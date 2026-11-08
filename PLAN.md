@@ -138,7 +138,8 @@ IP policy and tests:
 
 - [x] First user becomes admin.
   - Checked 2026-11-08 at main `445e33b`: `mvn verify` passes (475 unit + 145 integration, 0 failures). Covered by `AccountsContract` on SQLite and PostgreSQL (`firstAccountBecomesAdmin`, `setupOnlyOnce`, `firstAccountIsAdminWhicheverWayItIsCreated`, `concurrentSetupMakesExactlyOneAdmin`, `concurrentSetupCallsCreateOneAccount`), plus `MeApiTest`/`AdminApiTest`/`PermissionMatrixTest` over HTTP. Shaded jar on a fresh SQLite data dir: `GET /api/setup` → `{"needed":true}`; `POST /api/setup` → 201 with roles `["admin","user"]` and a `sid` cookie; `/api/me` lists every permission; `/api/admin/users` → 200; then `GET /api/setup` → `{"needed":false}`, a second `POST /api/setup` → 409 `setup_complete`, and registration (default closed) → 403. No code changes needed.
-- [ ] Role permissions combine as a union.
+- [x] Role permissions combine as a union.
+  - Checked 2026-11-08 at main `8c36365`: `mvn verify` passes (475 unit + 145 integration). Service level: `RolesContract.permissionsAreTheUnionOfTheRoles` on SQLite and PostgreSQL (overlapping roles, empty role, edits apply at once, empty-only → nothing). New HTTP-level `AdminApiTest.rolePermissionsCombineAsAUnion`: one user given `helpdesk` (`admin.users`, `rooms.create`), then `helpdesk` + `ip` (`ip.view`, `rooms.create`) + an empty role + `user`; `/api/me` lists the union and both `/api/admin/guests` and `/api/admin/ip/sessions/…` answer 200 on the same session (`/api/admin/settings` still 403); emptying `ip`'s permissions drops `ip.view` at once while `rooms.create` stays via `helpdesk`; only the empty role → no permissions, 403. No production code changes.
 - [ ] A guest gets an identity on first need, in cookie mode and in IP mode.
 - [ ] Custom-name rules are enforced.
 - [ ] IP-leak test passes across all DTOs.
