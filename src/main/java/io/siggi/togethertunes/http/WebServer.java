@@ -40,7 +40,8 @@ public final class WebServer implements AutoCloseable {
     /**
      * Binds {@code bind:port} (port 0 picks a free one) and starts accepting connections.
      *
-     * @param tmpDir directory SiggiHTTP may use for temporary files (e.g. parsed multipart uploads)
+     * @param tmpDir directory SiggiHTTP may use for temporary files (multipart parsing is off, so
+     *               normally unused)
      */
     public static WebServer start(String bind, int port, Router router, File tmpDir) throws IOException {
         ExecutorService executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("http-", 0).factory());
@@ -49,6 +50,12 @@ public final class WebServer implements AutoCloseable {
                 .setTmpDir(tmpDir)
                 .build();
         server.setServerName("TogetherTunes");
+        // Request bodies are streamed by the handlers (Request.copyBody / bodyToFile), which apply
+        // their own limits. SiggiHTTP's defaults would spool any multipart/form-data body to tmpDir
+        // before routing (on every path, even unauthenticated) and refuse an
+        // "Expect: 100-continue" body over 2 GB with a plain-text 413.
+        server.setIgnoringMultipartFormData(true);
+        server.setUploadLimit(0L);
         server.responderRegistry.register("/", router);
         ServerSocket socket = new ServerSocket();
         try {
