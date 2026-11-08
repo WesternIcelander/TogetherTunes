@@ -52,6 +52,13 @@ public final class ConfigLoader {
     /** Environment variable naming the config file (the {@code --config} option wins). */
     public static final String CONFIG_FILE_ENV = ENV_PREFIX + "CONFIG";
 
+    /**
+     * Environment variable with the server's secret key (base64). Not a config key: it is read by
+     * {@code io.siggi.togethertunes.secrets.ServerSecret}, listed here only so it isn't reported
+     * as unknown.
+     */
+    public static final String SECRET_KEY_ENV = ENV_PREFIX + "SECRET_KEY";
+
     /** Config file used when neither {@code --config} nor {@link #CONFIG_FILE_ENV} is given, if it exists. */
     public static final String DEFAULT_CONFIG_FILE = "config.json";
 
@@ -231,6 +238,7 @@ public final class ConfigLoader {
             known.add(envName(key));
         }
         known.add(CONFIG_FILE_ENV);
+        known.add(SECRET_KEY_ENV);
         for (String name : new TreeSet<>(env.keySet())) {
             if (name.startsWith(ENV_PREFIX) && !known.contains(name)) {
                 warnings.add("Ignoring unknown environment variable " + name);

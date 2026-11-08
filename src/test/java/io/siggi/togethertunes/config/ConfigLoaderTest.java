@@ -231,6 +231,7 @@ class ConfigLoaderTest {
     void unknownEnvironmentVariablesAreWarnings() throws ConfigException {
         env.put("TOGETHERTUNES_HTTP_PROT", "1");
         env.put("TOGETHERTUNES_CONFIG", "");
+        env.put("TOGETHERTUNES_SECRET_KEY", "read by ServerSecret, not a config key");
         List<String> warnings = loader().loadFromJson(null, URL_ONLY).warnings();
         assertEquals(List.of("Ignoring unknown environment variable TOGETHERTUNES_HTTP_PROT"), warnings);
     }

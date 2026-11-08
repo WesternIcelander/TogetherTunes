@@ -9,17 +9,22 @@ import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.secrets.SecretCipher;
+import io.siggi.togethertunes.secrets.SecretKeyException;
+import io.siggi.togethertunes.secrets.ServerSecret;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.Map;
 
 /**
  * Entry point of the runnable jar.
  *
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
- * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then opens
+ * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then loads
+ * the secret key ({@link ServerSecret}), opens
  * the database ({@link Database}) and applies pending migrations ({@link MigrationRunner}), starts the HTTP server ({@link WebServer}) and runs until the
  * process is stopped.
  */
@@ -44,6 +49,15 @@ public final class Main {
             System.exit(startup.status());
         }
         Config config = startup.config();
+        SecretCipher secrets;
+        try {
+            secrets = loadSecret(config, System.getenv(), System.out, System.err);
+        } catch (SecretKeyException e) {
+            System.err.println("Could not load the secret key: " + e.getMessage());
+            System.exit(EXIT_STARTUP);
+            return;
+        }
+        // TODO(OIDC provider admin / stream outputs): pass `secrets` to the repositories with *_enc columns.
         Database database;
         try {
             database = Database.open(config.dbUrl());
@@ -89,6 +103,25 @@ public final class Main {
         }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
         web.join();
+    }
+
+    /**
+     * Loads the secret key ({@link ServerSecret}), generating {@code <data>/secret.key} on first
+     * start, and reports where it came from.
+     */
+    static SecretCipher loadSecret(Config config, Map<String, String> env, PrintStream out, PrintStream err)
+            throws SecretKeyException {
+        ServerSecret.Loaded loaded = ServerSecret.load(config.dataDir(), env);
+        for (String warning : loaded.warnings()) {
+            err.println("WARNING: " + warning);
+        }
+        switch (loaded.source()) {
+            case ENVIRONMENT -> out.println("Secret key from " + ServerSecret.ENV_VAR);
+            case FILE -> out.println("Secret key from " + loaded.file());
+            case GENERATED -> out.println("Generated a new secret key in " + loaded.file()
+                    + " (back it up: encrypted secrets can't be read without it)");
+        }
+        return loaded.cipher();
     }
 
     /**
