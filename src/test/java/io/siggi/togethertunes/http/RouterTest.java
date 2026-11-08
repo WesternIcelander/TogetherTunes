@@ -102,6 +102,17 @@ class RouterTest {
     }
 
     @Test
+    void routesListsRegisteredRoutesInOrder() {
+        Router router = new Router();
+        assertEquals(List.of(), router.routes());
+        router.get("/api/items/{id}", (rq, rs) -> rs.empty(204));
+        router.delete("/api/items/{id}", (rq, rs) -> rs.empty(204));
+        router.get("/{path...}", (rq, rs) -> rs.empty(204));
+        assertEquals(List.of("GET /api/items/{id}", "DELETE /api/items/{id}", "GET /{path...}"), router.routes());
+        assertThrows(UnsupportedOperationException.class, () -> router.routes().add("POST /x"));
+    }
+
+    @Test
     void handlersRunOnVirtualThreads() throws Exception {
         Router router = new Router((rq, rs, next) -> {
             trace.add("hook virtual=" + Thread.currentThread().isVirtual());

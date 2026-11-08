@@ -91,6 +91,18 @@ public final class Router implements HTTPResponder {
         return this;
     }
 
+    /**
+     * The registered routes as {@code "METHOD pattern"} (e.g. {@code "GET /api/admin/users/{id}"}),
+     * in registration order. For tests that must cover every endpoint.
+     */
+    public List<String> routes() {
+        List<String> out = new ArrayList<>(routes.size());
+        for (Route r : routes) {
+            out.add(r.method() + " " + r.pattern());
+        }
+        return List.copyOf(out);
+    }
+
     private static Handler compose(List<Hook> hooks, Handler handler) {
         Handler next = handler;
         for (int i = hooks.size() - 1; i >= 0; i--) {
