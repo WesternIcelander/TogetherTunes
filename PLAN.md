@@ -99,6 +99,8 @@ Rest of the skeleton:
 - [x] A Range request returns a correct `206`.
   - Checked 2026-11-08 at `e40934f`: `RangeRequestTest` (7) and `StaticFilesTest` (15) pass. Shaded jar on a fresh data dir, curl against `/test/ws-echo.html` (2381 bytes): `bytes=0-9` → 206 `Content-Range: bytes 0-9/2381`, `Content-Length: 10`; `bytes=10-` → 206 `bytes 10-2380/2381`; `bytes=-20` → 206 `bytes 2361-2380/2381`; `bytes=5-999999` → 206 clamped to `bytes 5-2380/2381`; `bytes=999999-` → 416 `Content-Range: bytes */2381`; HEAD with `bytes=0-9` → 206 with the same headers and no body. Partial bodies are byte-identical to the matching slices of the full file. No code changes needed.
 - [ ] **Gate M0:** check every step in M0. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+  - Checked 2026-11-08 at `e40934f`: `mvn verify` passes (322 tests: 263 unit + 59 integration, 0 failures). Every M0 step is `[x]` except one:
+    - `[?]` *(manual)* Browser test of the WebSocket echo in Chrome, Firefox and Safari. Implemented, agent pre-check done, test steps written under the step; needs Siggi to run them in real browsers and flip it to `[x]`. Then tick this gate.
 
 ## M1 — Identity and accounts
 
