@@ -136,7 +136,8 @@ IP policy and tests:
 
 **Done when:**
 
-- [ ] First user becomes admin.
+- [x] First user becomes admin.
+  - Checked 2026-11-08 at main `445e33b`: `mvn verify` passes (475 unit + 145 integration, 0 failures). Covered by `AccountsContract` on SQLite and PostgreSQL (`firstAccountBecomesAdmin`, `setupOnlyOnce`, `firstAccountIsAdminWhicheverWayItIsCreated`, `concurrentSetupMakesExactlyOneAdmin`, `concurrentSetupCallsCreateOneAccount`), plus `MeApiTest`/`AdminApiTest`/`PermissionMatrixTest` over HTTP. Shaded jar on a fresh SQLite data dir: `GET /api/setup` → `{"needed":true}`; `POST /api/setup` → 201 with roles `["admin","user"]` and a `sid` cookie; `/api/me` lists every permission; `/api/admin/users` → 200; then `GET /api/setup` → `{"needed":false}`, a second `POST /api/setup` → 409 `setup_complete`, and registration (default closed) → 403. No code changes needed.
 - [ ] Role permissions combine as a union.
 - [ ] A guest gets an identity on first need, in cookie mode and in IP mode.
 - [ ] Custom-name rules are enforced.
