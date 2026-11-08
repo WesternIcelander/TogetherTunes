@@ -26,6 +26,16 @@
 
         <junit.version>5.13.4</junit.version>
 
+        <!--
+            Frontend build (web/): frontend-maven-plugin downloads this exact Node into
+            web/node/ (npm is the one bundled with it), runs `npm ci` and then
+            `npm run build` (tsc). The TypeScript version is pinned in web/package.json
+            and web/package-lock.json. Skip with -Dskip.npm -Dskip.installnodenpm
+            (the plugin's own switches).
+        -->
+        <node.version>v24.22.2</node.version>
+        <frontend-maven-plugin.version>2.0.2</frontend-maven-plugin.version>
+
         <maven-compiler-plugin.version>3.13.0</maven-compiler-plugin.version>
         <maven-resources-plugin.version>3.3.1</maven-resources-plugin.version>
         <maven-jar-plugin.version>3.4.2</maven-jar-plugin.version>
@@ -119,10 +129,66 @@
                     <artifactId>maven-shade-plugin</artifactId>
                     <version>${maven-shade-plugin.version}</version>
                 </plugin>
+                <plugin>
+                    <groupId>com.github.eirslett</groupId>
+                    <artifactId>frontend-maven-plugin</artifactId>
+                    <version>${frontend-maven-plugin.version}</version>
+                </plugin>
             </plugins>
         </pluginManagement>
 
+        <!--
+            Web UI layout in the jar (and in target/classes): everything under /web/.
+            Static assets come from web/static/ (copied here), compiled TypeScript from
+            web/src/ lands in /web/js/ (tsc's outDir, see web/tsconfig.json).
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>web/static</directory>
+                <targetPath>web</targetPath>
+            </resource>
+        </resources>
+
         <plugins>
+            <!-- Compiles web/src/*.ts with tsc into target/classes/web/js/ (generate-resources). -->
+            <plugin>
+                <groupId>com.github.eirslett</groupId>
+                <artifactId>frontend-maven-plugin</artifactId>
+                <configuration>
+                    <workingDirectory>web</workingDirectory>
+                    <nodeVersion>${node.version}</nodeVersion>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>install-node-and-npm</id>
+                        <goals>
+                            <goal>install-node-and-npm</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>npm-ci</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>ci --no-audit --no-fund</arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>tsc</id>
+                        <goals>
+                            <goal>npm</goal>
+                        </goals>
+                        <configuration>
+                            <arguments>run build</arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>

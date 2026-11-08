@@ -1,0 +1,30 @@
+{
+  // Compiled by `npm run build` during `mvn package` (frontend-maven-plugin).
+  // Plain ES modules for the browser, no bundler: relative imports must name the
+  // compiled file, e.g. `import { x } from "./util.js";`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+
+    "rootDir": "src",
+    // Lands in the jar as /web/js/; static assets from web/static/ go to /web/.
+    "outDir": "../target/classes/web/js",
+    "sourceMap": true,
+    "inlineSources": true,
+    "noEmitOnError": true
+  },
+  "include": ["src/**/*.ts"]
+}
