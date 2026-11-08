@@ -27,6 +27,15 @@ import java.util.Objects;
  *       deleted. Errors from {@link Accounts#login}.</li>
  *   <li>{@code POST /api/auth/logout} → {@code 204}. Deletes the session the request is
  *       authenticated with (cookie or bearer) and clears the {@code sid} cookie. Idempotent.</li>
+ *   <li>{@code POST /api/auth/token} → {@code 201 {"token", "tokenType": "Bearer", "sessionId",
+ *       "expiresAt", "user"}}: a new {@code bearer} session for {@code Authorization: Bearer}.
+ *       With a body {@code {"username", "password"}} it logs in like {@code /api/auth/login}
+ *       (same errors and audit) but sets no cookie; that is how apps get a token. Without a body
+ *       (or with {@code {}}) it is issued to the user the request is already authenticated as
+ *       (e.g. from the web UI, or for an account that has no password); an anonymous or guest
+ *       request then gets {@code 401 not_authenticated}. Audited as {@value #AUDIT_TOKEN}. The
+ *       token is shown only in this response; it expires {@link Sessions#LIFETIME_MS} after its
+ *       last use and is revoked through {@link SessionsApi} or by logging out with it.</li>
  * </ul>
  *
  * <p>{@code user} is {@code {"id", "username", "displayName", "roles": [...]}}, as from setup.
@@ -36,6 +45,8 @@ public final class AuthApi {
     public static final String AUDIT_REGISTER = "account.register";
     /** {@code audit_log} action of a logout. */
     public static final String AUDIT_LOGOUT = "auth.logout";
+    /** {@code audit_log} action of a bearer token issued. */
+    public static final String AUDIT_TOKEN = "auth.token";
 
     private final Accounts accounts;
     private final Sessions sessions;
@@ -46,6 +57,9 @@ public final class AuthApi {
     }
 
     record LoginRequest(String username, String password) {
+    }
+
+    record TokenRequest(String username, String password) {
     }
 
     /**
@@ -63,6 +77,7 @@ public final class AuthApi {
         router.post("/api/auth/register", this::registerAccount, Hooks.rateLimit("register"));
         router.post("/api/auth/login", this::login, Hooks.rateLimit("login"));
         router.post("/api/auth/logout", this::logout);
+        router.post("/api/auth/token", this::token, Hooks.rateLimit("login"));
     }
 
     private void registerAccount(Request request, Response response) throws Exception {
@@ -104,23 +119,58 @@ public final class AuthApi {
                 // A stale sid (e.g. of a disabled user) is removed too.
                 sessions.deleteByToken(request.cookie(ActorResolver.SESSION_COOKIE));
             }
-            response.addHeader("Set-Cookie", sessionCookie("", 0));
+            response.setCookie(sessionCookie("", 0));
         }
         response.header("Cache-Control", "no-store");
         response.empty(204);
     }
 
+    private void token(Request request, Response response) throws Exception {
+        boolean noBody = request.contentLength() == 0
+                || (request.contentLength() < 0 && request.header("Transfer-Encoding") == null);
+        TokenRequest body = noBody ? null : request.readJson(TokenRequest.class);
+        Accounts.Account account;
+        String via;
+        if (body != null && (body.username() != null || body.password() != null)) {
+            account = accounts.login(body.username(), body.password(), request.clientIp());
+            via = "password";
+        } else {
+            Actor actor = ActorResolver.actor(request);
+            account = actor instanceof Actor.User user ? accounts.findEnabled(user.userId()) : null;
+            if (account == null) {
+                throw new HttpError(401, "not_authenticated", "Log in first, or send a username and password");
+            }
+            via = "session";
+        }
+        Sessions.Created session = sessions.create(account.id(), Actor.Via.BEARER, request.header("User-Agent"),
+                request.clientIp());
+        accounts.audit(account.id(), request.clientIp(), AUDIT_TOKEN, session.sessionId(), Map.of("via", via));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("token", session.token());
+        out.put("tokenType", "Bearer");
+        out.put("sessionId", session.sessionId());
+        out.put("expiresAt", session.expiresAt());
+        out.put("user", userJson(account));
+        response.header("Cache-Control", "no-store");
+        response.json(201, out);
+    }
+
     private void startSession(Request request, Response response, Accounts.Account account) throws Exception {
+        startCookieSession(sessions, secureCookies, request, response, account);
+    }
+
+    /** Logs {@code account} in on this browser: a new {@code cookie} session and its {@code sid} cookie. */
+    static void startCookieSession(Sessions sessions, boolean secureCookies, Request request, Response response,
+                                   Accounts.Account account) throws Exception {
         Sessions.Created session = sessions.create(account.id(), Actor.Via.COOKIE, request.header("User-Agent"),
                 request.clientIp());
-        response.addHeader("Set-Cookie", sessionCookie(session.token(), Sessions.LIFETIME_MS / 1000));
+        response.setCookie(Sessions.cookie(session.token(), secureCookies));
         response.header("Cache-Control", "no-store");
     }
 
     /** The {@code sid} cookie header value ({@code docs/auth.md#sessions}). */
     String sessionCookie(String value, long maxAgeSeconds) {
-        return ActorResolver.SESSION_COOKIE + "=" + value + "; Path=/; Max-Age=" + maxAgeSeconds
-                + "; HttpOnly; SameSite=Lax" + (secureCookies ? "; Secure" : "");
+        return Sessions.cookie(value, maxAgeSeconds, secureCookies);
     }
 
     static Map<String, Object> userJson(Accounts.Account account) {

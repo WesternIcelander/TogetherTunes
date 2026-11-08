@@ -6,6 +6,7 @@ import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Sessions;
+import io.siggi.togethertunes.auth.SessionsApi;
 import io.siggi.togethertunes.auth.SetupApi;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
@@ -105,13 +106,20 @@ public final class Main {
             return;
         }
         Settings settings = new Settings(database, config);
-        ActorResolver actors = new ActorResolver(database, settings);
+        ActorResolver actors = new ActorResolver(database, settings, config.secureCookies());
         Accounts accounts = new Accounts(database, Passwords.DEFAULT);
-        SetupApi setup = new SetupApi(accounts);
-        AuthApi auth = new AuthApi(accounts, new Sessions(database), settings, config.secureCookies());
+        Sessions sessions = new Sessions(database);
+        try {
+            sessions.deleteExpired();
+        } catch (SQLException e) {
+            System.err.println("Could not delete expired sessions: " + e);
+        }
+        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies());
+        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies());
+        SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -154,13 +162,16 @@ public final class Main {
      * until M1 "CSRF"). The web UI is the catch-all {@code GET /{path...}} route, so every
      * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
      * test socket used by the test page {@code /test/ws-echo.html}. {@link SetupApi} is the
-     * first-run setup ({@code /api/setup}), {@link AuthApi} local registration, login and logout
-     * ({@code /api/auth/...}).
+     * first-run setup ({@code /api/setup}), {@link AuthApi} local registration, login, logout and
+     * bearer tokens ({@code /api/auth/...}), {@link SessionsApi} the user's own sessions
+     * ({@code /api/me/sessions}).
      */
-    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth) {
+    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
+                         SessionsApi sessions) {
         Router router = new Router(actors.hook(), Hooks.csrf());
         setup.register(router);
         auth.register(router);
+        sessions.register(router);
         WebSockets webSockets = new WebSockets(config.publicBaseUrl());
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

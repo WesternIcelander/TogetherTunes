@@ -15,6 +15,7 @@ import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Sessions;
+import io.siggi.togethertunes.auth.SessionsApi;
 import io.siggi.togethertunes.auth.SetupApi;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
@@ -53,6 +54,8 @@ class MainRouterTest {
     private Settings settings;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
+    /** The server's clock; tests move it forward. */
+    private final TestClock clock = new TestClock(System.currentTimeMillis());
 
     @BeforeEach
     void setUp() throws Exception {
@@ -63,11 +66,14 @@ class MainRouterTest {
         MigrationRunner.migrate(database);
         BuiltinRoles.ensure(database);
         settings = new Settings(database, config);
-        ActorResolver actors = new ActorResolver(database, settings);
-        Accounts accounts = new Accounts(database, new Passwords(new Passwords.Params(64, 1, 1)));
-        SetupApi setup = new SetupApi(accounts);
-        AuthApi auth = new AuthApi(accounts, new Sessions(database), settings, config.secureCookies());
-        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth), dir.toFile());
+        ActorResolver actors = new ActorResolver(database, settings, clock, config.secureCookies());
+        Accounts accounts = new Accounts(database, new Passwords(new Passwords.Params(64, 1, 1)), clock);
+        Sessions sessions = new Sessions(database, clock);
+        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies());
+        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies());
+        SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
+        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi),
+                dir.toFile());
     }
 
     @AfterEach
@@ -254,23 +260,174 @@ class MainRouterTest {
         assertTrue(ok.body().contains("\"username\":\"Siggi\"") && ok.body().contains("[\"admin\",\"user\"]"), ok.body());
         assertEquals("no-store", ok.headers().firstValue("Cache-Control").orElse(""));
         String sid = sidCookie(ok);
-        assertEquals(1, count("SELECT COUNT(*) FROM sessions"));
+        assertEquals(2, count("SELECT COUNT(*) FROM sessions")); // setup's and this one
 
         // Logging in again from the same browser replaces its session.
         HttpResponse<String> again = postJson("/api/auth/login", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", sid);
         String sid2 = sidCookie(again);
         assertFalse(sid.equals(sid2));
-        assertEquals(1, count("SELECT COUNT(*) FROM sessions"));
+        assertEquals(2, count("SELECT COUNT(*) FROM sessions"));
 
         HttpResponse<String> out = postJson("/api/auth/logout", "", sid2);
         assertEquals(204, out.statusCode());
         assertEquals(List.of("sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"), out.headers().allValues("Set-Cookie"));
-        assertEquals(0, count("SELECT COUNT(*) FROM sessions"));
+        assertEquals(1, count("SELECT COUNT(*) FROM sessions"));
         assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.logout'"));
         // Idempotent, also without a cookie.
         assertEquals(204, postJson("/api/auth/logout", "", sid2).statusCode());
         HttpResponse<String> anonymous = postJson("/api/auth/logout", "", null);
         assertEquals(204, anonymous.statusCode());
         assertTrue(anonymous.headers().allValues("Set-Cookie").isEmpty());
+    }
+
+    private HttpResponse<String> send(String method, String path, String jsonBody, String... headers)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .method(method, jsonBody == null ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofString(jsonBody));
+        if (jsonBody != null) {
+            b.header("Content-Type", "application/json");
+        }
+        if (headers.length > 0) {
+            b.headers(headers);
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String setupAdmin() throws Exception {
+        HttpResponse<String> created = post("/api/setup", "application/json",
+                "{\"username\":\"siggi\",\"password\":\"correct horse\"}");
+        assertEquals(201, created.statusCode(), created.body());
+        return sidCookie(created);
+    }
+
+    private static String json(String body, String key) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("\"" + key + "\":\"([^\"]*)\"").matcher(body);
+        assertTrue(m.find(), key + " in " + body);
+        return m.group(1);
+    }
+
+    @Test
+    void setupLogsTheAdminIn() throws Exception {
+        String sid = setupAdmin();
+        HttpResponse<String> list = send("GET", "/api/me/sessions", null, "Cookie", sid);
+        assertEquals(200, list.statusCode(), list.body());
+        assertTrue(list.body().matches("\\{\"items\":\\[\\{\"id\":\"[0-9a-f-]{36}\",\"kind\":\"cookie\","
+                + "\"createdAt\":\\d+,\"lastSeenAt\":\\d+,\"expiresAt\":\\d+,\"userAgent\":\"Java-http-client/[^\"]+\","
+                + "\"current\":true}]}"), list.body());
+        assertEquals("no-store", list.headers().firstValue("Cache-Control").orElse(""));
+    }
+
+    @Test
+    void bearerTokens() throws Exception {
+        String sid = setupAdmin();
+        HttpResponse<String> wrong = send("POST", "/api/auth/token", "{\"username\":\"siggi\",\"password\":\"nope nope nope\"}");
+        assertEquals(401, wrong.statusCode());
+        assertTrue(wrong.body().contains("\"invalid_credentials\""), wrong.body());
+        HttpResponse<String> anonymous = send("POST", "/api/auth/token", null);
+        assertEquals(401, anonymous.statusCode());
+        assertTrue(anonymous.body().contains("\"not_authenticated\""), anonymous.body());
+        assertEquals(401, send("POST", "/api/auth/token", "{}").statusCode());
+
+        HttpResponse<String> issued = send("POST", "/api/auth/token",
+                "{\"username\":\"SIGGI\",\"password\":\"correct horse\"}", "User-Agent", "tt-app/1.0");
+        assertEquals(201, issued.statusCode(), issued.body());
+        assertTrue(issued.body().matches("\\{\"token\":\"[A-Za-z0-9_-]{43}\",\"tokenType\":\"Bearer\","
+                + "\"sessionId\":\"[0-9a-f-]{36}\",\"expiresAt\":\\d+,\"user\":\\{.*\"username\":\"siggi\".*}}"),
+                issued.body());
+        assertTrue(issued.headers().allValues("Set-Cookie").isEmpty(), "a token request sets no cookie");
+        assertEquals("no-store", issued.headers().firstValue("Cache-Control").orElse(""));
+        String token = json(issued.body(), "token");
+        String bearerId = json(issued.body(), "sessionId");
+        String auth = "Bearer " + token;
+
+        HttpResponse<String> list = send("GET", "/api/me/sessions", null, "Authorization", auth);
+        assertEquals(200, list.statusCode(), list.body());
+        assertTrue(list.body().contains("{\"id\":\"" + bearerId + "\",\"kind\":\"bearer\""), list.body());
+        assertTrue(list.body().contains("\"userAgent\":\"tt-app/1.0\""), list.body());
+        assertTrue(list.body().matches(".*\"kind\":\"bearer\"[^}]*\"current\":true}.*"), list.body());
+        assertTrue(list.body().matches(".*\"kind\":\"cookie\"[^}]*\"current\":false}.*"), list.body());
+        assertFalse(list.body().contains("127.0.0.1"), "no IP in the session list");
+        assertFalse(list.body().contains("\"ip"), list.body());
+
+        // From a logged-in browser, without a body.
+        HttpResponse<String> fromSession = send("POST", "/api/auth/token", null, "Cookie", sid);
+        assertEquals(201, fromSession.statusCode(), fromSession.body());
+        assertTrue(fromSession.headers().allValues("Set-Cookie").isEmpty());
+        assertEquals(3, count("SELECT COUNT(*) FROM sessions"));
+        assertEquals(2, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.token'"));
+        assertEquals(0, count("SELECT COUNT(*) FROM sessions WHERE token_hash = '" + token + "'"), "only hashes stored");
+
+        // Logging out with the token revokes it and leaves the cookie session alone.
+        assertEquals(204, send("POST", "/api/auth/logout", null, "Authorization", auth).statusCode());
+        HttpResponse<String> revoked = send("GET", "/api/me/sessions", null, "Authorization", auth);
+        assertEquals(401, revoked.statusCode());
+        assertTrue(revoked.body().contains("\"invalid_token\""), revoked.body());
+        assertEquals(200, send("GET", "/api/me/sessions", null, "Cookie", sid).statusCode());
+    }
+
+    @Test
+    void sessionListAndRevoke() throws Exception {
+        String sid = setupAdmin();
+        assertEquals(401, send("GET", "/api/me/sessions", null).statusCode());
+        assertEquals(401, send("DELETE", "/api/me/sessions", null).statusCode());
+        settings.set(Settings.REGISTRATION_MODE, RegistrationMode.OPEN);
+        String aliceSid = sidCookie(postJson("/api/auth/register", "{\"username\":\"alice\",\"password\":\"0123456789\"}", null));
+        String aliceSession = json(send("GET", "/api/me/sessions", null, "Cookie", aliceSid).body(), "id");
+
+        String sid2 = sidCookie(postJson("/api/auth/login", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null));
+        String token = json(send("POST", "/api/auth/token", null, "Cookie", sid).body(), "token");
+        HttpResponse<String> list = send("GET", "/api/me/sessions?limit=2", null, "Cookie", sid);
+        assertTrue(list.body().contains("\"nextCursor\":\""), list.body());
+        String cursor = json(list.body(), "nextCursor");
+        HttpResponse<String> page2 = send("GET", "/api/me/sessions?limit=2&cursor=" + cursor, null, "Cookie", sid);
+        assertFalse(page2.body().contains("nextCursor"), page2.body());
+        assertEquals(400, send("GET", "/api/me/sessions?limit=0", null, "Cookie", sid).statusCode());
+        assertEquals(400, send("GET", "/api/me/sessions?limit=x", null, "Cookie", sid).statusCode());
+
+        // Someone else's session is not found, and stays.
+        HttpResponse<String> notMine = send("DELETE", "/api/me/sessions/" + aliceSession, null, "Cookie", sid);
+        assertEquals(404, notMine.statusCode());
+        assertEquals(200, send("GET", "/api/me/sessions", null, "Cookie", aliceSid).statusCode());
+
+        // Log out everywhere else: the second browser and the token go, this one stays.
+        HttpResponse<String> others = send("DELETE", "/api/me/sessions", null, "Cookie", sid);
+        assertEquals(200, others.statusCode(), others.body());
+        assertEquals("{\"revoked\":2}", others.body());
+        assertEquals(401, send("GET", "/api/me/sessions", null, "Cookie", sid2).statusCode());
+        assertEquals(401, send("GET", "/api/me/sessions", null, "Authorization", "Bearer " + token).statusCode());
+
+        // Revoking the current session logs this browser out.
+        String current = json(send("GET", "/api/me/sessions", null, "Cookie", sid).body(), "id");
+        HttpResponse<String> self = send("DELETE", "/api/me/sessions/" + current, null, "Cookie", sid);
+        assertEquals(204, self.statusCode());
+        assertEquals(List.of("sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"), self.headers().allValues("Set-Cookie"));
+        assertEquals(401, send("GET", "/api/me/sessions", null, "Cookie", sid).statusCode());
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.session_revoked'"));
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.sessions_revoked'"));
+    }
+
+    @Test
+    void cookieSlidesWithUse() throws Exception {
+        String sid = setupAdmin();
+        HttpResponse<String> soon = send("GET", "/api/me/sessions", null, "Cookie", sid);
+        assertTrue(soon.headers().allValues("Set-Cookie").isEmpty(), "not re-sent within a minute");
+
+        clock.advance(2 * 60_000);
+        HttpResponse<String> later = send("GET", "/api/me/sessions", null, "Cookie", sid);
+        assertEquals(200, later.statusCode());
+        assertEquals(List.of(sid + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax; Secure"),
+                later.headers().allValues("Set-Cookie"));
+        assertEquals(1, count("SELECT COUNT(*) FROM sessions WHERE expires_at = last_seen_at + 2592000000"
+                + " AND last_seen_at > created_at"));
+        assertTrue(send("GET", "/api/me/sessions", null, "Cookie", sid).headers().allValues("Set-Cookie").isEmpty());
+
+        // Static files never resolve the actor, so they don't slide or set cookies.
+        clock.advance(2 * 60_000);
+        assertTrue(send("GET", "/setup.html", null, "Cookie", sid).headers().allValues("Set-Cookie").isEmpty());
+
+        // A logout that slides first still sends only the clearing cookie.
+        HttpResponse<String> out = send("POST", "/api/auth/logout", null, "Cookie", sid);
+        assertEquals(List.of("sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"), out.headers().allValues("Set-Cookie"));
     }
 }

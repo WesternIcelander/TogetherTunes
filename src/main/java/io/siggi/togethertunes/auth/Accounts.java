@@ -202,6 +202,22 @@ public final class Accounts {
         });
     }
 
+    /** The enabled account with this id, or {@code null} (unknown or disabled). */
+    public Account findEnabled(String userId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT id, username, display_name FROM users WHERE id = ? AND disabled = 0")) {
+                ps.setString(1, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    return new Account(rs.getString(1), rs.getString(2), rs.getString(3), roleNames(c, rs.getString(1)));
+                }
+            }
+        });
+    }
+
     /** Writes one {@code audit_log} row with a user actor (or none), in its own transaction. */
     public void audit(String actorUserId, String ip, String action, String target, Map<String, ?> details)
             throws SQLException {

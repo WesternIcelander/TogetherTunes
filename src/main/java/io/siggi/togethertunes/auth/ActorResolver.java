@@ -5,6 +5,7 @@ import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.http.Hook;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
+import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.sql.PreparedStatement;
@@ -35,9 +36,12 @@ import java.util.Objects;
  *   <li>Otherwise {@link Actor#ANONYMOUS}.</li>
  * </ol>
  *
- * <p>Resolution only reads. It never creates a guest (that happens lazily on the first action
- * that needs an identity) and never updates {@code last_seen_at}/{@code expires_at}/{@code ip_last};
- * the session and guest steps of M1 do that.
+ * <p>Using a session slides its expiry ({@link Sessions#touch}, at most once a minute); over
+ * HTTP, a slid {@code cookie} session also gets its {@code sid} cookie re-sent with a fresh
+ * {@code Max-Age}, so the browser keeps it as long as the server does. Otherwise resolution only
+ * reads: it never creates a guest (that happens lazily on the first action that needs an
+ * identity) and never updates a guest's {@code last_seen_at}/{@code ip_last} (the guest steps of
+ * M1 do that).
  *
  * <p>Over HTTP, {@link #hook()} resolves lazily: the actor is looked up the first time
  * {@link #actor(Request)} is called for a request and then reused, so static files never touch
@@ -52,6 +56,8 @@ public final class ActorResolver {
     private final Database db;
     private final Settings settings;
     private final Clock clock;
+    private final Sessions sessions;
+    private final boolean secureCookies;
 
     /** What a request presents to identify itself. Any component may be {@code null}. */
     public record Credentials(String bearer, String sessionCookie, String guestCookie, String clientIp) {
@@ -82,14 +88,33 @@ public final class ActorResolver {
         }
     }
 
+    /** With {@code Secure} session cookies. */
     public ActorResolver(Database db, Settings settings) {
-        this(db, settings, Clock.systemUTC());
+        this(db, settings, Clock.systemUTC(), true);
+    }
+
+    /**
+     * @param secureCookies whether a re-sent {@code sid} cookie gets the {@code Secure} flag (as
+     *                      in {@link AuthApi})
+     */
+    public ActorResolver(Database db, Settings settings, boolean secureCookies) {
+        this(db, settings, Clock.systemUTC(), secureCookies);
     }
 
     public ActorResolver(Database db, Settings settings, Clock clock) {
+        this(db, settings, clock, true);
+    }
+
+    public ActorResolver(Database db, Settings settings, Clock clock, boolean secureCookies) {
         this.db = Objects.requireNonNull(db);
         this.settings = Objects.requireNonNull(settings);
         this.clock = Objects.requireNonNull(clock);
+        this.sessions = new Sessions(db, clock);
+        this.secureCookies = secureCookies;
+    }
+
+    /** An actor, and whether its {@code sid} session's expiry just slid (so the cookie is re-sent). */
+    private record Resolved(Actor actor, boolean cookieSlid) {
     }
 
     /**
@@ -98,32 +123,37 @@ public final class ActorResolver {
      * @throws HttpError 401 {@code invalid_token} for a bearer token that doesn't identify a user
      */
     public Actor resolve(Credentials credentials) throws SQLException {
+        return resolveFull(credentials).actor();
+    }
+
+    private Resolved resolveFull(Credentials credentials) throws SQLException {
         long now = EpochMs.now(clock);
         if (credentials.bearer() != null) {
-            Actor.User user = Tokens.isWellFormed(credentials.bearer())
+            SessionUser found = Tokens.isWellFormed(credentials.bearer())
                     ? findUser(credentials.bearer(), Actor.Via.BEARER, now) : null;
+            Actor.User user = found == null ? null : found.user();
             if (user == null) {
                 throw new HttpError(401, "invalid_token", "The bearer token is invalid or expired");
             }
-            return user;
+            return new Resolved(user, false);
         }
         if (Tokens.isWellFormed(credentials.sessionCookie())) {
-            Actor.User user = findUser(credentials.sessionCookie(), Actor.Via.COOKIE, now);
-            if (user != null) {
-                return user;
+            SessionUser found = findUser(credentials.sessionCookie(), Actor.Via.COOKIE, now);
+            if (found != null) {
+                return new Resolved(found.user(), found.slid());
             }
         }
         boolean wantGuestCookie = Tokens.isWellFormed(credentials.guestCookie());
         if (!wantGuestCookie && credentials.clientIp() == null) {
-            return Actor.ANONYMOUS;
+            return new Resolved(Actor.ANONYMOUS, false);
         }
         if (!settings.guestsEnabled()) {
-            return Actor.ANONYMOUS;
+            return new Resolved(Actor.ANONYMOUS, false);
         }
         if (wantGuestCookie) {
             Actor.Guest guest = findGuest(GuestIdentity.COOKIE, Tokens.hash(credentials.guestCookie()));
             if (guest != null) {
-                return guest;
+                return new Resolved(guest, false);
             }
         }
         if (credentials.clientIp() != null && settings.guestsIdentifyBy() == GuestIdentity.IP) {
@@ -131,27 +161,39 @@ public final class ActorResolver {
             if (keyHash != null) {
                 Actor.Guest guest = findGuest(GuestIdentity.IP, keyHash);
                 if (guest != null) {
-                    return guest;
+                    return new Resolved(guest, false);
                 }
             }
         }
-        return Actor.ANONYMOUS;
+        return new Resolved(Actor.ANONYMOUS, false);
     }
 
-    private Actor.User findUser(String token, Actor.Via via, long now) throws SQLException {
+    /** A user found by session token; {@code slid} if this use moved the session's expiry. */
+    private record SessionUser(Actor.User user, boolean slid) {
+    }
+
+    private SessionUser findUser(String token, Actor.Via via, long now) throws SQLException {
         String hash = Tokens.hash(token);
-        return db.read(c -> {
+        record Row(Actor.User user, long lastSeenAt) {
+        }
+        Row row = db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT s.id, s.user_id FROM sessions s JOIN users u ON u.id = s.user_id"
+                    "SELECT s.id, s.user_id, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id"
                             + " WHERE s.token_hash = ? AND s.kind = ? AND s.expires_at > ? AND u.disabled = 0")) {
                 ps.setString(1, hash);
                 ps.setString(2, via.kind());
                 ps.setLong(3, now);
                 try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? new Actor.User(rs.getString(2), rs.getString(1), via) : null;
+                    return rs.next() ? new Row(new Actor.User(rs.getString(2), rs.getString(1), via), rs.getLong(3)) : null;
                 }
             }
         });
+        if (row == null) {
+            return null;
+        }
+        boolean slid = now - row.lastSeenAt() >= Sessions.TOUCH_INTERVAL_MS
+                && sessions.touch(row.user().sessionId(), row.lastSeenAt()) != 0;
+        return new SessionUser(row.user(), slid);
     }
 
     private Actor.Guest findGuest(GuestIdentity kind, String keyHash) throws SQLException {
@@ -172,7 +214,7 @@ public final class ActorResolver {
     /** The router-wide hook: makes {@link #actor(Request)} work for every request. */
     public Hook hook() {
         return (request, response, next) -> {
-            request.setAttribute(Lazy.class, new Lazy(this, Credentials.of(request)));
+            request.setAttribute(Lazy.class, new Lazy(this, Credentials.of(request), response));
             next.handle(request, response);
         };
     }
@@ -195,12 +237,14 @@ public final class ActorResolver {
     private static final class Lazy {
         private final ActorResolver resolver;
         private final Credentials credentials;
+        private final Response response;
         private Actor actor;
         private HttpError error;
 
-        Lazy(ActorResolver resolver, Credentials credentials) {
+        Lazy(ActorResolver resolver, Credentials credentials, Response response) {
             this.resolver = resolver;
             this.credentials = credentials;
+            this.response = response;
         }
 
         Actor get() throws SQLException {
@@ -209,7 +253,11 @@ public final class ActorResolver {
             }
             if (actor == null) {
                 try {
-                    actor = resolver.resolve(credentials);
+                    Resolved resolved = resolver.resolveFull(credentials);
+                    actor = resolved.actor();
+                    if (resolved.cookieSlid() && !response.committed()) {
+                        response.setCookie(Sessions.cookie(credentials.sessionCookie(), resolver.secureCookies));
+                    }
                 } catch (HttpError e) {
                     error = e;
                     throw e;

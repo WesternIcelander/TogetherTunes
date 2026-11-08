@@ -37,6 +37,8 @@ public final class Response {
     private final HTTPRequest rawRequest;
     private final HTTPResponse raw;
     private boolean detached;
+    /** The cookies set so far, by name. */
+    private final Map<String, String> cookies = new LinkedHashMap<>();
 
     Response(HTTPRequest rawRequest) {
         this.rawRequest = rawRequest;
@@ -57,15 +59,42 @@ public final class Response {
         return this;
     }
 
-    /** Sets a header, replacing earlier values (except {@code Set-Cookie}, which adds). */
+    /** Sets a header, replacing earlier values ({@code Set-Cookie}: see {@link #setCookie}). */
     public Response header(String name, String value) {
+        if (name.equalsIgnoreCase("Set-Cookie")) {
+            return setCookie(value);
+        }
         raw.setHeader(name, value);
         return this;
     }
 
-    /** Adds a header value. */
+    /**
+     * Adds a header value. A {@code Set-Cookie} goes through {@link #setCookie}, so a later cookie
+     * of the same name replaces an earlier one.
+     */
     public Response addHeader(String name, String value) {
+        if (name.equalsIgnoreCase("Set-Cookie")) {
+            return setCookie(value);
+        }
         raw.addHeader(name, value);
+        return this;
+    }
+
+    /**
+     * Sets a cookie: {@code setCookieValue} is a whole {@code Set-Cookie} header value
+     * ({@code name=value; attributes}). An earlier cookie of the same name in this response is
+     * replaced, so e.g. a refreshed session cookie and a logout's clearing cookie never both go out.
+     */
+    public Response setCookie(String setCookieValue) {
+        int eq = setCookieValue.indexOf('=');
+        if (eq <= 0) {
+            throw new IllegalArgumentException("Not a Set-Cookie value");
+        }
+        cookies.put(setCookieValue.substring(0, eq).strip(), setCookieValue);
+        raw.deleteHeader("Set-Cookie");
+        for (String cookie : cookies.values()) {
+            raw.addHeader("Set-Cookie", cookie);
+        }
         return this;
     }
 

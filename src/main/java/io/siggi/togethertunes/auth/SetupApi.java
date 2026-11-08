@@ -15,26 +15,32 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code GET /api/setup} → {@code {"needed": true|false}}. Open to everyone.</li>
  *   <li>{@code POST /api/setup} with {@code {"username", "password", "displayName"?}} →
- *       {@code 201 {"user": {"id", "username", "displayName", "roles": [...]}}}. Only while no
- *       account exists; afterwards {@code 409 setup_complete}. Validation errors as in
- *       {@link Accounts#createLocal}. Audited as {@code account.setup}.</li>
+ *       {@code 201 {"user": {"id", "username", "displayName", "roles": [...]}}} and a new
+ *       {@code sid} cookie (the new admin is logged in). Only while no account exists; afterwards
+ *       {@code 409 setup_complete}. Validation errors as in {@link Accounts#createLocal}. Audited
+ *       as {@code account.setup}.</li>
  * </ul>
- *
- * <p>The new admin is not logged in by this call yet; the Sessions step makes it set the
- * {@code sid} cookie.
  */
 public final class SetupApi {
     /** {@code audit_log} action of a successful setup. */
     public static final String AUDIT_ACTION = "account.setup";
 
     private final Accounts accounts;
+    private final Sessions sessions;
+    private final boolean secureCookies;
 
     /** The POST body. */
     record SetupRequest(String username, String password, String displayName) {
     }
 
-    public SetupApi(Accounts accounts) {
+    /**
+     * @param secureCookies whether the {@code sid} cookie gets the {@code Secure} flag (as in
+     *                      {@link AuthApi})
+     */
+    public SetupApi(Accounts accounts, Sessions sessions, boolean secureCookies) {
         this.accounts = Objects.requireNonNull(accounts);
+        this.sessions = Objects.requireNonNull(sessions);
+        this.secureCookies = secureCookies;
     }
 
     public void register(Router router) {
@@ -51,7 +57,7 @@ public final class SetupApi {
         SetupRequest body = request.readJson(SetupRequest.class);
         Accounts.Account account = accounts.createLocal(body.username(), body.displayName(), body.password(), true,
                 request.clientIp(), AUDIT_ACTION);
-        response.header("Cache-Control", "no-store");
+        AuthApi.startCookieSession(sessions, secureCookies, request, response, account);
         response.json(201, Map.of("user", AuthApi.userJson(account)));
     }
 }
