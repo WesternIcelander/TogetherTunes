@@ -13,6 +13,8 @@ import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
+import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
@@ -81,7 +83,9 @@ class AdminApiTest {
         AdminApi adminApi = new AdminApi(database, accounts, new Users(database, passwords, clock), new Roles(database),
                 new Permissions(database, settings), settings);
         server = WebServer.start("127.0.0.1", 0,
-                Main.router(config, staticFiles, actors, setup, auth, sessionsApi, adminApi), dir.toFile());
+                Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
+                        new MeApi(accounts, new Users(database, passwords, clock), new Permissions(database, settings),
+                                new Guests(database, settings, config.secureCookies()), settings), adminApi), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

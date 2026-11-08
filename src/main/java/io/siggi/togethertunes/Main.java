@@ -4,6 +4,8 @@ import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
+import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
@@ -125,11 +127,13 @@ public final class Main {
         SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies(), limits);
         AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies(), limits);
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
-        AdminApi admin = new AdminApi(database, accounts, new Users(database, Passwords.DEFAULT, Clock.systemUTC()),
-                new Roles(database), new Permissions(database, settings), settings);
+        Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
+        Permissions permissions = new Permissions(database, settings);
+        AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
+        MeApi me = new MeApi(accounts, users, permissions, new Guests(database, settings, config.secureCookies()), settings);
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, admin),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -175,17 +179,19 @@ public final class Main {
      * test socket used by the test page {@code /test/ws-echo.html}. {@link SetupApi} is the
      * first-run setup ({@code /api/setup}), {@link AuthApi} local registration, login, logout and
      * bearer tokens ({@code /api/auth/...}), {@link SessionsApi} the user's own sessions
-     * ({@code /api/me/sessions}), {@link AdminApi} the admin API for users, roles and settings
+     * ({@code /api/me/sessions}), {@link MeApi} who-am-I and the guest identity ({@code /api/me},
+     * {@code /api/me/guest}), {@link AdminApi} the admin API for users, roles and settings
      * ({@code /api/admin/...}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
-                         SessionsApi sessions, AdminApi admin) {
+                         SessionsApi sessions, MeApi me, AdminApi admin) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
         setup.register(router);
         auth.register(router);
         sessions.register(router);
+        me.register(router);
         admin.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);

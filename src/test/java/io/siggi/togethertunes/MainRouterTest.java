@@ -17,6 +17,8 @@ import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
+import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Sessions;
@@ -84,7 +86,9 @@ class MainRouterTest {
         Passwords fastPasswords = new Passwords(new Passwords.Params(64, 1, 1));
         AdminApi admin = new AdminApi(database, accounts, new Users(database, fastPasswords, clock), new Roles(database),
                 new Permissions(database, settings), settings);
-        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi, admin),
+        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
+                new MeApi(accounts, new Users(database, fastPasswords, clock), new Permissions(database, settings),
+                        new Guests(database, settings, config.secureCookies()), settings), admin),
                 dir.toFile());
     }
 

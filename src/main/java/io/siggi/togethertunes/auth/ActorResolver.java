@@ -40,7 +40,7 @@ import java.util.Objects;
  * HTTP, a slid {@code cookie} session also gets its {@code sid} cookie re-sent with a fresh
  * {@code Max-Age}, so the browser keeps it as long as the server does. Otherwise resolution only
  * reads: it never creates a guest (that happens lazily on the first action that needs an
- * identity) and never updates a guest's {@code last_seen_at}/{@code ip_last} (the guest steps of
+ * identity, {@link Guests#requireIdentity}) and never updates a guest's {@code last_seen_at}/{@code ip_last} (the guest steps of
  * M1 do that).
  *
  * <p>Over HTTP, {@link #hook()} resolves lazily: the actor is looked up the first time
@@ -231,6 +231,21 @@ public final class ActorResolver {
             throw new IllegalStateException("ActorResolver.hook() is not installed on this router");
         }
         return lazy.get();
+    }
+
+    /**
+     * Replaces the actor of {@code request} for the rest of the request, e.g. after an anonymous
+     * request became a guest ({@link Guests#requireIdentity}).
+     *
+     * @throws IllegalStateException if the request didn't pass through {@link #hook()}
+     */
+    static void setActor(Request request, Actor actor) {
+        Lazy lazy = request.attribute(Lazy.class);
+        if (lazy == null) {
+            throw new IllegalStateException("ActorResolver.hook() is not installed on this router");
+        }
+        lazy.actor = Objects.requireNonNull(actor);
+        lazy.error = null;
     }
 
     /** Per-request memo. Requests are handled on one thread, so no locking. */
