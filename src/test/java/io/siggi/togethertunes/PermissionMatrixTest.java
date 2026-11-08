@@ -1,0 +1,547 @@
+package io.siggi.togethertunes;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.siggi.simplewebsocket.SimpleWebsocket;
+import io.siggi.simplewebsocket.WebSocketConnector;
+import io.siggi.simplewebsocket.WebSocketMessage;
+import io.siggi.simplewebsocket.WebsocketHeaders;
+import io.siggi.togethertunes.auth.Accounts;
+import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.auth.AdminActivityApi;
+import io.siggi.togethertunes.auth.AdminApi;
+import io.siggi.togethertunes.auth.AuthApi;
+import io.siggi.togethertunes.auth.AuthRateLimits;
+import io.siggi.togethertunes.auth.BuiltinRoles;
+import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.IdentityTickets;
+import io.siggi.togethertunes.auth.MeApi;
+import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.auth.Permissions;
+import io.siggi.togethertunes.auth.Roles;
+import io.siggi.togethertunes.auth.Sessions;
+import io.siggi.togethertunes.auth.SessionsApi;
+import io.siggi.togethertunes.auth.SetupApi;
+import io.siggi.togethertunes.auth.Users;
+import io.siggi.togethertunes.config.Config;
+import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.MigrationRunner;
+import io.siggi.togethertunes.http.RateLimiter;
+import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.http.StaticFiles;
+import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.settings.Settings;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.function.Function;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+/**
+ * The permission matrix ({@code docs/milestones.md}, M1 security): every route of
+ * {@link Main#router} is called by each kind of actor, and the status must be exactly the one in
+ * the {@link #MATRIX} table.
+ *
+ * <ul>
+ *   <li><b>Columns</b>: {@link Who#ANONYMOUS}, {@link Who#GUEST} (a guest identity, run once in
+ *       cookie mode and once in IP mode), {@link Who#USER} (a fresh account with the default
+ *       {@code user} role) and {@link Who#ADMIN} (a fresh account holding the built-in
+ *       {@code admin} role).</li>
+ *   <li><b>Fresh state per cell</b>: each call gets a new caller and, where the route needs one,
+ *       a new target (a user, a role, a spare session of the caller), so destructive calls (logout,
+ *       password change, revoking sessions, deleting a role) can't affect other cells.</li>
+ *   <li><b>Completeness</b>: the rows must name exactly the routes the router has, so a new route
+ *       fails this test until its row is added. Later milestones extend the table with their
+ *       routes (and, for room-scoped routes, room-role columns as they become relevant).</li>
+ *   <li><b>Denials</b>: every {@code 401} must be {@code not_authenticated} and every {@code 403}
+ *       must carry an error code, so a refusal can't be mistaken for an unrelated client error.</li>
+ * </ul>
+ *
+ * <p>Requests send a valid body for the caller, so an allowed cell shows the route's real success
+ * status rather than a validation error that would hide a missing permission check.
+ */
+class PermissionMatrixTest {
+    private static final String PUBLIC_BASE_URL = "https://tunes.example";
+    private static final int WS_UPGRADED = 101;
+
+    /** The kinds of caller, in table column order. */
+    enum Who { ANONYMOUS, GUEST, USER, ADMIN }
+
+    /** What a cell sends. {@code body} may be null. {@code websocket}: open a socket instead. */
+    record Call(String method, String path, String body, boolean websocket) {
+        static Call get(String path) {
+            return new Call("GET", path, null, false);
+        }
+
+        static Call delete(String path) {
+            return new Call("DELETE", path, null, false);
+        }
+
+        static Call post(String path, String body) {
+            return new Call("POST", path, body, false);
+        }
+
+        static Call patch(String path, String body) {
+            return new Call("PATCH", path, body, false);
+        }
+
+        static Call put(String path, String body) {
+            return new Call("PUT", path, body, false);
+        }
+
+        static Call socket(String path) {
+            return new Call("GET", path, null, true);
+        }
+    }
+
+    /**
+     * One route: how to call it in a cell, and the expected status for anonymous / guest / user /
+     * admin.
+     */
+    record Row(String route, Function<Cell, Call> call, int anonymous, int guest, int user, int admin) {
+        int expected(Who who) {
+            return switch (who) {
+                case ANONYMOUS -> anonymous;
+                case GUEST -> guest;
+                case USER -> user;
+                case ADMIN -> admin;
+            };
+        }
+    }
+
+    private static Row row(String route, Function<Cell, Call> call, int anonymous, int guest, int user, int admin) {
+        return new Row(route, call, anonymous, guest, user, admin);
+    }
+
+    /** An admin route: 401 for anonymous and guests, 403 for a plain user, {@code ok} for an admin. */
+    private static Row admin(String route, Function<Cell, Call> call, int ok) {
+        return row(route, call, 401, 401, 403, ok);
+    }
+
+    // ------------------------------------------------------------------ the table
+
+    /** Every route, as {@code "METHOD pattern"} (see {@link Router#routes()}). Extend per milestone. */
+    private static final List<Row> MATRIX = List.of(
+            // Setup: done once the first account exists, whoever asks.
+            row("GET /api/setup", c -> Call.get("/api/setup"), 200, 200, 200, 200),
+            row("POST /api/setup", c -> Call.post("/api/setup", c.newAccountJson()), 409, 409, 409, 409),
+
+            // Auth: open to every caller (registration is open in this fixture).
+            row("POST /api/auth/register", c -> Call.post("/api/auth/register", c.newAccountJson()), 201, 201, 201, 201),
+            row("POST /api/auth/login", c -> Call.post("/api/auth/login", c.targetCredentialsJson()), 200, 200, 200, 200),
+            row("POST /api/auth/logout", c -> Call.post("/api/auth/logout", null), 204, 204, 204, 204),
+            row("POST /api/auth/token", c -> Call.post("/api/auth/token", c.targetCredentialsJson()), 201, 201, 201, 201),
+
+            // Me: users and guests manage themselves; an anonymous caller only reads.
+            row("GET /api/me", c -> Call.get("/api/me"), 200, 200, 200, 200),
+            row("PATCH /api/me", c -> Call.patch("/api/me", c.selfRenameJson()), 401, 200, 200, 200),
+            row("POST /api/me/password", c -> Call.post("/api/me/password", c.passwordChangeJson()), 401, 401, 204, 204),
+            row("POST /api/me/guest", c -> Call.post("/api/me/guest", null), 201, 200, 409, 409),
+            row("PATCH /api/me/guest", c -> Call.patch("/api/me/guest", c.guestRenameJson()), 401, 200, 409, 409),
+            row("GET /api/me/sessions", c -> Call.get("/api/me/sessions"), 401, 401, 200, 200),
+            row("DELETE /api/me/sessions", c -> Call.delete("/api/me/sessions"), 401, 401, 200, 200),
+            row("DELETE /api/me/sessions/{id}", c -> Call.delete("/api/me/sessions/" + c.spareSessionId()),
+                    401, 401, 204, 204),
+
+            // Admin: admin.users / admin.roles / admin.settings / ip.view.
+            admin("GET /api/admin/users", c -> Call.get("/api/admin/users"), 200),
+            admin("POST /api/admin/users", c -> Call.post("/api/admin/users", c.newAccountJson()), 201),
+            admin("GET /api/admin/users/{id}", c -> Call.get("/api/admin/users/" + c.targetUserId()), 200),
+            admin("PATCH /api/admin/users/{id}", c -> Call.patch("/api/admin/users/" + c.targetUserId(),
+                    "{\"displayName\":\"Renamed\"}"), 200),
+            admin("POST /api/admin/users/{id}/password", c -> Call.post("/api/admin/users/" + c.targetUserId()
+                    + "/password", "{\"password\":\"temporary-password\"}"), 204),
+            admin("GET /api/admin/users/{id}/roles", c -> Call.get("/api/admin/users/" + c.targetUserId() + "/roles"), 200),
+            admin("PUT /api/admin/users/{id}/roles", c -> Call.put("/api/admin/users/" + c.targetUserId() + "/roles",
+                    "{\"roleIds\":[\"" + c.targetRoleId() + "\"]}"), 200),
+            admin("GET /api/admin/roles", c -> Call.get("/api/admin/roles"), 200),
+            admin("POST /api/admin/roles", c -> Call.post("/api/admin/roles",
+                    "{\"name\":\"role " + c.n + "\",\"permissions\":[\"rooms.create\"]}"), 201),
+            admin("GET /api/admin/roles/{id}", c -> Call.get("/api/admin/roles/" + c.targetRoleId()), 200),
+            admin("PATCH /api/admin/roles/{id}", c -> Call.patch("/api/admin/roles/" + c.targetRoleId(),
+                    "{\"name\":\"renamed " + c.n + "\"}"), 200),
+            admin("DELETE /api/admin/roles/{id}", c -> Call.delete("/api/admin/roles/" + c.targetRoleId()), 204),
+            admin("GET /api/admin/roles/{id}/permissions",
+                    c -> Call.get("/api/admin/roles/" + c.targetRoleId() + "/permissions"), 200),
+            admin("PUT /api/admin/roles/{id}/permissions", c -> Call.put("/api/admin/roles/" + c.targetRoleId()
+                    + "/permissions", "{\"permissions\":[\"library.upload\"]}"), 200),
+            admin("GET /api/admin/settings", c -> Call.get("/api/admin/settings"), 200),
+            admin("PATCH /api/admin/settings", c -> Call.patch("/api/admin/settings", "{\"overlay.enabled\":false}"), 200),
+            admin("GET /api/admin/guests", c -> Call.get("/api/admin/guests"), 200),
+            admin("GET /api/admin/audit", c -> Call.get("/api/admin/audit"), 200),
+            admin("GET /api/admin/ip/sessions/{userId}", c -> Call.get("/api/admin/ip/sessions/" + c.targetUserId()), 200),
+
+            // The M0 WebSocket test page: open to everyone.
+            row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
+            row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
+            row("POST /test/ws-echo/report", c -> Call.post("/test/ws-echo/report", "{\"ok\":true}"), 204, 204, 204, 204),
+
+            // Static files.
+            row("GET /{path...}", c -> Call.get("/test/ws-echo.html"), 200, 200, 200, 200));
+
+    // ------------------------------------------------------------------ fixture
+
+    @TempDir
+    Path dir;
+
+    private StaticFiles staticFiles;
+    private Database database;
+    private Router router;
+    private WebServer server;
+    private final HttpClient http = HttpClient.newHttpClient();
+    private final TestClock clock = new TestClock(System.currentTimeMillis());
+    private String root; // sid cookie of the setup admin
+    private String adminRoleId;
+    private int counter;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", PUBLIC_BASE_URL), 4, dir)
+                .load(null).config();
+        staticFiles = StaticFiles.fromClasspath(PermissionMatrixTest.class.getClassLoader(), dir);
+        database = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
+        MigrationRunner.migrate(database);
+        BuiltinRoles.ensure(database);
+        Settings settings = new Settings(database, config);
+        ActorResolver actors = new ActorResolver(database, settings, clock, config.secureCookies());
+        Passwords passwords = new Passwords(new Passwords.Params(64, 1, 1));
+        Accounts accounts = new Accounts(database, passwords, clock);
+        Sessions sessions = new Sessions(database, clock);
+        Users users = new Users(database, passwords, clock);
+        Permissions permissions = new Permissions(database, settings);
+        Guests guests = new Guests(database, settings, config.secureCookies());
+        AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 100_000, 1, clock),
+                new RateLimiter("register", 100_000, 1, clock), new RateLimiter("login", 100_000, 1, clock));
+        router = Main.router(config, staticFiles, actors,
+                new SetupApi(accounts, sessions, config.secureCookies(), limits),
+                new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
+                new SessionsApi(sessions, accounts, config.secureCookies()),
+                new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
+                new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
+                AdminActivityApi.create(database, guests, permissions, clock));
+        server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
+
+        HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
+                "{\"username\":\"root\",\"password\":\"root-password\"}"));
+        assertEquals(201, setup.statusCode(), setup.body());
+        root = cookie(setup, "sid");
+        ok(Call.patch("/api/admin/settings", "{\"registration.mode\":\"open\",\"guests.allowCustomNames\":true}"));
+        for (JsonElement e : json(ok(Call.get("/api/admin/roles"))).getAsJsonArray("items")) {
+            if (e.getAsJsonObject().get("name").getAsString().equals(BuiltinRoles.ADMIN)) {
+                adminRoleId = e.getAsJsonObject().get("id").getAsString();
+            }
+        }
+        assertTrue(adminRoleId != null, "the admin role exists");
+    }
+
+    @AfterEach
+    void tearDown() {
+        server.close();
+        staticFiles.close();
+        database.close();
+    }
+
+    // ------------------------------------------------------------------ tests
+
+    @Test
+    void everyRouteHasARow() {
+        Set<String> rows = new TreeSet<>();
+        for (Row r : MATRIX) {
+            assertTrue(rows.add(r.route()), "duplicate row " + r.route());
+        }
+        assertEquals(new TreeSet<>(router.routes()), rows, "the matrix names exactly the router's routes");
+    }
+
+    @ParameterizedTest(name = "guests identified by {0}")
+    @ValueSource(strings = {"cookie", "ip"})
+    void everyActorGetsTheExpectedStatus(String identifyBy) throws Exception {
+        ok(Call.patch("/api/admin/settings", "{\"guests.identifyBy\":\"" + identifyBy + "\"}"));
+        List<String> wrong = new ArrayList<>();
+        for (Row row : MATRIX) {
+            for (Who who : Who.values()) {
+                Cell cell = newCell(who);
+                Call call = row.call().apply(cell);
+                assertEquals(row.route(), routeOf(call), "the row's call reaches its route");
+                Result got = cell.perform(call);
+                int want = row.expected(who);
+                if (got.status() != want) {
+                    wrong.add(row.route() + " as " + who + ": want " + want + ", got " + got.status() + " " + got.body());
+                } else if ((want == 401 || want == 403) && got.errorCode() == null) {
+                    wrong.add(row.route() + " as " + who + ": " + want + " without an error code: " + got.body());
+                }
+            }
+        }
+        assertEquals(List.of(), wrong, "permission matrix mismatches (guests by " + identifyBy + ")");
+    }
+
+    @Test
+    void callerKindsAreWhatTheyClaim() throws Exception {
+        Map<Who, String> kinds = new LinkedHashMap<>();
+        for (String identifyBy : List.of("cookie", "ip")) {
+            ok(Call.patch("/api/admin/settings", "{\"guests.identifyBy\":\"" + identifyBy + "\"}"));
+            for (Who who : Who.values()) {
+                Cell cell = newCell(who);
+                JsonObject me = json(cell.perform(Call.get("/api/me")).body());
+                kinds.put(who, me.get("kind").getAsString());
+                if (who == Who.ADMIN || who == Who.USER) {
+                    boolean holdsAdminUsers = me.getAsJsonArray("permissions").asList().stream()
+                            .anyMatch(p -> p.getAsString().equals("admin.users"));
+                    assertEquals(who == Who.ADMIN, holdsAdminUsers, who + " " + me);
+                }
+            }
+            assertEquals(Map.of(Who.ANONYMOUS, "anonymous", Who.GUEST, "guest", Who.USER, "user", Who.ADMIN, "user"),
+                    kinds, "guests by " + identifyBy);
+        }
+    }
+
+    // ------------------------------------------------------------------ cells
+
+    /**
+     * One cell's caller and targets. Targets are created lazily, by the setup admin, so each cell
+     * only pays for what its row uses.
+     */
+    final class Cell {
+        final Who who;
+        final int n;
+        final String ip;
+        final String password;
+        String cookie; // "sid=…" or "gid=…", or null
+        private String targetUserId;
+        private String targetUsername;
+        private String targetRoleId;
+
+        Cell(Who who, int n) {
+            this.who = who;
+            this.n = n;
+            this.ip = "2001:db8:0:" + Integer.toHexString(n) + "::1"; // its own /64, so IP-mode guests never share a key
+            this.password = "password-" + n + "-long";
+        }
+
+        /** A username and password nobody has used yet. */
+        String newAccountJson() {
+            return "{\"username\":\"new-" + n + "\",\"password\":\"new-password-" + n + "\"}";
+        }
+
+        /** The credentials of this cell's target user. */
+        String targetCredentialsJson() throws RuntimeException {
+            targetUserId();
+            return "{\"username\":\"" + targetUsername + "\",\"password\":\"target-password\"}";
+        }
+
+        String selfRenameJson() {
+            return who == Who.GUEST || who == Who.ANONYMOUS ? "{\"name\":\"Guest " + n + "\"}"
+                    : "{\"displayName\":\"Person " + n + "\"}";
+        }
+
+        String guestRenameJson() {
+            return "{\"name\":\"Guest " + n + "\"}";
+        }
+
+        String passwordChangeJson() {
+            return "{\"currentPassword\":\"" + password + "\",\"newPassword\":\"" + password + "-changed\"}";
+        }
+
+        /** Another live session of the caller (for a user or admin), or a random id otherwise. */
+        String spareSessionId() {
+            try {
+                if (cookie == null || !cookie.startsWith("sid=")) {
+                    return "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+                }
+                login("user-" + n, password);
+                for (JsonElement e : json(perform(Call.get("/api/me/sessions")).body()).getAsJsonArray("items")) {
+                    JsonObject s = e.getAsJsonObject();
+                    if (!s.get("current").getAsBoolean()) {
+                        return s.get("id").getAsString();
+                    }
+                }
+                throw new AssertionError("no spare session");
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** A user nobody else touches. */
+        String targetUserId() {
+            if (targetUserId == null) {
+                try {
+                    targetUsername = "target-" + n;
+                    HttpResponse<String> r = send(null, ip, Call.post("/api/auth/register",
+                            "{\"username\":\"" + targetUsername + "\",\"password\":\"target-password\"}"));
+                    assertEquals(201, r.statusCode(), r.body());
+                    targetUserId = json(r.body()).getAsJsonObject("user").get("id").getAsString();
+                } catch (IOException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return targetUserId;
+        }
+
+        /** A custom role nobody else touches. */
+        String targetRoleId() {
+            if (targetRoleId == null) {
+                try {
+                    targetRoleId = json(ok(Call.post("/api/admin/roles", "{\"name\":\"target " + n + "\"}")).body())
+                            .get("id").getAsString();
+                } catch (IOException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return targetRoleId;
+        }
+
+        Result perform(Call call) throws IOException, InterruptedException {
+            if (call.websocket()) {
+                return openSocket(call.path());
+            }
+            HttpResponse<String> r = send(cookie, ip, call);
+            return new Result(r.statusCode(), r.body());
+        }
+
+        private Result openSocket(String path) {
+            WebsocketHeaders headers = new WebsocketHeaders();
+            headers.setHeader("Origin", PUBLIC_BASE_URL);
+            headers.setHeader("X-Forwarded-For", ip);
+            if (cookie != null) {
+                headers.setHeader("Cookie", cookie);
+            }
+            try (SimpleWebsocket ws = new WebSocketConnector()
+                    .connect(URI.create("ws://127.0.0.1:" + server.port() + path + "?tag=matrix"), headers)) {
+                ws.send(WebSocketMessage.create("ping " + n));
+                assertEquals("ping " + n, ws.read().getText());
+                return new Result(WS_UPGRADED, "");
+            } catch (Exception e) {
+                return new Result(-1, String.valueOf(e));
+            }
+        }
+
+        private void login(String username, String pw) throws IOException, InterruptedException {
+            HttpResponse<String> r = send(null, ip, Call.post("/api/auth/login",
+                    "{\"username\":\"" + username + "\",\"password\":\"" + pw + "\"}"));
+            assertEquals(200, r.statusCode(), r.body());
+            if (cookie == null) {
+                cookie = cookie(r, "sid");
+            }
+        }
+    }
+
+    record Result(int status, String body) {
+        String errorCode() {
+            try {
+                JsonObject error = JsonParser.parseString(body).getAsJsonObject().getAsJsonObject("error");
+                return error == null ? null : error.get("code").getAsString();
+            } catch (RuntimeException e) {
+                return null;
+            }
+        }
+    }
+
+    /** A fresh caller of the given kind, on its own IP (so IP-mode guests don't share one). */
+    private Cell newCell(Who who) throws Exception {
+        Cell cell = new Cell(who, ++counter);
+        switch (who) {
+            case ANONYMOUS -> {
+            }
+            case GUEST -> {
+                HttpResponse<String> r = send(null, cell.ip, Call.post("/api/me/guest", null));
+                assertEquals(201, r.statusCode(), r.body());
+                cell.cookie = r.headers().allValues("Set-Cookie").stream().anyMatch(c -> c.startsWith("gid="))
+                        ? cookie(r, "gid") : null; // IP mode: the IP alone identifies the guest
+            }
+            case USER, ADMIN -> {
+                HttpResponse<String> r = send(null, cell.ip, Call.post("/api/auth/register",
+                        "{\"username\":\"user-" + cell.n + "\",\"password\":\"" + cell.password + "\"}"));
+                assertEquals(201, r.statusCode(), r.body());
+                cell.cookie = cookie(r, "sid");
+                if (who == Who.ADMIN) {
+                    String id = json(r.body()).getAsJsonObject("user").get("id").getAsString();
+                    ok(Call.put("/api/admin/users/" + id + "/roles", "{\"roleIds\":[\"" + adminRoleId + "\"]}"));
+                }
+            }
+        }
+        return cell;
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /** Calls as the setup admin and requires a 2xx. */
+    private HttpResponse<String> ok(Call call) throws IOException, InterruptedException {
+        HttpResponse<String> r = send(root, "192.0.2.1", call);
+        assertTrue(r.statusCode() / 100 == 2, call + ": " + r.statusCode() + " " + r.body());
+        return r;
+    }
+
+    private HttpResponse<String> send(String cookie, String forwardedFor, Call call)
+            throws IOException, InterruptedException {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + call.path()))
+                .method(call.method(), call.body() == null ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofString(call.body()))
+                .header("Origin", PUBLIC_BASE_URL);
+        if (call.body() != null) {
+            b.header("Content-Type", "application/json");
+        }
+        if (cookie != null) {
+            b.header("Cookie", cookie);
+        }
+        if (forwardedFor != null) {
+            b.header("X-Forwarded-For", forwardedFor); // the loopback peer is a trusted proxy
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /** The route ({@code "METHOD pattern"}) that answers {@code call}, as the router picks it. */
+    private String routeOf(Call call) {
+        String path = call.path();
+        String bare = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
+        String best = null;
+        io.siggi.togethertunes.http.PathPattern bestPattern = null;
+        for (String route : router.routes()) {
+            int space = route.indexOf(' ');
+            if (!route.substring(0, space).equals(call.method())) {
+                continue;
+            }
+            io.siggi.togethertunes.http.PathPattern p =
+                    io.siggi.togethertunes.http.PathPattern.parse(route.substring(space + 1));
+            if (p.match(bare) != null && (bestPattern == null || p.compareTo(bestPattern) < 0)) {
+                best = route;
+                bestPattern = p;
+            }
+        }
+        return best == null ? call.method() + " (no route) " + bare : best;
+    }
+
+    private static JsonObject json(HttpResponse<String> r) {
+        return json(r.body());
+    }
+
+    private static JsonObject json(String body) {
+        return JsonParser.parseString(body).getAsJsonObject();
+    }
+
+    private static String cookie(HttpResponse<String> r, String name) {
+        for (String c : r.headers().allValues("Set-Cookie")) {
+            if (c.startsWith(name + "=")) {
+                return c.substring(0, c.indexOf(';'));
+            }
+        }
+        throw new AssertionError("no " + name + " cookie: " + r.headers().map());
+    }
+}
