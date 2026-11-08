@@ -127,3 +127,53 @@ table.list tbody tr.selected {
   border: 1px solid currentColor;
   opacity: 0.75;
 }
+
+/* Site navigation (web/src/session.ts renderNav). */
+.site-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  align-items: baseline;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.site-nav a:first-child {
+  font-weight: bold;
+  margin-right: auto;
+}
+
+.site-nav a[aria-current="page"] {
+  text-decoration: none;
+}
+
+button.link {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: LinkText;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.badge-current {
+  border: 1px solid currentColor;
+}
+
+table.sessions tbody tr {
+  cursor: default;
+}
+
+table.sessions tbody tr:hover {
+  background: none;
+}
+
+@media (max-width: 40rem) {
+  table.sessions th:nth-child(3),
+  table.sessions td:nth-child(3),
+  table.sessions th:nth-child(5),
+  table.sessions td:nth-child(5) {
+    display: none;
+  }
+}

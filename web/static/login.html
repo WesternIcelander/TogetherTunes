@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · TogetherTunes</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <script type="module" src="/js/login.js"></script>
+</head>
+<body>
+  <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
+  <h1>Log in</h1>
+  <p id="login-status" role="status" hidden></p>
+  <form id="login-form" class="form">
+    <label>Username
+      <input name="username" autocomplete="username" required maxlength="32" autofocus>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required maxlength="1024">
+    </label>
+    <button type="submit">Log in</button>
+    <p id="login-error" class="error" role="alert"></p>
+  </form>
+  <p>No account yet? <a id="register-link" href="/register.html">Register</a></p>
+</body>
+</html>

@@ -1,6 +1,7 @@
 // The admin pages (/admin/): users, roles and server settings, on top of /api/admin/... (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
 import { api, ApiError } from "./api.js";
+import { isAdmin, renderNav, requireUser } from "./session.js";
 
 interface RoleRef { id: string; name: string }
 
@@ -509,7 +510,21 @@ function setUpSettings(): void {
 
 // ------------------------------------------------------------------ start
 
-function start(): void {
+async function start(): Promise<void> {
+  // Log in first, and replace a temporary password, before anything else.
+  try {
+    const me = await requireUser();
+    if (me === null) return;
+    renderNav(me);
+    if (!isAdmin(me)) {
+      element("admin-tabs").hidden = true;
+      status("You don't have permission for this page.");
+      return;
+    }
+  } catch (e) {
+    status(message(e));
+    return;
+  }
   setUpUsers();
   setUpRoles();
   setUpSettings();
@@ -518,7 +533,7 @@ function start(): void {
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", start);
+  document.addEventListener("DOMContentLoaded", () => void start());
 } else {
-  start();
+  void start();
 }

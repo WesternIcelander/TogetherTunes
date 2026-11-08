@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Account · TogetherTunes</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <script type="module" src="/js/account.js"></script>
+</head>
+<body>
+  <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
+  <h1>Your account</h1>
+  <p id="account-status" role="status">Loading...</p>
+
+  <div id="account-body" hidden>
+    <section>
+      <h2>Profile</h2>
+      <p>Username: <strong id="account-username"></strong></p>
+      <p>Roles: <span id="account-roles"></span></p>
+      <form id="profile-form" class="row">
+        <label>Display name
+          <input name="displayName" autocomplete="nickname" maxlength="64">
+        </label>
+        <button type="submit">Save</button>
+        <p id="profile-error" class="error" role="alert"></p>
+      </form>
+      <p><a href="/password.html?next=%2Faccount%2F">Change password</a></p>
+    </section>
+
+    <section>
+      <h2>Sessions</h2>
+      <p class="muted">Where you are logged in: browsers, and bearer tokens for apps.</p>
+      <table class="list sessions">
+        <thead><tr><th>Device</th><th>Kind</th><th>Logged in</th><th>Last seen</th><th>Expires</th><th></th></tr></thead>
+        <tbody id="session-rows"></tbody>
+      </table>
+      <div class="row">
+        <button id="session-more" type="button" hidden>Load more</button>
+        <button id="session-revoke-others" type="button">Log out everywhere else</button>
+      </div>
+      <p id="session-error" class="error" role="alert"></p>
+    </section>
+  </div>
+</body>
+</html>

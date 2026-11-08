@@ -73,6 +73,41 @@ class WebBuildTest {
         assertTrue(read("web/js/api.js").contains("\"/api/setup\""));
     }
 
+    @Test
+    void accountPagesArePackaged() throws IOException {
+        for (String page : List.of("login", "register", "password")) {
+            String html = read("web/" + page + ".html");
+            assertTrue(html.contains("src=\"/js/" + page + ".js\""), html);
+            assertTrue(html.contains("id=\"site-nav\""), html);
+            assertTrue(read("web/js/" + page + ".js").contains("from \"./session.js\""), page);
+        }
+        String account = read("web/account/index.html");
+        assertTrue(account.contains("src=\"/js/account.js\""), account);
+        String accountJs = read("web/js/account.js");
+        assertTrue(accountJs.contains("\"/api/me/sessions\""), accountJs);
+        assertTrue(read("web/js/login.js").contains("\"/api/auth/login\""));
+        assertTrue(read("web/js/register.js").contains("\"/api/auth/register\""));
+        assertTrue(read("web/js/password.js").contains("\"/api/me/password\""));
+    }
+
+    @Test
+    void pagesThatNeedAnAccountGoThroughTheLoginAndPasswordGate() throws IOException {
+        String session = read("web/js/session.js");
+        // A temporary password sends the user to the change-password page first.
+        assertTrue(session.contains("mustChangePassword"), session);
+        assertTrue(session.contains("\"/password.html\""), session);
+        assertTrue(session.contains("\"/login.html\""), session);
+        // Administration is linked for any admin.* permission.
+        assertTrue(session.contains("\"admin.\""), session);
+        assertTrue(read("web/js/login.js").contains("mustChangePassword"));
+        for (String script : List.of("main", "admin", "account")) {
+            assertTrue(read("web/js/" + script + ".js").contains("from \"./session.js\""), script);
+        }
+        assertTrue(read("web/js/admin.js").contains("requireUser"));
+        assertTrue(read("web/js/account.js").contains("requireUser"));
+        assertTrue(read("web/admin/index.html").contains("id=\"site-nav\""));
+    }
+
     /**
      * Features the browser baseline (iOS 15 / Safari 15.0, see docs/architecture.md) lacks and
      * tsc doesn't reject with {@code lib: ES2021}: class static blocks (Safari 16.4) pass through
