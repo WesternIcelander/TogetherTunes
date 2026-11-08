@@ -112,6 +112,36 @@ public final class Response {
         json(status, Map.of("error", error));
     }
 
+    /**
+     * Starts an endless (or open-ended) streaming body with status 200. Call before anything else
+     * is written; set extra headers first. For {@code HEAD} the headers are sent now and the
+     * returned body is {@linkplain StreamBody#headOnly() head-only}.
+     */
+    public StreamBody stream(String contentType, StreamBody.Framing framing) throws IOException {
+        return stream(200, contentType, framing);
+    }
+
+    /** Like {@link #stream(String, StreamBody.Framing)} with a status. */
+    public StreamBody stream(int status, String contentType, StreamBody.Framing framing) throws IOException {
+        if (committed()) {
+            throw new IllegalStateException("Response already committed");
+        }
+        status(status);
+        raw.setContentType(contentType);
+        raw.setHeader("Cache-Control", "no-store");
+        if (framing == StreamBody.Framing.CLOSE_DELIMITED) {
+            raw.closeDelimited();
+        } else {
+            raw.contentLength(-1);
+        }
+        raw.setBuffered(false);
+        boolean head = "HEAD".equals(rawRequest.method());
+        if (head) {
+            raw.sendHeaders();
+        }
+        return new StreamBody(raw, head);
+    }
+
     /** Whether the status line and headers have been sent. */
     public boolean committed() {
         return raw.alreadyWrote();
