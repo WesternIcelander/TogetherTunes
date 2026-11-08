@@ -14,7 +14,7 @@ import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.EchoEndpoint;
-import io.siggi.togethertunes.http.Hooks;
+import io.siggi.togethertunes.http.Csrf;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
@@ -28,6 +28,7 @@ import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -158,8 +159,9 @@ public final class Main {
 
     /**
      * The application's routes. Router-wide hooks: actor resolution ({@link ActorResolver#hook()};
-     * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check (placeholder
-     * until M1 "CSRF"). The web UI is the catch-all {@code GET /{path...}} route, so every
+     * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check ({@link Csrf}:
+     * {@code Origin} must match {@code http.publicBaseUrl} for state-changing requests that may be
+     * cookie-authenticated, and for WebSocket upgrades). The web UI is the catch-all {@code GET /{path...}} route, so every
      * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
      * test socket used by the test page {@code /test/ws-echo.html}. {@link SetupApi} is the
      * first-run setup ({@code /api/setup}), {@link AuthApi} local registration, login, logout and
@@ -168,11 +170,13 @@ public final class Main {
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions) {
-        Router router = new Router(actors.hook(), Hooks.csrf());
+        Csrf csrf = new Csrf(config.publicBaseUrl(),
+                List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
+        Router router = new Router(actors.hook(), csrf.hook());
         setup.register(router);
         auth.register(router);
         sessions.register(router);
-        WebSockets webSockets = new WebSockets(config.publicBaseUrl());
+        WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);
         return router;

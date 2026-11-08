@@ -1,21 +1,13 @@
 package io.siggi.togethertunes.http;
 
 /**
- * The standard hooks. Some are still placeholders that only call the next step; M1 fills them in
- * (the CSRF {@code Origin} check and rate limiting from {@code docs/auth.md}) without changing how
- * routes use them. Actor resolution is {@code auth.ActorResolver#hook()}, since it needs the
- * database.
+ * The standard per-route hooks. Rate limiting is still a placeholder that only calls the next
+ * step; M1 "Rate limiting" fills it in without changing how routes use it. The router-wide hooks
+ * live with what they need: actor resolution is {@code auth.ActorResolver#hook()} (the database),
+ * the CSRF check {@link Csrf#hook()} ({@code http.publicBaseUrl}).
  */
 public final class Hooks {
     private Hooks() {
-    }
-
-    /**
-     * Router-wide: for state-changing, cookie-authenticated requests, requires {@code Origin} to
-     * match {@code http.publicBaseUrl}. Placeholder until M1 "CSRF".
-     */
-    public static Hook csrf() {
-        return Placeholder.CSRF;
     }
 
     /**
@@ -27,14 +19,5 @@ public final class Hooks {
             throw new IllegalArgumentException("bucket");
         }
         return (request, response, next) -> next.handle(request, response);
-    }
-
-    private enum Placeholder implements Hook {
-        CSRF;
-
-        @Override
-        public void handle(Request request, Response response, Handler next) throws Exception {
-            next.handle(request, response);
-        }
     }
 }

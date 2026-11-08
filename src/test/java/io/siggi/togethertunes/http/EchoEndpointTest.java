@@ -22,6 +22,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -37,7 +38,7 @@ class EchoEndpointTest {
     @BeforeEach
     void setUp() throws IOException {
         Router router = new Router();
-        EchoEndpoint.register(router, new WebSockets(ORIGIN));
+        EchoEndpoint.register(router, new WebSockets(new Csrf(ORIGIN, List.of("sid", "gid"))));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 

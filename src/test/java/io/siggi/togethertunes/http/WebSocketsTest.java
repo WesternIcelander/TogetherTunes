@@ -55,7 +55,8 @@ class WebSocketsTest {
     Path dir;
 
     private WebServer server;
-    private final Logger julLogger = Logger.getLogger(WebSockets.class.getName());
+    /** The package logger, so the refusal logged by {@link Csrf} is seen too. */
+    private final Logger julLogger = Logger.getLogger(WebSockets.class.getPackageName());
     private final List<String> logLines = Collections.synchronizedList(new ArrayList<>());
     private final Handler logHandler = new Handler() {
         @Override
@@ -80,7 +81,7 @@ class WebSocketsTest {
     void setUp() throws IOException {
         julLogger.addHandler(logHandler);
         julLogger.setLevel(Level.ALL);
-        WebSockets webSockets = new WebSockets(PUBLIC_BASE_URL);
+        WebSockets webSockets = new WebSockets(new Csrf(PUBLIC_BASE_URL, List.of("sid", "gid")));
         Router router = new Router();
         router.get("/ws/echo", webSockets.handler((request, ws) -> {
             Thread t = Thread.currentThread();
@@ -127,20 +128,20 @@ class WebSocketsTest {
 
     @Test
     void originIsSchemeHostAndPortOfPublicBaseUrl() {
-        assertEquals("http://tunes.example:8080", WebSockets.originOf("http://Tunes.Example:8080/app"));
-        assertEquals("https://tunes.example", WebSockets.originOf("https://tunes.example"));
-        assertEquals("https://tunes.example", WebSockets.originOf("https://tunes.example:443/"));
-        assertEquals("http://tunes.example", WebSockets.originOf("HTTP://tunes.example:80"));
-        assertEquals("https://tunes.example:80", WebSockets.originOf("https://tunes.example:80"));
-        assertEquals("http://[::1]:8080", WebSockets.originOf("http://[::1]:8080"));
-        assertThrows(IllegalArgumentException.class, () -> WebSockets.originOf("ftp://tunes.example"));
-        assertThrows(IllegalArgumentException.class, () -> WebSockets.originOf("/relative"));
-        assertEquals(ORIGIN, new WebSockets(PUBLIC_BASE_URL).origin());
+        assertEquals("http://tunes.example:8080", Csrf.originOf("http://Tunes.Example:8080/app"));
+        assertEquals("https://tunes.example", Csrf.originOf("https://tunes.example"));
+        assertEquals("https://tunes.example", Csrf.originOf("https://tunes.example:443/"));
+        assertEquals("http://tunes.example", Csrf.originOf("HTTP://tunes.example:80"));
+        assertEquals("https://tunes.example:80", Csrf.originOf("https://tunes.example:80"));
+        assertEquals("http://[::1]:8080", Csrf.originOf("http://[::1]:8080"));
+        assertThrows(IllegalArgumentException.class, () -> Csrf.originOf("ftp://tunes.example"));
+        assertThrows(IllegalArgumentException.class, () -> Csrf.originOf("/relative"));
+        assertEquals(ORIGIN, new WebSockets(new Csrf(PUBLIC_BASE_URL, List.of("sid", "gid"))).origin());
     }
 
     @Test
     void acceptorSettings() {
-        WebSockets webSockets = new WebSockets(PUBLIC_BASE_URL);
+        WebSockets webSockets = new WebSockets(new Csrf(PUBLIC_BASE_URL, List.of("sid", "gid")));
         assertEquals(65536, webSockets.acceptor().getMaxMessageSize());
         assertEquals(65536 + 1024, webSockets.acceptor().getMaxPayloadLength());
         assertEquals(List.of(ORIGIN), webSockets.acceptor().getAllowedOrigins());
@@ -180,6 +181,26 @@ class WebSocketsTest {
             ws.send(WebSocketMessage.create("no origin"));
             assertEquals("no origin", ws.read().getText());
         }
+    }
+
+    @Test
+    void missingOriginWithACredentialCookieIsRefused() throws Exception {
+        // A browser always sends Origin, so an upgrade carrying sid/gid without it is refused
+        // (it would be authenticated by the cookie, CSRF check from docs/auth.md).
+        for (String cookie : List.of("sid=abc", "gid=abc", "x=1; sid=abc")) {
+            String response = rawHandshake(handshakeRequest(null, "13")
+                    .replace("\r\n\r\n", "\r\nCookie: " + cookie + "\r\n\r\n"));
+            assertTrue(response.startsWith("HTTP/1.1 403 "), cookie + ": " + response);
+            assertTrue(response.contains("\"origin_not_allowed\""), response);
+        }
+        // with the right Origin, cookies are fine; other cookies don't need an Origin
+        assertTrue(rawHandshake(handshakeRequest(ORIGIN, "13")
+                .replace("\r\n\r\n", "\r\nCookie: sid=abc\r\n\r\n")).startsWith("HTTP/1.1 101 "));
+        assertTrue(rawHandshake(handshakeRequest(null, "13")
+                .replace("\r\n\r\n", "\r\nCookie: theme=dark\r\n\r\n")).startsWith("HTTP/1.1 101 "));
+        assertNotNull(events.poll(5, TimeUnit.SECONDS));
+        assertNotNull(events.poll(5, TimeUnit.SECONDS));
+        assertNull(events.poll(200, TimeUnit.MILLISECONDS));
     }
 
     @Test
@@ -453,9 +474,13 @@ class WebSocketsTest {
 
     /** Sends a handshake and returns the response head (and body, if one comes before 1 s of silence). */
     private String rawHandshake(String origin, String version) throws IOException {
+        return rawHandshake(handshakeRequest(origin, version));
+    }
+
+    private String rawHandshake(String request) throws IOException {
         try (Socket s = rawSocket()) {
             OutputStream out = s.getOutputStream();
-            out.write(handshakeRequest(origin, version).getBytes(StandardCharsets.US_ASCII));
+            out.write(request.getBytes(StandardCharsets.US_ASCII));
             out.flush();
             s.setSoTimeout(1000);
             return readAll(s.getInputStream());

@@ -5,9 +5,6 @@ import io.siggi.simplewebsocket.WebSocketAcceptor;
 import io.siggi.simplewebsocket.WebSocketCloseInfo;
 import io.siggi.simplewebsocket.WebSocketMessage;
 import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -18,9 +15,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * decompression; a bigger one closes the socket with 1009), and single frames to
  * {@value #MAX_FRAME_PAYLOAD} bytes as sent, and only accepts upgrades whose
  * {@code Origin} is the origin of {@code http.publicBaseUrl}. That is the WebSocket CSRF check
- * from {@code docs/auth.md}: browsers always send {@code Origin} on a WebSocket handshake, so a
- * page on another site can't open a socket that carries the user's {@code sid}/{@code gid}
- * cookies. Requests without {@code Origin} are accepted, since they can't come from a browser
+ * from {@code docs/auth.md} ({@link Csrf#checkUpgrade}, run before the acceptor's own check):
+ * browsers always send {@code Origin} on a WebSocket handshake, so a page on another site can't
+ * open a socket that carries the user's {@code sid}/{@code gid} cookies. Requests without
+ * {@code Origin} are accepted only without those cookies, since they can't come from a browser
  * page (bearer clients authenticate with their first message instead).
  *
  * <p>Each socket runs on its own virtual thread: the upgrade request's handler thread (already a
@@ -50,14 +48,16 @@ public final class WebSockets {
     private static final AtomicLong IDS = new AtomicLong();
 
     private final WebSocketAcceptor acceptor;
+    private final Csrf csrf;
     private final String origin;
 
     /**
-     * @param publicBaseUrl {@code http.publicBaseUrl}; its scheme, host and port form the only
-     *                      allowed {@code Origin}
+     * @param csrf the CSRF check; its {@link Csrf#origin() origin} (from {@code http.publicBaseUrl})
+     *             is the only allowed {@code Origin}
      */
-    public WebSockets(String publicBaseUrl) {
-        this.origin = originOf(publicBaseUrl);
+    public WebSockets(Csrf csrf) {
+        this.csrf = csrf;
+        this.origin = csrf.origin();
         this.acceptor = new WebSocketAcceptor()
                 .setMaxMessageSize(MAX_MESSAGE_SIZE)
                 // The per-frame limit defaults to 16 KiB, and browsers send a message as one
@@ -66,30 +66,6 @@ public final class WebSockets {
                 .setMaxPayloadLength(MAX_FRAME_PAYLOAD)
                 .setAllowedOrigins(origin)
                 .setAllowMissingOrigin(true);
-    }
-
-    /**
-     * The origin ({@code scheme://host[:port]}, lower case, default port left out) of a URL such
-     * as {@code https://Tunes.example.com/prefix}.
-     *
-     * @throws IllegalArgumentException if it isn't an absolute http(s) URL with a host
-     */
-    static String originOf(String url) {
-        URI uri;
-        try {
-            uri = new URI(url);
-        } catch (URISyntaxException e) {
-            throw new IllegalArgumentException("Not a URL: " + url, e);
-        }
-        String scheme = uri.getScheme() == null ? null : uri.getScheme().toLowerCase(Locale.ROOT);
-        if (!"http".equals(scheme) && !"https".equals(scheme) || uri.getHost() == null) {
-            throw new IllegalArgumentException("Not an absolute http(s) URL with a host: " + url);
-        }
-        int port = uri.getPort();
-        boolean defaultPort = port == -1
-                || scheme.equals("http") && port == 80
-                || scheme.equals("https") && port == 443;
-        return scheme + "://" + uri.getHost().toLowerCase(Locale.ROOT) + (defaultPort ? "" : ":" + port);
     }
 
     /** The only {@code Origin} accepted on upgrades. */
@@ -105,8 +81,8 @@ public final class WebSockets {
     /**
      * A GET route handler that upgrades the request and runs the socket on the current virtual
      * thread until it ends. A request that isn't a WebSocket upgrade gets {@code 426} (code
-     * {@code upgrade_required}); a disallowed {@code Origin} gets {@code 403} (code
-     * {@code origin_not_allowed}). Route hooks run before the upgrade, so they can still reject
+     * {@code upgrade_required}); a disallowed {@code Origin}, or none with a {@code sid}/{@code gid}
+     * cookie, gets {@code 403} (code {@code origin_not_allowed}). Route hooks run before the upgrade, so they can still reject
      * the request with a normal HTTP error.
      */
     public Handler handler(Endpoint endpoint) {
@@ -115,6 +91,7 @@ public final class WebSockets {
                 response.header("Upgrade", "websocket");
                 throw new HttpError(426, "upgrade_required", "This endpoint only accepts WebSocket connections");
             }
+            csrf.checkUpgrade(request);
             if (!acceptor.isOriginAllowed(request.raw())) {
                 LOG.log(System.Logger.Level.INFO, "WebSocket upgrade on " + request.path()
                         + " refused: Origin " + quote(request.header("Origin")) + " is not " + origin);

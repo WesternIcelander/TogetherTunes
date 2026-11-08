@@ -128,6 +128,7 @@ class MainRouterTest {
 
     private HttpResponse<String> post(String path, String contentType, String body) throws IOException, InterruptedException {
         return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                        .header("Origin", PUBLIC_BASE_URL)
                         .header("Content-Type", contentType)
                         .POST(HttpRequest.BodyPublishers.ofString(body)).build(),
                 HttpResponse.BodyHandlers.ofString());
@@ -177,6 +178,7 @@ class MainRouterTest {
 
     private HttpResponse<String> postJson(String path, String body, String cookie) throws IOException, InterruptedException {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .header("Origin", PUBLIC_BASE_URL)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (cookie != null) {
@@ -287,6 +289,13 @@ class MainRouterTest {
                         : HttpRequest.BodyPublishers.ofString(jsonBody));
         if (jsonBody != null) {
             b.header("Content-Type", "application/json");
+        }
+        boolean origin = false;
+        for (int i = 0; i < headers.length; i += 2) {
+            origin |= headers[i].equalsIgnoreCase("Origin");
+        }
+        if (!origin) {
+            b.header("Origin", PUBLIC_BASE_URL); // as a browser on our own page would
         }
         if (headers.length > 0) {
             b.headers(headers);
@@ -429,5 +438,44 @@ class MainRouterTest {
         // A logout that slides first still sends only the clearing cookie.
         HttpResponse<String> out = send("POST", "/api/auth/logout", null, "Cookie", sid);
         assertEquals(List.of("sid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"), out.headers().allValues("Set-Cookie"));
+    }
+
+    @Test
+    void csrfOriginCheckOnRealRoutes() throws Exception {
+        String sid = setupAdmin();
+        // logout from another site, or without Origin, is refused and the session survives
+        assertEquals(403, send("POST", "/api/auth/logout", null, "Cookie", sid, "Origin", "https://evil.example").statusCode());
+        HttpResponse<String> noOrigin = http.send(HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + server.port() + "/api/auth/logout"))
+                .header("Cookie", sid).POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(403, noOrigin.statusCode(), noOrigin.body());
+        assertTrue(noOrigin.body().contains("\"origin_not_allowed\""), noOrigin.body());
+        assertTrue(noOrigin.headers().allValues("Set-Cookie").isEmpty());
+        assertEquals(1, count("SELECT COUNT(*) FROM sessions"));
+        // reading is fine from anywhere (GET isn't state-changing)
+        assertEquals(200, send("GET", "/api/me/sessions", null, "Cookie", sid, "Origin", "https://evil.example").statusCode());
+        // login CSRF: a cross-site login is refused even without cookies
+        assertEquals(403, send("POST", "/api/auth/login", "{\"username\":\"siggi\",\"password\":\"correct horse\"}",
+                "Origin", "https://evil.example").statusCode());
+        assertEquals(1, count("SELECT COUNT(*) FROM sessions"));
+        // a bearer client needs no Origin even with a stray cookie
+        String token = json(send("POST", "/api/auth/token", "{\"username\":\"siggi\",\"password\":\"correct horse\"}")
+                .body(), "token");
+        HttpResponse<String> bearer = http.send(HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + server.port() + "/api/auth/logout"))
+                .header("Authorization", "Bearer " + token).header("Cookie", sid)
+                .POST(HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.ofString());
+        assertEquals(204, bearer.statusCode(), bearer.body());
+        // from our own page it works
+        assertEquals(204, send("POST", "/api/auth/logout", null, "Cookie", sid).statusCode());
+        assertEquals(0, count("SELECT COUNT(*) FROM sessions"));
+    }
+
+    @Test
+    void webSocketUpgradeWithCookieNeedsOrigin() {
+        WebsocketHeaders headers = new WebsocketHeaders();
+        headers.setHeader("Cookie", "sid=abc");
+        assertThrows(IOException.class, () -> new WebSocketConnector()
+                .connect(URI.create("ws://127.0.0.1:" + server.port() + "/ws/echo"), headers).close());
     }
 }
