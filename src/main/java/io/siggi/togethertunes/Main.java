@@ -44,7 +44,7 @@ public final class Main {
         try {
             // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config),
-                    new File(System.getProperty("java.io.tmpdir")));
+                    new File(System.getProperty("java.io.tmpdir")), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
             System.exit(EXIT_STARTUP);

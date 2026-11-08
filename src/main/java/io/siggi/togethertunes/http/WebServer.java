@@ -2,12 +2,15 @@ package io.siggi.togethertunes.http;
 
 import io.siggi.http.HTTPServer;
 import io.siggi.http.HTTPServerBuilder;
+import io.siggi.http.iphelper.IP;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -19,6 +22,11 @@ import java.util.concurrent.TimeUnit;
  * <p>We own the {@link ServerSocket} and the accept loop (SiggiHTTP's own listener is deprecated
  * and uses platform threads); each accepted socket goes to {@link HTTPServer#handle(Socket)},
  * which runs it on the virtual-thread executor given to {@link HTTPServerBuilder#setExecutor}.
+ *
+ * <p>Client IPs: SiggiHTTP resolves them itself ({@link Request#clientIp()}). It takes
+ * {@code X-Forwarded-For} (walking the list from the right past trusted hops) when the peer is
+ * loopback, a Cloudflare address or {@link HTTPServer#isIPTrusted}; {@link #setTrustedProxies}
+ * makes the latter exactly {@code http.trustedProxies}.
  */
 public final class WebServer implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(WebServer.class.getName());
@@ -44,6 +52,21 @@ public final class WebServer implements AutoCloseable {
      *               normally unused)
      */
     public static WebServer start(String bind, int port, Router router, File tmpDir) throws IOException {
+        return start(bind, port, router, tmpDir, List.of());
+    }
+
+    /**
+     * Binds {@code bind:port} (port 0 picks a free one) and starts accepting connections.
+     *
+     * @param tmpDir         directory SiggiHTTP may use for temporary files (multipart parsing is
+     *                       off, so normally unused)
+     * @param trustedProxies CIDRs (or single addresses) whose {@code X-Forwarded-For} is trusted,
+     *                       IPv4 or IPv6, e.g. {@code Config.trustedProxies()}; see
+     *                       {@link #setTrustedProxies}
+     * @throws IllegalArgumentException if a trusted proxy isn't a valid address or CIDR
+     */
+    public static WebServer start(String bind, int port, Router router, File tmpDir, List<String> trustedProxies)
+            throws IOException {
         ExecutorService executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("http-", 0).factory());
         HTTPServer server = new HTTPServerBuilder()
                 .setExecutor(executor)
@@ -56,6 +79,12 @@ public final class WebServer implements AutoCloseable {
         // "Expect: 100-continue" body over 2 GB with a plain-text 413.
         server.setIgnoringMultipartFormData(true);
         server.setUploadLimit(0L);
+        try {
+            setTrustedProxies(server, trustedProxies);
+        } catch (RuntimeException e) {
+            executor.shutdownNow();
+            throw e;
+        }
         server.responderRegistry.register("/", router);
         ServerSocket socket = new ServerSocket();
         try {
@@ -94,6 +123,37 @@ public final class WebServer implements AutoCloseable {
                     LOG.log(System.Logger.Level.WARNING, "Could not hand off a connection", e);
                 }
             }
+        }
+    }
+
+    /**
+     * Makes {@code server}'s trusted-IP list ({@link HTTPServer#isIPTrusted}) exactly
+     * {@code trustedProxies}. SiggiHTTP trusts the private ranges {@code 10.0.0.0/8},
+     * {@code 172.16.0.0/12}, {@code 192.168.0.0/16} and {@code 127.0.0.1} by default; those are
+     * removed, so anyone on the LAN can't spoof their IP with {@code X-Forwarded-For} unless
+     * configured ({@code docs/auth.md}). Loopback peers and Cloudflare's ranges stay trusted by
+     * SiggiHTTP itself regardless of this list.
+     *
+     * @param trustedProxies IPv4/IPv6 addresses or CIDRs ({@code 10.0.0.0/8},
+     *                       {@code 2001:db8::/32}, {@code 192.168.1.1}); the config loader has
+     *                       already validated and normalised them
+     * @throws IllegalArgumentException if an entry isn't a valid address or CIDR (the list is then
+     *                                  left unchanged)
+     */
+    public static void setTrustedProxies(HTTPServer server, List<String> trustedProxies) {
+        List<IP> parsed = new ArrayList<>(trustedProxies.size());
+        for (String cidr : trustedProxies) {
+            try {
+                parsed.add(IP.getIP(cidr));
+            } catch (RuntimeException e) {
+                throw new IllegalArgumentException("Not a valid trusted proxy address or CIDR: " + cidr, e);
+            }
+        }
+        for (IP ip : server.getTrustedIPs()) {
+            server.untrustIP(ip.toString());
+        }
+        for (IP ip : parsed) {
+            server.trustIP(ip.toString());
         }
     }
 
