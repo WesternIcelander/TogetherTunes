@@ -187,6 +187,7 @@ class MeApiTest {
     void anonymousMe() throws Exception {
         JsonObject me = call(200, "GET", "/api/me", null, null);
         assertEquals("anonymous", me.get("kind").getAsString());
+        assertNull(me.get("isGuest"));
         assertTrue(me.get("guestsEnabled").getAsBoolean());
         assertFalse(me.get("customNames").getAsBoolean());
 
@@ -213,6 +214,8 @@ class MeApiTest {
         JsonObject me = call(200, "GET", "/api/me", null, gid);
         assertEquals("guest", me.get("kind").getAsString());
         assertEquals(id, me.get("id").getAsString());
+        assertTrue(guest.get("isGuest").getAsBoolean());
+        assertTrue(me.get("isGuest").getAsBoolean());
 
         // Asking again with the cookie returns the same guest, without a new row or cookie.
         HttpResponse<String> again = send("POST", "/api/me/guest", null, gid);
@@ -367,6 +370,8 @@ class MeApiTest {
         JsonObject me = call(200, "GET", "/api/me", null, admin);
         assertEquals("user", me.get("kind").getAsString());
         assertEquals("siggi", me.get("username").getAsString());
+        assertEquals(me.get("displayName").getAsString(), me.get("name").getAsString());
+        assertFalse(me.get("isGuest").getAsBoolean());
         assertTrue(me.getAsJsonArray("roles").toString().contains("admin"));
         assertTrue(me.getAsJsonArray("permissions").toString().contains("admin.users"), me.toString());
         assertError("already_logged_in", call(409, "POST", "/api/me/guest", null, admin));

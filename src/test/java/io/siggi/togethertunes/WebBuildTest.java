@@ -49,6 +49,12 @@ class WebBuildTest {
     }
 
     @Test
+    void guestBadgeIsPackaged() throws IOException {
+        assertTrue(read("web/js/actor.js").contains("badge-guest"));
+        assertTrue(read("web/css/main.css").contains(".badge-guest"));
+    }
+
+    @Test
     void echoTestPageIsPackaged() throws IOException {
         String page = read("web/test/ws-echo.html");
         assertTrue(page.contains("src=\"/js/test/ws-echo.js\""), page);

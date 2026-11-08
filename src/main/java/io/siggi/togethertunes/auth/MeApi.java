@@ -18,11 +18,14 @@ import java.util.Objects;
  *   <li>{@code GET /api/me} → one of
  *     <ul>
  *       <li>{@code {"kind": "user", "id", "username", "displayName", "roles": [...],
- *           "mustChangePassword", "permissions": [...]}} ({@code permissions}: the effective ones,
- *           with feature switches applied);</li>
- *       <li>{@code {"kind": "guest", "id", "name", "nameChosen", "customNames"}};</li>
+ *           "mustChangePassword", "name", "isGuest": false, "permissions": [...]}}
+ *           ({@code name} = {@code displayName}; {@code permissions}: the effective ones, with
+ *           feature switches applied);</li>
+ *       <li>{@code {"kind": "guest", "id", "name", "isGuest": true, "nameChosen", "customNames"}};</li>
  *       <li>{@code {"kind": "anonymous", "guestsEnabled", "customNames"}}.</li>
  *     </ul>
+ *     For a user or guest the response is a superset of its {@link ActorRef}
+ *     ({@code kind, id, name, isGuest}), the form every other response and message uses.
  *     {@code customNames} is {@code guests.allowCustomNames}: whether the UI may offer a name
  *     field. No IP anywhere ({@code docs/auth.md#ip-address-policy}).</li>
  *   <li>{@code POST /api/me/guest} {@code {"name"?}} (body optional) → {@code 201} and the guest
@@ -82,6 +85,8 @@ public final class MeApi {
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("kind", "user");
             out.putAll(AuthApi.userJson(account));
+            out.put("name", account.displayName());
+            out.put("isGuest", false);
             List<String> held = new ArrayList<>();
             for (Permission p : permissions.effective(user)) {
                 held.add(p.wireName());
@@ -112,6 +117,7 @@ public final class MeApi {
         out.put("kind", "guest");
         out.put("id", guest.id());
         out.put("name", guest.name());
+        out.put("isGuest", true);
         out.put("nameChosen", guest.nameChosen());
         out.put("customNames", settings.guestsAllowCustomNames());
         return out;
