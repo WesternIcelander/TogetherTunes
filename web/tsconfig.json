@@ -3,10 +3,16 @@
   // Plain ES modules for the browser, no bundler: relative imports must name the
   // compiled file, e.g. `import { x } from "./util.js";`.
   "compilerOptions": {
+    // Browser baseline: iOS 15 / Safari 15.0 (see docs/architecture.md#browser-baseline).
+    // target ES2022 keeps class fields, private `#` members and top-level await
+    // native (all fine in Safari 15.0). lib ES2021 makes tsc reject the ES2022+
+    // library calls 15.0 lacks (`.at()`, `Object.hasOwn`, `findLast`). What tsc
+    // can't catch (class static blocks, `structuredClone` from the DOM lib) is
+    // checked in the compiled output by WebBuildTest.
     "target": "ES2022",
     "module": "ES2022",
     "moduleResolution": "bundler",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "lib": ["ES2021", "DOM", "DOM.Iterable"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,
