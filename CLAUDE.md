@@ -7,11 +7,13 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 - **Do not implement anything from `docs/future-ideas.md`.** Only avoid design choices that would block those ideas later.
 - **Implement milestone by milestone**, following `docs/milestones.md`. Don't start the next milestone until the current milestone's "Done when" criteria pass.
 - **Java 21**, Maven. Use virtual threads for request handlers and streaming connections.
-- **No web framework.** HTTP goes through the author's own HTTP stack, `io.siggi:SiggiHTTP:1.10` (see `docs/architecture.md#http-stack-requirements`). If it's missing a capability, add it there; don't bring in Netty, Jetty, Spring or similar.
+- **Project coordinates:** Maven `io.siggi:TogetherTunes`, Java base package `io.siggi.togethertunes`. (An older predecessor with the same name exists, but never had an artifact ID; this is a fresh project.)
+- **No web framework.** HTTP goes through the author's own HTTP stack, `io.siggi:SiggiHTTP:1.10`, with `io.siggi:SimpleWebsocket` for WebSocket (see `docs/architecture.md#http-stack-requirements`). If it's missing a capability, add it there; don't bring in Netty, Jetty, Spring or similar.
 - **Database:** plain JDBC, and every schema change needs both `db/migrations/sqlite/` and `db/migrations/postgres/` versions. Store times as epoch ms in `BIGINT` and IDs as UUIDv7 `TEXT`.
-- **Frontend:** vanilla JS/TS, no framework. It's served as static files.
+- **Frontend:** vanilla TypeScript, no framework, no bundler. `tsc` compiles it to ES modules during the Maven build (`frontend-maven-plugin`, so no system Node is needed), and the output is served as static files.
+- **Config:** one JSON file (parsed with Gson) plus environment-variable overrides. Default output profile is 720p30.
 - **Media tools** (ffmpeg, ffprobe, yt-dlp) are called as subprocesses: from ingest, from the overlay encoder, and from the v1 RTMP pusher. The packager itself never decodes or encodes.
-- **Keep dependencies minimal.** Pre-approved: SQLite JDBC, PostgreSQL JDBC, Bouncy Castle (Argon2id), Nimbus JOSE+JWT (OIDC), ZXing core (QR), a JSON library, JUnit and Testcontainers. Ask before adding anything else.
+- **Keep dependencies minimal.** Pre-approved: SiggiHTTP, SimpleWebsocket, SQLite JDBC, PostgreSQL JDBC, Bouncy Castle (Argon2id), Nimbus JOSE+JWT (OIDC), ZXing core (QR), Gson, JUnit and Testcontainers; at build time, TypeScript via `frontend-maven-plugin`. No connection-pool library: write a small pool. Ask before adding anything else.
 
 ## Invariants that must not be broken
 

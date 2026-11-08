@@ -68,8 +68,9 @@ The output is never more than about 1 unit plus LEAD ahead of real time, so a se
 
 Write it in-house; it's small.
 
-- **PIDs:** PAT 0x0000, PMT 0x1000, video 0x0100 (`stream_type 0x1B`, H.264), audio 0x0101 (`stream_type 0x0F`, AAC ADTS). PCR is carried on the video PID.
-- **Each unit starts with** PAT, then PMT, then the IDR access unit with `random_access_indicator=1` in the adaptation field. Every unit is therefore a valid place to start, both for `.ts` joins and for HLS segments.
+- **PIDs** (same as VRCDN): PAT 0x0000, SDT 0x0011, PMT 0x0100, video 0x0101 (`stream_type 0x1B`, H.264), audio 0x0102 (`stream_type 0x0F`, AAC ADTS). PCR is carried on the video PID.
+- **SDT, PAT and PMT** are written at the start of every unit, and PAT and PMT are repeated about every 400 ms within a unit (VRCDN repeats them at roughly that interval).
+- **Each unit starts with** SDT, PAT, then PMT, then the IDR access unit with `random_access_indicator=1` in the adaptation field. Every unit is therefore a valid place to start, both for `.ts` joins and for HLS segments.
 - **Video access unit → PES:** convert AVCC to Annex B. Each NAL has a length prefix (`lengthSizeMinusOne+1` bytes from avcC); replace it with `00 00 00 01`. Prepend an **AUD** NAL (`00 00 00 01 09 F0`) to every access unit. Before every IDR, insert SPS and PPS from avcC. Use one PES per access unit, with `PES_packet_length = 0` (unbounded, allowed for video).
 - **Audio → PES:** wrap each AAC frame in a 7-byte **ADTS** header: `syncword 0xFFF, ID=0, layer=0, protection_absent=1, profile=1 (LC), sf_index=3 (48 kHz), channel_config=2, frame_length=7+len, buffer_fullness=0x7FF, raw_blocks=0`. Group about 5 frames (about 107 ms) into one PES, with PTS = the first frame's PTS.
 - **Interleave** video and audio PES in DTS order within a unit.
@@ -87,10 +88,11 @@ All three outputs are equal features. Each one is enabled server-wide by the adm
 
 `GET /live/{token}.ts` (also `HEAD`):
 
-- Response `200`, `Content-Type: video/mp2t`, `Cache-Control: no-store`, and no `Content-Length`. Use chunked encoding, or a body that ends when the connection closes (whichever VRChat players accept better; to be tested in milestone 4).
-- Ignore `Range` and always return `200` from the live edge. `HEAD` returns the headers only.
+- Response `200`, `Content-Type: video/mp2t`, `Cache-Control: no-store`, with **no `Content-Length` and no `Transfer-Encoding`**: the body ends when the connection closes. This is what VRCDN does (see below).
+- Ignore `Range` and always return `200` from the live edge. `HEAD` returns `200` with `Content-Length: 0` and no body, like VRCDN; it doesn't start the packager or count as a viewer.
 - **Join point:** by default, the client receives data from the **next** unit boundary (`join=next`). This keeps every VRChat viewer at the same live edge, so they stay close in sync. The alternative, `join=latest` (send the most recent unit immediately, so playback starts faster), is a room setting. It costs up to 2 s of extra, permanent lag for that viewer.
 - **Per-consumer bounded queue:** 4 units (about 8 s). If it overflows, the client is disconnected; it will usually reconnect.
+- **Reference — VRCDN's `.ts` output** (observed 2026-11-08 on `stream.vrcdn.live/live/<name>.live.ts`): HTTP/1.1 `200`, `Content-Type: video/mp2t; charset=utf-8`, no `Content-Length`, no `Transfer-Encoding` (close-delimited, despite a `Connection: keep-alive` header). `HEAD` → `200`, `Content-Length: 0`. The body starts with SDT, PAT and PMT, then continues from the current live position **mid-GOP** (no burst, no waiting for a keyframe); data then arrives at the stream's real-time rate. PIDs as above; PAT/PMT about every 0.4 s; PCR on the video PID. We copy all of this except the join point: `join=next` starts a viewer at the next unit boundary instead of mid-GOP. The player can't show anything before that IDR either way, so the viewer sees the same picture at the same time, without the undecodable lead-in.
 - **Before testing in VRChat, check:** on PC, VRChat passes URLs through its bundled yt-dlp first. yt-dlp's generic extractor may probe the URL with a HEAD or a short GET, so make sure both of those are handled cheaply and don't count as viewers.
 
 ### HLS

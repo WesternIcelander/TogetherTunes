@@ -7,7 +7,7 @@ Build in this order. Each milestone should end with its "Done when" criteria pas
 - Maven project, Java 21, one runnable jar. Config loading (file + environment overrides).
 - Integrate the author's HTTP stack. Confirm, or add, everything listed under [HTTP stack requirements](architecture.md#http-stack-requirements).
 - DB layer: `Dialect` interface, a migration runner, the initial schema for SQLite **and** PostgreSQL. Settings storage.
-- Static file serving for `web/`. Trusted-proxy handling for the client IP.
+- Static file serving for `web/`, and the TypeScript build (tsc) as part of the Maven build. Trusted-proxy handling for the client IP.
 
 **Done when:** the server starts against both databases, migrations apply, a test page loads, a test WebSocket echoes, and a Range request returns a correct `206`.
 
@@ -31,6 +31,7 @@ Build in this order. Each milestone should end with its "Done when" criteria pas
 
 **Done when:**
 - an MP3, a FLAC with cover art, 24 fps and 60 fps videos, a portrait video and a YouTube URL all ingest, with byte-identical avcC;
+- the MP3 and FLAC keep their originals (web-playable, with a gain), while the video uploads and the YouTube item keep none;
 - pasting a second form of the same YouTube URL (`youtu.be`, `shorts`, with `&t=`) reuses the item without starting yt-dlp;
 - an unreferenced item is purged after the (shortened, for the test) retention period, and a purged YouTube item refetches into the same row.
 
@@ -45,6 +46,7 @@ Build in this order. Each milestone should end with its "Done when" criteria pas
 - two browsers stay within about 50 ms of each other;
 - switching video ↔ audio-only has no audible gap, tested in Chrome, Firefox and iOS Safari;
 - audio-only mode never requests `mezz.mp4`;
+- an audio upload plays from its original, at the same loudness as `audio.m4a` (within about 1 dB);
 - a guest can vote and request according to policy, and gets 403 on a non-current, non-next item when guest downloads are off.
 
 ## M4 — Program output (all three outputs)
@@ -60,7 +62,7 @@ Build in this order. Each milestone should end with its "Done when" criteria pas
 - `.ts` and HLS each play in VRChat via AVPro on PC and Quest;
 - skip, seek and pause show up within about 4 s on `.ts`.
 
-Record which HTTP framing works best for `.ts` in VRChat.
+Confirm that the close-delimited `.ts` framing copied from VRCDN plays in VRChat on PC and Quest.
 
 ## M5 — QR overlay
 

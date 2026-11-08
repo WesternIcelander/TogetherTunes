@@ -55,6 +55,10 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
       error NULL, output_profile TEXT, loudness_lufs NULL, metadata_json,
+      original_file TEXT NULL,              -- e.g. 'original.flac'; audio uploads only
+      original_codec TEXT NULL,             -- ffprobe codec/container of the original
+      original_web INTEGER,                 -- 1 if browsers can play the original
+      original_gain_db REAL NULL,           -- gain the web client applies to the original
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
 

@@ -47,7 +47,7 @@ Search results return only item metadata. They don't say which library an item c
 
 ## Media access rules
 
-`GET /media/{itemId}/{file}` (`audio.m4a`, `mezz.mp4`, `cover.jpg`) is decided as follows:
+`GET /media/{itemId}/{file}` (`audio.m4a`, `mezz.mp4`, `original`, `cover.jpg`) is decided as follows:
 
 1. **Logged-in user:** allowed. A direct link is enough; the item doesn't have to be in their library.
 2. **Guest or anonymous:**

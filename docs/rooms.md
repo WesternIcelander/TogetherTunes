@@ -104,7 +104,8 @@ Each connection is in one of two modes, chosen with a toggle and remembered per 
 
 The client plays the media itself, in sync with the timeline. There is a **video / audio-only** toggle:
 
-- Audio items, and items with `presentAsAudio`: always `audio.m4a` in an `<audio>` element, with the cover art shown.
+- Audio items: the **original** file (`originalUrl`) in an `<audio>` element, with `originalGainDb` applied through the element's `GainNode`, when the item has a web-playable original and `canPlayType` agrees. Otherwise `audio.m4a`. The cover art is shown.
+- Video items with `presentAsAudio`: `audio.m4a` in an `<audio>` element, with the cover art shown.
 - Video items in video mode: `mezz.mp4` in a `<video>` element.
 - Video items in audio-only mode: `audio.m4a` only. The video is never requested, so it uses no bandwidth.
 
@@ -117,6 +118,8 @@ drift  = el.currentTime*1000 − target
 40 ms < |drift| ≤ 750  → el.playbackRate = clamp(1 − drift/2000, 0.95, 1.05)
 |drift| ≤ 40 ms        → el.playbackRate = 1
 ```
+
+If an original keeps needing hard seeks (drift still above 750 ms after two hard seeks within 10 s; typical for VBR MP3s without a seek table), the client switches that item to `audio.m4a` for the rest of the session.
 
 Set `preservesPitch = true`. Preload the next entry about 10 s before the current one ends (in the mode the client will use for it), and show a "Click to listen" overlay until the browser allows autoplay.
 

@@ -6,7 +6,7 @@
                    ┌───────────────────────── server process (Java 21) ─────────────────────────┐
  browser / app ──► │ HTTP layer (own stack) ── REST API ── Auth ── Library ── Rooms             │
    (WebSocket) ──► │        │                                    │          │                    │
-                   │        │ static files (vanilla JS UI)       │          ├─ RoomState (memory)│
+                   │        │ static files (vanilla TS UI)       │          ├─ RoomState (memory)│
                    │        │ media file serving (Range)         │          └─ Packager (opt.)   │
  VRChat player ──► │        └─ /live/{token}.ts, .m3u8 ◄─────────┼──────────── │                 │
                    │                                            │             └─► ffmpeg (RTMP) ─┼──► VRCDN etc.
@@ -46,11 +46,11 @@
   db/                     sqlite file (when using SQLite)
   media/<itemId>/
     mezz.mp4              video+audio (music video) — faststart, playable in browsers
-    audio.m4a             audio only (every item) — for web audio-only mode and remote-free listening
+    audio.m4a             audio only (every item) — packager audio; web audio-only mode for video items
     card.mp4              2 s still-card GOP (audio-only items; also used as transition card)
     index.bin             packager sample index (see library-and-ingest.md)
     cover.jpg             artwork (embedded, from YouTube thumbnail, or generated)
-    source.<ext>          original upload (only if keep-originals is enabled)
+    original.<ext>        original file of an audio upload (audio uploads only) — played by the web client
   cards/                  server-wide filler cards (paused, idle, "loading") per output profile
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
@@ -63,7 +63,7 @@ Everything under `media/<itemId>/` is immutable once the item is `ready`. A re-i
 
 ## Configuration
 
-A single config file (properties or JSON), with environment-variable overrides. Keys:
+A single JSON config file, with environment-variable overrides. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
@@ -72,11 +72,10 @@ A single config file (properties or JSON), with environment-variable overrides. 
 | `data.dir` | `./data` | |
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
 | `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
-| `output.profile` | `1080p30` | `1080p30` \| `720p30`. Changing it marks every item for re-ingest |
+| `output.profile` | `720p30` | `720p30` \| `1080p30`. Changing it marks every item for re-ingest |
 | `ingest.workers` | cores/2 | |
 | `ingest.maxUploadBytes` | 4 GiB | |
 | `ingest.maxDurationSeconds` | 1800 | Applies to both uploads and yt-dlp |
-| `ingest.keepOriginals` | false | |
 | `overlay.workers` | 1 | Concurrent overlay re-encodes |
 | `overlay.cacheMaxBytes` | 20 GiB | Least-recently-used eviction of `rooms/*/ov/` |
 | `http.trustedProxies` | none | CIDRs whose `X-Forwarded-For` is trusted. Required for correct guest IPs behind a reverse proxy |
@@ -92,7 +91,7 @@ Runtime settings live in the DB and are edited in the admin UI: registration mod
 
 ## HTTP stack requirements
 
-The design assumes the author's HTTP stack can do the following. Each needs to be confirmed, or added, in milestone 0.
+The author's HTTP stack is **SiggiHTTP** (`io.siggi:SiggiHTTP:1.10`); WebSocket framing comes from **SimpleWebsocket** (`io.siggi:SimpleWebsocket`), which sits on SiggiHTTP's connection upgrade. The design assumes the stack can do the following. Each needs to be confirmed, or added, in milestone 0.
 
 1. **Range requests** (`bytes=a-b`, open-ended, suffix): `206` with `Content-Range`; `HEAD` support.
 2. **Streaming responses with no end**: write and flush incrementally, using either `Transfer-Encoding: chunked` or a body delimited by closing the connection. The handler must find out quickly when the client disconnects (the write fails).
@@ -114,6 +113,6 @@ server/
   output/      packager, TS muxer, .ts endpoint, HLS segmenter, RTMP pusher
   overlay/     QR/overlay renderer, overlay card encoder, music-video overlay re-encoder
   retention/   unreferenced-item sweeper
-web/           vanilla JS/TS UI (built to static files)
+web/           vanilla TypeScript UI (compiled by tsc into static files during the Maven build)
 docs/          this design
 ```

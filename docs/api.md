@@ -35,7 +35,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }`.
 | PATCH | `/api/items/{id}` | Metadata, `presentAsAudio`: the adder or `library.editAny` |
 | DELETE | `/api/items/{id}` | Purge immediately: `library.purge` |
 | GET | `/api/items/{id}/job` | Ingest status |
-| GET | `/media/{id}/{audio.m4a\|mezz.mp4\|cover.jpg}` | Range-capable. Guest rules in [libraries.md](libraries.md#media-access-rules) |
+| GET | `/media/{id}/{audio.m4a\|mezz.mp4\|original\|cover.jpg}` | Range-capable. `original` exists only for audio uploads. Guest rules in [libraries.md](libraries.md#media-access-rules) |
 | GET / POST | `/api/playlists` | The caller's playlists |
 | GET / PATCH / DELETE | `/api/playlists/{id}` | |
 | POST / PATCH / DELETE | `/api/playlists/{id}/entries[/{entryId}]` | Add, move (`beforeEntryId`), remove |
@@ -122,7 +122,8 @@ Actions that need an identity (votes, requests, suggestions, vote-skip) are refu
 { "type": "state", "version": 42,
   "room": { "id", "name", "controlMode", "settings", "you": { "role", "canVote", "canRequest", "canUpload", "canYoutube", "canSkip" } },
   "timeline": { "state": "idle|playing|paused", "entryId", "anchorServerMs", "anchorPositionMs" },
-  "current": { "entryId", "item": { "id", "kind", "presentAsAudio", "title", "artist", "durationMs", "coverUrl", "audioUrl", "videoUrl" } },
+  "current": { "entryId", "item": { "id", "kind", "presentAsAudio", "title", "artist", "durationMs", "coverUrl", "audioUrl", "videoUrl",
+                                     "originalUrl", "originalGainDb" } },   // original*: web-playable audio uploads only
   "queue": [ { "entryId", "status": "ready|processing", "item": {…}, "addedBy": {actor}, "votes": 3, "yourVote": 1 } ],
   "suggestions": [ … ],
   "history": [ … ],

@@ -18,6 +18,16 @@ Guest uploads are subject to `guests.uploadQuota`, counted per guest and per IP.
    - If `content_sha256` matches an existing item, reuse that item and discard the upload. If the existing item is `purged`, re-ingest into it.
    - Otherwise run ffprobe, and reject the file if it has no audio, can't be parsed, or is too long. Create the item (`pending`) and an ingest job.
 3. Metadata comes from container tags, falling back to the filename. Cover art comes from the embedded picture.
+4. For an audio file, the upload is kept as the item's original ([below](#originals-audio-uploads)). For a video file, it is deleted once ingest has finished.
+
+## Originals (audio uploads)
+
+An **audio item that came from an upload** keeps its original file as `media/<itemId>/original.<ext>`, and the web client plays it instead of `audio.m4a` ([rooms.md](rooms.md#listen-mode)). The packager always uses `audio.m4a`, because it needs the fixed AAC profile. Originals of video uploads and of YouTube downloads are deleted after ingest.
+
+- **Browser-playable check:** ingest records the original's codec and container (`items.original_codec`). It is marked web-playable (`original_web`) only for MP3, AAC (in MP4/M4A or ADTS), FLAC, Opus (in Ogg or WebM) and PCM WAV, and only if its duration is within 50 ms of `audio.m4a`. Anything else (WMA, ALAC, APE, …) is still kept, but the web client uses `audio.m4a`. The client also checks `canPlayType` before using an original.
+- **Loudness:** the original isn't normalised. Ingest computes `original_gain_db = min(−14 − I, −1 − TP)` from the first loudnorm pass (integrated loudness *I* and true peak *TP* of the source), so the web client can play it at the same loudness as `audio.m4a` without clipping, using its per-element Web Audio `GainNode`.
+- The SHA-256 used for dedupe is the original's hash, so a re-upload of the same file matches.
+- Retention deletes the original together with the rest of `media/<itemId>/`.
 
 ## YouTube caching
 
@@ -50,7 +60,7 @@ Every item is transcoded at ingest to one fixed profile, so the packager can spl
 |---|---|
 | Video codec | H.264 High, level 4.1 (1080p30) / 4.0 (720p30), yuv420p, SAR 1:1 |
 | x264 preset | **veryfast**, for everything: mezzanines, cards and overlay re-encodes |
-| Resolution | 1920×1080 or 1280×720 (server-wide). Scale to fit, then pad to the exact size with black |
+| Resolution | 1280×720 (default) or 1920×1080, server-wide (`output.profile`). Scale to fit, then pad to the exact size with black |
 | Frame rate | Constant 30 fps (the `fps=30` filter converts other rates) |
 | GOP | Closed, IDR exactly every 2 s (60 frames), forced IDR at t=0, no scene-cut keyframes |
 | B-frames | **None** (`-bf 0`), so PTS = DTS |
@@ -63,7 +73,7 @@ Every item is transcoded at ingest to one fixed profile, so the packager can spl
 
 `veryfast` was chosen so that overlay re-encodes run faster than real time: about 2.8× real time for 1080p30 on 2 cores in testing. The cost is about 10–15% more bitrate than `medium` at the same quality, which the 6 Mb/s cap absorbs.
 
-Reference command (video item; the second loudnorm pass is shown):
+Reference command (video item at 1080p30; the second loudnorm pass is shown). At 720p30 use `scale=1280:720`/`pad=1280:720`, `-level:v 4.0`, `-maxrate 3M -bufsize 6M`:
 
 ```sh
 ffmpeg -i src -map 0:v:0 -map 0:a:0 \
@@ -136,4 +146,4 @@ Steps: `probe → (download) → loudness pass 1 → encode → extract audio.m4
 
 **Verify:** the audio duration is within 50 ms of the source, the avcC invariant holds, and keyframes fall exactly every 2 s.
 
-If the output profile changes, every item that isn't purged gets a `reencode` job.
+If the output profile changes, every item that isn't purged gets a `reencode` job. Audio uploads re-encode from their original; YouTube items are fetched again; video uploads re-encode from their old mezzanine (one extra generation of loss, since their originals weren't kept).

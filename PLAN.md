@@ -10,38 +10,35 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 
 - [x] **Locate the author's HTTP stack.** It is `io.siggi:SiggiHTTP:1.10` (Maven artifact, published to the author's repo; repository settings are in `~/.m2/settings.xml`, e.g. `https://repo.siggi.io`). Sources jar is available. Java 8 target, JPMS module `io.siggi.http`, one dependency (`io.siggi:ZipLib:1.0`).
 - [ ] Work out how Maven resolves it: declare the author's repository in `pom.xml` (the `<id>` must match the `<server>`/mirror entry in `~/.m2/settings.xml` if credentials are needed; never commit credentials). It already resolves from the local repository on this machine.
-- [ ] Settle the open questions in `docs/README.md#open-questions` that block M0, and record each answer in this file:
-  - [x] Build tool: **Maven** (decided 2026-11-08).
-  - [ ] HTTP stack capabilities: Range, endless streaming responses, WebSocket, multi-GB request bodies, per-route hooks. Confirm each against SiggiHTTP 1.10 with a test. First look at the sources (2026-11-08):
-    - Range: `HTTPResponse` parses `Range` and serves partial content. Check open-ended, suffix (`bytes=-N`), `416`, `HEAD` and `Content-Range`.
-    - Streaming responses: chunked by default (`HTTPResponse`, `setContentLength(-1)`). Check close-delimited mode and how quickly a disconnect surfaces as a write failure.
-    - WebSocket: only a generic `HTTPResponse.upgradeConnection(...)` returning the raw `Socket`; no framing. Candidate: `io.siggi:SimpleWebsocket:1.0` (author's, built against SiggiHTTP 1.6). Ask whether to use it (and bump it to 1.10) or add WebSocket support to SiggiHTTP.
-    - Large uploads: `HTTPRequest.getInputStream()` gives the raw body; multipart parser and `TooBigException` exist. Check that a raw multi-GB `PUT` can be streamed to disk without buffering.
-    - Virtual threads: `HTTPServerBuilder.setExecutor(Executor)`; pass `Executors.newVirtualThreadPerTaskExecutor()` (or similar).
-    - Per-route hooks: routing via `HTTPResponderRegistry`; no hook chain seen, so build one in our `http/` adapter layer.
-    - Client IP: `HTTPHandler` trusts `X-Forwarded-For` from **loopback, Cloudflare ranges and `server.isIPTrusted(...)`**. The design says XFF is trusted only from `http.trustedProxies`. Decide: change SiggiHTTP so the implicit loopback/Cloudflare trust can be turned off, or resolve the IP ourselves from the raw peer address.
-    - SiggiHTTP has its own `Sessions`; we don't use them (sessions live in our DB per `docs/auth.md`).
-  - [ ] JSON library choice (one, pre-approved category).
-  - [ ] Default output profile: 1080p30 (assumed).
-  - [ ] Keep-originals default: off (assumed).
-- [ ] Check the dev machine has `ffmpeg` (with libx264), `ffprobe` and `yt-dlp`, and note the versions. Check Docker is available for Testcontainers (PostgreSQL).
+- [x] Settle the open questions in `docs/README.md#open-questions` (all resolved 2026-11-08; see the notes log and the README).
+- [ ] Confirm the HTTP stack's capabilities with tests in M0 (Range, endless streaming responses, WebSocket, multi-GB request bodies, per-route hooks). First look at the sources (2026-11-08):
+  - Range: `HTTPResponse` parses `Range` and serves partial content. Check open-ended, suffix (`bytes=-N`), `416`, `HEAD` and `Content-Range`.
+  - Streaming responses: chunked by default (`HTTPResponse`, `setContentLength(-1)`). The `.ts` output needs a **close-delimited** body (no `Content-Length`, no `Transfer-Encoding`), like VRCDN; check SiggiHTTP can do that, and add it if not. Check how quickly a disconnect surfaces as a write failure.
+  - WebSocket: use **`io.siggi:SimpleWebsocket:1.0`** (`SimpleWebsocket.accept(HTTPRequest)`; blocking `read()` suits one virtual thread per socket). It was built against SiggiHTTP 1.6: exclude that transitive dependency and check it works with 1.10. It limits the size of each frame (`maxPayloadLength`) but not of a fragmented message, so add a total-message cap (in SimpleWebsocket) before `/ws` is exposed.
+  - Large uploads: `HTTPRequest.getInputStream()` gives the raw body; multipart parser and `TooBigException` exist. Check that a raw multi-GB `PUT` can be streamed to disk without buffering.
+  - Virtual threads: `HTTPServerBuilder.setExecutor(Executor)`; pass `Executors.newVirtualThreadPerTaskExecutor()` (or similar).
+  - Per-route hooks: routing via `HTTPResponderRegistry`; no hook chain seen, so build one in our `http/` adapter layer.
+  - Client IP: **leave SiggiHTTP's handling as is for now.** It trusts `X-Forwarded-For` from loopback, Cloudflare ranges and `server.isIPTrusted(...)`; feed `http.trustedProxies` into the latter. A future SiggiHTTP version will stop the implicit trust and require the app to list trusted ranges; adopt it when it's released.
+  - SiggiHTTP has its own `Sessions`; we don't use them (sessions live in our DB per `docs/auth.md`).
+- [ ] Check the dev machine has `ffmpeg` (with libx264), `ffprobe` and `yt-dlp`, and note the versions. Check Docker is available for Testcontainers (PostgreSQL). (Node isn't needed: `frontend-maven-plugin` downloads it.)
 
 ## M0 — Skeleton
 
-- [ ] Maven project (`pom.xml`): `maven.compiler.release` 21, single runnable jar (shade or assembly plugin, with `Main-Class`), Surefire for JUnit 5 (Failsafe for Testcontainers tests if they should run separately); package layout from `docs/architecture.md#code-layout-suggested`; JUnit 5 set up.
-- [ ] `.gitignore` for build output, `data/`, IDE files.
-- [ ] Config loading: config file (properties or JSON) + environment-variable overrides, every key from `docs/architecture.md#configuration`; `http.publicBaseUrl` required; fail fast on bad values.
+- [ ] Maven project (`pom.xml`): `io.siggi:TogetherTunes`, base package `io.siggi.togethertunes`, `maven.compiler.release` 21, single runnable jar (shade or assembly plugin, with `Main-Class`), Surefire for JUnit 5 (Failsafe for Testcontainers tests if they should run separately); package layout from `docs/architecture.md#code-layout-suggested`; JUnit 5 set up.
+- [ ] `.gitignore` for build output, `data/`, IDE files, `node/`, `node_modules/`.
+- [ ] Frontend build: TypeScript sources in `web/src`, compiled by `tsc` (strict, ES modules, no bundler) during `mvn package` via `frontend-maven-plugin` with pinned Node and TypeScript versions; compiled output plus static assets packaged so the server can serve them.
+- [ ] Config loading: JSON config file (Gson) + environment-variable overrides, `output.profile` defaulting to `720p30`, every key from `docs/architecture.md#configuration`; `http.publicBaseUrl` required; fail fast on bad values.
 - [ ] Integrate the HTTP stack: router, request/response adapters, per-route hook chain (auth, CSRF, rate-limit placeholders). Request handlers on virtual threads.
 - [ ] Fill gaps in the HTTP stack (in the stack itself, not by adding a framework), each with tests:
   - [ ] Range requests (`bytes=a-b`, open-ended, suffix) → `206` + `Content-Range`; `416` for unsatisfiable; `HEAD`.
-  - [ ] Endless streaming responses (chunked and close-delimited), fast client-disconnect detection.
-  - [ ] WebSocket (RFC 6455): text frames, ping/pong, close. (Fallback SSE + POST only if WebSocket truly can't be done.)
+  - [ ] Endless streaming responses: close-delimited (for `.ts`) and chunked; fast client-disconnect detection.
+  - [ ] WebSocket via SimpleWebsocket on SiggiHTTP 1.10: text frames, ping/pong, close, total-message size cap.
   - [ ] Streaming multi-GB request bodies to disk.
-- [ ] Trusted-proxy client IP resolution (`http.trustedProxies` CIDRs, `X-Forwarded-For` only from trusted peers), IPv4 and IPv6, with unit tests.
+- [ ] Client IP: use SiggiHTTP's resolution, with `http.trustedProxies` (CIDRs, IPv4 and IPv6) fed into `isIPTrusted`; unit-test the CIDR matching. Implicit loopback/Cloudflare trust is accepted for now.
 - [ ] Static file serving for `web/` (content types, caching headers, no directory traversal).
 - [ ] DB layer:
   - [ ] `Dialect` interface (upsert, `RETURNING`, case-insensitive search) with SQLite and PostgreSQL implementations.
-  - [ ] Connection handling: SQLite WAL / `foreign_keys=ON` / `busy_timeout=5000`, single write connection (or small pool with retry); PostgreSQL pool.
+  - [ ] Connection handling: SQLite WAL / `foreign_keys=ON` / `busy_timeout=5000`, single write connection (or small pool with retry); a small hand-written PostgreSQL pool (no pool library).
   - [ ] UUIDv7 generator; epoch-ms time helper.
   - [ ] Migration runner: `db/migrations/{sqlite,postgres}/NNNN_name.sql`, one transaction per file, `schema_migrations` table.
   - [ ] Initial schema for **both** dialects: every table in `docs/data-model.md`.
@@ -102,9 +99,10 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 ### Ingest pipeline
 - [ ] DB-backed ingest queue (`ingest_jobs`), worker pool (`ingest.workers`), survives restart, progress + log tail.
 - [ ] Job steps: probe → (download) → loudnorm pass 1 → encode → extract `audio.m4a` → card render+encode → index → verify → publish (atomic directory swap).
+- [ ] Originals (`docs/library-and-ingest.md#originals-audio-uploads`): audio uploads keep `original.<ext>` with `original_codec`, `original_web` (codec whitelist + duration within 50 ms) and `original_gain_db = min(−14 − I, −1 − TP)` from loudnorm pass 1; originals of video uploads and YouTube downloads are deleted after ingest.
 - [ ] Audio-only items: `audio.m4a` + `card.mp4`, no `mezz.mp4`. Video items: `mezz.mp4`, `audio.m4a`, `card.mp4`.
 - [ ] Verify step: audio duration within 50 ms of source, avcC byte-identical to reference, keyframes exactly every 2 s.
-- [ ] Re-encode jobs when `output.profile` changes.
+- [ ] Re-encode jobs when `output.profile` changes: audio uploads from their original, YouTube items by refetching, video uploads from their old mezzanine.
 - [ ] Chunked resumable uploads (`/api/uploads…`): chunks to `tmp/`, streaming SHA-256, size limit, `complete` with dedupe (incl. re-ingest into a purged row), ffprobe rejects (no audio, unparseable, too long), metadata from tags/filename, embedded cover.
 - [ ] YouTube: URL → 11-char ID normalisation (all forms in the doc), cache lookup (ready / pending+processing attach / purged → refetch same row / failed retry after 10 min / miss → create), `yt-dlp -J` metadata (reject live, too long), download from canonical URL, title/artist/thumbnail rules, optional cookies file, `presentAsAudio` at import.
 - [ ] Permissions for adding media (`library.upload`, `library.youtube` + `ytdlp.enabled`); guest paths stubbed until rooms exist; guest upload quota (per guest and per IP).
@@ -115,7 +113,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Playlists + entries (fractional positions, duplicates allowed, move with `beforeEntryId`).
 - [ ] Sharing (`/api/shares`), adds to recipient's library, notifications (`seen`).
 - [ ] `library.viewAll` endpoints for other users' libraries and playlists.
-- [ ] Media serving `/media/{id}/{audio.m4a|mezz.mp4|cover.jpg}` with Range; media access rules incl. `guests.download` and the current/next `Set<itemId>` (stubbed room state until M3).
+- [ ] Media serving `/media/{id}/{audio.m4a|mezz.mp4|original|cover.jpg}` with Range (correct content type for the original); media access rules incl. `guests.download` and the current/next `Set<itemId>` (stubbed room state until M3).
 
 ### Retention
 - [ ] `last_referenced_at` maintenance on every unreference event and on creation.
@@ -126,6 +124,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 
 **Done when:**
 - [ ] An MP3, a FLAC with cover art, 24 fps and 60 fps videos, a portrait video and a YouTube URL all ingest, with byte-identical avcC.
+- [ ] The MP3 and FLAC keep their originals (web-playable, with a gain); the video uploads and the YouTube item keep none.
 - [ ] A second form of the same YouTube URL (`youtu.be`, `shorts`, with `&t=`) reuses the item without starting yt-dlp.
 - [ ] An unreferenced item is purged after the (shortened) retention period, and a purged YouTube item refetches into the same row.
 
@@ -149,7 +148,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 ### Web client
 - [ ] Room page: now playing, queue, votes, suggestions, request search, upload/YouTube request, history, presence.
 - [ ] Clock sync (8 exchanges, min-RTT, 30 s repeat, EMA, outlier filter).
-- [ ] Listen mode: sync loop (hard seek / rate nudge / steady), `preservesPitch`, preload next ~10 s before end, "Click to listen" autoplay overlay.
+- [ ] Listen mode: audio items play their original with `originalGainDb` via `GainNode` (fallback to `audio.m4a` if not web-playable, `canPlayType` says no, or hard seeks don't converge); sync loop (hard seek / rate nudge / steady), `preservesPitch`, preload next ~10 s before end, "Click to listen" autoplay overlay.
 - [ ] Video ↔ audio-only crossfade switch (two synced elements, 150 ms ramp via Web Audio `GainNode`, stop video download in audio-only).
 - [ ] Remote mode: no media loaded, delayed progress bar (`estimatedDelayMs`, ±0.5 s user nudge in localStorage); mode remembered per room.
 - [ ] Owner management view: room settings (server-disabled options greyed out), members, guest bans, request history.
@@ -158,6 +157,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Two browsers stay within about 50 ms of each other.
 - [ ] Video ↔ audio-only switching has no audible gap in Chrome, Firefox and iOS Safari.
 - [ ] Audio-only mode never requests `mezz.mp4`.
+- [ ] An audio upload plays from its original, at the same loudness as `audio.m4a` (within about 1 dB).
 - [ ] A guest can vote and request according to policy, and gets 403 on a non-current, non-next item when guest downloads are off.
 
 ## M4 — Program output (all three outputs)
@@ -167,11 +167,11 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Unit builder + timestamp rules: audio-driven boundaries (1920-tick frames), video follows audio, card GOP repetition and truncation, fillers in whole units, clock start at 900000, 33-bit wrap, DTS = PTS.
 - [ ] Applying timeline changes at unit boundaries; natural end mid-unit; >3 s drift re-sync at item boundaries; unknown state → Paused.
 - [ ] Index loading for current + next only; positional reads.
-- [ ] MPEG-TS muxer: PIDs, PAT/PMT per unit, RAI on IDR, PES for video (unbounded) and audio (~5 frames), interleave by DTS, PCR on every video PES, continuity counters for packager lifetime, stuffing. Each unit's bytes produced once as an immutable `byte[]`.
+- [ ] MPEG-TS muxer: PIDs as VRCDN (SDT 0x11, PMT 0x100, video 0x101, audio 0x102), SDT/PAT/PMT at each unit start and PAT/PMT about every 400 ms, RAI on IDR, PES for video (unbounded) and audio (~5 frames), interleave by DTS, PCR on every video PES, continuity counters for packager lifetime, stuffing. Each unit's bytes produced once as an immutable `byte[]`.
 - [ ] Pacing thread (one platform thread per active output, LEAD 1000 ms); per-consumer bounded queues, slow consumers disconnected.
 - [ ] Packager lifecycle: start on enable or first request; stop 60 s after last consumer unless RTMP enabled.
 - [ ] Offline harness: scripted fake timeline (video items, audio items, pause, seek, empty queue) → file, no pacing.
-- [ ] `.ts` endpoint: `GET`/`HEAD /live/{token}.ts`, join=next (and room setting join=latest), 4-unit queue, cheap HEAD/short GET probes not counted as viewers; chunked vs close-delimited switchable for testing.
+- [ ] `.ts` endpoint: `GET`/`HEAD /live/{token}.ts`, join=next (and room setting join=latest), 4-unit queue, close-delimited body (no `Content-Length`, no `Transfer-Encoding`), `HEAD` → `200` with `Content-Length: 0`, as VRCDN does; cheap HEAD/short GET probes not counted as viewers.
 - [ ] HLS segmenter: ring of 8, playlist of 6, real `EXTINF`, correct headers.
 - [ ] RTMP pusher: supervised ffmpeg (`-c copy -f flv`), backoff 1/2/5/10/30 s, status with last stderr line.
 - [ ] Stream outputs API (`/api/rooms/{id}/outputs…`, rotate), server switches `outputs.*.enabled`, room switches, tokens (128-bit base64url, never fully logged), RTMP key encrypted and shown as last 4 only, per-IP rate limit and per-token connection cap (64).
@@ -183,7 +183,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] RTMP to VRCDN (or local nginx-rtmp) plays in VRChat and recovers from network cuts. *(manual)*
 - [ ] `.ts` and HLS each play in VRChat via AVPro on PC and Quest. *(manual)*
 - [ ] Skip, seek and pause show up within about 4 s on `.ts`. *(manual)*
-- [ ] Recorded which HTTP framing works best for `.ts` in VRChat (note it here and in `docs/program-output.md`).
+- [ ] Close-delimited `.ts` framing (copied from VRCDN) confirmed in VRChat on PC and Quest. *(manual)*
 
 ## M5 — QR overlay
 
@@ -236,3 +236,13 @@ Record decisions, deviations from `docs/`, and answers to open questions here (n
 - 2026-11-08: Plan created from the design docs. No implementation yet.
 - 2026-11-08: HTTP stack is `io.siggi:SiggiHTTP:1.10`. Capability survey in "Before M0".
 - 2026-11-08: Build tool is Maven, not Gradle (README open question 1 resolved).
+- 2026-11-08: Remaining open questions resolved:
+  - Default output profile **720p30**, configurable (`output.profile`).
+  - **Audio uploads keep their original**, and the web player uses it (gain-matched to −14 LUFS, with fallback to `audio.m4a`). Video and YouTube originals are discarded. This replaces the former `ingest.keepOriginals` setting.
+  - Libraries: Bouncy Castle, Nimbus, ZXing as planned; **Gson** for JSON; no connection-pool library (hand-written pool).
+  - `.ts` framing: copy VRCDN. Observed on its stream: close-delimited body, `HEAD` → `200` + `Content-Length: 0`, SDT/PAT/PMT at the start, PAT/PMT about every 0.4 s, PIDs 0x100/0x101/0x102, joins mid-GOP with no burst. We copy all of it except the join point (`join=next` instead of mid-GOP). Details in `docs/program-output.md`.
+  - WebSocket: **SimpleWebsocket**.
+  - Client IP: leave SiggiHTTP's XFF handling as is; a future SiggiHTTP will require explicit trusted ranges.
+  - Frontend in **TypeScript** (tsc via `frontend-maven-plugin`, no bundler).
+  - Config file is **JSON**.
+  - Coordinates `io.siggi:TogetherTunes`, package `io.siggi.togethertunes`.

@@ -31,11 +31,11 @@ This folder is the design. It is written so an implementer (human or Claude Code
 
 | Topic | Decision |
 |---|---|
-| Backend | Java (21+, virtual threads) on the **author's own HTTP stack**, not a framework |
+| Backend | Java (21+, virtual threads) on the **author's own HTTP stack** (`io.siggi:SiggiHTTP`, WebSocket via `io.siggi:SimpleWebsocket`), not a framework. Built with **Maven** |
 | Database | **SQLite and PostgreSQL** both supported, via plain JDBC; SQLite is the default |
-| Web frontend | **Vanilla JS/TS**, no framework, served by the backend as static files |
+| Web frontend | **Vanilla TypeScript**, no framework, no bundler. Compiled with `tsc` during the Maven build and served by the backend as static files |
 | Media tools | `ffmpeg` / `ffprobe` / `yt-dlp` as subprocesses: at ingest, for overlay encodes, and for the v1 RTMP pusher |
-| Codec profile | H.264 (x264 preset **veryfast**, no B-frames, closed 2 s GOPs) + AAC-LC 48 kHz stereo. Identical for every item, card and overlay encode |
+| Codec profile | H.264 (x264 preset **veryfast**, no B-frames, closed 2 s GOPs) + AAC-LC 48 kHz stereo, **720p30 by default** (1080p30 configurable). Identical for every item, card and overlay encode |
 | VRChat delivery | RTMP push, MPEG-TS and HLS, all built from one shared TS byte stream; each enabled or disabled independently |
 | Web sync | Server clock + timeline anchor; clients play the files locally and correct drift |
 | Web audio-only switch | Two media elements synced to the timeline and swapped with a short crossfade, rather than HLS (reasons in [rooms.md](rooms.md#audio-only-switching)) |
@@ -70,11 +70,11 @@ This folder is the design. It is written so an implementer (human or Claude Code
 
 ## Open questions
 
-These are to be settled during implementation; the docs note the default they assume.
+All resolved on 2026-11-08; kept here for reference.
 
-1. Build tool: Gradle or Maven. **Decided: Maven.**
-2. Does the author's HTTP stack support WebSocket and long-lived streaming responses? Both are required; see [architecture.md](architecture.md#http-stack-requirements).
-3. Default output resolution: 1080p30 or 720p30. Assumed: 1080p30, configurable per server. Changing it requires re-transcoding the library.
-4. Third-party libraries for Argon2id, JWT verification and QR codes (Bouncy Castle, Nimbus JOSE, ZXing core), or hand-written versions. Assumed: use the libraries.
-5. Whether to keep original uploads after ingest. Assumed: configurable, off by default.
-6. Whether VRChat players handle a chunked or a close-delimited `.ts` response better. To be tested in milestone 4.
+1. Build tool: **Maven**.
+2. HTTP stack: **SiggiHTTP** (`io.siggi:SiggiHTTP:1.10`), with **SimpleWebsocket** (`io.siggi:SimpleWebsocket`) for WebSocket. Range and streaming responses are confirmed by tests in milestone 0.
+3. Default output resolution: **720p30**, configurable per server (`output.profile`, `720p30` | `1080p30`). Changing it requires re-transcoding the library.
+4. Third-party libraries: use Bouncy Castle (Argon2id), Nimbus JOSE+JWT and ZXing core.
+5. Originals: **audio uploads keep their original file**, and the web player plays it ([library-and-ingest.md](library-and-ingest.md#originals-audio-uploads)). Originals of video uploads and YouTube downloads are discarded after ingest.
+6. `.ts` framing: copy VRCDN — a close-delimited body ([program-output.md](program-output.md#direct-mpeg-ts-ts)).
