@@ -25,6 +25,9 @@
         <main.class>io.siggi.togethertunes.Main</main.class>
 
         <gson.version>2.13.2</gson.version>
+        <sqlite-jdbc.version>3.54.1.0</sqlite-jdbc.version>
+        <postgresql.version>42.7.14</postgresql.version>
+        <testcontainers.version>2.0.5</testcontainers.version>
         <junit.version>5.13.4</junit.version>
 
         <!--
@@ -84,9 +87,28 @@
             <version>${gson.version}</version>
         </dependency>
 
+        <!-- JDBC drivers. sqlite-jdbc is also a compile dependency because
+             SqliteDialect registers a Java SQL function (org.sqlite.Function). -->
+        <dependency>
+            <groupId>org.xerial</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>${sqlite-jdbc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- PostgreSQL in Docker for the *IT tests (Failsafe). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>
@@ -97,6 +119,13 @@
                 <groupId>org.junit</groupId>
                 <artifactId>junit-bom</artifactId>
                 <version>${junit.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
