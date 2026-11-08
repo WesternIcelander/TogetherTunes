@@ -18,7 +18,8 @@
 ```
 users(id PK, username UNIQUE, display_name, email NULL, created_at, disabled INTEGER)
 
-password_credentials(user_id PK FK, hash TEXT, updated_at)             -- Argon2id encoded string
+password_credentials(user_id PK FK, hash TEXT, updated_at,             -- Argon2id encoded string
+      must_change INTEGER)                                           -- 1: temporary password set by an admin
 
 user_identities(id PK, user_id FK, provider_id FK, subject TEXT,
       email NULL, created_at, last_login_at, UNIQUE(provider_id, subject))

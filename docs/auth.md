@@ -21,7 +21,7 @@ A **user** can have any number of **identities**: one local password credential,
 
 - Hash with **Argon2id**, using Bouncy Castle's `Argon2BytesGenerator`. Parameters: m=64 MiB, t=3, p=1. Store the full encoded string, so the parameters can be raised later and old hashes rehashed on login.
 - Minimum length 10; no composition rules. Login is rate-limited per IP (IPv6 by /64) and per username, with exponential backoff: per username 5 free failures, per IP 20, then each further failure locks that key for 1 s, 2 s, 4 s … up to 15 min; a key without failures for an hour starts over, and a successful login clears its username's count. A locked key gets `429 rate_limited` with `Retry-After`, even with the right password. Failures are written to `audit_log` (`auth.login_failed`), and the first refusal of each lock as `auth.login_throttled`. The account routes (setup, register, login/token) also have a per-IP request limit.
-- Reset: an admin sets a temporary password. There is no email in v1.
+- Reset: an admin sets a temporary password (`password_credentials.must_change`); the user is logged out everywhere and, after logging in with it, is asked to choose a new one (`POST /api/me/password`, which needs the current password and logs out the other sessions). Admins can also create accounts with a temporary password. There is no email in v1.
 
 ### OIDC
 
@@ -73,6 +73,7 @@ Details:
 - `user` can't be renamed or deleted, but its permissions and its default flag can be changed. It starts with `library.upload`, `library.youtube` and `rooms.create`.
 - Any role except `admin` can be marked default (`roles.is_default`); new accounts get every default role.
 - Role names are 1–32 letters, digits, spaces, `.`, `_` or `-`, start with a letter or digit, and are unique ignoring case.
+- **No escalation through the admin pages:** granting or taking away a role, creating or deleting a role, and changing a role's permissions or default flag need the acting user to hold every permission involved; only holders of `admin` can grant or take away `admin`. A user can't manage (disable, reset the password of, change the roles of) another user who holds `admin` or any permission the actor lacks. Users can't disable themselves.
 - Feature switches that gate a permission: `ytdlp.enabled` gates `library.youtube`, `overlay.enabled` gates `output.overlayVideo`. The `outputs.*.enabled` switches gate output kinds directly. A permission check fails with `403 feature_disabled` if the feature is off, then `401 not_authenticated` for guests and anonymous visitors, then `403 forbidden` if the user lacks the permission. Guests never hold permissions; what they may do comes from the guest policy.
 
 ## Guests

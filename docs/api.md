@@ -20,6 +20,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }`.
 | GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}` |
 | POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it |
 | PATCH | `/api/me/guest` | Rename (custom names only) |
+| POST | `/api/me/password` | `{currentPassword, newPassword}`: change your own password (replaces a temporary one; logs out your other sessions) |
 | POST | `/api/me/merge-guest` | After login: merge the guest held in this browser's cookie into the account |
 | GET / DELETE | `/api/me/sessions[/{id}]` | No IP field. `DELETE /api/me/sessions` revokes all sessions except the current one |
 | GET / DELETE | `/api/me/identities[/{id}]` | |
@@ -74,9 +75,9 @@ Inside a room, requests made by upload or YouTube go through the WebSocket `queu
 
 | Path | Notes |
 |---|---|
-| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)) |
-| `/api/admin/roles`, `/api/admin/roles/{id}/permissions` | |
-| `/api/admin/users`, `/api/admin/users/{id}/roles` | |
+| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)). `GET` lists `{key, group, type, value, default, options?}`; `PATCH {key: value}` is all-or-nothing, `null` resets to the default |
+| `/api/admin/roles[/{id}]`, `/api/admin/roles/{id}/permissions` | `GET` (also with *admin.users*) / `POST`; `GET` / `PATCH {name?, isDefault?}` / `DELETE`; `GET` / `PUT {permissions}` |
+| `/api/admin/users[/{id}]`, `/api/admin/users/{id}/roles`, `/api/admin/users/{id}/password` | `GET ?q=` / `POST {username, password, displayName?, roleIds?}` (temporary password); `GET` / `PATCH {displayName?, disabled?}`; `GET` / `PUT {roleIds}`; `POST {password}` sets a temporary password. No escalation: see [auth.md](auth.md#roles-and-permissions) |
 | `/api/admin/providers` | |
 | `/api/admin/jobs`, `/api/admin/ytdlp/update` | |
 | `/api/admin/guests?q=` | Guests: name, created, last seen. The `ip` field is included only for *ip.view* |
