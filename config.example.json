@@ -1,0 +1,22 @@
+{
+  "http": {
+    "bind": "0.0.0.0",
+    "port": 8080,
+    "publicBaseUrl": "https://music.example.com",
+    "trustedProxies": ["127.0.0.1/32", "::1/128"]
+  },
+  "data": {
+    "dir": "./data"
+  },
+  "output": {
+    "profile": "720p30"
+  },
+  "ingest": {
+    "maxUploadBytes": "4 GiB",
+    "maxDurationSeconds": 1800
+  },
+  "overlay": {
+    "workers": 1,
+    "cacheMaxBytes": "20 GiB"
+  }
+}

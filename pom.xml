@@ -24,6 +24,7 @@
 
         <main.class>io.siggi.togethertunes.Main</main.class>
 
+        <gson.version>2.13.2</gson.version>
         <junit.version>5.13.4</junit.version>
 
         <!--
@@ -75,6 +76,12 @@
             <groupId>io.siggi</groupId>
             <artifactId>SimpleWebsocket</artifactId>
             <version>${simplewebsocket.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.code.gson</groupId>
+            <artifactId>gson</artifactId>
+            <version>${gson.version}</version>
         </dependency>
 
         <dependency>
