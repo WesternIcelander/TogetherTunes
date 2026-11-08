@@ -23,8 +23,8 @@ import java.util.Map;
  * Entry point of the runnable jar.
  *
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
- * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then loads
- * the secret key ({@link ServerSecret}), opens
+ * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then creates
+ * the data directory layout ({@link DataDir}), loads the secret key ({@link ServerSecret}), opens
  * the database ({@link Database}) and applies pending migrations ({@link MigrationRunner}), starts the HTTP server ({@link WebServer}) and runs until the
  * process is stopped.
  */
@@ -49,6 +49,14 @@ public final class Main {
             System.exit(startup.status());
         }
         Config config = startup.config();
+        DataDir dataDir;
+        try {
+            dataDir = DataDir.create(config.dataDir());
+        } catch (IOException e) {
+            System.err.println("Could not set up the data directory: " + e.getMessage());
+            System.exit(EXIT_STARTUP);
+            return;
+        }
         SecretCipher secrets;
         try {
             secrets = loadSecret(config, System.getenv(), System.out, System.err);
@@ -74,8 +82,7 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
-        Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
+        Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
             staticFiles = StaticFiles.fromClasspath(Main.class.getClassLoader(), tmpDir);
