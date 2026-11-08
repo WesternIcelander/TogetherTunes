@@ -3,6 +3,11 @@ package io.siggi.togethertunes;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.http.Hooks;
+import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.http.WebServer;
+import java.io.File;
+import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -11,23 +16,51 @@ import java.nio.file.Path;
  * Entry point of the runnable jar.
  *
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
- * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid. The HTTP
- * server is wired in by a later M0 step.
+ * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then starts
+ * the HTTP server ({@link WebServer}) and runs until the process is stopped.
  */
 public final class Main {
     /** Exit status for an invalid configuration. */
     static final int EXIT_CONFIG = 1;
     /** Exit status for bad command-line usage. */
     static final int EXIT_USAGE = 2;
+    /** Exit status when the HTTP server can't start (e.g. the port is taken). */
+    static final int EXIT_STARTUP = 3;
+
+    /** Outcome of {@link #load}: an exit status, and the config when the status is 0. */
+    record Startup(int status, Config config) {
+    }
 
     private Main() {
     }
 
-    public static void main(String[] args) {
-        int status = run(args, ConfigLoader.forProcess(), System.out, System.err);
-        if (status != 0) {
-            System.exit(status);
+    public static void main(String[] args) throws InterruptedException {
+        Startup startup = load(args, ConfigLoader.forProcess(), System.out, System.err);
+        if (startup.status() != 0) {
+            System.exit(startup.status());
         }
+        Config config = startup.config();
+        WebServer web;
+        try {
+            // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config),
+                    new File(System.getProperty("java.io.tmpdir")));
+        } catch (IOException e) {
+            System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
+            System.exit(EXIT_STARTUP);
+            return;
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(web::close, "shutdown"));
+        System.out.println("Listening on " + config.httpBind() + ":" + web.port());
+        web.join();
+    }
+
+    /**
+     * The application's routes. Router-wide hooks: actor resolution, then the CSRF check
+     * (placeholders until M1). Routes are added by later steps.
+     */
+    static Router router(Config config) {
+        return new Router(Hooks.authenticate(), Hooks.csrf());
     }
 
     /**
@@ -36,6 +69,11 @@ public final class Main {
      * @return 0 to keep running, otherwise the exit status
      */
     static int run(String[] args, ConfigLoader loader, PrintStream out, PrintStream err) {
+        return load(args, loader, out, err).status();
+    }
+
+    /** Parses the command line and loads the configuration. */
+    static Startup load(String[] args, ConfigLoader loader, PrintStream out, PrintStream err) {
         Path configFile = null;
         for (int i = 0; i < args.length; i++) {
             String arg = args[i];
@@ -43,24 +81,24 @@ public final class Main {
             if (arg.equals("--config") || arg.equals("-c")) {
                 if (i + 1 >= args.length) {
                     err.println(arg + " needs a file name");
-                    return EXIT_USAGE;
+                    return new Startup(EXIT_USAGE, null);
                 }
                 value = args[++i];
             } else if (arg.startsWith("--config=")) {
                 value = arg.substring("--config=".length());
             } else if (arg.equals("--help") || arg.equals("-h")) {
                 out.println(usage());
-                return EXIT_USAGE;
+                return new Startup(EXIT_USAGE, null);
             } else {
                 err.println("Unknown argument: " + arg);
                 err.println(usage());
-                return EXIT_USAGE;
+                return new Startup(EXIT_USAGE, null);
             }
             try {
                 configFile = Path.of(value);
             } catch (InvalidPathException e) {
                 err.println("Invalid config file path: " + value);
-                return EXIT_USAGE;
+                return new Startup(EXIT_USAGE, null);
             }
         }
 
@@ -70,7 +108,7 @@ public final class Main {
             loaded = loader.load(configFile);
         } catch (ConfigException e) {
             err.println(e.getMessage());
-            return EXIT_CONFIG;
+            return new Startup(EXIT_CONFIG, null);
         }
         for (String warning : loaded.warnings()) {
             err.println("WARNING: " + warning);
@@ -79,7 +117,7 @@ public final class Main {
         out.println("Config: " + (loaded.configFile() == null ? "(no file, environment and defaults only)" : loaded.configFile()));
         out.println("Public URL " + config.publicBaseUrl() + ", listening on " + config.httpBind() + ":" + config.httpPort()
                 + ", data in " + config.dataDir() + ", output profile " + config.outputProfile());
-        return 0;
+        return new Startup(0, config);
     }
 
     private static String usage() {
