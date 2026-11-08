@@ -33,7 +33,7 @@ abstract class InitialSchemaContract {
 
     static {
         t("users", "id", "username", "display_name", "email", "created_at", "disabled");
-        t("password_credentials", "user_id", "hash", "updated_at");
+        t("password_credentials", "user_id", "hash", "updated_at", "must_change");
         t("user_identities", "id", "user_id", "provider_id", "subject", "email", "created_at", "last_login_at");
         t("oidc_providers", "id", "slug", "display_name", "issuer", "client_id", "client_secret_enc", "scopes",
                 "enabled", "allow_signup", "claim_mapping_json");

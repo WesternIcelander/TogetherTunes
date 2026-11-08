@@ -35,3 +35,79 @@ body {
 .error {
   color: #c62828;
 }
+
+.tabs {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.tabs a[aria-current="page"] {
+  font-weight: bold;
+  text-decoration: none;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+table.list {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+table.list th,
+table.list td {
+  text-align: left;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+table.list tbody tr {
+  cursor: pointer;
+}
+
+table.list tbody tr:hover,
+table.list tbody tr.selected {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.panel {
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 0.5rem;
+  padding: 0.5rem 1rem 1rem;
+  margin: 1rem 0;
+}
+
+.panel fieldset {
+  border: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+.checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.muted {
+  opacity: 0.7;
+}
+
+.setting {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin: 0.4rem 0;
+}
+
+.setting > span:first-child {
+  min-width: 16rem;
+  font-family: ui-monospace, monospace;
+}

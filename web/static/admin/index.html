@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TogetherTunes admin</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <script type="module" src="/js/admin.js"></script>
+</head>
+<body>
+  <h1>Administration</h1>
+  <nav class="tabs" id="admin-tabs">
+    <a href="#users" data-tab="users">Users</a>
+    <a href="#roles" data-tab="roles">Roles</a>
+    <a href="#settings" data-tab="settings">Settings</a>
+  </nav>
+  <p id="admin-status" role="status"></p>
+
+  <section id="tab-users" hidden>
+    <h2>Users</h2>
+    <form id="user-search" class="row">
+      <input name="q" type="search" placeholder="Search username or display name" aria-label="Search">
+      <button type="submit">Search</button>
+    </form>
+    <table class="list">
+      <thead><tr><th>Username</th><th>Display name</th><th>Roles</th><th>Status</th></tr></thead>
+      <tbody id="user-rows"></tbody>
+    </table>
+    <button id="user-more" type="button" hidden>Load more</button>
+
+    <div id="user-detail" class="panel" hidden></div>
+
+    <h3>Create a user</h3>
+    <form id="user-create" class="form">
+      <label>Username
+        <input name="username" autocomplete="off" required minlength="3" maxlength="32"
+               pattern="[A-Za-z0-9][A-Za-z0-9._\-]*">
+      </label>
+      <label>Display name (optional)
+        <input name="displayName" autocomplete="off" maxlength="64">
+      </label>
+      <label>Temporary password
+        <input name="password" type="text" autocomplete="off" required minlength="10" maxlength="1024">
+      </label>
+      <small>At least 10 characters. Give it to the user; they choose their own after logging in.</small>
+      <button type="submit">Create user</button>
+      <p class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="tab-roles" hidden>
+    <h2>Roles</h2>
+    <p>A user's permissions are the union of their roles' permissions. <code>admin</code> holds every
+      permission and can't be edited. Default roles are given to every new account.</p>
+    <div id="role-list"></div>
+    <h3>Create a role</h3>
+    <form id="role-create" class="form">
+      <label>Name
+        <input name="name" required maxlength="32">
+      </label>
+      <button type="submit">Create role</button>
+      <p class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <h2>Server settings</h2>
+    <form id="settings-form">
+      <div id="settings-fields"></div>
+      <button type="submit">Save settings</button>
+      <p class="error" role="alert"></p>
+    </form>
+  </section>
+</body>
+</html>

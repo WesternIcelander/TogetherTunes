@@ -45,8 +45,17 @@ public final class Accounts {
     /** Test hook: runs inside the transaction right after the first-account check. */
     volatile Runnable afterFirstCheck = () -> { };
 
-    /** An account as created. */
-    public record Account(String id, String username, String displayName, List<String> roles) {
+    /**
+     * An account as created or logged in.
+     *
+     * @param mustChangePassword whether its local password was set by an admin (a temporary
+     *                           password) and should be replaced by the user
+     */
+    public record Account(String id, String username, String displayName, List<String> roles,
+                          boolean mustChangePassword) {
+        public Account(String id, String username, String displayName, List<String> roles) {
+            this(id, username, displayName, roles, false);
+        }
     }
 
     public Accounts(Database db, Passwords passwords) {
@@ -90,6 +99,19 @@ public final class Accounts {
      */
     public Account createLocal(String username, String displayName, String password, boolean onlyFirst,
                                String ip, String auditAction) throws SQLException {
+        return createLocal(username, displayName, password, onlyFirst, ip, auditAction, null, false);
+    }
+
+    /**
+     * Creates a local account, as {@link #createLocal(String, String, String, boolean, String, String)}.
+     *
+     * @param actorUserId       the acting user for the audit log ({@code null}: the new user acts)
+     * @param temporaryPassword whether the password is temporary (set by an admin): the user is
+     *                          asked to change it ({@code password_credentials.must_change})
+     */
+    public Account createLocal(String username, String displayName, String password, boolean onlyFirst,
+                               String ip, String auditAction, String actorUserId, boolean temporaryPassword)
+            throws SQLException {
         String name = validUsername(username);
         String display = validDisplayName(displayName, name);
         String passwordProblem = Passwords.problem(password);
@@ -121,18 +143,22 @@ public final class Accounts {
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = c.prepareStatement(
-                    "INSERT INTO password_credentials (user_id, hash, updated_at) VALUES (?, ?, ?)")) {
+                    "INSERT INTO password_credentials (user_id, hash, updated_at, must_change) VALUES (?, ?, ?, ?)")) {
                 ps.setString(1, id);
                 ps.setString(2, hash);
                 ps.setLong(3, now);
+                ps.setInt(4, temporaryPassword ? 1 : 0);
                 ps.executeUpdate();
             }
             List<String> roles = grantRoles(c, id, first);
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("username", name);
             details.put("roles", roles);
-            AuditLog.write(c, now, id, null, ip, auditAction, id, details);
-            return new Account(id, name, display, roles);
+            if (temporaryPassword) {
+                details.put("temporaryPassword", true);
+            }
+            AuditLog.write(c, now, actorUserId == null ? id : actorUserId, null, ip, auditAction, id, details);
+            return new Account(id, name, display, roles, temporaryPassword);
         });
     }
 
@@ -232,21 +258,108 @@ public final class Accounts {
             }
             AuditLog.write(c, now, credential.userId(), null, ip, AUDIT_LOGIN, credential.userId(), details);
             return new Account(credential.userId(), credential.username(), credential.displayName(),
-                    roleNames(c, credential.userId()));
+                    roleNames(c, credential.userId()), credential.mustChange());
         });
     }
+
+    /**
+     * A user changes their own local password ({@code POST /api/me/password}), e.g. replacing a
+     * temporary one set by an admin. Checking the current password goes through the login
+     * backoff ({@link LoginThrottle}, same keys as {@link #login}), so it can't be used to guess
+     * passwords faster. On success the new hash replaces the old one, {@code must_change} is
+     * cleared, every other session of the user is deleted, and the change is audited as
+     * {@value #AUDIT_PASSWORD_CHANGED}; a wrong current password is audited as
+     * {@value #AUDIT_PASSWORD_CHANGE_FAILED}.
+     *
+     * @param keepSessionId the session the request uses, which stays logged in
+     * @throws HttpError 400 {@code invalid_password} (new password) or {@code password_unchanged};
+     *                   403 {@code wrong_password}; 409 {@code no_password} (the account has no
+     *                   local password); 429 {@code rate_limited}
+     */
+    public void changePassword(String userId, String keepSessionId, String currentPassword, String newPassword,
+                               String ip) throws SQLException {
+        String problem = Passwords.problem(newPassword);
+        if (problem != null) {
+            throw new HttpError(400, "invalid_password", problem);
+        }
+        Credential credential = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT u.username FROM users u WHERE u.id = ? AND u.disabled = 0")) {
+                ps.setString(1, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? credential(c, rs.getString(1)) : null;
+                }
+            }
+        });
+        if (credential == null) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        if (credential.hash() == null) {
+            throw new HttpError(409, "no_password", "This account has no password");
+        }
+        LoginThrottle.Attempt attempt;
+        try {
+            attempt = throttle.begin(ip, credential.username());
+        } catch (LoginThrottle.Locked locked) {
+            throw HttpError.tooManyRequests("Too many wrong passwords; try again later", locked.refusal().retryAfterMs());
+        }
+        boolean ok = currentPassword != null && currentPassword.length() <= 2 * Passwords.MAX_LENGTH
+                && passwords.verify(currentPassword, credential.hash());
+        long now = EpochMs.now(clock);
+        if (!ok) {
+            db.write(c -> {
+                AuditLog.write(c, now, userId, null, ip, AUDIT_PASSWORD_CHANGE_FAILED, userId, null);
+                return null;
+            });
+            throw new HttpError(403, "wrong_password", "The current password is wrong");
+        }
+        attempt.succeeded();
+        if (newPassword.equals(currentPassword)) {
+            throw new HttpError(400, "password_unchanged", "The new password must differ from the current one");
+        }
+        String hash = passwords.hash(newPassword);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE password_credentials SET hash = ?, updated_at = ?, must_change = 0 WHERE user_id = ? AND hash = ?")) {
+                ps.setString(1, hash);
+                ps.setLong(2, now);
+                ps.setString(3, userId);
+                ps.setString(4, credential.hash());
+                if (ps.executeUpdate() != 1) {
+                    throw new HttpError(409, "password_changed_concurrently",
+                            "The password was changed meanwhile; try again");
+                }
+            }
+            int revoked;
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM sessions WHERE user_id = ? AND id <> ?")) {
+                ps.setString(1, userId);
+                ps.setString(2, keepSessionId);
+                revoked = ps.executeUpdate();
+            }
+            AuditLog.write(c, now, userId, null, ip, AUDIT_PASSWORD_CHANGED, userId,
+                    Map.of("otherSessionsRevoked", revoked, "wasTemporary", credential.mustChange()));
+            return null;
+        });
+    }
+
+    /** {@code audit_log} action of a user changing their own password. */
+    public static final String AUDIT_PASSWORD_CHANGED = "auth.password_changed";
+    /** {@code audit_log} action of a password change refused for a wrong current password. */
+    public static final String AUDIT_PASSWORD_CHANGE_FAILED = "auth.password_change_failed";
 
     /** The enabled account with this id, or {@code null} (unknown or disabled). */
     public Account findEnabled(String userId) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id, username, display_name FROM users WHERE id = ? AND disabled = 0")) {
+                    "SELECT u.id, u.username, u.display_name, p.must_change FROM users u"
+                            + " LEFT JOIN password_credentials p ON p.user_id = u.id WHERE u.id = ? AND u.disabled = 0")) {
                 ps.setString(1, userId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
                         return null;
                     }
-                    return new Account(rs.getString(1), rs.getString(2), rs.getString(3), roleNames(c, rs.getString(1)));
+                    return new Account(rs.getString(1), rs.getString(2), rs.getString(3), roleNames(c, rs.getString(1)),
+                            rs.getInt(4) != 0);
                 }
             }
         });
@@ -275,17 +388,18 @@ public final class Accounts {
     }
 
     /** A user row with its local password hash ({@code null} if it has none). */
-    private record Credential(String userId, String username, String displayName, boolean disabled, String hash) {
+    private record Credential(String userId, String username, String displayName, boolean disabled, String hash,
+                              boolean mustChange) {
     }
 
     private static Credential credential(Connection c, String username) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
-                "SELECT u.id, u.username, u.display_name, u.disabled, p.hash FROM users u"
+                "SELECT u.id, u.username, u.display_name, u.disabled, p.hash, p.must_change FROM users u"
                         + " LEFT JOIN password_credentials p ON p.user_id = u.id WHERE lower(u.username) = ?")) {
             ps.setString(1, username.toLowerCase(Locale.ROOT));
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? new Credential(rs.getString(1), rs.getString(2), rs.getString(3),
-                        rs.getInt(4) != 0, rs.getString(5)) : null;
+                        rs.getInt(4) != 0, rs.getString(5), rs.getInt(6) != 0) : null;
             }
         }
     }

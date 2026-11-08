@@ -10,6 +10,10 @@ import io.siggi.simplewebsocket.WebSocketConnector;
 import io.siggi.simplewebsocket.WebSocketMessage;
 import io.siggi.simplewebsocket.WebsocketHeaders;
 import io.siggi.togethertunes.auth.Accounts;
+import io.siggi.togethertunes.auth.AdminApi;
+import io.siggi.togethertunes.auth.Permissions;
+import io.siggi.togethertunes.auth.Roles;
+import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
@@ -77,7 +81,10 @@ class MainRouterTest {
         SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies(), limits);
         AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies(), limits);
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
-        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi),
+        Passwords fastPasswords = new Passwords(new Passwords.Params(64, 1, 1));
+        AdminApi admin = new AdminApi(database, accounts, new Users(database, fastPasswords, clock), new Roles(database),
+                new Permissions(database, settings), settings);
+        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi, admin),
                 dir.toFile());
     }
 
@@ -160,7 +167,7 @@ class MainRouterTest {
                 "{\"username\":\"siggi\",\"displayName\":\"Siggi\",\"password\":\"correct horse\"}");
         assertEquals(201, created.statusCode(), created.body());
         assertTrue(created.body().matches("\\{\"user\":\\{\"id\":\"[0-9a-f-]{36}\",\"username\":\"siggi\","
-                + "\"displayName\":\"Siggi\",\"roles\":\\[\"admin\",\"user\"]}}"), created.body());
+                + "\"displayName\":\"Siggi\",\"roles\":\\[\"admin\",\"user\"],\"mustChangePassword\":false}}"), created.body());
         assertTrue(!created.body().contains("127.0.0.1"), "no IP in responses");
 
         assertEquals("{\"needed\":false}", get("/api/setup").body());
@@ -240,7 +247,7 @@ class MainRouterTest {
         HttpResponse<String> registered = postJson("/api/auth/register", body, null);
         assertEquals(201, registered.statusCode(), registered.body());
         assertTrue(registered.body().matches("\\{\"user\":\\{\"id\":\"[0-9a-f-]{36}\",\"username\":\"alice\","
-                + "\"displayName\":\"alice\",\"roles\":\\[\"user\"]}}"), registered.body());
+                + "\"displayName\":\"alice\",\"roles\":\\[\"user\"],\"mustChangePassword\":false}}"), registered.body());
         assertFalse(registered.body().contains("127.0.0.1"), "no IP in responses");
         sidCookie(registered); // registering logs you in
         HttpResponse<String> taken = postJson("/api/auth/register", "{\"username\":\"ALICE\",\"password\":\"0123456789\"}", null);

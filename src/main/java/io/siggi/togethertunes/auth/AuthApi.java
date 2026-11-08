@@ -38,12 +38,18 @@ import java.util.Objects;
  *       request then gets {@code 401 not_authenticated}. Audited as {@value #AUDIT_TOKEN}. The
  *       token is shown only in this response; it expires {@link Sessions#LIFETIME_MS} after its
  *       last use and is revoked through {@link SessionsApi} or by logging out with it.</li>
- * </ul>
  *
  * <p>Register, login and token are also limited per client IP ({@link AuthRateLimits}):
  * {@code 429 rate_limited} with {@code Retry-After} before the body is read.
  *
- * <p>{@code user} is {@code {"id", "username", "displayName", "roles": [...]}}, as from setup.
+ *   <li>{@code POST /api/me/password} {@code {"currentPassword", "newPassword"}} → {@code 204}:
+ *       the logged-in user changes their own password ({@link Accounts#changePassword}; other
+ *       sessions are logged out). This is how a temporary password set by an admin is replaced.</li>
+ * </ul>
+ *
+ * <p>{@code user} is {@code {"id", "username", "displayName", "roles": [...], "mustChangePassword"}}
+ * ({@code mustChangePassword}: the password is a temporary one set by an admin, and the UI asks
+ * for a new one).
  */
 public final class AuthApi {
     /** {@code audit_log} action of a registration. */
@@ -66,6 +72,9 @@ public final class AuthApi {
     }
 
     record TokenRequest(String username, String password) {
+    }
+
+    record PasswordChangeRequest(String currentPassword, String newPassword) {
     }
 
     /**
@@ -91,6 +100,18 @@ public final class AuthApi {
         router.post("/api/auth/login", this::login, Hooks.rateLimit(limits.login()));
         router.post("/api/auth/logout", this::logout);
         router.post("/api/auth/token", this::token, Hooks.rateLimit(limits.login()));
+        router.post("/api/me/password", this::changePassword, Hooks.rateLimit(limits.login()));
+    }
+
+    private void changePassword(Request request, Response response) throws Exception {
+        if (!(ActorResolver.actor(request) instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        PasswordChangeRequest body = request.readJson(PasswordChangeRequest.class);
+        accounts.changePassword(user.userId(), user.sessionId(), body.currentPassword(), body.newPassword(),
+                request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.empty(204);
     }
 
     private void registerAccount(Request request, Response response) throws Exception {
@@ -192,6 +213,7 @@ public final class AuthApi {
         user.put("username", account.username());
         user.put("displayName", account.displayName());
         user.put("roles", account.roles());
+        user.put("mustChangePassword", account.mustChangePassword());
         return user;
     }
 }

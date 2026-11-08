@@ -366,7 +366,7 @@ public final class Roles {
         throw new HttpError(404, "role_not_found", "No such role");
     }
 
-    private static List<Role> all(Connection c) throws SQLException {
+    static List<Role> all(Connection c) throws SQLException {
         Map<String, Set<Permission>> perms = new HashMap<>();
         try (PreparedStatement ps = c.prepareStatement("SELECT role_id, permission FROM role_permissions");
              ResultSet rs = ps.executeQuery()) {
