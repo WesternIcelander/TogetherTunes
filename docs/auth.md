@@ -92,9 +92,9 @@ A guest identity is created **lazily**: the first time an anonymous actor does s
 
 - By default the server generates a name: `Adjective Noun`, from bundled word lists of about 300 entries each, title-cased, e.g. "Quiet Walrus". If the name is already used (ignoring case) by an active guest (one seen in the last 30 days), it draws again; after 5 tries it appends the smallest free number from 2 ("Quiet Walrus 2").
 - If `guests.allowCustomNames` is on, the guest can choose a name when their identity is created, and can change it later.
-  - Length 2–32; letters, digits, spaces and basic punctuation; whitespace trimmed and collapsed.
-  - Rejected if it matches (case-insensitively, after NFKC normalisation) any registered username or display name, so guests can't impersonate accounts.
-  - Optionally checked against an admin-editable blocklist.
+  - Stored NFKC-normalised, whitespace trimmed and collapsed. Length 2–32 code points; letters of any script (with up to 3 combining marks each), digits, spaces and the punctuation ``.,'’-_!?&():;#+~``; at least one letter or digit. Otherwise `400 invalid_name`.
+  - Rejected with `409 name_taken` if it matches (case-insensitively, after NFKC normalisation, ignoring extra spaces) any registered username or display name, disabled accounts included, so guests can't impersonate accounts.
+  - Rejected with `400 name_blocked` if it contains an entry of the admin-editable blocklist `guests.nameBlocklist`, compared case-insensitively after NFKC with spaces and punctuation removed (so "b.a.d" matches "bad"; substring match, so entries should be specific).
 - Guests are always shown with a **guest badge** in the UI. Ordinary users can't tell guests apart by anything except name and badge: no IP, and no IP-derived hints.
 
 ### Guest policy (server settings)
@@ -104,6 +104,7 @@ A guest identity is created **lazily**: the first time an anonymous actor does s
 | `guests.enabled` | true | Off: logged-out users can only listen |
 | `guests.identifyBy` | `cookie` | `cookie` \| `ip` |
 | `guests.allowCustomNames` | false | |
+| `guests.nameBlocklist` | `[]` | Words custom guest names must not contain (see [Names](#names)) |
 | `guests.canVote` | true | Upper bound; each room can still switch it off |
 | `guests.canRequestLibrary` | true | Request from the room owner's library |
 | `guests.canUpload` | false | Upload files as requests |
