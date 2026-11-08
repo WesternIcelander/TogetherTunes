@@ -28,6 +28,7 @@ public final class Response {
             Map.entry(411, "Length Required"), Map.entry(412, "Precondition Failed"),
             Map.entry(413, "Content Too Large"), Map.entry(415, "Unsupported Media Type"),
             Map.entry(416, "Range Not Satisfiable"), Map.entry(422, "Unprocessable Content"),
+            Map.entry(426, "Upgrade Required"),
             Map.entry(429, "Too Many Requests"),
             Map.entry(500, "Internal Server Error"), Map.entry(501, "Not Implemented"),
             Map.entry(502, "Bad Gateway"), Map.entry(503, "Service Unavailable"),
