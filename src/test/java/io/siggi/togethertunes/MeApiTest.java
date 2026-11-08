@@ -90,7 +90,8 @@ class MeApiTest {
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, tickets),
-                new AdminApi(database, accounts, users, new Roles(database), permissions, settings)), dir.toFile());
+                new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
+                io.siggi.togethertunes.auth.AdminActivityApi.create(database, guests, permissions, clock)), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
                 "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);

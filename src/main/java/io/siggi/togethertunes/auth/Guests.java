@@ -15,7 +15,9 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -308,31 +310,109 @@ public final class Guests {
     /**
      * Records a use of a guest: {@code last_seen_at = now}, and {@code ip_last = clientIp} (unless
      * {@code clientIp} is {@code null}). Does nothing if the guest was seen less than
-     * {@link #TOUCH_INTERVAL_MS} ago from the same IP. Conditional on the {@code last_seen_at} and
-     * {@code ip_last} the caller read, so concurrent requests write once.
+     * {@link #TOUCH_INTERVAL_MS} ago from the same IP. Conditional on the {@code last_seen_at} the
+     * caller read, so concurrent requests write once.
      *
+     * @param sameIp whether the stored {@code ip_last} equals {@code clientIp}, as the caller found
+     *               with {@link IpAccess#GUEST_IP_UNCHANGED} (the stored IP itself is never read here)
      * @return whether the row was updated
      */
-    static boolean touch(Database db, String guestId, long lastSeenAt, String ipLast, String clientIp, long now)
+    static boolean touch(Database db, String guestId, long lastSeenAt, boolean sameIp, String clientIp, long now)
             throws SQLException {
-        boolean ipChanged = clientIp != null && !clientIp.equals(ipLast);
+        boolean ipChanged = clientIp != null && !sameIp;
         if (!ipChanged && now - lastSeenAt < TOUCH_INTERVAL_MS) {
             return false;
         }
-        String ip = clientIp != null ? clientIp : ipLast;
         return db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE guests SET last_seen_at = ?, ip_last = ? WHERE id = ? AND last_seen_at = ?"
-                            + " AND " + (ipLast == null ? "ip_last IS NULL" : "ip_last = ?"))) {
+                    "UPDATE guests SET last_seen_at = ?, ip_last = COALESCE(?, ip_last)"
+                            + " WHERE id = ? AND last_seen_at = ?")) {
                 ps.setLong(1, Math.max(now, lastSeenAt));
-                ps.setString(2, ip);
+                ps.setString(2, clientIp);
                 ps.setString(3, guestId);
                 ps.setLong(4, lastSeenAt);
-                if (ipLast != null) {
-                    ps.setString(5, ipLast);
-                }
                 return ps.executeUpdate() > 0;
             }
+        });
+    }
+
+    /**
+     * A guest for the admin list: its view plus when it was last seen. No IP (an {@code ip.view}
+     * holder gets it from {@link IpAccess#ipsOfGuests}).
+     */
+    public record GuestListItem(GuestView guest, long lastSeenAt) {
+    }
+
+    /** A page of {@link #list}; {@code nextCursor} is {@code null} on the last page. */
+    public record Page(List<GuestListItem> items, String nextCursor) {
+    }
+
+    /** Default and largest page size of {@link #list}. */
+    public static final int LIST_DEFAULT = 50;
+    public static final int LIST_MAX = 200;
+
+    /**
+     * All guests (banned ones too), most recently seen first. {@code query} (optional) matches
+     * part of the name, ignoring case. {@code cursor} is the previous page's {@code nextCursor}
+     * ({@code 400 invalid_cursor} if malformed). As guests keep being seen, a guest can move to an
+     * earlier page while paging; that is fine for an admin list.
+     */
+    public Page list(String query, String cursor, int limit) throws SQLException {
+        if (limit < 1 || limit > LIST_MAX) {
+            throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
+        }
+        long cursorAt = 0;
+        String cursorId = null;
+        if (cursor != null) {
+            int sep = cursor.indexOf('_');
+            try {
+                cursorAt = Long.parseLong(cursor.substring(0, Math.max(sep, 0)));
+            } catch (NumberFormatException e) {
+                sep = -1;
+            }
+            if (sep <= 0 || sep == cursor.length() - 1) {
+                throw new HttpError(400, "invalid_cursor", "Malformed cursor");
+            }
+            cursorId = cursor.substring(sep + 1);
+        }
+        Dialect d = db.dialect();
+        StringBuilder sql = new StringBuilder(
+                "SELECT id, kind, display_name, name_chosen, banned, created_at, last_seen_at FROM guests WHERE 1 = 1");
+        List<Object> params = new ArrayList<>();
+        if (query != null && !query.isBlank()) {
+            sql.append(" AND ").append(d.containsIgnoreCase("display_name"));
+            params.add(Dialect.containsPattern(query.strip()));
+        }
+        if (cursorId != null) {
+            sql.append(" AND (last_seen_at < ? OR (last_seen_at = ? AND id < ?))");
+            params.add(cursorAt);
+            params.add(cursorAt);
+            params.add(cursorId);
+        }
+        sql.append(" ORDER BY last_seen_at DESC, id DESC LIMIT ").append(limit + 1);
+        return db.read(c -> {
+            List<GuestListItem> items = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                for (int i = 0; i < params.size(); i++) {
+                    if (params.get(i) instanceof Long l) {
+                        ps.setLong(i + 1, l);
+                    } else {
+                        ps.setString(i + 1, (String) params.get(i));
+                    }
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        items.add(new GuestListItem(view(rs), rs.getLong(7)));
+                    }
+                }
+            }
+            String next = null;
+            if (items.size() > limit) {
+                items = new ArrayList<>(items.subList(0, limit));
+                GuestListItem last = items.get(limit - 1);
+                next = last.lastSeenAt() + "_" + last.guest().id();
+            }
+            return new Page(List.copyOf(items), next);
         });
     }
 
@@ -351,12 +431,17 @@ public final class Guests {
                 if (!rs.next()) {
                     return null;
                 }
-                GuestIdentity kind = rs.getString(2).equals(GuestIdentity.IP.wireName())
-                        ? GuestIdentity.IP : GuestIdentity.COOKIE;
-                return new GuestView(rs.getString(1), kind, rs.getString(3), rs.getInt(4) != 0, rs.getInt(5) != 0,
-                        rs.getLong(6));
+                return view(rs);
             }
         }
+    }
+
+    /** A {@link GuestView} from columns 1..6: id, kind, display_name, name_chosen, banned, created_at. */
+    private static GuestView view(ResultSet rs) throws SQLException {
+        GuestIdentity kind = rs.getString(2).equals(GuestIdentity.IP.wireName())
+                ? GuestIdentity.IP : GuestIdentity.COOKIE;
+        return new GuestView(rs.getString(1), kind, rs.getString(3), rs.getInt(4) != 0, rs.getInt(5) != 0,
+                rs.getLong(6));
     }
 
     /**

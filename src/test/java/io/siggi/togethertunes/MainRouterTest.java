@@ -89,7 +89,9 @@ class MainRouterTest {
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                 new MeApi(accounts, new Users(database, fastPasswords, clock), new Permissions(database, settings),
                         new Guests(database, settings, config.secureCookies()), settings,
-                        new io.siggi.togethertunes.auth.IdentityTickets()), admin),
+                        new io.siggi.togethertunes.auth.IdentityTickets()), admin,
+                io.siggi.togethertunes.auth.AdminActivityApi.create(database,
+                        new Guests(database, settings, config.secureCookies()), new Permissions(database, settings), clock)),
                 dir.toFile());
     }
 

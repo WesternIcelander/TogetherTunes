@@ -9,8 +9,8 @@ import java.sql.Types;
 import java.util.Map;
 
 /**
- * Writes {@code audit_log} rows. Only writes: reading the log (and its {@code ip} column) goes
- * through {@code IpAccess} (invariant 5), which comes with the admin audit API.
+ * Writes {@code audit_log} rows. Only writes: {@link AuditEntries} reads the log without its
+ * {@code ip} column, which only {@link IpAccess} reads (invariant 5).
  *
  * <p>Action names are dotted lower case, e.g. {@code account.setup}.
  */

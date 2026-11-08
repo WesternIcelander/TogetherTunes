@@ -2,6 +2,7 @@ package io.siggi.togethertunes;
 
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.IdentityTickets;
+import io.siggi.togethertunes.auth.AdminActivityApi;
 import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
@@ -133,11 +134,12 @@ public final class Main {
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
         // Shared with the WebSocket handler (M3), which redeems the tickets.
         IdentityTickets identityTickets = new IdentityTickets();
-        MeApi me = new MeApi(accounts, users, permissions, new Guests(database, settings, config.secureCookies()), settings,
-                identityTickets);
+        Guests guests = new Guests(database, settings, config.secureCookies());
+        MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
+        AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -185,10 +187,11 @@ public final class Main {
      * bearer tokens ({@code /api/auth/...}), {@link SessionsApi} the user's own sessions
      * ({@code /api/me/sessions}), {@link MeApi} who-am-I and the guest identity ({@code /api/me},
      * {@code /api/me/guest}), {@link AdminApi} the admin API for users, roles and settings
-     * ({@code /api/admin/...}).
+     * ({@code /api/admin/...}), {@link AdminActivityApi} the admin guest list, audit log and session
+     * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
-                         SessionsApi sessions, MeApi me, AdminApi admin) {
+                         SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -197,6 +200,7 @@ public final class Main {
         sessions.register(router);
         me.register(router);
         admin.register(router);
+        activity.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

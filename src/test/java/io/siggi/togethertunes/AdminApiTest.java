@@ -86,7 +86,10 @@ class AdminApiTest {
                 Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                         new MeApi(accounts, new Users(database, passwords, clock), new Permissions(database, settings),
                                 new Guests(database, settings, config.secureCookies()), settings,
-                                new io.siggi.togethertunes.auth.IdentityTickets()), adminApi), dir.toFile());
+                                new io.siggi.togethertunes.auth.IdentityTickets()), adminApi,
+                        io.siggi.togethertunes.auth.AdminActivityApi.create(database,
+                                new Guests(database, settings, config.secureCookies()), new Permissions(database, settings),
+                                clock)), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());
@@ -182,6 +185,86 @@ class AdminApiTest {
     // ------------------------------------------------------------------ tests
 
     @Test
+    void guestsAuditAndSessionIpsShowIpsOnlyToIpView() throws Exception {
+        // A cookie guest (created from 127.0.0.1, like every request here).
+        HttpResponse<String> guestCreated = send("POST", "/api/me/guest", null, null);
+        assertEquals(201, guestCreated.statusCode(), guestCreated.body());
+        String guestId = obj(guestCreated).get("id").getAsString();
+        String gid = guestCreated.headers().allValues("Set-Cookie").stream().filter(c -> c.startsWith("gid="))
+                .map(c -> c.substring(0, c.indexOf(';'))).findFirst().orElseThrow();
+
+        String helpdeskRole = call(201, "POST", "/api/admin/roles",
+                "{\"name\":\"helpdesk\",\"permissions\":[\"admin.users\"]}", admin).get("id").getAsString();
+        String ipRole = call(201, "POST", "/api/admin/roles",
+                "{\"name\":\"ip\",\"permissions\":[\"ip.view\"]}", admin).get("id").getAsString();
+        String helpId = createUser("help", "temporary-1");
+        call(200, "PUT", "/api/admin/users/" + helpId + "/roles", "{\"roleIds\":[\"" + helpdeskRole + "\"]}", admin);
+        String help = login("help", "temporary-1");
+        String ipId = createUser("ipview", "temporary-1");
+        call(200, "PUT", "/api/admin/users/" + ipId + "/roles", "{\"roleIds\":[\"" + ipRole + "\"]}", admin);
+        String ipView = login("ipview", "temporary-1");
+
+        // admin.users without ip.view: guests and audit log, no IP anywhere (call() checks the body).
+        JsonObject guests = call(200, "GET", "/api/admin/guests", null, help);
+        JsonObject g = guests.getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals(guestId, g.get("id").getAsString());
+        assertEquals("cookie", g.get("kind").getAsString());
+        assertFalse(g.has("ip"), g.toString());
+        assertTrue(g.has("lastSeenAt") && g.has("createdAt") && g.has("name") && g.has("banned"));
+        JsonObject audit = call(200, "GET", "/api/admin/audit", null, help);
+        assertTrue(audit.getAsJsonArray("items").size() > 3);
+        for (JsonElement e : audit.getAsJsonArray("items")) {
+            assertFalse(e.getAsJsonObject().has("ip"), e.toString());
+        }
+        JsonObject setup = call(200, "GET", "/api/admin/audit?action=account.setup", null, help)
+                .getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals(adminId, setup.getAsJsonObject("actor").get("id").getAsString());
+        assertFalse(setup.getAsJsonObject("actor").get("isGuest").getAsBoolean());
+        JsonObject guestAudit = call(200, "GET", "/api/admin/audit?actor=" + guestId, null, help)
+                .getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals("guest.created", guestAudit.get("action").getAsString());
+        assertEquals("cookie", guestAudit.getAsJsonObject("details").get("kind").getAsString());
+        assertTrue(guestAudit.getAsJsonObject("actor").get("isGuest").getAsBoolean());
+        assertError("forbidden", call(403, "GET", "/api/admin/ip/sessions/" + adminId, null, help));
+
+        // ip.view without admin.users: session IPs only.
+        assertError("forbidden", call(403, "GET", "/api/admin/guests", null, ipView));
+        assertError("forbidden", call(403, "GET", "/api/admin/audit", null, ipView));
+        HttpResponse<String> sessions = send("GET", "/api/admin/ip/sessions/" + adminId, null, ipView);
+        assertEquals(200, sessions.statusCode(), sessions.body());
+        JsonObject s = obj(sessions);
+        assertEquals(adminId, s.getAsJsonObject("user").get("id").getAsString());
+        JsonObject first = s.getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals("127.0.0.1", first.get("ip").getAsString());
+        assertEquals("cookie", first.get("kind").getAsString());
+        assertEquals("no-store", sessions.headers().firstValue("Cache-Control").orElse(null));
+        assertError("user_not_found", call(404, "GET", "/api/admin/ip/sessions/nope", null, ipView));
+
+        // The admin holds both: IPs in all three.
+        HttpResponse<String> r = send("GET", "/api/admin/guests", null, admin);
+        assertEquals("127.0.0.1", obj(r).getAsJsonArray("items").get(0).getAsJsonObject().get("ip").getAsString());
+        r = send("GET", "/api/admin/audit?action=account.setup", null, admin);
+        assertEquals("127.0.0.1", obj(r).getAsJsonArray("items").get(0).getAsJsonObject().get("ip").getAsString());
+
+        // Guests and anonymous visitors: 401 everywhere.
+        for (String path : List.of("/api/admin/guests", "/api/admin/audit", "/api/admin/ip/sessions/" + adminId)) {
+            assertError("not_authenticated", call(401, "GET", path, null, gid));
+            assertError("not_authenticated", call(401, "GET", path, null, null));
+        }
+
+        // Paging and errors.
+        JsonObject page = call(200, "GET", "/api/admin/audit?limit=1", null, help);
+        assertEquals(1, page.getAsJsonArray("items").size());
+        JsonObject next = call(200, "GET", "/api/admin/audit?limit=1&cursor=" + page.get("nextCursor").getAsString(),
+                null, help);
+        assertFalse(next.getAsJsonArray("items").get(0).getAsJsonObject().get("id").getAsString()
+                .equals(page.getAsJsonArray("items").get(0).getAsJsonObject().get("id").getAsString()));
+        assertError("invalid_limit", call(400, "GET", "/api/admin/guests?limit=201", null, help));
+        assertError("invalid_cursor", call(400, "GET", "/api/admin/audit?cursor=nope", null, help));
+        assertEquals(0, call(200, "GET", "/api/admin/guests?q=zzzz", null, help).getAsJsonArray("items").size());
+    }
+
+    @Test
     void everyRouteNeedsItsPermission() throws Exception {
         String bobId = createUser("bob", "temporary-1");
         String bob = login("bob", "temporary-1");
@@ -193,6 +276,7 @@ class AdminApiTest {
                 {"PATCH", "/api/admin/roles/x"}, {"DELETE", "/api/admin/roles/x"},
                 {"GET", "/api/admin/roles/x/permissions"}, {"PUT", "/api/admin/roles/x/permissions"},
                 {"GET", "/api/admin/settings"}, {"PATCH", "/api/admin/settings"},
+                {"GET", "/api/admin/guests"}, {"GET", "/api/admin/audit"}, {"GET", "/api/admin/ip/sessions/" + bobId},
         };
         for (String[] route : routes) {
             String body = route[0].equals("GET") || route[0].equals("DELETE") ? null : "{}";

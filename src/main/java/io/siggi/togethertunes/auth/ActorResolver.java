@@ -157,7 +157,7 @@ public final class ActorResolver {
             return new Resolved(Actor.ANONYMOUS, null);
         }
         if (wantGuestCookie) {
-            GuestRow row = findGuest(GuestIdentity.COOKIE, Tokens.hash(credentials.guestCookie()));
+            GuestRow row = findGuest(GuestIdentity.COOKIE, Tokens.hash(credentials.guestCookie()), credentials.clientIp());
             if (row != null) {
                 boolean touched = touch(row, credentials.clientIp(), now);
                 return new Resolved(row.guest(),
@@ -167,7 +167,7 @@ public final class ActorResolver {
         if (credentials.clientIp() != null && settings.guestsIdentifyBy() == GuestIdentity.IP) {
             String keyHash = GuestKeys.ipKeyHash(credentials.clientIp());
             if (keyHash != null) {
-                GuestRow row = findGuest(GuestIdentity.IP, keyHash);
+                GuestRow row = findGuest(GuestIdentity.IP, keyHash, credentials.clientIp());
                 if (row != null) {
                     touch(row, credentials.clientIp(), now);
                     return new Resolved(row.guest(), null);
@@ -178,7 +178,7 @@ public final class ActorResolver {
     }
 
     private boolean touch(GuestRow row, String clientIp, long now) throws SQLException {
-        return Guests.touch(db, row.guest().guestId(), row.lastSeenAt(), row.ipLast(), clientIp, now);
+        return Guests.touch(db, row.guest().guestId(), row.lastSeenAt(), row.sameIp(), clientIp, now);
     }
 
     /** A user found by session token; {@code slid} if this use moved the session's expiry. */
@@ -209,19 +209,24 @@ public final class ActorResolver {
         return new SessionUser(row.user(), slid);
     }
 
-    /** A guest found by key, with what {@link Guests#touch} needs. */
-    private record GuestRow(Actor.Guest guest, long lastSeenAt, String ipLast) {
+    /**
+     * A guest found by key, with what {@link Guests#touch} needs: whether its stored
+     * {@code ip_last} equals this request's IP (the stored IP itself is not read; see {@link IpAccess}).
+     */
+    private record GuestRow(Actor.Guest guest, long lastSeenAt, boolean sameIp) {
     }
 
-    private GuestRow findGuest(GuestIdentity kind, String keyHash) throws SQLException {
+    private GuestRow findGuest(GuestIdentity kind, String keyHash, String clientIp) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id, banned, last_seen_at, ip_last FROM guests WHERE key_hash = ? AND kind = ?")) {
-                ps.setString(1, keyHash);
-                ps.setString(2, kind.wireName());
+                    "SELECT id, banned, last_seen_at, " + IpAccess.GUEST_IP_UNCHANGED
+                            + " FROM guests WHERE key_hash = ? AND kind = ?")) {
+                ps.setString(1, clientIp);
+                ps.setString(2, keyHash);
+                ps.setString(3, kind.wireName());
                 try (ResultSet rs = ps.executeQuery()) {
                     return rs.next() ? new GuestRow(new Actor.Guest(rs.getString(1), kind, rs.getInt(2) != 0),
-                            rs.getLong(3), rs.getString(4)) : null;
+                            rs.getLong(3), rs.getInt(4) != 0) : null;
                 }
             }
         });
