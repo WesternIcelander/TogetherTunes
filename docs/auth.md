@@ -67,6 +67,14 @@ Admins can create more roles (e.g. "trusted", "moderator") and assign several to
 
 Server-wide feature switches (below) are checked **before** permissions: a disabled feature is off for everyone, admins included, until it is re-enabled.
 
+Details:
+
+- `admin` has no stored permission rows; it holds every permission by definition, including ones added in later versions. It can be granted and taken away, but the last enabled user holding it can't lose it.
+- `user` can't be renamed or deleted, but its permissions and its default flag can be changed. It starts with `library.upload`, `library.youtube` and `rooms.create`.
+- Any role except `admin` can be marked default (`roles.is_default`); new accounts get every default role.
+- Role names are 1–32 letters, digits, spaces, `.`, `_` or `-`, start with a letter or digit, and are unique ignoring case.
+- Feature switches that gate a permission: `ytdlp.enabled` gates `library.youtube`, `overlay.enabled` gates `output.overlayVideo`. The `outputs.*.enabled` switches gate output kinds directly. A permission check fails with `403 feature_disabled` if the feature is off, then `401 not_authenticated` for guests and anonymous visitors, then `403 forbidden` if the user lacks the permission. Guests never hold permissions; what they may do comes from the guest policy.
+
 ## Guests
 
 ### Identity assignment
