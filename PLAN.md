@@ -72,7 +72,7 @@ Rest of the skeleton:
 
 - [x] Data dir layout created on startup (`db/`, `media/`, `cards/`, `rooms/`, `tmp/`).
 - [x] Test page in `web/` and a test WebSocket echo endpoint.
-- [ ] Fill in the **Commands** section of CLAUDE.md (build, test, run, run against PostgreSQL).
+- [x] Fill in the **Commands** section of CLAUDE.md (build, test, run, run against PostgreSQL).
 - [ ] *(manual)* Browser test of the WebSocket echo in Chrome, Firefox and Safari: connect, send messages, leave idle for over a minute, close tabs, reload. Write the test steps under this item. Report anything odd (unexpected disconnects, close codes, exceptions, with `getCloseInfo()` output) to the SimpleWebsocket session.
 
 **Done when:**

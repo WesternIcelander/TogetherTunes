@@ -58,7 +58,15 @@ Two branches, each checked out in its own worktree:
 
 ## Commands
 
-- Build + unit tests + integration tests: `mvn verify` (`-DskipITs` to skip the `*IT` Failsafe tests). Unit tests only: `mvn test`.
-- Runnable jar: `mvn package`, then `java -jar target/TogetherTunes-1.0-SNAPSHOT.jar`.
+All from the repository root. The first build downloads Node into `web/node/` (`frontend-maven-plugin`); `tsc` compiles `web/src/` into the jar on every build.
 
-(Still to fill in during M0: run with a config file, run against PostgreSQL.)
+- **Build + all tests:** `mvn verify`. It runs unit tests (`*Test`, Surefire) and integration tests (`*IT`, Failsafe; Testcontainers starts `postgres:16-alpine`, so Docker must be running). `-DskipITs` skips the `*IT` tests (no Docker needed).
+- **Unit tests only:** `mvn test`. One class: `mvn test -Dtest=ConfigLoaderTest`. One integration test: `mvn verify -Dtest=NoSuchTest -Dsurefire.failIfNoSpecifiedTests=false -Dit.test=PostgresMigrationIT`.
+- **Build the jar without tests:** `mvn package -DskipTests` produces `target/TogetherTunes-1.0-SNAPSHOT.jar` (shaded, includes the web UI; ignore `original-*.jar`).
+- **Run (SQLite):** `cp config.example.json config.json`, set `http.publicBaseUrl` (e.g. `http://localhost:8080` for local testing), then `java -jar target/TogetherTunes-1.0-SNAPSHOT.jar`. Without `--config <file>` (or `TOGETHERTUNES_CONFIG`) it reads `./config.json` if present. `config.json` and `data/` are git-ignored. The default database is `<data.dir>/db/media.db`. On first start it creates the data dir layout and `<data.dir>/secret.key` and applies migrations. Every config key can be overridden by an env var (`http.publicBaseUrl` → `TOGETHERTUNES_HTTP_PUBLIC_BASE_URL`); `--help` prints usage. Test page: `/test/ws-echo.html`.
+- **Run against PostgreSQL:** start a database, e.g.
+  `docker run -d --rm --name tt-pg -e POSTGRES_USER=togethertunes -e POSTGRES_PASSWORD=togethertunes -e POSTGRES_DB=togethertunes -p 5432:5432 postgres:16-alpine`,
+  then set `db.url` (in `config.json`, or as an env var):
+  `TOGETHERTUNES_DB_URL='jdbc:postgresql://localhost:5432/togethertunes?user=togethertunes&password=togethertunes' java -jar target/TogetherTunes-1.0-SNAPSHOT.jar`.
+  Credentials go in the URL. Media, cards and `secret.key` still live in `data.dir`. `docker stop tt-pg` stops the database and deletes its data (`--rm`).
+- **Exit codes:** 1 bad config, 2 bad command line, 3 startup failure (data dir, secret key, database, port in use).
