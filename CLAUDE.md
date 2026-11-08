@@ -5,11 +5,11 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 ## Ground rules
 
 - **Do not implement anything from `docs/future-ideas.md`.** Only avoid design choices that would block those ideas later.
-- **Implement milestone by milestone**, following `docs/milestones.md`. Don't start the next milestone until the current milestone's "Done when" criteria pass.
+- **Implement milestone by milestone**, following `PLAN.md` (derived from `docs/milestones.md`). Don't start the next milestone until the current milestone's gate step is ticked.
 - **Java 21**, Maven. Use virtual threads for request handlers and streaming connections.
 - **Project coordinates:** Maven `io.siggi:TogetherTunes`, Java base package `io.siggi.togethertunes`. (An older predecessor with the same name exists, but never had an artifact ID; this is a fresh project.)
-- **No web framework.** HTTP goes through the author's own HTTP stack, `io.siggi:SiggiHTTP:1.10`, with `io.siggi:SimpleWebsocket` for WebSocket (see `docs/architecture.md#http-stack-requirements`). If it's missing a capability, add it there; don't bring in Netty, Jetty, Spring or similar.
-  - **Never call `HTTPResponse.handleRequestWithFile` in SiggiHTTP 1.10**, directly or through `VirtualFileSystemResponder`. A bug lets an `OPTIONS` request truncate or overwrite the file; it's fixed in 1.11. Serve files with `returnFile(file, contentType)` (which handles Range) after checking the method yourself.
+- **No web framework.** HTTP goes through the author's own HTTP stack, `io.siggi:SiggiHTTP:1.11-SNAPSHOT`, with `io.siggi:SimpleWebsocket:1.1-SNAPSHOT` for WebSocket (see `docs/architecture.md#http-stack-requirements`). Don't bring in Netty, Jetty, Spring or similar. If either library is missing a capability or has a bug, see "Upstream libraries" below.
+  - **Don't call `HTTPResponse.handleRequestWithFile`**, directly or through `VirtualFileSystemResponder`. In 1.10 an `OPTIONS` request could truncate or overwrite the file (fixed in 1.11), and we don't need it. Serve files with `returnFile(file, contentType)` (which handles Range) after checking the method yourself.
 - **Database:** plain JDBC, and every schema change needs both `db/migrations/sqlite/` and `db/migrations/postgres/` versions. Store times as epoch ms in `BIGINT` and IDs as UUIDv7 `TEXT`.
 - **Frontend:** vanilla TypeScript, no framework, no bundler. `tsc` compiles it to ES modules during the Maven build (`frontend-maven-plugin`, so no system Node is needed), and the output is served as static files.
 - **Config:** one JSON file (parsed with Gson) plus environment-variable overrides. Default output profile is 720p30.
@@ -26,6 +26,23 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 6. Stream URL tokens and RTMP keys are capabilities. Never log them in full.
 7. One YouTube video ID maps to exactly one item row, forever (purged items are refetched into the same row).
 
+## Upstream libraries (SiggiHTTP, SimpleWebsocket)
+
+SiggiHTTP and SimpleWebsocket are separate projects, each with its own Claude session (named `SiggiHTTP` and `SimpleWebsocket`; find them with `ListAgents`).
+
+- **Never modify them directly**: not their source, not copies or patches in this repo, and no workarounds that reimplement them here.
+- **Report bugs and missing capabilities** to that session with `SendMessage`: what's wrong, how to reproduce it, and what TogetherTunes needs. That session fixes it, or tells Siggi if it can't, and then runs `mvn install`, so the fixed `1.11-SNAPSHOT` / `1.1-SNAPSHOT` lands in the local `~/.m2`.
+- While waiting for a fix, leave the affected PLAN.md step unchecked with an indented note saying what was reported and to whom, and stop (in a `run-plan` run, return ok=false). Continue once the new snapshot is installed.
+
+## PLAN.md conventions
+
+- Every `- [ ]` line in `PLAN.md` is one step. Do only the step you were given.
+- `[x]`: done, tests pass, committed and pushed.
+- `[?]`: **implemented, awaiting manual verification.** Used for steps marked *(manual)* (real browsers, phones, VRChat, real OIDC providers). Do everything an agent can (test pages, scripts, written test instructions under the step), then mark it `[?]`; this counts as success for the run. Siggi flips it to `[x]` after checking.
+- If a step can't be finished, leave it `[ ]`, add an indented note explaining why, and stop.
+- **Gates:** each milestone ends with a gate step. It ticks itself only if every step in the milestone is `[x]` (otherwise it lists what's left). Either way, the run stops there for review.
+- **When a run stops** (gate reached, or a step failed or is waiting on upstream), the session that started the run sends Siggi a push notification (`PushNotification`) saying which milestone or step it stopped at and why.
+
 ## Repository layout and git workflow
 
 Two branches, each checked out in its own worktree:
@@ -37,7 +54,7 @@ Two branches, each checked out in its own worktree:
 
 - **When an implementation step is completed:** commit the code on `main` (from the repository root) and push `main`.
 - **Then update the notes:** tick the step in `PLAN.md`, add any decisions or deviations to its notes log, and update `docs/` or this file if the design changed. Commit on `plan` (run git from `plan/`) and push `plan`.
-- On the first push of each branch, set its upstream: `git push -u origin main` / `git push -u origin plan`.
+- **Push after every commit**, on both branches. The SSH agent provides the GitHub key. On the first push of each branch, set its upstream: `git push -u origin main` / `git push -u origin plan`.
 
 ## Commands
 
