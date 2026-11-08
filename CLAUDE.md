@@ -58,4 +58,7 @@ Two branches, each checked out in its own worktree:
 
 ## Commands
 
-(Fill in once M0 exists: build, test, run, run against PostgreSQL.)
+- Build + unit tests + integration tests: `mvn verify` (`-DskipITs` to skip the `*IT` Failsafe tests). Unit tests only: `mvn test`.
+- Runnable jar: `mvn package`, then `java -jar target/TogetherTunes-1.0-SNAPSHOT.jar`.
+
+(Still to fill in during M0: run with a config file, run against PostgreSQL.)
