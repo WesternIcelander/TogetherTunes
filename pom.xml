@@ -25,6 +25,7 @@
         <main.class>io.siggi.togethertunes.Main</main.class>
 
         <gson.version>2.13.2</gson.version>
+        <bouncycastle.version>1.86</bouncycastle.version>
         <sqlite-jdbc.version>3.54.1.0</sqlite-jdbc.version>
         <postgresql.version>42.7.14</postgresql.version>
         <testcontainers.version>2.0.5</testcontainers.version>
@@ -85,6 +86,14 @@
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
+        </dependency>
+
+        <!-- Argon2id password hashing (lightweight API only, not the JCE provider,
+             so the shaded jar needn't keep Bouncy Castle's signature). -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>${bouncycastle.version}</version>
         </dependency>
 
         <!-- JDBC drivers. sqlite-jdbc is also a compile dependency because

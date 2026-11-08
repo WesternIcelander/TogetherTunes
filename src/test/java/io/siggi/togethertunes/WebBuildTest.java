@@ -46,4 +46,12 @@ class WebBuildTest {
         assertTrue(script.contains("\"/ws/echo\""), script);
         assertTrue(read("web/index.html").contains("href=\"/test/ws-echo.html\""));
     }
+
+    @Test
+    void setupPageIsPackaged() throws IOException {
+        String page = read("web/setup.html");
+        assertTrue(page.contains("src=\"/js/setup.js\""), page);
+        assertTrue(read("web/js/setup.js").contains("from \"./api.js\""));
+        assertTrue(read("web/js/api.js").contains("\"/api/setup\""));
+    }
 }

@@ -1,8 +1,17 @@
 // Entry point of the web UI. Loaded by index.html as an ES module.
-// Placeholder until the real UI arrives; it proves the tsc build and module loading work.
+// Until the first account exists, every visit goes to the setup page.
+import { setupNeeded } from "./api.js";
 import { describeVersion } from "./version.js";
 
-function start(): void {
+async function start(): Promise<void> {
+  try {
+    if (await setupNeeded()) {
+      location.replace("/setup.html");
+      return;
+    }
+  } catch {
+    // Show the page anyway; the API calls on it will report the problem.
+  }
   const status = document.getElementById("status");
   if (status !== null) {
     status.textContent = describeVersion();
@@ -10,7 +19,7 @@ function start(): void {
 }
 
 if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", start);
+  document.addEventListener("DOMContentLoaded", () => void start());
 } else {
-  start();
+  void start();
 }

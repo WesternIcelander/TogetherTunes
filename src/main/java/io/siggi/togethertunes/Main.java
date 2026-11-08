@@ -1,6 +1,10 @@
 package io.siggi.togethertunes;
 
+import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.auth.BuiltinRoles;
+import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.auth.SetupApi;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
@@ -29,7 +33,8 @@ import java.util.Map;
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
  * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then creates
  * the data directory layout ({@link DataDir}), loads the secret key ({@link ServerSecret}), opens
- * the database ({@link Database}) and applies pending migrations ({@link MigrationRunner}), starts the HTTP server ({@link WebServer}) and runs until the
+ * the database ({@link Database}) and applies pending migrations ({@link MigrationRunner}) and creates the built-in roles
+ * ({@link BuiltinRoles}), starts the HTTP server ({@link WebServer}) and runs until the
  * process is stopped.
  */
 public final class Main {
@@ -80,6 +85,7 @@ public final class Main {
         }
         try {
             MigrationRunner.migrate(database);
+            BuiltinRoles.ensure(database);
         } catch (SQLException | RuntimeException e) {
             System.err.println("Could not migrate the database: " + e.getMessage());
             database.close();
@@ -97,9 +103,10 @@ public final class Main {
             return;
         }
         ActorResolver actors = new ActorResolver(database, new Settings(database, config));
+        SetupApi setup = new SetupApi(new Accounts(database, Passwords.DEFAULT));
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -141,10 +148,12 @@ public final class Main {
      * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check (placeholder
      * until M1 "CSRF"). The web UI is the catch-all {@code GET /{path...}} route, so every
      * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
-     * test socket used by the test page {@code /test/ws-echo.html}.
+     * test socket used by the test page {@code /test/ws-echo.html}. {@link SetupApi} is the
+     * first-run setup ({@code /api/setup}).
      */
-    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors) {
+    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup) {
         Router router = new Router(actors.hook(), Hooks.csrf());
+        setup.register(router);
         WebSockets webSockets = new WebSockets(config.publicBaseUrl());
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);
