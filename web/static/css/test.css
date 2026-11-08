@@ -1,0 +1,53 @@
+/* Styles for the test pages under /test/. */
+
+.panel {
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 0.5rem;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+}
+
+.row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+#text {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+#period {
+  width: 5rem;
+}
+
+.log {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  list-style: none;
+  margin: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  padding: 0;
+}
+
+.log li {
+  border-top: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  padding: 0.15rem 0;
+}
+
+.log .error {
+  color: #d22;
+}
+
+.log .warn {
+  color: #b70;
+}
+
+.log .ok {
+  color: #2a2;
+}

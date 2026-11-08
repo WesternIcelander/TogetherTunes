@@ -5,10 +5,12 @@ import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
+import io.siggi.togethertunes.http.EchoEndpoint;
 import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -134,10 +136,13 @@ public final class Main {
     /**
      * The application's routes. Router-wide hooks: actor resolution, then the CSRF check
      * (placeholders until M1). The web UI is the catch-all {@code GET /{path...}} route, so every
-     * more specific route (API, media, live) wins over it.
+     * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
+     * test socket used by the test page {@code /test/ws-echo.html}.
      */
     static Router router(Config config, StaticFiles staticFiles) {
         Router router = new Router(Hooks.authenticate(), Hooks.csrf());
+        WebSockets webSockets = new WebSockets(config.publicBaseUrl());
+        EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);
         return router;
     }

@@ -35,4 +35,15 @@ class WebBuildTest {
         read("web/js/version.js");
         read("web/js/main.js.map");
     }
+
+    @Test
+    void echoTestPageIsPackaged() throws IOException {
+        String page = read("web/test/ws-echo.html");
+        assertTrue(page.contains("src=\"/js/test/ws-echo.js\""), page);
+        assertTrue(page.contains("href=\"/css/test.css\""), page);
+        read("web/css/test.css");
+        String script = read("web/js/test/ws-echo.js");
+        assertTrue(script.contains("\"/ws/echo\""), script);
+        assertTrue(read("web/index.html").contains("href=\"/test/ws-echo.html\""));
+    }
 }

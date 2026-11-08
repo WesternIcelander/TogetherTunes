@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSocket echo test - TogetherTunes</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="stylesheet" href="/css/test.css">
+  <script type="module" src="/js/test/ws-echo.js"></script>
+</head>
+<body>
+  <h1>WebSocket echo test</h1>
+  <p>
+    Opens a socket to <code id="url">/ws/echo</code>, which sends every message back unchanged.
+    Each echo is compared with what was sent. Messages up to 64 KiB are accepted; a bigger one
+    closes the socket with code 1009.
+  </p>
+
+  <section class="panel">
+    <p>
+      Status: <strong id="state">loading</strong>
+      <span id="stats"></span>
+    </p>
+    <div class="row">
+      <button id="connect" type="button" disabled>Connect</button>
+      <button id="disconnect" type="button" disabled>Close (1000)</button>
+      <label><input id="auto-connect" type="checkbox"> Connect on page load</label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <form id="send-form" class="row">
+      <input id="text" type="text" value="hello" aria-label="Text message">
+      <button id="send-text" type="submit" disabled>Send text</button>
+    </form>
+    <div class="row">
+      <button class="send-size" type="button" data-kind="text" data-bytes="16384" disabled>Text 16 KiB</button>
+      <button class="send-size" type="button" data-kind="binary" data-bytes="1024" disabled>Binary 1 KiB</button>
+      <button class="send-size" type="button" data-kind="binary" data-bytes="65536" disabled>Binary 64 KiB (limit)</button>
+      <button class="send-size" type="button" data-kind="binary" data-bytes="65537" disabled>Binary 64 KiB + 1 (expect 1009)</button>
+      <button id="burst" type="button" disabled>Burst of 100</button>
+    </div>
+    <div class="row">
+      <label><input id="periodic" type="checkbox"> Send a message every</label>
+      <input id="period" type="number" min="1" max="3600" value="10" aria-label="Period in seconds"> s
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="row">
+      <strong>Log</strong>
+      <button id="clear" type="button">Clear</button>
+      <label><input id="log-messages" type="checkbox" checked> Log every message</label>
+    </div>
+    <ol id="log" class="log" aria-live="polite"></ol>
+  </section>
+</body>
+</html>
