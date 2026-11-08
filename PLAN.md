@@ -50,6 +50,7 @@ We build against **SiggiHTTP 1.11-SNAPSHOT** and **SimpleWebsocket 1.1-SNAPSHOT*
 HTTP stack checks, each with tests:
 
 - [ ] Range requests through `returnFile` (`bytes=a-b`, open-ended, suffix) → `206` + `Content-Range`; `416` for unsatisfiable; `HEAD`.
+  - Waiting on upstream (2026-11-08). Reported to the `SiggiHTTP` session: in `returnFile` (1.11-SNAPSHOT, commit bc2c7df), (1) suffix ranges (`bytes=-N`) return `200` with the whole file; (2) a last-pos past EOF isn't clamped (`bytes=500-1000000` gives `200`, not `206 bytes 500-99999/100000`); (3) there's no `416`: `bytes=SIZE-`, `bytes=-0` and out-of-range ranges return `200` with the whole file. `bytes=a-b`, `bytes=a-`, `HEAD` (with and without Range) and `Accept-Ranges` work. The test `src/test/java/io/siggi/togethertunes/http/RangeRequestTest.java` is in the `main` working tree, uncommitted (3 of 7 tests fail). Once the fixed snapshot is installed, rerun `mvn -o test -Dtest=RangeRequestTest`, then commit and tick this step.
 - [ ] Endless streaming responses: close-delimited (for `.ts`) and chunked; fast client-disconnect detection.
 - [ ] Streaming multi-GB request bodies to disk.
 - [ ] WebSocket via SimpleWebsocket 1.1-SNAPSHOT: one `WebSocketAcceptor` with `setMaxMessageSize(65536)` and an origin check matching `publicBaseUrl` (`setAllowedOrigins`; this is the WebSocket CSRF check from `docs/auth.md`). One virtual thread per socket with blocking `read()`; log `getCloseInfo()` when a socket ends.
