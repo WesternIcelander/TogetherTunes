@@ -99,6 +99,14 @@ The author's HTTP stack is **SiggiHTTP** (`io.siggi:SiggiHTTP:1.10`); WebSocket 
 4. **Request bodies of several GB** streamed to disk, for uploads. Chunked or resumable upload is described in api.md.
 5. **Per-route hooks** for authentication, CSRF checks and rate limiting.
 
+## Browser baseline
+
+The web UI must work on **iOS 15 / Safari 15.0** (iOS 15 devices that can't update, e.g. iPhone X and iPod touch 7th gen) as well as current Chrome, Firefox and Safari. Older iOS is out of scope.
+
+- **Allowed** (Safari 15.0 has them): ES modules, class fields, static fields and methods, private `#` fields and methods, `#x in obj`, top-level await, optional chaining, `??` / `??=`, `replaceAll`, `Promise.any`, `Error` `cause`.
+- **Not allowed** without a fallback: `Array/String.prototype.at`, `Object.hasOwn`, `structuredClone`, `findLast` / `findLastIndex` (Safari 15.4), class static blocks (16.4), and anything newer. For DOM APIs, check caniuse/MDN.
+- **How it's enforced:** `web/tsconfig.json` uses `target` ES2022 (class fields and `#` members stay native) with `lib` ES2021 + DOM, so tsc rejects the ES2022+ library calls. tsc can't catch static blocks (valid ES2022 syntax) or DOM-lib additions such as `structuredClone`, so `WebBuildTest` scans the compiled `web/js/**/*.js` and fails on class static blocks, `.at(`, `Object.hasOwn`, `structuredClone` and `findLast`. When a new problem feature turns up, add it to that list.
+
 ## Code layout (suggested)
 
 ```
