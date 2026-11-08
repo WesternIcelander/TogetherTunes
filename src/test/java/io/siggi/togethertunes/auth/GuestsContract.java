@@ -18,13 +18,16 @@ import io.siggi.togethertunes.settings.Settings;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,6 +41,7 @@ abstract class GuestsContract {
     private Settings settings;
     private Guests guests;
     private ActorResolver resolver;
+    private TestClock clock;
 
     /** Opens a fresh, empty database. */
     protected abstract Database open() throws SQLException;
@@ -46,7 +50,7 @@ abstract class GuestsContract {
     void setUp() throws SQLException {
         db = open();
         MigrationRunner.migrate(db);
-        TestClock clock = new TestClock(NOW);
+        clock = new TestClock(NOW);
         settings = new Settings(db);
         guests = new Guests(db, settings, clock, true, () -> "Quiet Walrus");
         resolver = new ActorResolver(db, settings, clock);
@@ -147,5 +151,108 @@ abstract class GuestsContract {
         settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, false);
         assertEquals("custom_names_disabled",
                 assertThrows(HttpError.class, () -> guests.rename(created.guest().id(), "Other", null)).code());
+    }
+
+    // ------------------------------------------------------------------ generated names
+
+    /** A {@link Guests} whose name draws come from {@code draws} (then "Last Resort"), counted. */
+    private Guests guestsDrawing(AtomicInteger count, String... draws) {
+        Deque<String> queue = new ArrayDeque<>(List.of(draws));
+        return new Guests(db, settings, clock, true, () -> {
+            count.incrementAndGet();
+            synchronized (queue) {
+                return queue.isEmpty() ? "Last Resort" : queue.poll();
+            }
+        });
+    }
+
+    private void setLastSeen(String guestId, long at) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE guests SET last_seen_at = ? WHERE id = ?")) {
+                ps.setLong(1, at);
+                ps.setString(2, guestId);
+                return ps.executeUpdate();
+            }
+        });
+    }
+
+    @Test
+    void generatedNameIsRedrawnWhileTaken() throws SQLException {
+        guests.create(GuestIdentity.COOKIE, null, null); // Quiet Walrus
+        AtomicInteger draws = new AtomicInteger();
+        Guests drawing = guestsDrawing(draws, "Quiet Walrus", "QUIET WALRUS", "Night Owl");
+        Guests.GuestView guest = drawing.create(GuestIdentity.COOKIE, null, null).guest();
+        assertEquals("Night Owl", guest.name());
+        assertFalse(guest.nameChosen());
+        assertEquals(3, draws.get());
+        assertEquals("Night Owl", column(guest.id(), "display_name"));
+    }
+
+    @Test
+    void generatedNameGetsANumberAfterFiveTakenDraws() throws SQLException {
+        AtomicInteger draws = new AtomicInteger();
+        Guests drawing = guestsDrawing(draws);
+        assertEquals("Last Resort", drawing.create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals(1, draws.get());
+        assertEquals("Last Resort 2", drawing.create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals(1 + Guests.NAME_DRAWS, draws.get());
+        assertEquals("Last Resort 3", drawing.create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals("Quiet Walrus", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals("Quiet Walrus 2", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+    }
+
+    @Test
+    void numberIsTheSmallestFreeOneIgnoringOtherSuffixes() throws SQLException {
+        settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, true);
+        guests.create(GuestIdentity.COOKIE, null, "quiet walrus");
+        guests.create(GuestIdentity.COOKIE, null, "Quiet Walrus 3");
+        guests.create(GuestIdentity.COOKIE, null, "Quiet Walrus Fan");
+        guests.create(GuestIdentity.COOKIE, null, "Quiet Walrus 02");
+        guests.create(GuestIdentity.COOKIE, null, "Quiet Walrusx 2");
+        guests.create(GuestIdentity.COOKIE, null, "Quiet_Walrus 2");
+        assertEquals("Quiet Walrus 2", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals("Quiet Walrus 4", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+    }
+
+    @Test
+    void onlyActiveGuestsHoldTheirNames() throws SQLException {
+        String first = guests.create(GuestIdentity.COOKIE, null, null).guest().id();
+        String second = guests.create(GuestIdentity.COOKIE, null, null).guest().id();
+        assertEquals("Quiet Walrus 2", guests.get(second).name());
+
+        setLastSeen(first, NOW - Guests.ACTIVE_MS); // exactly at the limit: still active
+        assertEquals("Quiet Walrus 3", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+
+        setLastSeen(first, NOW - Guests.ACTIVE_MS - 1);
+        AtomicInteger draws = new AtomicInteger();
+        assertEquals("Quiet Walrus",
+                guestsDrawing(draws, "Quiet Walrus").create(GuestIdentity.COOKIE, null, null).guest().name());
+        assertEquals(1, draws.get());
+
+        clock.advance(Guests.ACTIVE_MS + 1); // everyone above is inactive now
+        assertEquals("Quiet Walrus", guests.create(GuestIdentity.COOKIE, null, null).guest().name());
+    }
+
+    @Test
+    void concurrentCreationsGetDistinctNames() throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(8);
+        try {
+            List<Future<String>> results = new ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                Callable<String> create = () -> guests.create(GuestIdentity.COOKIE, null, null).guest().name();
+                results.add(pool.submit(create));
+            }
+            Set<String> names = results.stream().map(f -> {
+                try {
+                    return f.get();
+                } catch (Exception ex) {
+                    throw new AssertionError(ex);
+                }
+            }).collect(Collectors.toSet());
+            assertEquals(16, names.size(), names.toString());
+            assertTrue(names.contains("Quiet Walrus") && names.contains("Quiet Walrus 16"), names.toString());
+        } finally {
+            pool.shutdownNow();
+        }
     }
 }

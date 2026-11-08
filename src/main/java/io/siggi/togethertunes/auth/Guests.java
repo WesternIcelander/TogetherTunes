@@ -1,21 +1,24 @@
 package io.siggi.togethertunes.auth;
 
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.Dialect;
 import io.siggi.togethertunes.db.EpochMs;
+import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
-import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /**
@@ -40,7 +43,8 @@ import java.util.function.Supplier;
  * The {@code gid} cookie slides: it is re-sent with a fresh one-year {@code Max-Age} when its
  * guest's use is recorded.
  *
- * <p>Names: without a chosen name a guest gets a generated one ({@code name_chosen = 0}); with
+ * <p>Names: without a chosen name a guest gets a generated one ({@code name_chosen = 0}, see
+ * {@link #generatedName}); with
  * {@code guests.allowCustomNames} on, a name can be given at creation and changed later
  * ({@link #validCustomName}).
  */
@@ -61,7 +65,15 @@ public final class Guests {
     /** {@code audit_log} action of a guest renaming itself. */
     public static final String AUDIT_RENAMED = "guest.renamed";
 
-    private static final SecureRandom RANDOM = new SecureRandom();
+    /** Generated names drawn before a number is appended ({@code docs/auth.md#names}). */
+    public static final int NAME_DRAWS = 5;
+    /**
+     * A guest seen within this long (by {@code last_seen_at}) is <i>active</i>: generated names
+     * are unique among active guests. 30 days.
+     */
+    public static final long ACTIVE_MS = 30L * 24 * 60 * 60 * 1000;
+    /** PostgreSQL advisory lock that serialises generated-name choice with the insert. */
+    private static final long POSTGRES_NAME_LOCK_KEY = 0x5454677565737473L; // "TTguests"
 
     private final Database db;
     private final Settings settings;
@@ -98,21 +110,19 @@ public final class Guests {
      *                      {@link AuthApi})
      */
     public Guests(Database db, Settings settings, boolean secureCookies) {
-        this(db, settings, Clock.systemUTC(), secureCookies, Guests::placeholderName);
+        this(db, settings, Clock.systemUTC(), secureCookies, GuestNames.bundled());
     }
 
-    /** @param names generates a name for a guest that hasn't chosen one */
+    /**
+     * @param names draws a name for a guest that hasn't chosen one (made unique by
+     *              {@link #generatedName})
+     */
     public Guests(Database db, Settings settings, Clock clock, boolean secureCookies, Supplier<String> names) {
         this.db = Objects.requireNonNull(db);
         this.settings = Objects.requireNonNull(settings);
         this.clock = Objects.requireNonNull(clock);
         this.secureCookies = secureCookies;
         this.names = Objects.requireNonNull(names);
-    }
-
-    /** Placeholder until the bundled adjective and noun lists exist: {@code Guest 1234}. */
-    static String placeholderName() {
-        return "Guest " + (1000 + RANDOM.nextInt(9000));
     }
 
     // ------------------------------------------------------------------ HTTP
@@ -199,10 +209,11 @@ public final class Guests {
         }
         String id = UuidV7.newId();
         boolean chosen = name != null;
-        String displayName = chosen ? name : names.get();
         long now = EpochMs.now(clock);
+        String displayName;
         try {
-            db.write(c -> {
+            displayName = db.write(c -> {
+                String dn = chosen ? name : generatedName(c, now);
                 try (PreparedStatement ps = c.prepareStatement(
                         "INSERT INTO guests (id, kind, key_hash, ip_last, display_name, name_chosen, created_at,"
                                 + " last_seen_at, banned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)")) {
@@ -210,14 +221,14 @@ public final class Guests {
                     ps.setString(2, mode.wireName());
                     ps.setString(3, keyHash);
                     ps.setString(4, clientIp);
-                    ps.setString(5, displayName);
+                    ps.setString(5, dn);
                     ps.setInt(6, chosen ? 1 : 0);
                     ps.setLong(7, now);
                     ps.setLong(8, now);
                     ps.executeUpdate();
                 }
                 AuditLog.write(c, now, null, id, clientIp, AUDIT_CREATED, id, Map.of("kind", mode.wireName()));
-                return null;
+                return dn;
             });
         } catch (SQLException e) {
             // IP mode: another request from the same address created the guest first.
@@ -228,6 +239,61 @@ public final class Guests {
             return new Created(raced, null, false);
         }
         return new Created(new GuestView(id, mode, displayName, chosen, false, now), token, true);
+    }
+
+    /**
+     * A generated name that no active guest ({@link #ACTIVE_MS}) uses, compared ignoring case:
+     * up to {@value #NAME_DRAWS} draws, then the last draw with the smallest free number from 2
+     * appended ("Quiet Walrus 2"). Call it in the write transaction that inserts the guest; on
+     * PostgreSQL it takes an advisory lock so concurrent creations can't pick the same name
+     * (SQLite writes are serialised anyway).
+     */
+    String generatedName(Connection c, long now) throws SQLException {
+        Dialect dialect = db.dialect();
+        if (dialect instanceof PostgresDialect) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT pg_advisory_xact_lock(?)")) {
+                ps.setLong(1, POSTGRES_NAME_LOCK_KEY);
+                ps.execute();
+            }
+        }
+        long activeSince = now - ACTIVE_MS;
+        String drawn = null;
+        for (int i = 0; i < NAME_DRAWS; i++) {
+            drawn = names.get();
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM guests WHERE "
+                    + dialect.equalsIgnoreCase("display_name") + " AND last_seen_at >= ?")) {
+                ps.setString(1, Dialect.foldCase(drawn));
+                ps.setLong(2, activeSince);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return drawn;
+                    }
+                }
+            }
+        }
+        String prefix = Dialect.foldCase(drawn) + " ";
+        Set<Long> taken = new HashSet<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT display_name FROM guests WHERE "
+                + dialect.containsIgnoreCase("display_name") + " AND last_seen_at >= ?")) {
+            ps.setString(1, Dialect.escapeLike(prefix) + "%");
+            ps.setLong(2, activeSince);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String folded = Dialect.foldCase(rs.getString(1));
+                    if (folded.startsWith(prefix)) {
+                        String suffix = folded.substring(prefix.length());
+                        if (suffix.matches("[1-9][0-9]{0,17}")) {
+                            taken.add(Long.parseLong(suffix));
+                        }
+                    }
+                }
+            }
+        }
+        long n = 2;
+        while (taken.contains(n)) {
+            n++;
+        }
+        return drawn + " " + n;
     }
 
     /** The guest with this id, or {@code null}. */
