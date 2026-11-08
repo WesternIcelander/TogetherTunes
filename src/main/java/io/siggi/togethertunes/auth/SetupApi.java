@@ -4,6 +4,7 @@ import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import java.time.Clock;
 import java.util.Map;
 import java.util.Objects;
 
@@ -28,6 +29,7 @@ public final class SetupApi {
     private final Accounts accounts;
     private final Sessions sessions;
     private final boolean secureCookies;
+    private final AuthRateLimits limits;
 
     /** The POST body. */
     record SetupRequest(String username, String password, String displayName) {
@@ -38,14 +40,20 @@ public final class SetupApi {
      *                      {@link AuthApi})
      */
     public SetupApi(Accounts accounts, Sessions sessions, boolean secureCookies) {
+        this(accounts, sessions, secureCookies, AuthRateLimits.defaults(Clock.systemUTC()));
+    }
+
+    /** @param limits {@code POST /api/setup} uses {@link AuthRateLimits#setup} */
+    public SetupApi(Accounts accounts, Sessions sessions, boolean secureCookies, AuthRateLimits limits) {
         this.accounts = Objects.requireNonNull(accounts);
         this.sessions = Objects.requireNonNull(sessions);
         this.secureCookies = secureCookies;
+        this.limits = Objects.requireNonNull(limits);
     }
 
     public void register(Router router) {
         router.get("/api/setup", (request, response) -> status(response));
-        router.post("/api/setup", this::setup, Hooks.rateLimit("setup"));
+        router.post("/api/setup", this::setup, Hooks.rateLimit(limits.setup()));
     }
 
     private void status(Response response) throws Exception {

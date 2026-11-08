@@ -312,6 +312,45 @@ abstract class AccountsContract {
     }
 
     @Test
+    void loginBacksOffPerUsernameAndPerIp() throws SQLException {
+        setup("siggi");
+        io.siggi.togethertunes.TestClock clock = new io.siggi.togethertunes.TestClock(NOW);
+        Accounts throttled = new Accounts(db, CHEAP, clock, new LoginThrottle(clock,
+                new LoginThrottle.Policy(4, 1_000, 8_000, 60_000, 100),
+                new LoginThrottle.Policy(2, 1_000, 8_000, 60_000, 100)));
+        // Per username: two free failures, the third locks for 1 s, even for the right password.
+        for (int i = 0; i < 3; i++) {
+            String ip = "192.0.2." + (10 + i);
+            assertError(401, "invalid_credentials", assertThrows(HttpError.class, () -> throttled.login("Siggi", "wrong-password", ip)));
+        }
+        HttpError locked = assertThrows(HttpError.class, () -> throttled.login("siggi", "0123456789", "192.0.2.20"));
+        assertError(429, "rate_limited", locked);
+        assertEquals(1, locked.retryAfterSeconds());
+        clock.advance(500);
+        assertError(429, "rate_limited", assertThrows(HttpError.class, () -> throttled.login("siggi", "0123456789", "192.0.2.21")));
+        List<List<String>> refusals = rows("SELECT actor_user_id, ip, target, details_json, at FROM audit_log"
+                + " WHERE action = 'auth.login_throttled'");
+        assertEquals(List.of(java.util.Arrays.asList(null, "192.0.2.20", null,
+                "{\"username\":\"siggi\",\"scope\":\"username\",\"retryAfterMs\":1000}", String.valueOf(NOW))),
+                refusals, "only the first refusal of a lock is audited");
+        assertEquals(3, rows("SELECT id FROM audit_log WHERE action = 'auth.login_failed'").size(),
+                "refused attempts are not failures");
+        clock.advance(500);
+        throttled.login("siggi", "0123456789", "192.0.2.22");
+
+        // Per IP: four free failures across usernames, the fifth locks the IP for 1 s.
+        for (int i = 0; i < 5; i++) {
+            String name = "nobody" + i;
+            assertError(401, "invalid_credentials", assertThrows(HttpError.class, () -> throttled.login(name, "0123456789", "198.51.100.1")));
+        }
+        assertError(429, "rate_limited", assertThrows(HttpError.class, () -> throttled.login("siggi", "0123456789", "198.51.100.1")));
+        assertTrue(rows("SELECT details_json FROM audit_log WHERE action = 'auth.login_throttled' ORDER BY id")
+                .get(1).get(0).contains("\"scope\":\"ip\""));
+        clock.advance(1_000);
+        assertEquals("siggi", throttled.login("siggi", "0123456789", "198.51.100.1").username());
+    }
+
+    @Test
     void accountWithoutLocalPasswordCannotLogIn() throws SQLException {
         Accounts.Account admin = setup("siggi");
         db.write(c -> {

@@ -41,6 +41,7 @@ public final class Accounts {
     private final Database db;
     private final Passwords passwords;
     private final Clock clock;
+    private final LoginThrottle throttle;
     /** Test hook: runs inside the transaction right after the first-account check. */
     volatile Runnable afterFirstCheck = () -> { };
 
@@ -53,9 +54,15 @@ public final class Accounts {
     }
 
     public Accounts(Database db, Passwords passwords, Clock clock) {
+        this(db, passwords, clock, new LoginThrottle(clock));
+    }
+
+    /** @param throttle the login backoff ({@link #login}) */
+    public Accounts(Database db, Passwords passwords, Clock clock, LoginThrottle throttle) {
         this.db = Objects.requireNonNull(db);
         this.passwords = Objects.requireNonNull(passwords);
         this.clock = Objects.requireNonNull(clock);
+        this.throttle = Objects.requireNonNull(throttle);
     }
 
     /** Whether at least one account exists (if not, the server shows the setup page). */
@@ -142,11 +149,37 @@ public final class Accounts {
      * don't reveal which usernames exist. The right password for a disabled account gives
      * {@code 403 account_disabled}.
      *
-     * @param ip the client IP, for the audit log only
-     * @throws HttpError 401 {@code invalid_credentials}; 403 {@code account_disabled}
+     * <p>Attempts are throttled per client IP and per username with exponential backoff
+     * ({@link LoginThrottle}; every outcome but success counts as a failure). A locked IP or
+     * username gets {@code 429 rate_limited} with {@code Retry-After} without the password being
+     * checked; the first refusal of each lockout is audited as {@value #AUDIT_LOGIN_THROTTLED}
+     * ({@code details}: {@code username}, {@code scope} {@code ip} or {@code username},
+     * {@code retryAfterMs}).
+     *
+     * @param ip the client IP, for throttling and the audit log only
+     * @throws HttpError 401 {@code invalid_credentials}; 403 {@code account_disabled};
+     *                   429 {@code rate_limited}
      */
     public Account login(String username, String password, String ip) throws SQLException {
         String name = username == null ? "" : username.strip();
+        LoginThrottle.Attempt attempt;
+        try {
+            attempt = throttle.begin(ip, name);
+        } catch (LoginThrottle.Locked locked) {
+            LoginThrottle.Refusal refusal = locked.refusal();
+            if (refusal.firstRefusal()) {
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("username", shortened(name));
+                details.put("scope", refusal.scope().json());
+                details.put("retryAfterMs", refusal.retryAfterMs());
+                long now = EpochMs.now(clock);
+                db.write(c -> {
+                    AuditLog.write(c, now, null, null, ip, AUDIT_LOGIN_THROTTLED, null, details);
+                    return null;
+                });
+            }
+            throw HttpError.tooManyRequests("Too many failed logins; try again later", refusal.retryAfterMs());
+        }
         boolean plausible = !name.isEmpty() && name.length() <= USERNAME_MAX && password != null
                 && password.length() <= 2 * Passwords.MAX_LENGTH;
         Credential credential = plausible ? db.read(c -> credential(c, name)) : null;
@@ -160,7 +193,7 @@ public final class Accounts {
         long now = EpochMs.now(clock);
         if (!ok) {
             Map<String, Object> details = new LinkedHashMap<>();
-            details.put("username", name.length() > USERNAME_MAX ? name.substring(0, USERNAME_MAX) + "…" : name);
+            details.put("username", shortened(name));
             details.put("reason", credential == null ? "unknown_user"
                     : credential.hash() == null ? "no_password" : "wrong_password");
             db.write(c -> {
@@ -178,6 +211,7 @@ public final class Accounts {
             });
             throw new HttpError(403, "account_disabled", "This account is disabled");
         }
+        attempt.succeeded();
         String newHash = passwords.needsRehash(credential.hash()) ? passwords.hash(password) : null;
         return db.write(c -> {
             if (newHash != null) {
@@ -232,6 +266,13 @@ public final class Accounts {
     public static final String AUDIT_LOGIN = "auth.login";
     /** {@code audit_log} action of a failed login. */
     public static final String AUDIT_LOGIN_FAILED = "auth.login_failed";
+    /** {@code audit_log} action of a login refused because its IP or username is locked. */
+    public static final String AUDIT_LOGIN_THROTTLED = "auth.login_throttled";
+
+    /** A typed username for audit details: at most {@value #USERNAME_MAX} characters plus "…". */
+    private static String shortened(String name) {
+        return name.length() > USERNAME_MAX ? name.substring(0, USERNAME_MAX) + "…" : name;
+    }
 
     /** A user row with its local password hash ({@code null} if it has none). */
     private record Credential(String userId, String username, String displayName, boolean disabled, String hash) {

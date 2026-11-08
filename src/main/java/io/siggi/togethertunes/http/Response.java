@@ -129,8 +129,11 @@ public final class Response {
         raw.sendHeaders();
     }
 
-    /** Sends the {@code docs/api.md} error body. */
+    /** Sends the {@code docs/api.md} error body (and {@code Retry-After} if the error has one). */
     public void error(HttpError error) throws IOException {
+        if (error.retryAfterSeconds() > 0) {
+            header("Retry-After", Long.toString(error.retryAfterSeconds()));
+        }
         error(error.status(), error.code(), error.getMessage());
     }
 

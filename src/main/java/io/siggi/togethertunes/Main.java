@@ -3,6 +3,7 @@ package io.siggi.togethertunes;
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
+import io.siggi.togethertunes.auth.AuthRateLimits;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Sessions;
@@ -28,6 +29,7 @@ import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.time.Clock;
 import java.util.List;
 import java.util.Map;
 
@@ -109,14 +111,15 @@ public final class Main {
         Settings settings = new Settings(database, config);
         ActorResolver actors = new ActorResolver(database, settings, config.secureCookies());
         Accounts accounts = new Accounts(database, Passwords.DEFAULT);
+        AuthRateLimits limits = AuthRateLimits.defaults(Clock.systemUTC());
         Sessions sessions = new Sessions(database);
         try {
             sessions.deleteExpired();
         } catch (SQLException e) {
             System.err.println("Could not delete expired sessions: " + e);
         }
-        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies());
-        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies());
+        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies(), limits);
+        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies(), limits);
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         WebServer web;
         try {

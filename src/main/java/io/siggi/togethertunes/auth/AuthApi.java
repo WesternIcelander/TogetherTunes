@@ -7,6 +7,7 @@ import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.settings.RegistrationMode;
 import io.siggi.togethertunes.settings.Settings;
+import java.time.Clock;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -24,7 +25,8 @@ import java.util.Objects;
  *       {@link Accounts#createLocal}; audited as {@value #AUDIT_REGISTER}.</li>
  *   <li>{@code POST /api/auth/login} {@code {"username", "password"}} → {@code 200 {"user": {...}}}
  *       and a new {@code sid} cookie; the request's previous {@code sid} session, if any, is
- *       deleted. Errors from {@link Accounts#login}.</li>
+ *       deleted. Errors from {@link Accounts#login}, including its per-IP and per-username backoff
+ *       ({@code 429 rate_limited} with {@code Retry-After}).</li>
  *   <li>{@code POST /api/auth/logout} → {@code 204}. Deletes the session the request is
  *       authenticated with (cookie or bearer) and clears the {@code sid} cookie. Idempotent.</li>
  *   <li>{@code POST /api/auth/token} → {@code 201 {"token", "tokenType": "Bearer", "sessionId",
@@ -37,6 +39,9 @@ import java.util.Objects;
  *       token is shown only in this response; it expires {@link Sessions#LIFETIME_MS} after its
  *       last use and is revoked through {@link SessionsApi} or by logging out with it.</li>
  * </ul>
+ *
+ * <p>Register, login and token are also limited per client IP ({@link AuthRateLimits}):
+ * {@code 429 rate_limited} with {@code Retry-After} before the body is read.
  *
  * <p>{@code user} is {@code {"id", "username", "displayName", "roles": [...]}}, as from setup.
  */
@@ -52,6 +57,7 @@ public final class AuthApi {
     private final Sessions sessions;
     private final Settings settings;
     private final boolean secureCookies;
+    private final AuthRateLimits limits;
 
     record RegisterRequest(String username, String password, String displayName) {
     }
@@ -67,6 +73,13 @@ public final class AuthApi {
      *                      {@code http.publicBaseUrl} is {@code https}
      */
     public AuthApi(Accounts accounts, Sessions sessions, Settings settings, boolean secureCookies) {
+        this(accounts, sessions, settings, secureCookies, AuthRateLimits.defaults(Clock.systemUTC()));
+    }
+
+    /** @param limits the per-IP limits of register, login and token */
+    public AuthApi(Accounts accounts, Sessions sessions, Settings settings, boolean secureCookies,
+                   AuthRateLimits limits) {
+        this.limits = Objects.requireNonNull(limits);
         this.accounts = Objects.requireNonNull(accounts);
         this.sessions = Objects.requireNonNull(sessions);
         this.settings = Objects.requireNonNull(settings);
@@ -74,10 +87,10 @@ public final class AuthApi {
     }
 
     public void register(Router router) {
-        router.post("/api/auth/register", this::registerAccount, Hooks.rateLimit("register"));
-        router.post("/api/auth/login", this::login, Hooks.rateLimit("login"));
+        router.post("/api/auth/register", this::registerAccount, Hooks.rateLimit(limits.register()));
+        router.post("/api/auth/login", this::login, Hooks.rateLimit(limits.login()));
         router.post("/api/auth/logout", this::logout);
-        router.post("/api/auth/token", this::token, Hooks.rateLimit("login"));
+        router.post("/api/auth/token", this::token, Hooks.rateLimit(limits.login()));
     }
 
     private void registerAccount(Request request, Response response) throws Exception {

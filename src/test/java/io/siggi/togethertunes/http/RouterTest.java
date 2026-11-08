@@ -187,14 +187,30 @@ class RouterTest {
     }
 
     @Test
-    void placeholderHooksPassThrough() throws Exception {
+    void rateLimitHookRefusesWith429AndRetryAfter() throws Exception {
+        io.siggi.togethertunes.TestClock clock = new io.siggi.togethertunes.TestClock(1_000_000);
+        RateLimiter limiter = new RateLimiter("login", 2, 5_000, clock);
+        java.util.concurrent.atomic.AtomicInteger handled = new java.util.concurrent.atomic.AtomicInteger();
         Router router = new Router();
-        router.post("/api/auth/login", (rq, rs) -> rs.json(Map.of("ok", true)), Hooks.rateLimit("login"));
+        router.post("/api/auth/login", (rq, rs) -> {
+            handled.incrementAndGet();
+            rs.json(Map.of("ok", true));
+        }, Hooks.rateLimit(limiter));
+        router.post("/api/auth/token", (rq, rs) -> rs.json(Map.of("ok", true)), Hooks.rateLimit(limiter));
         start(router);
-        HttpResponse<String> r = send(req("/api/auth/login").POST(BodyPublishers.noBody()));
-        assertEquals(200, r.statusCode());
-        assertTrue(json(r).get("ok").getAsBoolean());
-        assertThrows(IllegalArgumentException.class, () -> Hooks.rateLimit(""));
+        assertEquals(200, send(req("/api/auth/login").POST(BodyPublishers.noBody())).statusCode());
+        assertEquals(200, send(req("/api/auth/token").POST(BodyPublishers.noBody())).statusCode()); // shared bucket
+        HttpResponse<String> refused = send(req("/api/auth/login").POST(BodyPublishers.ofString("{}")));
+        assertError(refused, 429, "rate_limited");
+        assertEquals("5", refused.headers().firstValue("Retry-After").orElse(""));
+        assertEquals(1, handled.get());
+        clock.advance(4_001);
+        assertEquals("1", send(req("/api/auth/login").POST(BodyPublishers.noBody())).headers()
+                .firstValue("Retry-After").orElse(""), "rounded up to whole seconds");
+        clock.advance(999);
+        assertEquals(200, send(req("/api/auth/login").POST(BodyPublishers.noBody())).statusCode());
+        assertEquals(2, handled.get());
+        assertThrows(NullPointerException.class, () -> Hooks.rateLimit(null));
     }
 
     @Test

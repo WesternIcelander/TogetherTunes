@@ -12,6 +12,7 @@ import io.siggi.simplewebsocket.WebsocketHeaders;
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
+import io.siggi.togethertunes.auth.AuthRateLimits;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Sessions;
@@ -21,6 +22,7 @@ import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
+import io.siggi.togethertunes.http.RateLimiter;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.settings.RegistrationMode;
@@ -69,8 +71,11 @@ class MainRouterTest {
         ActorResolver actors = new ActorResolver(database, settings, clock, config.secureCookies());
         Accounts accounts = new Accounts(database, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(database, clock);
-        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies());
-        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies());
+        // Generous route limits, so tests can make many requests; loginBacksOff… checks the login backoff.
+        AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
+                new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
+        SetupApi setup = new SetupApi(accounts, sessions, config.secureCookies(), limits);
+        AuthApi auth = new AuthApi(accounts, sessions, settings, config.secureCookies(), limits);
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi),
                 dir.toFile());
@@ -242,6 +247,28 @@ class MainRouterTest {
         assertEquals(409, taken.statusCode());
         assertTrue(taken.body().contains("\"username_taken\""), taken.body());
         assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'account.register'"));
+    }
+
+    @Test
+    void loginBacksOffPerUsernameWithRetryAfter() throws Exception {
+        assertEquals(201, post("/api/setup", "application/json",
+                "{\"username\":\"Siggi\",\"password\":\"correct horse\"}").statusCode());
+        for (int i = 0; i < 6; i++) { // five free failures, the sixth locks the username for 1 s
+            assertEquals(401, postJson("/api/auth/login", "{\"username\":\"siggi\",\"password\":\"wrong horse\"}", null)
+                    .statusCode());
+        }
+        HttpResponse<String> locked = postJson("/api/auth/login", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
+        assertEquals(429, locked.statusCode(), locked.body());
+        assertTrue(locked.body().contains("\"rate_limited\""), locked.body());
+        assertEquals("1", locked.headers().firstValue("Retry-After").orElse(""));
+        assertTrue(locked.headers().allValues("Set-Cookie").isEmpty());
+        HttpResponse<String> token = postJson("/api/auth/token", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
+        assertEquals(429, token.statusCode(), "the token endpoint shares the backoff");
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.login_throttled'"));
+        assertEquals(6, count("SELECT COUNT(*) FROM audit_log WHERE action = 'auth.login_failed'"));
+        clock.advance(1_000);
+        assertEquals(200, postJson("/api/auth/login", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null)
+                .statusCode());
     }
 
     @Test

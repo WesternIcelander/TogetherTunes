@@ -13,6 +13,7 @@ public class HttpError extends RuntimeException {
 
     private final int status;
     private final String code;
+    private final long retryAfterSeconds;
 
     /**
      * @param status  HTTP status, 400–599
@@ -20,12 +21,20 @@ public class HttpError extends RuntimeException {
      * @param message human-readable message
      */
     public HttpError(int status, String code, String message) {
+        this(status, code, message, 0);
+    }
+
+    /**
+     * @param retryAfterSeconds sent as {@code Retry-After} when positive (e.g. for {@code 429})
+     */
+    public HttpError(int status, String code, String message, long retryAfterSeconds) {
         super(message, null, false, false);
         if (status < 400 || status > 599) {
             throw new IllegalArgumentException("Not an error status: " + status);
         }
         this.status = status;
         this.code = code;
+        this.retryAfterSeconds = Math.max(0, retryAfterSeconds);
     }
 
     public int status() {
@@ -34,6 +43,11 @@ public class HttpError extends RuntimeException {
 
     public String code() {
         return code;
+    }
+
+    /** The {@code Retry-After} value in seconds, or 0 for none. */
+    public long retryAfterSeconds() {
+        return retryAfterSeconds;
     }
 
     public static HttpError badRequest(String message) {
@@ -62,5 +76,13 @@ public class HttpError extends RuntimeException {
 
     public static HttpError tooManyRequests(String message) {
         return new HttpError(429, "rate_limited", message);
+    }
+
+    /**
+     * {@code 429 rate_limited} with {@code Retry-After}: {@code retryAfterMs} rounded up to whole
+     * seconds (at least 1).
+     */
+    public static HttpError tooManyRequests(String message, long retryAfterMs) {
+        return new HttpError(429, "rate_limited", message, Math.max(1, (retryAfterMs + 999) / 1000));
     }
 }
