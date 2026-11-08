@@ -14,8 +14,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * WebSocket endpoints, on SimpleWebsocket. One instance (and so one {@link WebSocketAcceptor})
  * per server, shared by every WebSocket route.
  *
- * <p>The acceptor limits messages (and so single frames, too) to {@value #MAX_MESSAGE_SIZE} bytes
- * (after permessage-deflate decompression; a bigger one closes the socket with 1009) and only accepts upgrades whose
+ * <p>The acceptor limits messages to {@value #MAX_MESSAGE_SIZE} bytes (after permessage-deflate
+ * decompression; a bigger one closes the socket with 1009), and single frames to
+ * {@value #MAX_FRAME_PAYLOAD} bytes as sent, and only accepts upgrades whose
  * {@code Origin} is the origin of {@code http.publicBaseUrl}. That is the WebSocket CSRF check
  * from {@code docs/auth.md}: browsers always send {@code Origin} on a WebSocket handshake, so a
  * page on another site can't open a socket that carries the user's {@code sid}/{@code gid}
@@ -33,6 +34,15 @@ public final class WebSockets {
 
     /** Largest accepted message, in bytes. */
     public static final int MAX_MESSAGE_SIZE = 65536;
+
+    /**
+     * Largest accepted frame payload, in bytes as sent (compressed, with permessage-deflate).
+     * Chrome and Firefox compress every message, and deflate makes incompressible data slightly
+     * bigger (64 KiB of random bytes: 65557 bytes), so a frame limit equal to
+     * {@link #MAX_MESSAGE_SIZE} would refuse full-size messages. The message limit, which counts
+     * decompressed bytes, still caps what we accept.
+     */
+    static final int MAX_FRAME_PAYLOAD = MAX_MESSAGE_SIZE + 1024;
 
     /** Close code for an unexpected server error (RFC 6455 "Internal Error"). */
     static final int CLOSE_INTERNAL_ERROR = 1011;
@@ -52,7 +62,8 @@ public final class WebSockets {
                 .setMaxMessageSize(MAX_MESSAGE_SIZE)
                 // The per-frame limit defaults to 16 KiB, and browsers send a message as one
                 // frame, so without this a 16-64 KiB message would close the socket with 1009.
-                .setMaxPayloadLength(MAX_MESSAGE_SIZE)
+                // It counts compressed bytes, hence the headroom (see MAX_FRAME_PAYLOAD).
+                .setMaxPayloadLength(MAX_FRAME_PAYLOAD)
                 .setAllowedOrigins(origin)
                 .setAllowMissingOrigin(true);
     }

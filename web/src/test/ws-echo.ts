@@ -372,3 +372,6 @@ if (document.readyState === "loading") {
 } else {
   start();
 }
+
+// A module, not a global script, so the test pages' names don't clash.
+export {};

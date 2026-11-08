@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebSocket auto test - TogetherTunes</title>
+  <link rel="stylesheet" href="/css/main.css">
+  <link rel="stylesheet" href="/css/test.css">
+  <script type="module" src="/js/test/ws-auto.js"></script>
+</head>
+<body>
+  <h1>WebSocket auto test</h1>
+  <p id="intro">
+    Runs the M0 browser checks of the echo socket (<code>/ws/echo</code>) unattended, in about
+    seven minutes: messages, the 64 KiB limit, closing, a closed tab, a removed frame, a long idle
+    period, periodic traffic, many sockets at once and a page reload. For each close it also asks
+    the server what it saw. Click Start, then leave the page alone. It's fine to switch to another
+    tab or window; the report says whether the page was hidden. At the end the report is shown
+    here and sent to the server log.
+  </p>
+
+  <section class="panel">
+    <p>Status: <strong id="state">loading</strong> <span id="countdown"></span></p>
+    <div class="row">
+      <button id="start" type="button" disabled>Start</button>
+      <button id="copy" type="button" hidden>Copy report</button>
+    </div>
+    <p id="popup-note" class="hint">
+      Start opens a second tab for a moment (the closed-tab check) and closes it again. If the
+      browser blocks it, that check is skipped.
+    </p>
+  </section>
+
+  <section class="panel">
+    <strong>Results</strong>
+    <table class="results">
+      <thead><tr><th>Check</th><th>Result</th><th>Details</th></tr></thead>
+      <tbody id="results"></tbody>
+    </table>
+    <p id="summary"></p>
+  </section>
+
+  <section class="panel">
+    <strong>Log</strong>
+    <ol id="log" class="log" aria-live="polite"></ol>
+  </section>
+</body>
+</html>

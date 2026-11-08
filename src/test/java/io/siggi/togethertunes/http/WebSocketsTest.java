@@ -15,6 +15,7 @@ import io.siggi.simplewebsocket.WebSocketConnector;
 import io.siggi.simplewebsocket.WebSocketMessage;
 import io.siggi.simplewebsocket.WebsocketHeaders;
 import java.io.ByteArrayOutputStream;
+import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -29,6 +30,7 @@ import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.Deflater;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -140,7 +142,7 @@ class WebSocketsTest {
     void acceptorSettings() {
         WebSockets webSockets = new WebSockets(PUBLIC_BASE_URL);
         assertEquals(65536, webSockets.acceptor().getMaxMessageSize());
-        assertEquals(65536, webSockets.acceptor().getMaxPayloadLength());
+        assertEquals(65536 + 1024, webSockets.acceptor().getMaxPayloadLength());
         assertEquals(List.of(ORIGIN), webSockets.acceptor().getAllowedOrigins());
         assertFalse(webSockets.acceptor().isRequiringSameOrigin());
         assertNull(webSockets.acceptor().getOriginChecker());
@@ -237,6 +239,105 @@ class WebSocketsTest {
         WebSocketCloseInfo info = closeInfos.poll(10, TimeUnit.SECONDS);
         assertNotNull(info);
         assertEquals(1009, info.getLocalStatusCode());
+    }
+
+    /**
+     * What Chrome and Firefox do: with permessage-deflate they compress every message, even
+     * incompressible data, so a 64 KiB message travels as a frame of slightly more than 64 KiB.
+     */
+    @Test
+    void compressedFramesOfFullSizeMessagesAreAccepted() throws Exception {
+        byte[] max = new byte[65536];
+        new java.util.Random(42).nextBytes(max);
+        try (Socket s = rawSocket()) {
+            OutputStream out = s.getOutputStream();
+            String request = handshakeRequest(ORIGIN, "13")
+                    .replace("\r\n\r\n", "\r\nSec-WebSocket-Extensions: permessage-deflate; client_max_window_bits\r\n\r\n");
+            out.write(request.getBytes(StandardCharsets.US_ASCII));
+            out.flush();
+            DataInputStream in = new DataInputStream(s.getInputStream());
+            String head = readHead(in);
+            assertTrue(head.startsWith("HTTP/1.1 101 "), head);
+            assertTrue(head.toLowerCase(java.util.Locale.ROOT).contains("permessage-deflate"), head);
+
+            byte[] payload = deflate(max);
+            assertTrue(payload.length > 65536, "deflate grows random data: " + payload.length);
+            sendFrame(out, 0xC2, payload); // FIN, RSV1 (compressed), binary
+            int[] reply = readFrameStart(in);
+            assertEquals(0x2, reply[0], "echoed as binary, not closed");
+
+            sendFrame(out, 0xC2, deflate(new byte[65537])); // compresses well, but is over the message limit
+            // skip the rest of the echo, then expect the close frame
+            int[] next;
+            do {
+                next = readFrameStart(in);
+            } while (next[0] != 0x8);
+            assertEquals(1009, next[1]);
+        }
+    }
+
+    /** permessage-deflate payload: raw deflate, sync flush, without the trailing 00 00 FF FF. */
+    private static byte[] deflate(byte[] data) {
+        Deflater deflater = new Deflater(Deflater.DEFAULT_COMPRESSION, true);
+        deflater.setInput(data);
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = deflater.deflate(chunk, 0, chunk.length, Deflater.SYNC_FLUSH)) > 0) {
+            buf.write(chunk, 0, n);
+        }
+        deflater.end();
+        byte[] out = buf.toByteArray();
+        return Arrays.copyOf(out, out.length - 4);
+    }
+
+    /** One masked client frame with a 64-bit length. */
+    private static void sendFrame(OutputStream out, int firstByte, byte[] payload) throws IOException {
+        byte[] mask = {1, 2, 3, 4};
+        out.write(firstByte);
+        out.write(0x80 | 127);
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            out.write((int) ((long) payload.length >>> shift) & 0xFF);
+        }
+        out.write(mask);
+        byte[] masked = new byte[payload.length];
+        for (int i = 0; i < payload.length; i++) {
+            masked[i] = (byte) (payload[i] ^ mask[i & 3]);
+        }
+        out.write(masked);
+        out.flush();
+    }
+
+    /** Reads one server frame; returns {opcode, close code (or -1)}. The payload is skipped. */
+    private static int[] readFrameStart(DataInputStream in) throws IOException {
+        int b0 = in.readUnsignedByte();
+        int b1 = in.readUnsignedByte();
+        long length = b1 & 0x7F;
+        if (length == 126) {
+            length = in.readUnsignedShort();
+        } else if (length == 127) {
+            length = in.readLong();
+        }
+        int opcode = b0 & 0x0F;
+        int code = -1;
+        if (opcode == 0x8 && length >= 2) {
+            code = in.readUnsignedShort();
+            length -= 2;
+        }
+        in.skipNBytes(length);
+        return new int[] {opcode, code};
+    }
+
+    private static String readHead(InputStream in) throws IOException {
+        ByteArrayOutputStream buf = new ByteArrayOutputStream();
+        while (!buf.toString(StandardCharsets.ISO_8859_1).endsWith("\r\n\r\n")) {
+            int b = in.read();
+            if (b < 0) {
+                break;
+            }
+            buf.write(b);
+        }
+        return buf.toString(StandardCharsets.ISO_8859_1);
     }
 
     @Test
