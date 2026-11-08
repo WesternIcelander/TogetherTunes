@@ -14,7 +14,13 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Confirm the HTTP stack's capabilities with tests in M0 (Range, endless streaming responses, WebSocket, multi-GB request bodies, per-route hooks). First look at the sources (2026-11-08):
   - Range: `HTTPResponse` parses `Range` and serves partial content. Check open-ended, suffix (`bytes=-N`), `416`, `HEAD` and `Content-Range`.
   - Streaming responses: chunked by default (`HTTPResponse`, `setContentLength(-1)`). The `.ts` output needs a **close-delimited** body (no `Content-Length`, no `Transfer-Encoding`), like VRCDN; check SiggiHTTP can do that, and add it if not. Check how quickly a disconnect surfaces as a write failure.
-  - WebSocket: use **`io.siggi:SimpleWebsocket:1.0`** (`SimpleWebsocket.accept(HTTPRequest)`; blocking `read()` suits one virtual thread per socket). It was built against SiggiHTTP 1.6: exclude that transitive dependency and check it works with 1.10. It limits the size of each frame (`maxPayloadLength`) but not of a fragmented message, so add a total-message cap (in SimpleWebsocket) before `/ws` is exposed.
+  - WebSocket: use **`io.siggi:SimpleWebsocket:1.1-SNAPSHOT`**, which fixes both issues we reported against 1.0. SiggiHTTP is now a `provided` dependency (built against 1.10), so we declare SiggiHTTP ourselves. It adds `maxMessageSize` (closes with 1009). The snapshot is only in the local `~/.m2` (not on repo.siggi.io or GitHub yet). Behaviour a blocking `read()` loop needs to know about:
+    - `read()` answers pings itself.
+    - It sends a keepalive ping after 5 s idle, and the 15 s read timeout only fires if the peer stops responding.
+    - permessage-deflate is negotiated by default, and `maxMessageSize` applies after decompression.
+    - `send()` throws once the connection is closed, and writes time out after 15 s.
+    - `close()` waits up to 5 s for the peer's close reply.
+    - `getCloseInfo()` explains why `read()` returned null.
   - Large uploads: `HTTPRequest.getInputStream()` gives the raw body; multipart parser and `TooBigException` exist. Check that a raw multi-GB `PUT` can be streamed to disk without buffering.
   - Virtual threads: `HTTPServerBuilder.setExecutor(Executor)`; pass `Executors.newVirtualThreadPerTaskExecutor()` (or similar).
   - Per-route hooks: routing via `HTTPResponderRegistry`; no hook chain seen, so build one in our `http/` adapter layer.
@@ -32,7 +38,9 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Fill gaps in the HTTP stack (in the stack itself, not by adding a framework), each with tests:
   - [ ] Range requests (`bytes=a-b`, open-ended, suffix) → `206` + `Content-Range`; `416` for unsatisfiable; `HEAD`.
   - [ ] Endless streaming responses: close-delimited (for `.ts`) and chunked; fast client-disconnect detection.
-  - [ ] WebSocket via SimpleWebsocket on SiggiHTTP 1.10: text frames, ping/pong, close, total-message size cap.
+  - [ ] WebSocket via SimpleWebsocket 1.1-SNAPSHOT: one `WebSocketAcceptor` with `setMaxMessageSize(65536)` and an origin check matching `publicBaseUrl` (`setAllowedOrigins`; this is the WebSocket CSRF check from `docs/auth.md`). One virtual thread per socket with blocking `read()`; log `getCloseInfo()` when a socket ends.
+  - [ ] Browser test of the WebSocket echo in Chrome, Firefox and Safari: connect, send messages, leave idle for over a minute, close tabs, reload. Report anything odd (unexpected disconnects, close codes, exceptions, with `getCloseInfo()` output) to the SimpleWebsocket session or to Siggi.
+  - [ ] Switch to the released SimpleWebsocket 1.1 once it's published (the snapshot only resolves on this machine, so CI and the Docker image need the release).
   - [ ] Streaming multi-GB request bodies to disk.
 - [ ] Client IP: use SiggiHTTP's resolution, with `http.trustedProxies` (CIDRs, IPv4 and IPv6) fed into `isIPTrusted`; unit-test the CIDR matching. Implicit loopback/Cloudflare trust is accepted for now.
 - [ ] Static file serving for `web/` (content types, caching headers, no directory traversal).
@@ -246,3 +254,4 @@ Record decisions, deviations from `docs/`, and answers to open questions here (n
   - Frontend in **TypeScript** (tsc via `frontend-maven-plugin`, no bundler).
   - Config file is **JSON**.
   - Coordinates `io.siggi:TogetherTunes`, package `io.siggi.togethertunes`.
+- 2026-11-08: SimpleWebsocket 1.1-SNAPSHOT (local `~/.m2` only) fixes our two reports: SiggiHTTP 1.10 as `provided`, and `maxMessageSize`. Use it, and test it in real browsers in M0 before 1.1 is released.
