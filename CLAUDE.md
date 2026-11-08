@@ -69,4 +69,5 @@ All from the repository root. The first build downloads Node into `web/node/` (`
   then set `db.url` (in `config.json`, or as an env var):
   `TOGETHERTUNES_DB_URL='jdbc:postgresql://localhost:5432/togethertunes?user=togethertunes&password=togethertunes' java -jar target/TogetherTunes-1.0-SNAPSHOT.jar`.
   Credentials go in the URL. Media, cards and `secret.key` still live in `data.dir`. `docker stop tt-pg` stops the database and deletes its data (`--rm`).
+- **Stop what you start.** A server or database you start for a smoke test (`java -jar ...`, `docker run ...`) must be stopped before you finish the step, also when the step fails: note its PID and `kill` it (and `docker stop` containers). Leftover servers keep ports busy and confuse later runs.
 - **Exit codes:** 1 bad config, 2 bad command line, 3 startup failure (data dir, secret key, database, port in use).
