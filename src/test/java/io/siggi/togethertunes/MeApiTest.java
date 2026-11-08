@@ -16,6 +16,7 @@ import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.IdentityTickets;
 import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
@@ -58,6 +59,7 @@ class MeApiTest {
     private Database database;
     private Settings settings;
     private Guests guests;
+    private IdentityTickets tickets;
     private ActorResolver actors;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
@@ -82,11 +84,12 @@ class MeApiTest {
         Users users = new Users(database, passwords, clock);
         Permissions permissions = new Permissions(database, settings);
         guests = new Guests(database, settings, clock, config.secureCookies(), new Names());
+        tickets = new IdentityTickets(clock);
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
-                new MeApi(accounts, users, permissions, guests, settings),
+                new MeApi(accounts, users, permissions, guests, settings, tickets),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings)), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
@@ -383,6 +386,46 @@ class MeApiTest {
         assertEquals("Siggi B", call(200, "PATCH", "/api/me", "{}", admin).get("displayName").getAsString());
         assertEquals("siggi", call(200, "PATCH", "/api/me", "{\"displayName\":\"\"}", admin)
                 .get("displayName").getAsString());
+    }
+
+    /** Every {@code POST /api/me/guest} that returns a guest also returns a fresh identity ticket for it. */
+    @Test
+    void postGuestIssuesASingleUseIdentityTicket() throws Exception {
+        HttpResponse<String> r = send("POST", "/api/me/guest", null, null);
+        assertEquals(201, r.statusCode(), r.body());
+        JsonObject created = JsonParser.parseString(r.body()).getAsJsonObject();
+        String id = created.get("id").getAsString();
+        String gid = cookie(r, "gid");
+        String ticket = created.get("identityTicket").getAsString();
+        assertEquals(43, ticket.length(), ticket);
+        assertNull(call(200, "GET", "/api/me", null, gid).get("identityTicket"), "only POST issues tickets");
+
+        // Already a guest (200): a new ticket each time, for the same guest.
+        String second = call(200, "POST", "/api/me/guest", null, gid).get("identityTicket").getAsString();
+        String third = call(200, "POST", "/api/me/guest", "{}", gid).get("identityTicket").getAsString();
+        assertNotEquals(ticket, second);
+        assertNotEquals(second, third);
+
+        assertEquals(id, tickets.redeem(ticket).guestId());
+        assertNull(tickets.redeem(ticket), "single use");
+        assertEquals(id, tickets.redeem(second).guestId());
+
+        // Valid for 60 s.
+        clock.advance(IdentityTickets.TTL_MS);
+        assertNull(tickets.redeem(third), "expired");
+
+        // IP mode: also for an existing IP guest.
+        settings.set(Settings.GUESTS_IDENTIFY_BY, GuestIdentity.IP);
+        JsonObject ipGuest = call(201, "POST", "/api/me/guest", null, null);
+        JsonObject ipAgain = call(200, "POST", "/api/me/guest", null, null);
+        String ipId = ipGuest.get("id").getAsString();
+        assertEquals(ipId, ipAgain.get("id").getAsString());
+        assertEquals(ipId, tickets.redeem(ipGuest.get("identityTicket").getAsString()).guestId());
+        assertEquals(ipId, tickets.redeem(ipAgain.get("identityTicket").getAsString()).guestId());
+
+        // Refused requests get none.
+        assertNull(call(409, "POST", "/api/me/guest", null, admin).get("identityTicket"));
+        assertEquals(0, tickets.size());
     }
 
     /** {@link Guests#requireIdentity} as an identity-requiring action would use it. */

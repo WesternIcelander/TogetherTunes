@@ -85,7 +85,8 @@ class AdminApiTest {
         server = WebServer.start("127.0.0.1", 0,
                 Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                         new MeApi(accounts, new Users(database, passwords, clock), new Permissions(database, settings),
-                                new Guests(database, settings, config.secureCookies()), settings), adminApi), dir.toFile());
+                                new Guests(database, settings, config.secureCookies()), settings,
+                                new io.siggi.togethertunes.auth.IdentityTickets()), adminApi), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

@@ -88,7 +88,8 @@ class MainRouterTest {
                 new Permissions(database, settings), settings);
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                 new MeApi(accounts, new Users(database, fastPasswords, clock), new Permissions(database, settings),
-                        new Guests(database, settings, config.secureCookies()), settings), admin),
+                        new Guests(database, settings, config.secureCookies()), settings,
+                        new io.siggi.togethertunes.auth.IdentityTickets()), admin),
                 dir.toFile());
     }
 

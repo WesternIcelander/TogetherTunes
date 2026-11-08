@@ -31,7 +31,10 @@ import java.util.Objects;
  *   <li>{@code POST /api/me/guest} {@code {"name"?}} (body optional) → {@code 201} and the guest
  *       (as in {@code GET /api/me}) when a guest was created ({@link Guests#create}; cookie mode
  *       sets the {@code gid} cookie); {@code 200} when the request already is a guest (a given
- *       {@code name} then renames it) or, in IP mode, its address already has one. A logged-in
+ *       {@code name} then renames it) or, in IP mode, its address already has one. Both add
+ *       {@code "identityTicket"}: a new single-use ticket, valid for 60 s, that an already open
+ *       WebSocket redeems with {@code {type:"identity", ticket}} to become this guest
+ *       ({@link IdentityTickets}). A logged-in
  *       user gets {@code 409 already_logged_in}. Errors: {@code 403 guests_disabled},
  *       {@code 403 custom_names_disabled}, {@code 400 invalid_name},
  *       {@code 409 name_taken} (an account's name), {@code 400 name_blocked} (admin blocklist).</li>
@@ -49,6 +52,7 @@ public final class MeApi {
     private final Permissions permissions;
     private final Guests guests;
     private final Settings settings;
+    private final IdentityTickets tickets;
 
     record GuestRequest(String name) {
     }
@@ -56,12 +60,15 @@ public final class MeApi {
     record PatchRequest(String name, String displayName) {
     }
 
-    public MeApi(Accounts accounts, Users users, Permissions permissions, Guests guests, Settings settings) {
+    /** @param tickets the identity tickets the WebSocket redeems (shared with it) */
+    public MeApi(Accounts accounts, Users users, Permissions permissions, Guests guests, Settings settings,
+                 IdentityTickets tickets) {
         this.accounts = Objects.requireNonNull(accounts);
         this.users = Objects.requireNonNull(users);
         this.permissions = Objects.requireNonNull(permissions);
         this.guests = Objects.requireNonNull(guests);
         this.settings = Objects.requireNonNull(settings);
+        this.tickets = Objects.requireNonNull(tickets);
     }
 
     public void register(Router router) {
@@ -138,7 +145,7 @@ public final class MeApi {
         if (actor instanceof Actor.Guest guest) {
             Guests.GuestView view = body.name() == null ? guests.get(guest.guestId())
                     : guests.rename(guest.guestId(), body.name(), request.clientIp());
-            response.json(200, guestJson(view));
+            response.json(200, withTicket(view));
             return;
         }
         Guests.Created created = guests.create(request, response, body.name());
@@ -146,7 +153,14 @@ public final class MeApi {
         if (!created.created() && body.name() != null) {
             view = guests.rename(view.id(), body.name(), request.clientIp());
         }
-        response.json(created.created() ? 201 : 200, guestJson(view));
+        response.json(created.created() ? 201 : 200, withTicket(view));
+    }
+
+    /** The guest as in {@code GET /api/me}, plus a new {@code identityTicket} for it. */
+    private Map<String, Object> withTicket(Guests.GuestView view) throws Exception {
+        Map<String, Object> out = guestJson(view);
+        out.put("identityTicket", tickets.issue(view.id()));
+        return out;
     }
 
     private void renameGuest(Request request, Response response) throws Exception {

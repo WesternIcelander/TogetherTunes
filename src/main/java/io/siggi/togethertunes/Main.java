@@ -1,6 +1,7 @@
 package io.siggi.togethertunes;
 
 import io.siggi.togethertunes.auth.Accounts;
+import io.siggi.togethertunes.auth.IdentityTickets;
 import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
@@ -130,7 +131,10 @@ public final class Main {
         Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
         Permissions permissions = new Permissions(database, settings);
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
-        MeApi me = new MeApi(accounts, users, permissions, new Guests(database, settings, config.secureCookies()), settings);
+        // Shared with the WebSocket handler (M3), which redeems the tickets.
+        IdentityTickets identityTickets = new IdentityTickets();
+        MeApi me = new MeApi(accounts, users, permissions, new Guests(database, settings, config.secureCookies()), settings,
+                identityTickets);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin),
