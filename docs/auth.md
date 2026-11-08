@@ -20,7 +20,7 @@ A **user** can have any number of **identities**: one local password credential,
 ### Local passwords
 
 - Hash with **Argon2id**, using Bouncy Castle's `Argon2BytesGenerator`. Parameters: m=64 MiB, t=3, p=1. Store the full encoded string, so the parameters can be raised later and old hashes rehashed on login.
-- Minimum length 10; no composition rules. Login is rate-limited per IP and per username, with exponential backoff. Failures are written to `audit_log`.
+- Minimum length 10; no composition rules. Login is rate-limited per IP (IPv6 by /64) and per username, with exponential backoff: per username 5 free failures, per IP 20, then each further failure locks that key for 1 s, 2 s, 4 s … up to 15 min; a key without failures for an hour starts over, and a successful login clears its username's count. A locked key gets `429 rate_limited` with `Retry-After`, even with the right password. Failures are written to `audit_log` (`auth.login_failed`), and the first refusal of each lock as `auth.login_throttled`. The account routes (setup, register, login/token) also have a per-IP request limit.
 - Reset: an admin sets a temporary password. There is no email in v1.
 
 ### OIDC
