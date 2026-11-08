@@ -2,8 +2,10 @@ package io.siggi.togethertunes;
 
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.auth.Sessions;
 import io.siggi.togethertunes.auth.SetupApi;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
@@ -102,11 +104,14 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        ActorResolver actors = new ActorResolver(database, new Settings(database, config));
-        SetupApi setup = new SetupApi(new Accounts(database, Passwords.DEFAULT));
+        Settings settings = new Settings(database, config);
+        ActorResolver actors = new ActorResolver(database, settings);
+        Accounts accounts = new Accounts(database, Passwords.DEFAULT);
+        SetupApi setup = new SetupApi(accounts);
+        AuthApi auth = new AuthApi(accounts, new Sessions(database), settings, config.secureCookies());
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -149,11 +154,13 @@ public final class Main {
      * until M1 "CSRF"). The web UI is the catch-all {@code GET /{path...}} route, so every
      * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
      * test socket used by the test page {@code /test/ws-echo.html}. {@link SetupApi} is the
-     * first-run setup ({@code /api/setup}).
+     * first-run setup ({@code /api/setup}), {@link AuthApi} local registration, login and logout
+     * ({@code /api/auth/...}).
      */
-    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup) {
+    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth) {
         Router router = new Router(actors.hook(), Hooks.csrf());
         setup.register(router);
+        auth.register(router);
         WebSockets webSockets = new WebSockets(config.publicBaseUrl());
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

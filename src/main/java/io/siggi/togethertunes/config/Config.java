@@ -54,6 +54,15 @@ public record Config(
         return URI.create(publicBaseUrl);
     }
 
+    /**
+     * Whether cookies get the {@code Secure} flag: when {@link #publicBaseUrl()} is {@code https}.
+     * (Over plain {@code http}, e.g. local testing, a {@code Secure} cookie would be dropped by
+     * browsers other than for {@code localhost}.)
+     */
+    public boolean secureCookies() {
+        return "https".equalsIgnoreCase(publicBaseUri().getScheme());
+    }
+
     /** Whether {@link #dbUrl()} points at PostgreSQL (otherwise SQLite). */
     public boolean isPostgres() {
         return dbUrl.startsWith(ConfigLoader.POSTGRES_URL_PREFIX);

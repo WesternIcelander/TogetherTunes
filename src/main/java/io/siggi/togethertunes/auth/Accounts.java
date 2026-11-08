@@ -129,6 +129,122 @@ public final class Accounts {
         });
     }
 
+    /**
+     * Checks a local username and password ({@code docs/auth.md#local-passwords}). The username is
+     * matched case-insensitively after stripping surrounding whitespace. On success the hash is
+     * replaced by a fresh one if its Argon2 parameters differ from the current ones
+     * ({@link Passwords#needsRehash}), and the login is audited as {@value #AUDIT_LOGIN}; a failure
+     * is audited as {@value #AUDIT_LOGIN_FAILED} (no actor; {@code details.username} as typed,
+     * shortened).
+     *
+     * <p>An unknown username, an account without a local password and a wrong password all give
+     * the same answer, and all three cost one Argon2 derivation, so the answer and its timing
+     * don't reveal which usernames exist. The right password for a disabled account gives
+     * {@code 403 account_disabled}.
+     *
+     * @param ip the client IP, for the audit log only
+     * @throws HttpError 401 {@code invalid_credentials}; 403 {@code account_disabled}
+     */
+    public Account login(String username, String password, String ip) throws SQLException {
+        String name = username == null ? "" : username.strip();
+        boolean plausible = !name.isEmpty() && name.length() <= USERNAME_MAX && password != null
+                && password.length() <= 2 * Passwords.MAX_LENGTH;
+        Credential credential = plausible ? db.read(c -> credential(c, name)) : null;
+        boolean ok;
+        if (credential == null || credential.hash() == null) {
+            passwords.verify(plausible ? password : "", dummyHash()); // same cost as a real check
+            ok = false;
+        } else {
+            ok = passwords.verify(password, credential.hash());
+        }
+        long now = EpochMs.now(clock);
+        if (!ok) {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("username", name.length() > USERNAME_MAX ? name.substring(0, USERNAME_MAX) + "…" : name);
+            details.put("reason", credential == null ? "unknown_user"
+                    : credential.hash() == null ? "no_password" : "wrong_password");
+            db.write(c -> {
+                AuditLog.write(c, now, null, null, ip, AUDIT_LOGIN_FAILED, credential == null ? null : credential.userId(),
+                        details);
+                return null;
+            });
+            throw new HttpError(401, "invalid_credentials", "Wrong username or password");
+        }
+        if (credential.disabled()) {
+            db.write(c -> {
+                AuditLog.write(c, now, null, null, ip, AUDIT_LOGIN_FAILED, credential.userId(),
+                        Map.of("username", credential.username(), "reason", "disabled"));
+                return null;
+            });
+            throw new HttpError(403, "account_disabled", "This account is disabled");
+        }
+        String newHash = passwords.needsRehash(credential.hash()) ? passwords.hash(password) : null;
+        return db.write(c -> {
+            if (newHash != null) {
+                // Only replace the hash we verified, so a concurrent password change wins.
+                try (PreparedStatement ps = c.prepareStatement(
+                        "UPDATE password_credentials SET hash = ?, updated_at = ? WHERE user_id = ? AND hash = ?")) {
+                    ps.setString(1, newHash);
+                    ps.setLong(2, now);
+                    ps.setString(3, credential.userId());
+                    ps.setString(4, credential.hash());
+                    ps.executeUpdate();
+                }
+            }
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("method", "password");
+            if (newHash != null) {
+                details.put("rehashed", true);
+            }
+            AuditLog.write(c, now, credential.userId(), null, ip, AUDIT_LOGIN, credential.userId(), details);
+            return new Account(credential.userId(), credential.username(), credential.displayName(),
+                    roleNames(c, credential.userId()));
+        });
+    }
+
+    /** Writes one {@code audit_log} row with a user actor (or none), in its own transaction. */
+    public void audit(String actorUserId, String ip, String action, String target, Map<String, ?> details)
+            throws SQLException {
+        long now = EpochMs.now(clock);
+        db.write(c -> {
+            AuditLog.write(c, now, actorUserId, null, ip, action, target, details);
+            return null;
+        });
+    }
+
+    /** {@code audit_log} action of a successful login. */
+    public static final String AUDIT_LOGIN = "auth.login";
+    /** {@code audit_log} action of a failed login. */
+    public static final String AUDIT_LOGIN_FAILED = "auth.login_failed";
+
+    /** A user row with its local password hash ({@code null} if it has none). */
+    private record Credential(String userId, String username, String displayName, boolean disabled, String hash) {
+    }
+
+    private static Credential credential(Connection c, String username) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT u.id, u.username, u.display_name, u.disabled, p.hash FROM users u"
+                        + " LEFT JOIN password_credentials p ON p.user_id = u.id WHERE lower(u.username) = ?")) {
+            ps.setString(1, username.toLowerCase(Locale.ROOT));
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? new Credential(rs.getString(1), rs.getString(2), rs.getString(3),
+                        rs.getInt(4) != 0, rs.getString(5)) : null;
+            }
+        }
+    }
+
+    private volatile String dummyHash;
+
+    /** A hash of a random password at the current parameters, so failed lookups cost a real verify. */
+    private String dummyHash() {
+        String hash = dummyHash;
+        if (hash == null) {
+            hash = passwords.hash(Tokens.newToken());
+            dummyHash = hash;
+        }
+        return hash;
+    }
+
     private static HttpError setupComplete() {
         return new HttpError(409, "setup_complete", "Setup is already complete");
     }
@@ -154,7 +270,6 @@ public final class Accounts {
 
     /** Grants the default roles, plus admin for the first account; returns the role names, sorted. */
     private static List<String> grantRoles(Connection c, String userId, boolean first) throws SQLException {
-        List<String> roles = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE is_default = 1 OR (? = 1 AND name = ?)")) {
             ps.setString(1, userId);
@@ -162,6 +277,12 @@ public final class Accounts {
             ps.setString(3, BuiltinRoles.ADMIN);
             ps.executeUpdate();
         }
+        return roleNames(c, userId);
+    }
+
+    /** The names of the user's roles, sorted. */
+    private static List<String> roleNames(Connection c, String userId) throws SQLException {
+        List<String> roles = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement(
                 "SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.name")) {
             ps.setString(1, userId);

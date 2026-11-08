@@ -4,7 +4,6 @@ import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 
@@ -52,12 +51,7 @@ public final class SetupApi {
         SetupRequest body = request.readJson(SetupRequest.class);
         Accounts.Account account = accounts.createLocal(body.username(), body.displayName(), body.password(), true,
                 request.clientIp(), AUDIT_ACTION);
-        Map<String, Object> user = new LinkedHashMap<>();
-        user.put("id", account.id());
-        user.put("username", account.username());
-        user.put("displayName", account.displayName());
-        user.put("roles", account.roles());
         response.header("Cache-Control", "no-store");
-        response.json(201, Map.of("user", user));
+        response.json(201, Map.of("user", AuthApi.userJson(account)));
     }
 }
