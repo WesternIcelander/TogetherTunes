@@ -543,6 +543,45 @@ class AdminApiTest {
     }
 
     @Test
+    void rolePermissionsCombineAsAUnion() throws Exception {
+        String helpdeskRole = call(201, "POST", "/api/admin/roles",
+                "{\"name\":\"helpdesk\",\"permissions\":[\"admin.users\",\"rooms.create\"]}", admin).get("id").getAsString();
+        String ipRole = call(201, "POST", "/api/admin/roles",
+                "{\"name\":\"ip\",\"permissions\":[\"ip.view\",\"rooms.create\"]}", admin).get("id").getAsString();
+        String emptyRole = call(201, "POST", "/api/admin/roles",
+                "{\"name\":\"empty\",\"permissions\":[]}", admin).get("id").getAsString();
+        String bothId = createUser("both", "temporary-1");
+        String both = login("both", "temporary-1");
+
+        // One role at a time: only that role's permissions.
+        call(200, "PUT", "/api/admin/users/" + bothId + "/roles", "{\"roleIds\":[\"" + helpdeskRole + "\"]}", admin);
+        assertEquals(List.of("admin.users", "rooms.create"),
+                strings(call(200, "GET", "/api/me", null, both).getAsJsonArray("permissions")).stream().sorted().toList());
+        assertEquals(200, send("GET", "/api/admin/guests", null, both).statusCode());
+        assertEquals(403, send("GET", "/api/admin/ip/sessions/" + adminId, null, both).statusCode());
+
+        // Several roles (overlapping, plus an empty one and the built-in user role): the union, on the same session.
+        call(200, "PUT", "/api/admin/users/" + bothId + "/roles", "{\"roleIds\":[\"" + helpdeskRole + "\",\""
+                + ipRole + "\",\"" + emptyRole + "\",\"" + roleId("user") + "\"]}", admin);
+        assertEquals(List.of("admin.users", "ip.view", "library.upload", "library.youtube", "rooms.create"),
+                strings(call(200, "GET", "/api/me", null, both).getAsJsonArray("permissions")).stream().sorted().toList());
+        assertEquals(200, send("GET", "/api/admin/guests", null, both).statusCode());
+        assertEquals(200, send("GET", "/api/admin/ip/sessions/" + adminId, null, both).statusCode());
+        assertError("forbidden", call(403, "GET", "/api/admin/settings", null, both));
+
+        // Editing one role's permissions changes the union at once; a permission still granted by another role stays.
+        call(200, "PUT", "/api/admin/roles/" + ipRole + "/permissions", "{\"permissions\":[]}", admin);
+        assertEquals(List.of("admin.users", "library.upload", "library.youtube", "rooms.create"),
+                strings(call(200, "GET", "/api/me", null, both).getAsJsonArray("permissions")).stream().sorted().toList());
+        assertEquals(403, send("GET", "/api/admin/ip/sessions/" + adminId, null, both).statusCode());
+
+        // Only the empty role left: nothing.
+        call(200, "PUT", "/api/admin/users/" + bothId + "/roles", "{\"roleIds\":[\"" + emptyRole + "\"]}", admin);
+        assertEquals(List.of(), strings(call(200, "GET", "/api/me", null, both).getAsJsonArray("permissions")));
+        assertError("forbidden", call(403, "GET", "/api/admin/guests", null, both));
+    }
+
+    @Test
     void adminPageLoads() throws Exception {
         HttpResponse<String> page = send("GET", "/admin/", null, null);
         assertEquals(200, page.statusCode());
