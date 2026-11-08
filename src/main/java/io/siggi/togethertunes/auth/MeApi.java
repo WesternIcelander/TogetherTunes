@@ -30,7 +30,8 @@ import java.util.Objects;
  *       sets the {@code gid} cookie); {@code 200} when the request already is a guest (a given
  *       {@code name} then renames it) or, in IP mode, its address already has one. A logged-in
  *       user gets {@code 409 already_logged_in}. Errors: {@code 403 guests_disabled},
- *       {@code 403 custom_names_disabled}, {@code 400 invalid_name}.</li>
+ *       {@code 403 custom_names_disabled}, {@code 400 invalid_name},
+ *       {@code 409 name_taken} (an account's name), {@code 400 name_blocked} (admin blocklist).</li>
  *   <li>{@code PATCH /api/me/guest} {@code {"name"}} → {@code 200} and the guest: renames the
  *       current guest ({@link Guests#rename}). An anonymous request gets
  *       {@code 401 identity_required} (create the guest first), a user {@code 409 not_a_guest}.</li>

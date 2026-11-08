@@ -308,6 +308,41 @@ class MeApiTest {
     }
 
     @Test
+    void customNamesCantMatchAccounts() throws Exception {
+        settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, true);
+        assertEquals("DJ Sig", call(200, "PATCH", "/api/me", "{\"displayName\":\"DJ Sig\"}", admin)
+                .get("displayName").getAsString());
+        String gid = cookie(send("POST", "/api/me/guest", null, null), "gid");
+        // Username and display name, ignoring case, width (NFKC) and spacing.
+        for (String taken : List.of("siggi", "SIGGI", "\\uff33\\uff49\\uff47\\uff47\\uff49", "dj sig", " DJ   SIG ")) {
+            assertError("name_taken", call(409, "PATCH", "/api/me/guest", "{\"name\":\"" + taken + "\"}", gid));
+        }
+        assertError("name_taken", call(409, "POST", "/api/me/guest", "{\"name\":\"Siggi\"}", null));
+        assertEquals(1, count("SELECT COUNT(*) FROM guests"));
+        assertEquals("Siggi 2", call(200, "PATCH", "/api/me/guest", "{\"name\":\"Siggi 2\"}", gid)
+                .get("name").getAsString());
+        // Stored NFKC-normalised.
+        assertEquals("Night Owl", call(200, "PATCH", "/api/me/guest",
+                "{\"name\":\"\\uff2eight Owl\"}", gid).get("name").getAsString());
+    }
+
+    @Test
+    void customNameBlocklist() throws Exception {
+        settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, true);
+        settings.setJson("guests.nameBlocklist", "[\"Rude\", \"very bad\"]");
+        String gid = cookie(send("POST", "/api/me/guest", null, null), "gid");
+        for (String blocked : List.of("rude", "So RUDE", "R.U.D.E", "verybad", "Very-Bad Guy")) {
+            assertError("name_blocked", call(400, "PATCH", "/api/me/guest", "{\"name\":\"" + blocked + "\"}", gid));
+        }
+        assertError("name_blocked", call(400, "POST", "/api/me/guest", "{\"name\":\"rude dude\"}", null));
+        assertEquals("Very Good", call(200, "PATCH", "/api/me/guest", "{\"name\":\"Very Good\"}", gid)
+                .get("name").getAsString());
+        // Generated names are not checked against the blocklist.
+        settings.setJson("guests.nameBlocklist", "[\"Generated\"]");
+        assertTrue(call(201, "POST", "/api/me/guest", null, null).get("name").getAsString().startsWith("Generated"));
+    }
+
+    @Test
     void bannedGuestCantRename() throws Exception {
         settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, true);
         String gid = cookie(send("POST", "/api/me/guest", null, null), "gid");

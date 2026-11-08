@@ -46,7 +46,7 @@ import java.util.function.Supplier;
  * <p>Names: without a chosen name a guest gets a generated one ({@code name_chosen = 0}, see
  * {@link #generatedName}); with
  * {@code guests.allowCustomNames} on, a name can be given at creation and changed later
- * ({@link #validCustomName}).
+ * ({@link GuestNameRules}).
  */
 public final class Guests {
     /** Lifetime of the {@code gid} cookie: one year, sliding (re-sent on use, see {@link ActorResolver}). */
@@ -57,9 +57,9 @@ public final class Guests {
      */
     public static final long TOUCH_INTERVAL_MS = 60_000;
     /** Shortest custom guest name, in code points. */
-    public static final int NAME_MIN = 2;
+    public static final int NAME_MIN = GuestNameRules.MIN_LENGTH;
     /** Longest custom guest name, in code points. */
-    public static final int NAME_MAX = 32;
+    public static final int NAME_MAX = GuestNameRules.MAX_LENGTH;
     /** {@code audit_log} action of a guest identity created. */
     public static final String AUDIT_CREATED = "guest.created";
     /** {@code audit_log} action of a guest renaming itself. */
@@ -148,7 +148,8 @@ public final class Guests {
      *
      * @param customName a requested name, or {@code null} for a generated one
      * @throws HttpError 403 {@code guests_disabled}; 403 {@code custom_names_disabled} for a
-     *                   {@code customName} while custom names are off; 400 {@code invalid_name}
+     *                   {@code customName} while custom names are off; 400 {@code invalid_name},
+     *                   409 {@code name_taken} or 400 {@code name_blocked} ({@link GuestNameRules})
      */
     public Created create(Request request, Response response, String customName) throws SQLException {
         if (!settings.guestsEnabled()) {
@@ -163,12 +164,15 @@ public final class Guests {
         return created;
     }
 
-    /** {@link #validCustomName}, after checking that custom names are allowed. */
+    /**
+     * A custom name to store, after checking that custom names are allowed: the rules of
+     * {@link GuestNameRules#check} (form, no clash with an account, not on the blocklist).
+     */
     private String checkedCustomName(String name) throws SQLException {
         if (!settings.guestsAllowCustomNames()) {
             throw new HttpError(403, "custom_names_disabled", "Guests can't choose their names on this server");
         }
-        return validCustomName(name);
+        return GuestNameRules.check(db, settings.guestsNameBlocklist(), name);
     }
 
     /** The {@code gid} cookie header value ({@code HttpOnly; SameSite=Lax}, one year). */
@@ -359,7 +363,8 @@ public final class Guests {
      * Renames a guest to a name it chose ({@code name_chosen = 1}).
      *
      * @throws HttpError 403 {@code custom_names_disabled}; 403 {@code guest_banned}; 400
-     *                   {@code invalid_name}; 404 {@code not_found} for an unknown guest
+     *                   {@code invalid_name}, 409 {@code name_taken} or 400 {@code name_blocked}
+     *                   ({@link GuestNameRules}); 404 {@code not_found} for an unknown guest
      */
     public GuestView rename(String guestId, String name, String clientIp) throws SQLException {
         String valid = checkedCustomName(name);
@@ -384,23 +389,10 @@ public final class Guests {
     }
 
     /**
-     * A custom guest name as stored: whitespace trimmed and collapsed, {@value #NAME_MIN} to
-     * {@value #NAME_MAX} code points, no control or format characters. Otherwise 400
-     * {@code invalid_name}.
+     * A custom guest name in its stored form ({@link GuestNameRules#normalise}), without the
+     * account and blocklist checks. Otherwise 400 {@code invalid_name}.
      */
     public static String validCustomName(String name) {
-        String n = name == null ? "" : name.replaceAll("(?U)\\s+", " ").strip();
-        int length = n.codePointCount(0, n.length());
-        boolean ok = length >= NAME_MIN && length <= NAME_MAX && n.codePoints().noneMatch(cp -> {
-            int type = Character.getType(cp);
-            return type == Character.CONTROL || type == Character.FORMAT || type == Character.UNASSIGNED
-                    || type == Character.PRIVATE_USE || type == Character.SURROGATE
-                    || type == Character.LINE_SEPARATOR || type == Character.PARAGRAPH_SEPARATOR;
-        });
-        if (!ok) {
-            throw new HttpError(400, "invalid_name", "Guest names are " + NAME_MIN + " to " + NAME_MAX
-                    + " characters, without control characters");
-        }
-        return n;
+        return GuestNameRules.normalise(name);
     }
 }

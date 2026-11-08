@@ -29,12 +29,12 @@ interface PermissionInfo { name: string; description: string; feature?: string; 
 
 interface RoleList { items: Role[]; permissions: PermissionInfo[] }
 
-type SettingValue = boolean | number | string | { perHour: number; maxItemBytes: number } | undefined;
+type SettingValue = boolean | number | string | string[] | { perHour: number; maxItemBytes: number } | undefined;
 
 interface Setting {
   key: string;
   group: string;
-  type: "boolean" | "integer" | "string" | "enum" | "uploadQuota";
+  type: "boolean" | "integer" | "string" | "enum" | "uploadQuota" | "stringList";
   value?: SettingValue;
   default?: SettingValue;
   options?: string[];
@@ -394,6 +394,7 @@ async function loadSettings(): Promise<void> {
 
 function describe(value: SettingValue): string {
   if (value === undefined) return "(none)";
+  if (Array.isArray(value)) return value.length === 0 ? "(empty)" : `${value.length} entries`;
   if (typeof value === "object") return `${value.perHour} per hour, ${value.maxItemBytes} bytes per item`;
   return String(value);
 }
@@ -425,7 +426,7 @@ function settingRow(s: Setting): HTMLElement {
       input = h("select", { name }, ...(s.options ?? []).map((o) => h("option", { value: o, text: o, selected: o === s.value })));
       break;
     case "uploadQuota": {
-      const q = typeof s.value === "object" ? s.value : { perHour: 0, maxItemBytes: 0 };
+      const q = typeof s.value === "object" && !Array.isArray(s.value) ? s.value : { perHour: 0, maxItemBytes: 0 };
       input = h("span", { class: "row" },
         h("input", { type: "number", name: name + ":perHour", min: "0", step: "1", value: String(q.perHour), "aria-label": "Uploads per hour" }),
         "per hour,",
@@ -433,6 +434,10 @@ function settingRow(s: Setting): HTMLElement {
         "bytes per item");
       break;
     }
+    case "stringList":
+      input = h("textarea", { name, rows: "5", cols: "40", placeholder: "One entry per line",
+        text: Array.isArray(s.value) ? s.value.join("\n") : "" });
+      break;
     default:
       input = h("input", { type: "text", name, value: typeof s.value === "string" ? s.value : "", size: "40" });
   }
@@ -465,6 +470,9 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
         break;
       case "uploadQuota":
         value = { perHour: Number(data.get(name + ":perHour")), maxItemBytes: Number(data.get(name + ":maxItemBytes")) };
+        break;
+      case "stringList":
+        value = String(data.get(name) ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
         break;
       case "string": {
         const text = String(data.get(name) ?? "");

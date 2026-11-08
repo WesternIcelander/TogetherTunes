@@ -401,6 +401,9 @@ class AdminApiTest {
         JsonObject quota = find(items, "guests.uploadQuota");
         assertEquals("uploadQuota", quota.get("type").getAsString());
         assertEquals(3, quota.getAsJsonObject("value").get("perHour").getAsInt());
+        JsonObject blocklist = find(items, "guests.nameBlocklist");
+        assertEquals("stringList", blocklist.get("type").getAsString());
+        assertEquals(0, blocklist.getAsJsonArray("value").size());
         JsonObject cookies = find(items, "ytdlp.cookiesFile");
         assertEquals("string", cookies.get("type").getAsString());
         assertFalse(cookies.has("value"));
@@ -416,6 +419,12 @@ class AdminApiTest {
         assertEquals(5, settings.guestsUploadQuota().perHour());
         assertEquals("/data/cookies.txt", settings.ytdlpCookiesFile());
         assertTrue(settings.overlayEnabled());
+        JsonObject listed = call(200, "PATCH", "/api/admin/settings",
+                "{\"guests.nameBlocklist\":[\" bad  word \",\"\",\"other\"]}", admin);
+        assertEquals(List.of("bad word", "other"),
+                strings(find(listed.getAsJsonArray("items"), "guests.nameBlocklist").getAsJsonArray("value")));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"guests.nameBlocklist\":\"bad\"}", admin));
 
         // All or nothing.
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
@@ -429,7 +438,7 @@ class AdminApiTest {
         call(200, "PATCH", "/api/admin/settings", "{\"overlay.enabled\":null,\"ytdlp.cookiesFile\":null}", admin);
         assertFalse(settings.overlayEnabled());
         assertEquals(null, settings.ytdlpCookiesFile());
-        assertEquals(2, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
+        assertEquals(3, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
 
         // Feature switches show up in the role editor.
         call(200, "PATCH", "/api/admin/settings", "{\"ytdlp.enabled\":false}", admin);

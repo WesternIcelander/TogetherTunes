@@ -90,7 +90,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(18, all.size());
+        assertEquals(19, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -169,6 +169,18 @@ abstract class SettingsContract {
                 () -> settings.setJson("guests.uploadQuota", "{\"perHour\": -1, \"maxItemBytes\": 1}"));
         assertTrue(settings.guestsCanUpload());
 
+        assertEquals(List.of(), settings.guestsNameBlocklist());
+        settings.setJson("guests.nameBlocklist", "[\"  a\\tb  \", \"\", \" \", \"c\", \"a b\"]");
+        assertEquals(List.of("a b", "c"), settings.guestsNameBlocklist());
+        assertEquals("[\"a b\",\"c\"]", raw("guests.nameBlocklist"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("guests.nameBlocklist", "\"a\""));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("guests.nameBlocklist", "[1]"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("guests.nameBlocklist", "[[\"a\"]]"));
+        assertThrows(IllegalArgumentException.class,
+                () -> settings.setJson("guests.nameBlocklist", "[\"" + "x".repeat(65) + "\"]"));
+        settings.setJson("guests.nameBlocklist", "[]");
+        assertEquals(List.of(), settings.guestsNameBlocklist());
+
         settings.setJson("ytdlp.cookiesFile", "null");
         assertNull(settings.ytdlpCookiesFile());
     }
@@ -182,7 +194,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(18, settings.all().size());
+        assertEquals(19, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

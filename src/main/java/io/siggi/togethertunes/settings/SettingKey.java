@@ -1,9 +1,12 @@
 package io.siggi.togethertunes.settings;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.function.Function;
 
@@ -212,6 +215,49 @@ public final class SettingKey<T> {
                 o.addProperty("perHour", value.perHour());
                 o.addProperty("maxItemBytes", value.maxItemBytes());
                 return o;
+            }
+        });
+    }
+
+    /**
+     * A list of strings, as a JSON array. Each entry is trimmed and its whitespace collapsed;
+     * blank entries and exact duplicates are dropped (first one kept). At most {@code maxItems}
+     * entries of at most {@code maxLength} code points each.
+     */
+    static SettingKey<StringList> stringList(String name, int maxItems, int maxLength) {
+        return new SettingKey<>(name, StringList.class, StringList.EMPTY, false, new Codec<>() {
+            @Override
+            public StringList decode(JsonElement json) {
+                if (!json.isJsonArray()) {
+                    throw new IllegalArgumentException("expected an array of strings, got " + json);
+                }
+                LinkedHashSet<String> items = new LinkedHashSet<>();
+                for (JsonElement e : json.getAsJsonArray()) {
+                    JsonPrimitive p = primitive(e);
+                    if (!p.isString()) {
+                        throw new IllegalArgumentException("expected a string, got " + e);
+                    }
+                    String s = p.getAsString().replaceAll("(?U)\\s+", " ").strip();
+                    if (s.isEmpty()) {
+                        continue;
+                    }
+                    if (s.codePointCount(0, s.length()) > maxLength) {
+                        throw new IllegalArgumentException("entries are at most " + maxLength
+                                + " characters long: " + s);
+                    }
+                    items.add(s);
+                }
+                if (items.size() > maxItems) {
+                    throw new IllegalArgumentException("at most " + maxItems + " entries, got " + items.size());
+                }
+                return new StringList(List.copyOf(items));
+            }
+
+            @Override
+            public JsonElement encode(StringList value) {
+                JsonArray a = new JsonArray();
+                value.items().forEach(a::add);
+                return a;
             }
         });
     }

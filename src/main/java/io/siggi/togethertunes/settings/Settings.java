@@ -55,6 +55,12 @@ public final class Settings {
     public static final SettingKey<UploadQuota> GUESTS_UPLOAD_QUOTA = SettingKey.uploadQuota(
             "guests.uploadQuota", new UploadQuota(3, 500L * 1024 * 1024));
     public static final SettingKey<Boolean> GUESTS_DOWNLOAD = SettingKey.bool("guests.download", false);
+    /**
+     * Words and phrases custom guest names must not contain (compared ignoring case, NFKC
+     * normalisation, spaces and punctuation; see {@code auth.GuestNameRules}). Empty by default.
+     */
+    public static final SettingKey<StringList> GUESTS_NAME_BLOCKLIST = SettingKey.stringList(
+            "guests.nameBlocklist", 2000, 64);
 
     // Library
     public static final SettingKey<Boolean> YTDLP_ENABLED = SettingKey.bool("ytdlp.enabled", true);
@@ -79,7 +85,7 @@ public final class Settings {
     static {
         Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
         for (SettingKey<?> k : List.of(REGISTRATION_MODE,
-                GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_CAN_VOTE,
+                GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
@@ -260,6 +266,11 @@ public final class Settings {
 
     public boolean guestsAllowCustomNames() throws SQLException {
         return get(GUESTS_ALLOW_CUSTOM_NAMES);
+    }
+
+    /** The admin blocklist for custom guest names (raw entries, possibly empty). */
+    public List<String> guestsNameBlocklist() throws SQLException {
+        return get(GUESTS_NAME_BLOCKLIST).items();
     }
 
     public boolean guestsCanVote() throws SQLException {

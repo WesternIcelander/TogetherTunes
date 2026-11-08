@@ -10,6 +10,7 @@ import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.settings.SettingKey;
 import io.siggi.togethertunes.settings.Settings;
+import io.siggi.togethertunes.settings.StringList;
 import io.siggi.togethertunes.settings.UploadQuota;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -75,8 +76,9 @@ import java.util.Set;
  * <ul>
  *   <li>{@code GET /api/admin/settings} → {@code {"items": [{"key", "group", "type", "value"?,
  *       "default"?, "options"?}]}} in {@link Settings#KEYS} order. {@code type} is
- *       {@code boolean}, {@code integer}, {@code string}, {@code enum} (with {@code options}) or
- *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}); a {@code null} value (e.g. no
+ *       {@code boolean}, {@code integer}, {@code string}, {@code enum} (with {@code options}),
+ *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}) or {@code stringList} (an array
+ *       of strings); a {@code null} value (e.g. no
  *       yt-dlp cookies file) is left out.</li>
  *   <li>{@code PATCH /api/admin/settings} {@code {"key": value, ...}} → the same as {@code GET}.
  *       {@code null} resets a setting to its default. All or nothing: {@code 400 unknown_setting}
@@ -489,6 +491,9 @@ public final class AdminApi {
         }
         if (t == UploadQuota.class) {
             return "uploadQuota";
+        }
+        if (t == StringList.class) {
+            return "stringList";
         }
         if (t.isEnum()) {
             return "enum";
