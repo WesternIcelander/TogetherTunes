@@ -80,9 +80,9 @@ Inside a room, requests made by upload or YouTube go through the WebSocket `queu
 | `/api/admin/users[/{id}]`, `/api/admin/users/{id}/roles`, `/api/admin/users/{id}/password` | `GET ?q=` / `POST {username, password, displayName?, roleIds?}` (temporary password); `GET` / `PATCH {displayName?, disabled?}`; `GET` / `PUT {roleIds}`; `POST {password}` sets a temporary password. No escalation: see [auth.md](auth.md#roles-and-permissions) |
 | `/api/admin/providers` | |
 | `/api/admin/jobs`, `/api/admin/ytdlp/update` | |
-| `/api/admin/guests?q=` | Guests: name, created, last seen. The `ip` field is included only for *ip.view* |
-| `/api/admin/audit` | The `ip` field is included only for *ip.view* |
-| `/api/admin/ip/sessions/{userId}` | *ip.view* |
+| `/api/admin/guests?q=&cursor=&limit=` | *admin.users*. `GET` → `{items:[{id, name, kind, nameChosen, banned, createdAt, lastSeenAt, ip?}], nextCursor?}`, most recently seen first; `q` matches part of the name. `ip` (last IP) only for *ip.view* |
+| `/api/admin/audit?action=&actor=&cursor=&limit=` | *admin.users*. `GET` → `{items:[{id, at, actor?, action, target?, details?, ip?}], nextCursor?}`, newest first; `action` exact, `actor` a user or guest id. `ip` only for *ip.view* |
+| `/api/admin/ip/sessions/{userId}` | *ip.view* (alone is enough). `GET` → `{user: actor, items:[{id, kind, createdAt, lastSeenAt, expiresAt, userAgent?, ip?}]}`: the user's live sessions; `404 user_not_found` |
 
 ## Live (no session; token in path)
 

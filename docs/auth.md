@@ -118,7 +118,7 @@ Room owners control the same features for their own room, but only within these 
 
 IP addresses are **never** exposed to an actor that lacks `ip.view`. This holds everywhere: REST responses, WebSocket messages, exports, error messages, and the user's own session list.
 
-- Only the `IpAccess` service reads IP columns, and it checks `ip.view` on every call. General DTOs (`UserView`, `GuestView`, `SessionView`, `AuditEntryView`) have no IP field.
+- Only the `IpAccess` service reads IP columns, and it checks `ip.view` on every call. (Recording a guest's changed IP compares `ip_last` with the request's IP in SQL, which yields only "same or not"; a source-scan test fails if any other class selects an IP column.) General DTOs (`UserView`, `GuestView`, `SessionView`, `AuditEntryView`) have no IP field.
 - Responses that include IPs for permitted viewers are separate endpoints or fields under `/api/admin/…`, and are built by `IpAccess`.
 - Logs: application logs may contain IPs, since only server operators can read them. Anything shown in the UI goes through `IpAccess`.
 - Test requirement: a test serialises every DTO type and fails if it finds a string that looks like an IP address.
