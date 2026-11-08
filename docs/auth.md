@@ -40,8 +40,8 @@ Implement a minimal relying party; no framework.
 
 - **Web:** an opaque 256-bit token in cookie `sid` with `HttpOnly; Secure; SameSite=Lax; Path=/`. The DB stores only its SHA-256 hash. Sliding expiry of 30 days.
 - **API / app:** the same tokens, of kind `bearer`, sent as `Authorization: Bearer …`. Both kinds slide: a use moves `expires_at` (written at most once a minute), and a slid `sid` cookie is re-sent with a fresh `Max-Age`.
-- **CSRF:** for cookie-authenticated requests that change state (including guest-cookie requests), require the `Origin` header to match `publicBaseUrl`.
-- **WebSocket:** authenticated by cookie (`sid` or `gid`) during the upgrade, with the same Origin check. Bearer clients send `{type:"auth"}` as the first message.
+- **CSRF:** for cookie-authenticated requests that change state (including guest-cookie requests), require the `Origin` header to match `publicBaseUrl`. In practice, for every method but GET, HEAD and OPTIONS, unless the request has an `Authorization: Bearer` header: an `Origin` that is present must be the origin of `publicBaseUrl` (so cross-site writes are refused even without cookies, which also covers login CSRF and IP-mode guests, whose IP is an ambient credential too), and a request carrying a `sid` or `gid` cookie must send it. Refusals are `403 origin_not_allowed`.
+- **WebSocket:** authenticated by cookie (`sid` or `gid`) during the upgrade, with the same Origin check (a present `Origin` must match; none is accepted only without `sid`/`gid`). Bearer clients send `{type:"auth"}` as the first message.
 
 ## Roles and permissions
 
