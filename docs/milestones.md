@@ -4,7 +4,7 @@ Build in this order. Each milestone should end with its "Done when" criteria pas
 
 ## M0 — Skeleton
 
-- Gradle project, Java 21, one runnable jar. Config loading (file + environment overrides).
+- Maven project, Java 21, one runnable jar. Config loading (file + environment overrides).
 - Integrate the author's HTTP stack. Confirm, or add, everything listed under [HTTP stack requirements](architecture.md#http-stack-requirements).
 - DB layer: `Dialect` interface, a migration runner, the initial schema for SQLite **and** PostgreSQL. Settings storage.
 - Static file serving for `web/`. Trusted-proxy handling for the client IP.

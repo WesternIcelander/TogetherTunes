@@ -72,7 +72,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 
 These are to be settled during implementation; the docs note the default they assume.
 
-1. Build tool: Gradle or Maven. Assumed: Gradle.
+1. Build tool: Gradle or Maven. **Decided: Maven.**
 2. Does the author's HTTP stack support WebSocket and long-lived streaming responses? Both are required; see [architecture.md](architecture.md#http-stack-requirements).
 3. Default output resolution: 1080p30 or 720p30. Assumed: 1080p30, configurable per server. Changing it requires re-transcoding the library.
 4. Third-party libraries for Argon2id, JWT verification and QR codes (Bouncy Castle, Nimbus JOSE, ZXing core), or hand-written versions. Assumed: use the libraries.
