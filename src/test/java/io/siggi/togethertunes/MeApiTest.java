@@ -410,4 +410,91 @@ class MeApiTest {
             }
         }
     }
+
+    // ------------------------------------------------------------------ guest use
+
+    private HttpResponse<String> getFrom(String path, String cookie, String forwardedFor) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .header("X-Forwarded-For", forwardedFor);
+        if (cookie != null) {
+            b.header("Cookie", cookie);
+        }
+        HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+        assertFalse(r.body().contains(forwardedFor), "no IP in responses: " + r.body());
+        return r;
+    }
+
+    private long lastSeen(String guestId) throws Exception {
+        return database.read(c -> {
+            try (var ps = c.prepareStatement("SELECT last_seen_at FROM guests WHERE id = ?")) {
+                ps.setString(1, guestId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    @Test
+    void gidCookieSlidesAndIpLastFollowsTheClient() throws Exception {
+        HttpResponse<String> r = send("POST", "/api/me/guest", null, null);
+        assertEquals(201, r.statusCode(), r.body());
+        String gid = cookie(r, "gid");
+        String id = JsonParser.parseString(r.body()).getAsJsonObject().get("id").getAsString();
+        long created = lastSeen(id);
+
+        // Used again within a minute: no cookie, nothing written.
+        clock.advance(30_000);
+        HttpResponse<String> soon = send("GET", "/api/me", null, gid);
+        assertEquals(id, JsonParser.parseString(soon.body()).getAsJsonObject().get("id").getAsString());
+        assertNull(setCookie(soon, "gid"), "not re-sent within a minute");
+        assertEquals(created, lastSeen(id));
+
+        // After a minute: the same token comes back with a fresh one-year Max-Age.
+        clock.advance(60_000);
+        HttpResponse<String> later = send("GET", "/api/me", null, gid);
+        assertEquals(List.of(gid + "; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax; Secure"),
+                later.headers().allValues("Set-Cookie"));
+        assertEquals(clock.millis(), lastSeen(id));
+
+        // Static files never resolve the actor, so they neither slide nor set cookies.
+        clock.advance(2 * 60_000);
+        HttpResponse<String> file = send("GET", "/test/ws-echo.html", null, gid);
+        assertEquals(200, file.statusCode());
+        assertTrue(file.headers().allValues("Set-Cookie").isEmpty());
+
+        // The guest's latest address is recorded (for ip.view), never shown.
+        getFrom("/api/me", gid, "198.51.100.23");
+        assertEquals("198.51.100.23", ipLast(id));
+    }
+
+    @Test
+    void ipModeGuestKeepsItsIdentityAcrossIpv6InterfaceIds() throws Exception {
+        settings.set(Settings.GUESTS_IDENTIFY_BY, GuestIdentity.IP);
+        HttpRequest create = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/api/me/guest"))
+                .POST(HttpRequest.BodyPublishers.noBody()).header("Origin", PUBLIC_BASE_URL)
+                .header("X-Forwarded-For", "2001:db8:7:8::1").build();
+        HttpResponse<String> r = http.send(create, HttpResponse.BodyHandlers.ofString());
+        assertEquals(201, r.statusCode(), r.body());
+        assertNull(setCookie(r, "gid"));
+        String id = JsonParser.parseString(r.body()).getAsJsonObject().get("id").getAsString();
+        assertEquals("2001:db8:7:8:0:0:0:1", normalised(ipLast(id)));
+
+        // Same /64, another interface ID: the same guest, and ip_last follows.
+        JsonObject me = JsonParser.parseString(getFrom("/api/me", null, "2001:db8:7:8:aaaa:bbbb:cccc:dddd").body())
+                .getAsJsonObject();
+        assertEquals(id, me.get("id").getAsString());
+        assertEquals("2001:db8:7:8:aaaa:bbbb:cccc:dddd", normalised(ipLast(id)));
+        // Another /64, or IPv4: someone else (anonymous until they act).
+        assertEquals("anonymous", JsonParser.parseString(getFrom("/api/me", null, "2001:db8:7:9::1").body())
+                .getAsJsonObject().get("kind").getAsString());
+        assertEquals("anonymous", JsonParser.parseString(getFrom("/api/me", null, "198.51.100.23").body())
+                .getAsJsonObject().get("kind").getAsString());
+    }
+
+    /** An IPv6 literal in full uncompressed lowercase form, so the test doesn't depend on how SiggiHTTP prints it. */
+    private static String normalised(String ip) throws Exception {
+        return java.net.InetAddress.getByName(ip).getHostAddress();
+    }
 }

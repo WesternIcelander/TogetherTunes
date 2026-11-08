@@ -237,4 +237,76 @@ abstract class ActorResolverContract {
         String alice = user("alice", false);
         assertEquals(alice, ((Actor.User) resolve(null, session(alice, "cookie"), gid, null)).userId());
     }
+
+    // ------------------------------------------------------------------ guest use
+
+    /** {@code last_seen_at} and {@code ip_last} of a guest. */
+    record Seen(long lastSeenAt, String ipLast) {
+    }
+
+    Seen seen(String guestId) throws SQLException {
+        return db.read(c -> {
+            try (var ps = c.prepareStatement("SELECT last_seen_at, ip_last FROM guests WHERE id = ?")) {
+                ps.setString(1, guestId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return new Seen(rs.getLong(1), rs.getString(2));
+                }
+            }
+        });
+    }
+
+    Actor resolveAt(long now, String gid, String ip) throws SQLException {
+        return new ActorResolver(db, settings, Clock.fixed(Instant.ofEpochMilli(now), ZoneOffset.UTC))
+                .resolve(new Credentials(null, null, gid, ip));
+    }
+
+    @Test
+    void usingACookieGuestRecordsLastSeenAndIp() throws SQLException {
+        String gid = Tokens.newToken();
+        String guestId = guest("cookie", Tokens.hash(gid), false); // last seen a day ago, no ip_last
+        assertEquals(guestId, ((Actor.Guest) resolve(null, null, gid, "203.0.113.7")).guestId());
+        assertEquals(new Seen(NOW, "203.0.113.7"), seen(guestId));
+
+        // Within a minute from the same address: nothing written.
+        resolveAt(NOW + 59_000, gid, "203.0.113.7");
+        assertEquals(new Seen(NOW, "203.0.113.7"), seen(guestId));
+        // A new address is recorded right away.
+        resolveAt(NOW + 30_000, gid, "2001:db8::42");
+        assertEquals(new Seen(NOW + 30_000, "2001:db8::42"), seen(guestId));
+        // Without a client IP, ip_last is kept.
+        resolveAt(NOW + 120_000, gid, null);
+        assertEquals(new Seen(NOW + 120_000, "2001:db8::42"), seen(guestId));
+    }
+
+    @Test
+    void usingAnIpGuestRecordsTheFullAddress() throws SQLException {
+        settings.set(Settings.GUESTS_IDENTIFY_BY, GuestIdentity.IP);
+        String guestId = guest("ip", GuestKeys.ipKeyHash("2001:db8:1:2::1"), false);
+        resolve(null, null, null, "2001:db8:1:2::1");
+        assertEquals(new Seen(NOW, "2001:db8:1:2::1"), seen(guestId));
+        // Same /64, rotated interface ID: same guest, the address it now uses.
+        assertEquals(guestId, ((Actor.Guest) resolveAt(NOW + 1_000, null, "2001:db8:1:2:abcd::9")).guestId());
+        assertEquals(new Seen(NOW + 1_000, "2001:db8:1:2:abcd::9"), seen(guestId));
+    }
+
+    @Test
+    void bannedAndUnresolvedGuestsAreHandled() throws SQLException {
+        String gid = Tokens.newToken();
+        String banned = guest("cookie", Tokens.hash(gid), true);
+        resolve(null, null, gid, "203.0.113.9");
+        assertEquals(new Seen(NOW, "203.0.113.9"), seen(banned), "banned guests are recorded too (for ip.view)");
+
+        // A user with a stray gid cookie doesn't touch the guest.
+        String gid2 = Tokens.newToken();
+        String other = guest("cookie", Tokens.hash(gid2), false);
+        Seen before = seen(other);
+        String alice = user("alice", false);
+        resolve(null, session(alice, "cookie"), gid2, "203.0.113.10");
+        assertEquals(before, seen(other));
+        // Nor does a request while guests are disabled.
+        settings.set(Settings.GUESTS_ENABLED, false);
+        resolve(null, null, gid2, "203.0.113.10");
+        assertEquals(before, seen(other));
+    }
 }

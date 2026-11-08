@@ -38,10 +38,12 @@ import java.util.Objects;
  *
  * <p>Using a session slides its expiry ({@link Sessions#touch}, at most once a minute); over
  * HTTP, a slid {@code cookie} session also gets its {@code sid} cookie re-sent with a fresh
- * {@code Max-Age}, so the browser keeps it as long as the server does. Otherwise resolution only
- * reads: it never creates a guest (that happens lazily on the first action that needs an
- * identity, {@link Guests#requireIdentity}) and never updates a guest's {@code last_seen_at}/{@code ip_last} (the guest steps of
- * M1 do that).
+ * {@code Max-Age}, so the browser keeps it as long as the server does. Likewise using a guest
+ * records it ({@link Guests#touch}: {@code last_seen_at} at most once a minute, {@code ip_last}
+ * whenever the client IP changed), and over HTTP a recorded {@code cookie} guest gets its
+ * {@code gid} cookie re-sent with a fresh one-year {@code Max-Age}. Resolution never creates a
+ * guest: that happens lazily on the first action that needs an identity
+ * ({@link Guests#requireIdentity}).
  *
  * <p>Over HTTP, {@link #hook()} resolves lazily: the actor is looked up the first time
  * {@link #actor(Request)} is called for a request and then reused, so static files never touch
@@ -113,8 +115,11 @@ public final class ActorResolver {
         this.secureCookies = secureCookies;
     }
 
-    /** An actor, and whether its {@code sid} session's expiry just slid (so the cookie is re-sent). */
-    private record Resolved(Actor actor, boolean cookieSlid) {
+    /**
+     * An actor, and the {@code Set-Cookie} value to re-send because its {@code sid} session or
+     * {@code gid} guest just slid ({@code null}: none).
+     */
+    private record Resolved(Actor actor, String setCookie) {
     }
 
     /**
@@ -135,37 +140,45 @@ public final class ActorResolver {
             if (user == null) {
                 throw new HttpError(401, "invalid_token", "The bearer token is invalid or expired");
             }
-            return new Resolved(user, false);
+            return new Resolved(user, null);
         }
         if (Tokens.isWellFormed(credentials.sessionCookie())) {
             SessionUser found = findUser(credentials.sessionCookie(), Actor.Via.COOKIE, now);
             if (found != null) {
-                return new Resolved(found.user(), found.slid());
+                return new Resolved(found.user(),
+                        found.slid() ? Sessions.cookie(credentials.sessionCookie(), secureCookies) : null);
             }
         }
         boolean wantGuestCookie = Tokens.isWellFormed(credentials.guestCookie());
         if (!wantGuestCookie && credentials.clientIp() == null) {
-            return new Resolved(Actor.ANONYMOUS, false);
+            return new Resolved(Actor.ANONYMOUS, null);
         }
         if (!settings.guestsEnabled()) {
-            return new Resolved(Actor.ANONYMOUS, false);
+            return new Resolved(Actor.ANONYMOUS, null);
         }
         if (wantGuestCookie) {
-            Actor.Guest guest = findGuest(GuestIdentity.COOKIE, Tokens.hash(credentials.guestCookie()));
-            if (guest != null) {
-                return new Resolved(guest, false);
+            GuestRow row = findGuest(GuestIdentity.COOKIE, Tokens.hash(credentials.guestCookie()));
+            if (row != null) {
+                boolean touched = touch(row, credentials.clientIp(), now);
+                return new Resolved(row.guest(),
+                        touched ? Guests.cookie(credentials.guestCookie(), secureCookies) : null);
             }
         }
         if (credentials.clientIp() != null && settings.guestsIdentifyBy() == GuestIdentity.IP) {
             String keyHash = GuestKeys.ipKeyHash(credentials.clientIp());
             if (keyHash != null) {
-                Actor.Guest guest = findGuest(GuestIdentity.IP, keyHash);
-                if (guest != null) {
-                    return new Resolved(guest, false);
+                GuestRow row = findGuest(GuestIdentity.IP, keyHash);
+                if (row != null) {
+                    touch(row, credentials.clientIp(), now);
+                    return new Resolved(row.guest(), null);
                 }
             }
         }
-        return new Resolved(Actor.ANONYMOUS, false);
+        return new Resolved(Actor.ANONYMOUS, null);
+    }
+
+    private boolean touch(GuestRow row, String clientIp, long now) throws SQLException {
+        return Guests.touch(db, row.guest().guestId(), row.lastSeenAt(), row.ipLast(), clientIp, now);
     }
 
     /** A user found by session token; {@code slid} if this use moved the session's expiry. */
@@ -196,14 +209,19 @@ public final class ActorResolver {
         return new SessionUser(row.user(), slid);
     }
 
-    private Actor.Guest findGuest(GuestIdentity kind, String keyHash) throws SQLException {
+    /** A guest found by key, with what {@link Guests#touch} needs. */
+    private record GuestRow(Actor.Guest guest, long lastSeenAt, String ipLast) {
+    }
+
+    private GuestRow findGuest(GuestIdentity kind, String keyHash) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement(
-                    "SELECT id, banned FROM guests WHERE key_hash = ? AND kind = ?")) {
+                    "SELECT id, banned, last_seen_at, ip_last FROM guests WHERE key_hash = ? AND kind = ?")) {
                 ps.setString(1, keyHash);
                 ps.setString(2, kind.wireName());
                 try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? new Actor.Guest(rs.getString(1), kind, rs.getInt(2) != 0) : null;
+                    return rs.next() ? new GuestRow(new Actor.Guest(rs.getString(1), kind, rs.getInt(2) != 0),
+                            rs.getLong(3), rs.getString(4)) : null;
                 }
             }
         });
@@ -270,8 +288,8 @@ public final class ActorResolver {
                 try {
                     Resolved resolved = resolver.resolveFull(credentials);
                     actor = resolved.actor();
-                    if (resolved.cookieSlid() && !response.committed()) {
-                        response.setCookie(Sessions.cookie(credentials.sessionCookie(), resolver.secureCookies));
+                    if (resolved.setCookie() != null && !response.committed()) {
+                        response.setCookie(resolved.setCookie());
                     }
                 } catch (HttpError e) {
                     error = e;

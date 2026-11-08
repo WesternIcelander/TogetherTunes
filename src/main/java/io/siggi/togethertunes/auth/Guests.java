@@ -33,16 +33,25 @@ import java.util.function.Supplier;
  *   <li><b>IP mode:</b> the key is the client IP ({@link GuestKeys}); two requests racing to
  *       create the same IP guest end up with the same row.</li>
  * </ul>
- * Both modes record the creating request's IP in {@code ip_last}, which only {@code IpAccess}
- * reads; {@link GuestView} has no IP field ({@code docs/auth.md#ip-address-policy}).
+ * Both modes record the creating request's IP in {@code ip_last}, and {@link ActorResolver} keeps
+ * it (and {@code last_seen_at}) current through {@link #touch} whenever the guest is used; in IP
+ * mode that is the full address, while the key is only its /64 for IPv6. Only {@code IpAccess}
+ * reads {@code ip_last}; {@link GuestView} has no IP field ({@code docs/auth.md#ip-address-policy}).
+ * The {@code gid} cookie slides: it is re-sent with a fresh one-year {@code Max-Age} when its
+ * guest's use is recorded.
  *
  * <p>Names: without a chosen name a guest gets a generated one ({@code name_chosen = 0}); with
  * {@code guests.allowCustomNames} on, a name can be given at creation and changed later
  * ({@link #validCustomName}).
  */
 public final class Guests {
-    /** Lifetime of the {@code gid} cookie: one year. */
+    /** Lifetime of the {@code gid} cookie: one year, sliding (re-sent on use, see {@link ActorResolver}). */
     public static final long COOKIE_MAX_AGE_SECONDS = 365L * 24 * 60 * 60;
+    /**
+     * A guest's use is recorded ({@code last_seen_at}, and the {@code gid} cookie re-sent) at most
+     * this often; a changed client IP is recorded in {@code ip_last} right away.
+     */
+    public static final long TOUCH_INTERVAL_MS = 60_000;
     /** Shortest custom guest name, in code points. */
     public static final int NAME_MIN = 2;
     /** Longest custom guest name, in code points. */
@@ -224,6 +233,37 @@ public final class Guests {
     /** The guest with this id, or {@code null}. */
     public GuestView get(String guestId) throws SQLException {
         return db.read(c -> find(c, "id = ?", guestId, null));
+    }
+
+    /**
+     * Records a use of a guest: {@code last_seen_at = now}, and {@code ip_last = clientIp} (unless
+     * {@code clientIp} is {@code null}). Does nothing if the guest was seen less than
+     * {@link #TOUCH_INTERVAL_MS} ago from the same IP. Conditional on the {@code last_seen_at} and
+     * {@code ip_last} the caller read, so concurrent requests write once.
+     *
+     * @return whether the row was updated
+     */
+    static boolean touch(Database db, String guestId, long lastSeenAt, String ipLast, String clientIp, long now)
+            throws SQLException {
+        boolean ipChanged = clientIp != null && !clientIp.equals(ipLast);
+        if (!ipChanged && now - lastSeenAt < TOUCH_INTERVAL_MS) {
+            return false;
+        }
+        String ip = clientIp != null ? clientIp : ipLast;
+        return db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE guests SET last_seen_at = ?, ip_last = ? WHERE id = ? AND last_seen_at = ?"
+                            + " AND " + (ipLast == null ? "ip_last IS NULL" : "ip_last = ?"))) {
+                ps.setLong(1, Math.max(now, lastSeenAt));
+                ps.setString(2, ip);
+                ps.setString(3, guestId);
+                ps.setLong(4, lastSeenAt);
+                if (ipLast != null) {
+                    ps.setString(5, ipLast);
+                }
+                return ps.executeUpdate() > 0;
+            }
+        });
     }
 
     private GuestView findByKey(GuestIdentity kind, String keyHash) throws SQLException {
