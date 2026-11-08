@@ -90,7 +90,8 @@ Rest of the skeleton:
 
 **Done when:**
 
-- [ ] Server starts against SQLite and against PostgreSQL; migrations apply on both.
+- [x] Server starts against SQLite and against PostgreSQL; migrations apply on both.
+  - Checked 2026-11-08 at `e40934f`: `mvn verify` passes (263 unit + 59 integration tests, incl. `PostgresMigrationIT`, `SchemaEquivalenceIT`). The shaded jar started from a fresh data dir with SQLite (default `data/db/media.db`) and with PostgreSQL 16 (`postgres:16-alpine` in Docker, `TOGETHERTUNES_DB_URL`): each run created the data dir layout and `secret.key`, applied `0001_initial_schema` (26 tables, one `schema_migrations` row), served `/test/ws-echo.html` with 200; a second start on each applied nothing and reused the key. No code changes needed.
 - [ ] Test page loads.
 - [ ] Test WebSocket echoes.
 - [ ] A Range request returns a correct `206`.
