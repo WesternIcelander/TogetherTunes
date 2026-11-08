@@ -18,7 +18,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 | GET | `/api/auth/providers` | |
 | GET | `/auth/oidc/{slug}/start?intent=login\|link`, `/auth/oidc/{slug}/callback` | |
 | GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}`. For a user or guest it includes the actor fields (`kind, id, name, isGuest`) |
-| POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it |
+| POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it. Returns the guest (`201` if created, `200` if it already existed) with a fresh `identityTicket` (see [WebSocket](#websocket)) |
 | PATCH | `/api/me/guest` | Rename (custom names only) |
 | POST | `/api/me/password` | `{currentPassword, newPassword}`: change your own password (replaces a temporary one; logs out your other sessions) |
 | POST | `/api/me/merge-guest` | After login: merge the guest held in this browser's cookie into the account |
