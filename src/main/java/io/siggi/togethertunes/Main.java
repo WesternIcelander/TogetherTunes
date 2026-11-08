@@ -3,6 +3,7 @@ package io.siggi.togethertunes;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
@@ -11,20 +12,22 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.sql.SQLException;
 
 /**
  * Entry point of the runnable jar.
  *
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
- * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then starts
- * the HTTP server ({@link WebServer}) and runs until the process is stopped.
+ * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then opens
+ * the database ({@link Database}), starts the HTTP server ({@link WebServer}) and runs until the
+ * process is stopped.
  */
 public final class Main {
     /** Exit status for an invalid configuration. */
     static final int EXIT_CONFIG = 1;
     /** Exit status for bad command-line usage. */
     static final int EXIT_USAGE = 2;
-    /** Exit status when the HTTP server can't start (e.g. the port is taken). */
+    /** Exit status when the database or the HTTP server can't start (e.g. the port is taken). */
     static final int EXIT_STARTUP = 3;
 
     /** Outcome of {@link #load}: an exit status, and the config when the status is 0. */
@@ -40,6 +43,14 @@ public final class Main {
             System.exit(startup.status());
         }
         Config config = startup.config();
+        Database database;
+        try {
+            database = Database.open(config.dbUrl());
+        } catch (SQLException | RuntimeException e) {
+            System.err.println("Could not open the database: " + e.getMessage());
+            System.exit(EXIT_STARTUP);
+            return;
+        }
         // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
         Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
         StaticFiles staticFiles;
@@ -47,6 +58,7 @@ public final class Main {
             staticFiles = StaticFiles.fromClasspath(Main.class.getClassLoader(), tmpDir);
         } catch (IOException e) {
             System.err.println("Could not set up the web UI: " + e.getMessage());
+            database.close();
             System.exit(EXIT_STARTUP);
             return;
         }
@@ -57,12 +69,14 @@ public final class Main {
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
             staticFiles.close();
+            database.close();
             System.exit(EXIT_STARTUP);
             return;
         }
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
             staticFiles.close();
+            database.close();
         }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
         web.join();
