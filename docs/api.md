@@ -6,7 +6,7 @@ JSON over HTTPS. A request is made by a user (`sid` cookie or `Authorization: Be
 - List endpoints use cursor pagination: `?cursor=…&limit=…` → `{ items, nextCursor }`.
 - **No response contains an IP address**, except the endpoints marked *ip.view*.
 
-Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }`.
+Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (`name`: a user's display name or a guest's name; `isGuest` drives the guest badge). Nothing else about an actor (no IP, no guest mode or ban flag) is in this form.
 
 ## Auth, account, guest identity
 
@@ -17,7 +17,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }`.
 | POST | `/api/auth/token` | Create a bearer token, from `{username, password}` or for the already logged-in user |
 | GET | `/api/auth/providers` | |
 | GET | `/auth/oidc/{slug}/start?intent=login\|link`, `/auth/oidc/{slug}/callback` | |
-| GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}` |
+| GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}`. For a user or guest it includes the actor fields (`kind, id, name, isGuest`) |
 | POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it |
 | PATCH | `/api/me/guest` | Rename (custom names only) |
 | POST | `/api/me/password` | `{currentPassword, newPassword}`: change your own password (replaces a temporary one; logs out your other sessions) |
