@@ -9,6 +9,7 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 - **Java 21**, Maven. Use virtual threads for request handlers and streaming connections.
 - **Project coordinates:** Maven `io.siggi:TogetherTunes`, Java base package `io.siggi.togethertunes`. (An older predecessor with the same name exists, but never had an artifact ID; this is a fresh project.)
 - **No web framework.** HTTP goes through the author's own HTTP stack, `io.siggi:SiggiHTTP:1.10`, with `io.siggi:SimpleWebsocket` for WebSocket (see `docs/architecture.md#http-stack-requirements`). If it's missing a capability, add it there; don't bring in Netty, Jetty, Spring or similar.
+  - **Never call `HTTPResponse.handleRequestWithFile` in SiggiHTTP 1.10**, directly or through `VirtualFileSystemResponder`. A bug lets an `OPTIONS` request truncate or overwrite the file; it's fixed in 1.11. Serve files with `returnFile(file, contentType)` (which handles Range) after checking the method yourself.
 - **Database:** plain JDBC, and every schema change needs both `db/migrations/sqlite/` and `db/migrations/postgres/` versions. Store times as epoch ms in `BIGINT` and IDs as UUIDv7 `TEXT`.
 - **Frontend:** vanilla TypeScript, no framework, no bundler. `tsc` compiles it to ES modules during the Maven build (`frontend-maven-plugin`, so no system Node is needed), and the output is served as static files.
 - **Config:** one JSON file (parsed with Gson) plus environment-variable overrides. Default output profile is 720p30.

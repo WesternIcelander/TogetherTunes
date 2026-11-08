@@ -12,7 +12,8 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Work out how Maven resolves it: declare the author's repository in `pom.xml` (the `<id>` must match the `<server>`/mirror entry in `~/.m2/settings.xml` if credentials are needed; never commit credentials). It already resolves from the local repository on this machine.
 - [x] Settle the open questions in `docs/README.md#open-questions` (all resolved 2026-11-08; see the notes log and the README).
 - [ ] Confirm the HTTP stack's capabilities with tests in M0 (Range, endless streaming responses, WebSocket, multi-GB request bodies, per-route hooks). First look at the sources (2026-11-08):
-  - Range: `HTTPResponse` parses `Range` and serves partial content. Check open-ended, suffix (`bytes=-N`), `416`, `HEAD` and `Content-Range`.
+  - **Don't use `handleRequestWithFile`** (nor `VirtualFileSystemResponder`, which calls it): in 1.10 an `OPTIONS` request falls through to the `PUT` branch and can truncate or overwrite the file. Fixed in 1.11.
+  - Range: `HTTPResponse.returnFile(...)` parses `Range` and serves partial content. Check open-ended, suffix (`bytes=-N`), `416`, `HEAD` and `Content-Range`.
   - Streaming responses: chunked by default (`HTTPResponse`, `setContentLength(-1)`). The `.ts` output needs a **close-delimited** body (no `Content-Length`, no `Transfer-Encoding`), like VRCDN; check SiggiHTTP can do that, and add it if not. Check how quickly a disconnect surfaces as a write failure.
   - WebSocket: use **`io.siggi:SimpleWebsocket:1.1-SNAPSHOT`**, which fixes both issues we reported against 1.0. SiggiHTTP is now a `provided` dependency (built against 1.10), so we declare SiggiHTTP ourselves. It adds `maxMessageSize` (closes with 1009). The snapshot is only in the local `~/.m2` (not on repo.siggi.io or GitHub yet). Behaviour a blocking `read()` loop needs to know about:
     - `read()` answers pings itself.
@@ -43,7 +44,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
   - [ ] Switch to the released SimpleWebsocket 1.1 once it's published (the snapshot only resolves on this machine, so CI and the Docker image need the release).
   - [ ] Streaming multi-GB request bodies to disk.
 - [ ] Client IP: use SiggiHTTP's resolution, with `http.trustedProxies` (CIDRs, IPv4 and IPv6) fed into `isIPTrusted`; unit-test the CIDR matching. Implicit loopback/Cloudflare trust is accepted for now.
-- [ ] Static file serving for `web/` (content types, caching headers, no directory traversal).
+- [ ] Static file serving for `web/` (content types, caching headers, no directory traversal), using `returnFile`, never `handleRequestWithFile` or `VirtualFileSystemResponder`. Test that `OPTIONS`, `PUT` and `DELETE` leave files untouched.
 - [ ] DB layer:
   - [ ] `Dialect` interface (upsert, `RETURNING`, case-insensitive search) with SQLite and PostgreSQL implementations.
   - [ ] Connection handling: SQLite WAL / `foreign_keys=ON` / `busy_timeout=5000`, single write connection (or small pool with retry); a small hand-written PostgreSQL pool (no pool library).
@@ -121,7 +122,7 @@ Legend: `[ ]` todo · `[x]` done · `[~]` in progress / partially done · `[-]` 
 - [ ] Playlists + entries (fractional positions, duplicates allowed, move with `beforeEntryId`).
 - [ ] Sharing (`/api/shares`), adds to recipient's library, notifications (`seen`).
 - [ ] `library.viewAll` endpoints for other users' libraries and playlists.
-- [ ] Media serving `/media/{id}/{audio.m4a|mezz.mp4|original|cover.jpg}` with Range (correct content type for the original); media access rules incl. `guests.download` and the current/next `Set<itemId>` (stubbed room state until M3).
+- [ ] Media serving `/media/{id}/{audio.m4a|mezz.mp4|original|cover.jpg}` with Range via `returnFile` (not `handleRequestWithFile`; correct content type for the original); media access rules incl. `guests.download` and the current/next `Set<itemId>` (stubbed room state until M3).
 
 ### Retention
 - [ ] `last_referenced_at` maintenance on every unreference event and on creation.
@@ -255,3 +256,4 @@ Record decisions, deviations from `docs/`, and answers to open questions here (n
   - Config file is **JSON**.
   - Coordinates `io.siggi:TogetherTunes`, package `io.siggi.togethertunes`.
 - 2026-11-08: SimpleWebsocket 1.1-SNAPSHOT (local `~/.m2` only) fixes our two reports: SiggiHTTP 1.10 as `provided`, and `maxMessageSize`. Use it, and test it in real browsers in M0 before 1.1 is released.
+- 2026-11-08: SiggiHTTP 1.10's `handleRequestWithFile` has a bug where `OPTIONS` can truncate or overwrite the file (fixed in 1.11). Never use it or `VirtualFileSystemResponder`; use `returnFile`. Consider moving to 1.11 when it's released.
