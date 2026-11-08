@@ -308,12 +308,7 @@ public final class Accounts {
 
     /** Takes the lock that serialises account creation (see the class comment). */
     private static void lockAccountCreation(Connection c) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("UPDATE roles SET builtin = 1 WHERE name = ? AND builtin = 1")) {
-            ps.setString(1, BuiltinRoles.ADMIN);
-            if (ps.executeUpdate() != 1) {
-                throw new IllegalStateException("The built-in admin role is missing (BuiltinRoles.ensure not run)");
-            }
-        }
+        BuiltinRoles.lockAdminRow(c);
     }
 
     private static boolean usernameTaken(Connection c, String username) throws SQLException {
