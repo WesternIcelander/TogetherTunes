@@ -4,6 +4,7 @@ import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
@@ -19,7 +20,7 @@ import java.sql.SQLException;
  *
  * <p>Usage: {@code java -jar TogetherTunes.jar [--config <file>]}. Loads and validates the
  * configuration (see {@link ConfigLoader}) and exits with status 1 if it is invalid, then opens
- * the database ({@link Database}), starts the HTTP server ({@link WebServer}) and runs until the
+ * the database ({@link Database}) and applies pending migrations ({@link MigrationRunner}), starts the HTTP server ({@link WebServer}) and runs until the
  * process is stopped.
  */
 public final class Main {
@@ -48,6 +49,14 @@ public final class Main {
             database = Database.open(config.dbUrl());
         } catch (SQLException | RuntimeException e) {
             System.err.println("Could not open the database: " + e.getMessage());
+            System.exit(EXIT_STARTUP);
+            return;
+        }
+        try {
+            MigrationRunner.migrate(database);
+        } catch (SQLException | RuntimeException e) {
+            System.err.println("Could not migrate the database: " + e.getMessage());
+            database.close();
             System.exit(EXIT_STARTUP);
             return;
         }
