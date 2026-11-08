@@ -188,7 +188,7 @@ class RouterTest {
 
     @Test
     void placeholderHooksPassThrough() throws Exception {
-        Router router = new Router(Hooks.authenticate(), Hooks.csrf());
+        Router router = new Router(Hooks.csrf());
         router.post("/api/auth/login", (rq, rs) -> rs.json(Map.of("ok", true)), Hooks.rateLimit("login"));
         start(router);
         HttpResponse<String> r = send(req("/api/auth/login").POST(BodyPublishers.noBody()));

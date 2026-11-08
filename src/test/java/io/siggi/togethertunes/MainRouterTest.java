@@ -8,10 +8,14 @@ import io.siggi.simplewebsocket.SimpleWebsocket;
 import io.siggi.simplewebsocket.WebSocketConnector;
 import io.siggi.simplewebsocket.WebSocketMessage;
 import io.siggi.simplewebsocket.WebsocketHeaders;
+import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -36,6 +40,7 @@ class MainRouterTest {
     Path dir;
 
     private StaticFiles staticFiles;
+    private Database database;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
 
@@ -44,13 +49,17 @@ class MainRouterTest {
         Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", PUBLIC_BASE_URL), 4, dir)
                 .load(null).config();
         staticFiles = StaticFiles.fromClasspath(MainRouterTest.class.getClassLoader(), dir);
-        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles), dir.toFile());
+        database = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
+        MigrationRunner.migrate(database);
+        ActorResolver actors = new ActorResolver(database, new Settings(database, config));
+        server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors), dir.toFile());
     }
 
     @AfterEach
     void tearDown() {
         server.close();
         staticFiles.close();
+        database.close();
     }
 
     private HttpResponse<String> get(String path) throws IOException, InterruptedException {

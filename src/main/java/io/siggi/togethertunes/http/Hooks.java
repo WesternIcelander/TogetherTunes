@@ -1,20 +1,13 @@
 package io.siggi.togethertunes.http;
 
 /**
- * The standard hooks. In M0 these are placeholders that only call the next step; M1 fills them in
- * (actor resolution, the CSRF {@code Origin} check and rate limiting from {@code docs/auth.md}),
- * without changing how routes use them.
+ * The standard hooks. Some are still placeholders that only call the next step; M1 fills them in
+ * (the CSRF {@code Origin} check and rate limiting from {@code docs/auth.md}) without changing how
+ * routes use them. Actor resolution is {@code auth.ActorResolver#hook()}, since it needs the
+ * database.
  */
 public final class Hooks {
     private Hooks() {
-    }
-
-    /**
-     * Router-wide: resolves the actor (user from {@code sid} cookie or bearer token, guest, or
-     * anonymous) and stores it on the request. Placeholder until M1 "Actor resolution".
-     */
-    public static Hook authenticate() {
-        return Placeholder.AUTHENTICATE;
     }
 
     /**
@@ -37,7 +30,7 @@ public final class Hooks {
     }
 
     private enum Placeholder implements Hook {
-        AUTHENTICATE, CSRF;
+        CSRF;
 
         @Override
         public void handle(Request request, Response response, Handler next) throws Exception {

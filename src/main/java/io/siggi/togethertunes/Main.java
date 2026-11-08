@@ -1,5 +1,6 @@
 package io.siggi.togethertunes;
 
+import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
@@ -14,6 +15,7 @@ import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
+import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
@@ -94,9 +96,10 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
+        ActorResolver actors = new ActorResolver(database, new Settings(database, config));
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -134,13 +137,14 @@ public final class Main {
     }
 
     /**
-     * The application's routes. Router-wide hooks: actor resolution, then the CSRF check
-     * (placeholders until M1). The web UI is the catch-all {@code GET /{path...}} route, so every
+     * The application's routes. Router-wide hooks: actor resolution ({@link ActorResolver#hook()};
+     * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check (placeholder
+     * until M1 "CSRF"). The web UI is the catch-all {@code GET /{path...}} route, so every
      * more specific route (API, media, live, WebSocket) wins over it. {@link EchoEndpoint} is the
      * test socket used by the test page {@code /test/ws-echo.html}.
      */
-    static Router router(Config config, StaticFiles staticFiles) {
-        Router router = new Router(Hooks.authenticate(), Hooks.csrf());
+    static Router router(Config config, StaticFiles staticFiles, ActorResolver actors) {
+        Router router = new Router(actors.hook(), Hooks.csrf());
         WebSockets webSockets = new WebSockets(config.publicBaseUrl());
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

@@ -38,7 +38,7 @@ public final class Router implements HTTPResponder {
 
     /**
      * @param globalHooks hooks run for every route, in this order, before the route's own hooks
-     *                    (normally {@link Hooks#authenticate()} then {@link Hooks#csrf()})
+     *                    (normally {@code ActorResolver.hook()} then {@link Hooks#csrf()})
      */
     public Router(Hook... globalHooks) {
         this.globalHooks = List.of(globalHooks);
