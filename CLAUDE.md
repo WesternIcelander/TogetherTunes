@@ -40,7 +40,7 @@ SiggiHTTP and SimpleWebsocket are separate projects, each with its own Claude se
 - `[x]`: done, tests pass, committed and pushed.
 - `[?]`: **implemented, awaiting manual verification.** Used for steps marked *(manual)* (real browsers, phones, VRChat, real OIDC providers). Do everything an agent can (test pages, scripts, written test instructions under the step), then mark it `[?]`; this counts as success for the run. Siggi flips it to `[x]` after checking.
 - If a step can't be finished, leave it `[ ]`, add an indented note explaining why, and stop.
-- **Gates:** each milestone ends with a gate step. It ticks itself only if every step in the milestone is `[x]` (otherwise it lists what's left). Either way, the run stops there for review.
+- **Gates:** each milestone ends with a gate step. It ticks itself only if every step in the milestone is `[x]` (otherwise it lists what's left), except for steps that PLAN.md explicitly says don't block the gate. Either way, the run stops there for review.
 - **When a run stops** (gate reached, or a step failed or is waiting on upstream), the session that started the run sends Siggi a push notification (`PushNotification`) saying which milestone or step it stopped at and why.
 
 ## Repository layout and git workflow
