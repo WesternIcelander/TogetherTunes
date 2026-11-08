@@ -42,7 +42,7 @@ We build against **SiggiHTTP 1.11-SNAPSHOT** and **SimpleWebsocket 1.1-SNAPSHOT*
 ## M0 — Skeleton
 
 - [x] Maven project (`pom.xml`): `io.siggi:TogetherTunes`, base package `io.siggi.togethertunes`, `maven.compiler.release` 21, single runnable jar (shade or assembly plugin, with `Main-Class`), Surefire for JUnit 5 (Failsafe for Testcontainers tests if they should run separately); package layout from `docs/architecture.md#code-layout-suggested`.
-- [ ] `.gitignore` for build output, `data/`, IDE files, `node/`, `node_modules/`.
+- [x] `.gitignore` for build output, `data/`, IDE files, `node/`, `node_modules/`.
 - [ ] Frontend build: TypeScript sources in `web/src`, compiled by `tsc` (strict, ES modules, no bundler) during `mvn package` via `frontend-maven-plugin` with pinned Node and TypeScript versions; compiled output plus static assets packaged so the server can serve them.
 - [ ] Config loading: JSON config file (Gson) + environment-variable overrides, `output.profile` defaulting to `720p30`, every key from `docs/architecture.md#configuration`; `http.publicBaseUrl` required; fail fast on bad values.
 - [ ] Integrate SiggiHTTP: router, request/response adapters, per-route hook chain (auth, CSRF, rate-limit placeholders). Request handlers on virtual threads.
