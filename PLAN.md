@@ -92,7 +92,8 @@ Rest of the skeleton:
 
 - [x] Server starts against SQLite and against PostgreSQL; migrations apply on both.
   - Checked 2026-11-08 at `e40934f`: `mvn verify` passes (263 unit + 59 integration tests, incl. `PostgresMigrationIT`, `SchemaEquivalenceIT`). The shaded jar started from a fresh data dir with SQLite (default `data/db/media.db`) and with PostgreSQL 16 (`postgres:16-alpine` in Docker, `TOGETHERTUNES_DB_URL`): each run created the data dir layout and `secret.key`, applied `0001_initial_schema` (26 tables, one `schema_migrations` row), served `/test/ws-echo.html` with 200; a second start on each applied nothing and reused the key. No code changes needed.
-- [ ] Test page loads.
+- [x] Test page loads.
+  - Checked 2026-11-08 at `e40934f`: `MainRouterTest`, `WebBuildTest`, `StaticFilesTest` pass. Shaded jar started on a fresh data dir: `GET /test/ws-echo.html` → 200 `text/html; charset=utf-8`, and the module it loads, `/js/test/ws-echo.js` (tsc output), → 200 `text/javascript; charset=utf-8`. No code changes needed.
 - [ ] Test WebSocket echoes.
 - [ ] A Range request returns a correct `206`.
 - [ ] **Gate M0:** check every step in M0. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
