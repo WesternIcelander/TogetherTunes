@@ -5,8 +5,8 @@ import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.http.Hooks;
 import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
-import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
@@ -40,27 +40,43 @@ public final class Main {
             System.exit(startup.status());
         }
         Config config = startup.config();
-        WebServer web;
+        // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
+        Path tmpDir = Path.of(System.getProperty("java.io.tmpdir"));
+        StaticFiles staticFiles;
         try {
-            // TODO(data dir step): use <data>/tmp once the data dir layout is created on startup.
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config),
-                    new File(System.getProperty("java.io.tmpdir")), config.trustedProxies());
+            staticFiles = StaticFiles.fromClasspath(Main.class.getClassLoader(), tmpDir);
         } catch (IOException e) {
-            System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
+            System.err.println("Could not set up the web UI: " + e.getMessage());
             System.exit(EXIT_STARTUP);
             return;
         }
-        Runtime.getRuntime().addShutdownHook(new Thread(web::close, "shutdown"));
+        WebServer web;
+        try {
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles),
+                    tmpDir.toFile(), config.trustedProxies());
+        } catch (IOException e) {
+            System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
+            staticFiles.close();
+            System.exit(EXIT_STARTUP);
+            return;
+        }
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            web.close();
+            staticFiles.close();
+        }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
         web.join();
     }
 
     /**
      * The application's routes. Router-wide hooks: actor resolution, then the CSRF check
-     * (placeholders until M1). Routes are added by later steps.
+     * (placeholders until M1). The web UI is the catch-all {@code GET /{path...}} route, so every
+     * more specific route (API, media, live) wins over it.
      */
-    static Router router(Config config) {
-        return new Router(Hooks.authenticate(), Hooks.csrf());
+    static Router router(Config config, StaticFiles staticFiles) {
+        Router router = new Router(Hooks.authenticate(), Hooks.csrf());
+        staticFiles.register(router);
+        return router;
     }
 
     /**
