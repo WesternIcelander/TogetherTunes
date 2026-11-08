@@ -1,0 +1,322 @@
+package io.siggi.togethertunes.settings;
+
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParseException;
+import com.google.gson.JsonParser;
+import com.google.gson.Strictness;
+import com.google.gson.stream.JsonReader;
+import com.google.gson.stream.JsonToken;
+import io.siggi.togethertunes.config.Config;
+import io.siggi.togethertunes.db.Database;
+import java.io.IOException;
+import java.io.StringReader;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+
+/**
+ * Server settings ({@code docs/auth.md#server-settings}), stored in the {@code settings} table
+ * as {@code (key, value_json)} rows and edited in the admin UI.
+ *
+ * <p>A setting without a row has its default; {@link #reset} deletes the row, so a later change
+ * of a default applies to every server that never changed that setting. A stored value that
+ * can't be parsed or no longer validates (e.g. after a downgrade) is logged and replaced by the
+ * default when read; rows with unknown keys are ignored. Values are validated on {@link #set},
+ * so the admin UI gets an {@link IllegalArgumentException} with a readable message.
+ *
+ * <p>Reads go to the database every time (no cache), so a change is seen at once everywhere and
+ * a {@code set} inside a transaction that rolls back leaves nothing behind. Calls inside a
+ * {@link Database#read}/{@link Database#write} callback join that transaction.
+ *
+ * <p>Default roles are not a setting: they are the {@code roles.is_default} flag.
+ */
+public final class Settings {
+    private static final System.Logger LOG = System.getLogger(Settings.class.getName());
+
+    // Accounts
+    public static final SettingKey<RegistrationMode> REGISTRATION_MODE = SettingKey.enumeration(
+            "registration.mode", RegistrationMode.class, RegistrationMode.CLOSED, RegistrationMode::wireName);
+
+    // Guests (docs/auth.md#guest-policy-server-settings)
+    public static final SettingKey<Boolean> GUESTS_ENABLED = SettingKey.bool("guests.enabled", true);
+    public static final SettingKey<GuestIdentity> GUESTS_IDENTIFY_BY = SettingKey.enumeration(
+            "guests.identifyBy", GuestIdentity.class, GuestIdentity.COOKIE, GuestIdentity::wireName);
+    public static final SettingKey<Boolean> GUESTS_ALLOW_CUSTOM_NAMES = SettingKey.bool("guests.allowCustomNames", false);
+    public static final SettingKey<Boolean> GUESTS_CAN_VOTE = SettingKey.bool("guests.canVote", true);
+    public static final SettingKey<Boolean> GUESTS_CAN_REQUEST_LIBRARY = SettingKey.bool("guests.canRequestLibrary", true);
+    public static final SettingKey<Boolean> GUESTS_CAN_UPLOAD = SettingKey.bool("guests.canUpload", false);
+    public static final SettingKey<Boolean> GUESTS_CAN_YOUTUBE = SettingKey.bool("guests.canYoutube", false);
+    public static final SettingKey<UploadQuota> GUESTS_UPLOAD_QUOTA = SettingKey.uploadQuota(
+            "guests.uploadQuota", new UploadQuota(3, 500L * 1024 * 1024));
+    public static final SettingKey<Boolean> GUESTS_DOWNLOAD = SettingKey.bool("guests.download", false);
+
+    // Library
+    public static final SettingKey<Boolean> YTDLP_ENABLED = SettingKey.bool("ytdlp.enabled", true);
+    public static final SettingKey<String> YTDLP_COOKIES_FILE = SettingKey.optionalString("ytdlp.cookiesFile");
+    public static final SettingKey<Integer> RETENTION_UNREFERENCED_DAYS = SettingKey.integer(
+            "retention.unreferencedDays", 14, 0, 36_500);
+    /** Default here is the documented 1800; {@link #Settings(Database, Config)} uses the config file's value. */
+    public static final SettingKey<Integer> INGEST_MAX_DURATION_SECONDS = SettingKey.integer(
+            "ingest.maxDurationSeconds", 1800, 1, Integer.MAX_VALUE);
+
+    // Outputs
+    public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
+    public static final SettingKey<Boolean> OUTPUTS_TS_ENABLED = SettingKey.bool("outputs.ts.enabled", true);
+    public static final SettingKey<Boolean> OUTPUTS_HLS_ENABLED = SettingKey.bool("outputs.hls.enabled", true);
+
+    // Overlay
+    public static final SettingKey<Boolean> OVERLAY_ENABLED = SettingKey.bool("overlay.enabled", false);
+
+    /** Every setting, in documentation order, by name. */
+    public static final Map<String, SettingKey<?>> KEYS;
+
+    static {
+        Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
+        for (SettingKey<?> k : List.of(REGISTRATION_MODE,
+                GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_CAN_VOTE,
+                GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
+                GUESTS_DOWNLOAD,
+                YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
+                OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
+                OVERLAY_ENABLED)) {
+            if (keys.put(k.name(), k) != null) {
+                throw new ExceptionInInitializerError("duplicate setting " + k.name());
+            }
+        }
+        KEYS = Collections.unmodifiableMap(keys);
+    }
+
+    private final Database db;
+    private final Map<SettingKey<?>, Object> defaults;
+
+    /** Settings with the built-in defaults. */
+    public Settings(Database db) {
+        this(db, Map.of());
+    }
+
+    /**
+     * Settings whose {@code ingest.maxDurationSeconds} default comes from the config file
+     * ({@code docs/architecture.md#configuration}); the admin UI can still override it.
+     */
+    public Settings(Database db, Config config) {
+        this(db, Map.of(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds()));
+    }
+
+    private Settings(Database db, Map<SettingKey<?>, Object> defaultOverrides) {
+        this.db = Objects.requireNonNull(db);
+        Map<SettingKey<?>, Object> d = new HashMap<>();
+        for (SettingKey<?> k : KEYS.values()) {
+            d.put(k, k.defaultValue());
+        }
+        defaultOverrides.forEach((k, v) -> d.put(k, validated(k, v)));
+        this.defaults = d;
+    }
+
+    private static <T> T validated(SettingKey<T> key, Object value) {
+        T typed = key.type().cast(value);
+        return key.decode(key.encode(typed));
+    }
+
+    /** The effective default of {@code key} on this server. */
+    public <T> T defaultValue(SettingKey<T> key) {
+        return key.type().cast(defaults.get(known(key)));
+    }
+
+    // ------------------------------------------------------------- generic access
+
+    /** The current value of {@code key}: the stored value, or the default. */
+    public <T> T get(SettingKey<T> key) throws SQLException {
+        known(key);
+        String json = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT value_json FROM settings WHERE key = ?")) {
+                ps.setString(1, key.name());
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+        return json == null ? defaultValue(key) : parseStored(key, json);
+    }
+
+    /**
+     * Stores {@code value} for {@code key}. {@code null} is allowed only for nullable settings.
+     *
+     * @throws IllegalArgumentException if the value is invalid
+     */
+    public <T> void set(SettingKey<T> key, T value) throws SQLException {
+        known(key);
+        String json = key.encode(value).toString();
+        db.write(c -> {
+            String sql = db.dialect().upsert("settings", List.of("key", "value_json"), List.of("key"),
+                    List.of("value_json"));
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setString(1, key.name());
+                ps.setString(2, json);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Removes the stored value, so {@code key} goes back to its default. */
+    public void reset(SettingKey<?> key) throws SQLException {
+        known(key);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM settings WHERE key = ?")) {
+                ps.setString(1, key.name());
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Every setting's current value, in {@link #KEYS} order, read in one query. */
+    public Map<SettingKey<?>, Object> all() throws SQLException {
+        Map<String, String> stored = db.read(c -> {
+            Map<String, String> rows = new HashMap<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT key, value_json FROM settings");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.put(rs.getString(1), rs.getString(2));
+                }
+            }
+            return rows;
+        });
+        Map<SettingKey<?>, Object> out = new LinkedHashMap<>();
+        for (SettingKey<?> k : KEYS.values()) {
+            String json = stored.get(k.name());
+            out.put(k, json == null ? defaults.get(k) : parseStored(k, json));
+        }
+        return Collections.unmodifiableMap(out);
+    }
+
+    /**
+     * Sets a setting by name from JSON text (for the admin API).
+     *
+     * @throws IllegalArgumentException for an unknown name, malformed JSON or an invalid value
+     */
+    public void setJson(String name, String json) throws SQLException {
+        SettingKey<?> key = KEYS.get(name);
+        if (key == null) {
+            throw new IllegalArgumentException("unknown setting: " + name);
+        }
+        setDecoded(key, parseJson(json));
+    }
+
+    private <T> void setDecoded(SettingKey<T> key, JsonElement json) throws SQLException {
+        set(key, key.decode(json));
+    }
+
+    private <T> T parseStored(SettingKey<T> key, String json) {
+        try {
+            return key.decode(parseJson(json));
+        } catch (IllegalArgumentException e) {
+            LOG.log(System.Logger.Level.WARNING, "Ignoring stored setting " + key.name() + " ("
+                    + e.getMessage() + "); using the default");
+            return key.type().cast(defaults.get(key));
+        }
+    }
+
+    /** Parses one complete, strict JSON value. */
+    private static JsonElement parseJson(String json) {
+        try (JsonReader reader = new JsonReader(new StringReader(json))) {
+            reader.setStrictness(Strictness.STRICT);
+            JsonElement element = JsonParser.parseReader(reader);
+            if (reader.peek() != JsonToken.END_DOCUMENT) {
+                throw new IllegalArgumentException("trailing data after the JSON value");
+            }
+            return element;
+        } catch (JsonParseException | IOException | IllegalStateException e) {
+            throw new IllegalArgumentException("malformed JSON: " + e.getMessage(), e);
+        }
+    }
+
+    private static <K extends SettingKey<?>> K known(K key) {
+        if (KEYS.get(key.name()) != key) {
+            throw new IllegalArgumentException("unknown setting: " + key.name());
+        }
+        return key;
+    }
+
+    // ------------------------------------------------------------- typed accessors
+
+    public RegistrationMode registrationMode() throws SQLException {
+        return get(REGISTRATION_MODE);
+    }
+
+    public boolean guestsEnabled() throws SQLException {
+        return get(GUESTS_ENABLED);
+    }
+
+    public GuestIdentity guestsIdentifyBy() throws SQLException {
+        return get(GUESTS_IDENTIFY_BY);
+    }
+
+    public boolean guestsAllowCustomNames() throws SQLException {
+        return get(GUESTS_ALLOW_CUSTOM_NAMES);
+    }
+
+    public boolean guestsCanVote() throws SQLException {
+        return get(GUESTS_CAN_VOTE);
+    }
+
+    public boolean guestsCanRequestLibrary() throws SQLException {
+        return get(GUESTS_CAN_REQUEST_LIBRARY);
+    }
+
+    public boolean guestsCanUpload() throws SQLException {
+        return get(GUESTS_CAN_UPLOAD);
+    }
+
+    public boolean guestsCanYoutube() throws SQLException {
+        return get(GUESTS_CAN_YOUTUBE);
+    }
+
+    public UploadQuota guestsUploadQuota() throws SQLException {
+        return get(GUESTS_UPLOAD_QUOTA);
+    }
+
+    public boolean guestsDownload() throws SQLException {
+        return get(GUESTS_DOWNLOAD);
+    }
+
+    public boolean ytdlpEnabled() throws SQLException {
+        return get(YTDLP_ENABLED);
+    }
+
+    /** The yt-dlp cookies file, or {@code null} for none. */
+    public String ytdlpCookiesFile() throws SQLException {
+        return get(YTDLP_COOKIES_FILE);
+    }
+
+    /** Days an unreferenced item is kept; 0 means never delete. */
+    public int retentionUnreferencedDays() throws SQLException {
+        return get(RETENTION_UNREFERENCED_DAYS);
+    }
+
+    public int ingestMaxDurationSeconds() throws SQLException {
+        return get(INGEST_MAX_DURATION_SECONDS);
+    }
+
+    public boolean outputsRtmpEnabled() throws SQLException {
+        return get(OUTPUTS_RTMP_ENABLED);
+    }
+
+    public boolean outputsTsEnabled() throws SQLException {
+        return get(OUTPUTS_TS_ENABLED);
+    }
+
+    public boolean outputsHlsEnabled() throws SQLException {
+        return get(OUTPUTS_HLS_ENABLED);
+    }
+
+    public boolean overlayEnabled() throws SQLException {
+        return get(OVERLAY_ENABLED);
+    }
+}
