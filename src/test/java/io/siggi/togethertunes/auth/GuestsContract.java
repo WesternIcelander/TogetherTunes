@@ -153,6 +153,62 @@ abstract class GuestsContract {
                 assertThrows(HttpError.class, () -> guests.rename(created.guest().id(), "Other", null)).code());
     }
 
+    private void insertUser(String id, String username, String displayName, boolean disabled) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO users (id, username, display_name, created_at, disabled) VALUES (?, ?, ?, ?, ?)")) {
+                ps.setString(1, id);
+                ps.setString(2, username);
+                ps.setString(3, displayName);
+                ps.setLong(4, NOW);
+                ps.setInt(5, disabled ? 1 : 0);
+                return ps.executeUpdate();
+            }
+        });
+    }
+
+    private void assertRejected(int status, String code, Callable<?> call) {
+        HttpError e = assertThrows(HttpError.class, call::call);
+        assertEquals(status, e.status());
+        assertEquals(code, e.code());
+    }
+
+    @Test
+    void customNameRulesAreEnforced() throws Exception {
+        settings.set(Settings.GUESTS_ALLOW_CUSTOM_NAMES, true);
+        insertUser("00000000-0000-7000-8000-000000000001", "siggi", "DJ Sig", false);
+        insertUser("00000000-0000-7000-8000-000000000002", "oldtimer", "Old Timer", true);
+        settings.setJson("guests.nameBlocklist", "[\"rude\"]");
+        String id = guests.create(GuestIdentity.COOKIE, null, null).guest().id();
+
+        // Form: 400 invalid_name. (create(mode, ip, name) takes a checked name; the request-level
+        // create runs the same GuestNameRules.check, tested over HTTP in MeApiTest.)
+        for (String bad : List.of("x", "y".repeat(33), "a<b", "...", "a\u200bb")) {
+            assertRejected(400, "invalid_name", () -> guests.rename(id, bad, null));
+        }
+        // Account names (username or display name, disabled accounts too): 409 name_taken.
+        for (String taken : List.of("SIGGI", "\uff53iggi", " dj   SIG ", "oldtimer", "old timer")) {
+            assertRejected(409, "name_taken", () -> guests.rename(id, taken, null));
+        }
+        // Blocklist: 400 name_blocked.
+        for (String blocked : List.of("Rude Boy", "r.u.d.e", "\uff32ude")) {
+            assertRejected(400, "name_blocked", () -> guests.rename(id, blocked, null));
+        }
+        // Nothing rejected was stored.
+        assertEquals("1", db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM guests");
+                 ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return Long.toString(rs.getLong(1));
+            }
+        }));
+        assertEquals("Quiet Walrus", guests.get(id).name());
+
+        // Allowed: stored NFKC-normalised, trimmed and collapsed.
+        assertEquals("Siggi Fan", guests.rename(id, "  \uff33iggi   Fan ", null).name());
+        assertEquals("Siggi Fan", column(id, "display_name"));
+    }
+
     // ------------------------------------------------------------------ generated names
 
     /** A {@link Guests} whose name draws come from {@code draws} (then "Last Resort"), counted. */
