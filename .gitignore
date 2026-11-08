@@ -1,0 +1,26 @@
+# Maven build output
+target/
+
+# Runtime data directory (database, media, secret.key)
+/data/
+
+# Node and packages downloaded by frontend-maven-plugin
+node/
+node_modules/
+
+# IDE files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.classpath
+.project
+.settings/
+.factorypath
+nbproject/
+nbactions.xml
+nb-configuration.xml
+
+# OS files
+.DS_Store
