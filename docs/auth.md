@@ -90,7 +90,7 @@ A guest identity is created **lazily**: the first time an anonymous actor does s
 
 ### Names
 
-- By default the server generates a name: `Adjective Noun`, from bundled word lists of about 300 entries each, title-cased, e.g. "Quiet Walrus". If the name is already used by an active guest, it draws again; after 5 tries it appends a number.
+- By default the server generates a name: `Adjective Noun`, from bundled word lists of about 300 entries each, title-cased, e.g. "Quiet Walrus". If the name is already used (ignoring case) by an active guest (one seen in the last 30 days), it draws again; after 5 tries it appends the smallest free number from 2 ("Quiet Walrus 2").
 - If `guests.allowCustomNames` is on, the guest can choose a name when their identity is created, and can change it later.
   - Length 2–32; letters, digits, spaces and basic punctuation; whitespace trimmed and collapsed.
   - Rejected if it matches (case-insensitively, after NFKC normalisation) any registered username or display name, so guests can't impersonate accounts.
