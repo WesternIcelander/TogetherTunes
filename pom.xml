@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>io.siggi</groupId>
+    <artifactId>TogetherTunes</artifactId>
+    <version>1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
+
+        <!--
+            Both are snapshots that only exist in the local ~/.m2: the SiggiHTTP and
+            SimpleWebsocket sessions `mvn install` new builds there. No snapshot
+            repository is declared below, so Maven never looks for them remotely.
+            Switch to the released versions before the first release.
+        -->
+        <siggihttp.version>1.11-SNAPSHOT</siggihttp.version>
+        <simplewebsocket.version>1.1-SNAPSHOT</simplewebsocket.version>
+    </properties>
+
+    <repositories>
+        <!--
+            The author's repository, for released io.siggi artifacts (e.g. ZipLib, and
+            SiggiHTTP / SimpleWebsocket once released). Anonymous read access works,
+            so no credentials are needed. The id matches the repository in the
+            "siggi-io" profile of ~/.m2/settings.xml; if credentials are ever needed,
+            add a <server> with this id there. Never put credentials in this file.
+        -->
+        <repository>
+            <id>siggi-io</id>
+            <name>Siggi.io Repository</name>
+            <url>https://repo.siggi.io</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <dependency>
+            <groupId>io.siggi</groupId>
+            <artifactId>SiggiHTTP</artifactId>
+            <version>${siggihttp.version}</version>
+        </dependency>
+        <!-- Declares SiggiHTTP as provided, so we declare SiggiHTTP ourselves above. -->
+        <dependency>
+            <groupId>io.siggi</groupId>
+            <artifactId>SimpleWebsocket</artifactId>
+            <version>${simplewebsocket.version}</version>
+        </dependency>
+    </dependencies>
+</project>
