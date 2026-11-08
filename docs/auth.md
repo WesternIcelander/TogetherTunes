@@ -39,7 +39,7 @@ Implement a minimal relying party; no framework.
 ## Sessions
 
 - **Web:** an opaque 256-bit token in cookie `sid` with `HttpOnly; Secure; SameSite=Lax; Path=/`. The DB stores only its SHA-256 hash. Sliding expiry of 30 days.
-- **API / app:** the same tokens, of kind `bearer`, sent as `Authorization: Bearer …`.
+- **API / app:** the same tokens, of kind `bearer`, sent as `Authorization: Bearer …`. Both kinds slide: a use moves `expires_at` (written at most once a minute), and a slid `sid` cookie is re-sent with a fresh `Max-Age`.
 - **CSRF:** for cookie-authenticated requests that change state (including guest-cookie requests), require the `Origin` header to match `publicBaseUrl`.
 - **WebSocket:** authenticated by cookie (`sid` or `gid`) during the upgrade, with the same Origin check. Bearer clients send `{type:"auth"}` as the first message.
 

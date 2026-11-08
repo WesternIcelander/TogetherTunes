@@ -14,14 +14,14 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }`.
 |---|---|---|
 | GET / POST | `/api/setup` | First admin |
 | POST | `/api/auth/login`, `/api/auth/logout`, `/api/auth/register` | |
-| POST | `/api/auth/token` | Create a bearer token |
+| POST | `/api/auth/token` | Create a bearer token, from `{username, password}` or for the already logged-in user |
 | GET | `/api/auth/providers` | |
 | GET | `/auth/oidc/{slug}/start?intent=login\|link`, `/auth/oidc/{slug}/callback` | |
 | GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}` |
 | POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it |
 | PATCH | `/api/me/guest` | Rename (custom names only) |
 | POST | `/api/me/merge-guest` | After login: merge the guest held in this browser's cookie into the account |
-| GET / DELETE | `/api/me/sessions[/{id}]` | No IP field |
+| GET / DELETE | `/api/me/sessions[/{id}]` | No IP field. `DELETE /api/me/sessions` revokes all sessions except the current one |
 | GET / DELETE | `/api/me/identities[/{id}]` | |
 
 ## Items, libraries, playlists, sharing
