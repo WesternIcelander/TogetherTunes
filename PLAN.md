@@ -99,7 +99,7 @@ Rest of the skeleton:
   - Checked 2026-11-08 at `e40934f`: `mvn verify` passes (263 unit + 59 integration tests); `EchoEndpointTest` (2) and `WebSocketsTest` (15) cover echo of text/binary, Origin check (403), 64 KiB limit (1009), 426s, close logging, virtual threads. Shaded jar on a fresh data dir with a raw-socket client on `/ws/echo`: 101 with the `publicBaseUrl` Origin; text (ASCII, non-ASCII, 16 KiB), binary 1 KiB and 64 KiB and a burst of 100 all echoed byte-identical and in order; client close 1000 echoed and logged `clean=true`; 64 KiB + 1 closed with 1009; Origin `http://127.0.0.1:…` refused with 403. No code changes needed. Real-browser checks remain under the *(manual)* step above.
 - [x] A Range request returns a correct `206`.
   - Checked 2026-11-08 at `e40934f`: `RangeRequestTest` (7) and `StaticFilesTest` (15) pass. Shaded jar on a fresh data dir, curl against `/test/ws-echo.html` (2381 bytes): `bytes=0-9` → 206 `Content-Range: bytes 0-9/2381`, `Content-Length: 10`; `bytes=10-` → 206 `bytes 10-2380/2381`; `bytes=-20` → 206 `bytes 2361-2380/2381`; `bytes=5-999999` → 206 clamped to `bytes 5-2380/2381`; `bytes=999999-` → 416 `Content-Range: bytes */2381`; HEAD with `bytes=0-9` → 206 with the same headers and no body. Partial bodies are byte-identical to the matching slices of the full file. No code changes needed.
-- [x] **Gate M0:** check every step in M0. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [x] **Gate M0:** check every step in M0. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
   - Checked 2026-11-08 at `e40934f`: `mvn verify` passes (322 tests: 263 unit + 59 integration, 0 failures). Every M0 step is `[x]` except one:
     - `[?]` *(manual)* Browser test of the WebSocket echo in Chrome, Firefox and Safari. Implemented, agent pre-check done, test steps written under the step; needs Siggi to run them in real browsers and flip it to `[x]`. Then tick this gate.
   - Ticked 2026-11-08 at main `f0d3253`: the browser test passed in all three browsers (see the step), so every M0 step is `[x]`. `mvn verify` passes (267 unit + 59 integration tests).
@@ -146,7 +146,7 @@ IP policy and tests:
   - Checked 2026-11-08 at main `8a7d544`: `mvn verify` passes (476 unit + 146 integration). Rules live in `GuestNameRules.check` (NFKC, trim/collapse, 2–32 code points, allowed characters with at most 3 combining marks, at least one letter or digit → 400 `invalid_name`; case/width/spacing-insensitive clash with any username or display name → 409 `name_taken`; compact-substring blocklist → 400 `name_blocked`), applied by `POST /api/me/guest` (with a name), `PATCH /api/me/guest` and `PATCH /api/me`, and only when `guests.allowCustomNames` is on (else 403 `custom_names_disabled`). Covered by `GuestNameRulesTest` (form, key, blocklist), `MeApiTest` over HTTP (`customNames`, `customNamesCantMatchAccounts`, `customNameBlocklist`, banned/anonymous can't rename), and a new `GuestsContract.customNameRulesAreEnforced` on SQLite and PostgreSQL, which adds the one missing case: a **disabled** account's username and display name are also taken. No production code changes.
 - [x] IP-leak test passes across all DTOs.
   - Checked 2026-11-08 at main `8a7d544`: `mvn verify` passes (477 unit + 146 integration, 0 failures). `DtoIpLeakTest` (5 tests) passes: every record is classified (DTO or internal), no general DTO has an IP-like field, every DTO type is built from IPv4/IPv6-seeded data and serialised with no IP found, and every GET route swept as anonymous, cookie guest, IP-mode guest, cookie user, bearer user and an admin.* user without `ip.view` returns no IP in headers or bodies; the `ip.view` admin control sees the seeded IPs only under `ip` keys on the three IP endpoints. No code changes.
-- [x] **Gate M1:** check every step in M1. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [x] **Gate M1:** check every step in M1. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M2 — Ingest, libraries, retention
 
@@ -197,7 +197,7 @@ UI:
 - [ ] The MP3 and FLAC keep their originals (web-playable, with a gain); the video uploads and the YouTube item keep none.
 - [ ] A second form of the same YouTube URL (`youtu.be`, `shorts`, with `&t=`) reuses the item without starting yt-dlp.
 - [ ] An unreferenced item is purged after the (shortened) retention period, and a purged YouTube item refetches into the same row.
-- [ ] **Gate M2:** check every step in M2. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M2:** check every step in M2. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M3 — Rooms and synchronised web playback
 
@@ -234,7 +234,7 @@ Web client:
 - [ ] *(manual)* Audio-only mode never requests `mezz.mp4` (check in the browser's network panel).
 - [ ] An audio upload plays from its original, at the same loudness as `audio.m4a` (within about 1 dB).
 - [ ] A guest can vote and request according to policy, and gets 403 on a non-current, non-next item when guest downloads are off.
-- [ ] **Gate M3:** check every step in M3. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M3:** check every step in M3. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M4 — Program output (all three outputs)
 
@@ -261,7 +261,7 @@ Web client:
 - [ ] *(manual)* `.ts` and HLS each play in VRChat via AVPro on PC and Quest.
 - [ ] *(manual)* Skip, seek and pause show up within about 4 s on `.ts`.
 - [ ] *(manual)* Close-delimited `.ts` framing (copied from VRCDN) confirmed in VRChat on PC and Quest.
-- [ ] **Gate M4:** check every step in M4. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M4:** check every step in M4. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M5 — QR overlay
 
@@ -283,7 +283,7 @@ Web client:
 - [ ] A music video skipped to mid-item gains the overlay within 4 s with no stream glitch (ffmpeg/ffprobe).
 - [ ] *(manual)* Visual check of the mid-item overlay switch: no visible glitch.
 - [ ] Without `output.overlayVideo`, music videos play without overlay while cards still show it.
-- [ ] **Gate M5:** check every step in M5. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M5:** check every step in M5. If all are `[x]`, tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M6 — OIDC and OAuth
 
@@ -301,7 +301,7 @@ Web client:
 - [ ] *(manual)* Login works with at least one real OIDC provider and one plain-OAuth provider.
   - **Doesn't block the M6 gate.** Do the agent part as usual and mark it `[?]`; Siggi checks it later, while M7 continues. Until then it is tracked under "Before the first release".
 - [ ] Tests cover bad `nonce`, bad `aud`, expired token, unknown `kid`.
-- [ ] **Gate M6:** check every step in M6. If all are `[x]` (the real-provider login check may still be `[?]`: it doesn't block this gate), tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M6:** check every step in M6. If all are `[x]` (the real-provider login check may still be `[?]`: it doesn't block this gate), tick this gate. Otherwise list the ones that aren't (especially `[?]`) under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## M7 — Polish
 
@@ -310,7 +310,7 @@ Web client:
 - [ ] Docker image bundling ffmpeg (with TLS for `rtmps://`) and yt-dlp; plain-jar instructions.
 - [ ] Deployment notes (HTTPS, reverse proxy `proxy_buffering off` for `/live/`, trusted proxies, VRChat allowlist) and backup notes (SQLite / PostgreSQL, `secret.key`, media dir).
 - [ ] Manual VRChat release checklist (from `docs/milestones.md#testing-strategy`), written as a document in the repo.
-- [ ] **Gate M7:** check every step in M7. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. Either way, return ok=false so the run stops for review.
+- [ ] **Gate M7:** check every step in M7. If all are `[x]`, tick this gate. Otherwise list the ones that aren't under it and leave it unchecked. If it was ticked, return ok=true so the run continues with the next milestone; otherwise return ok=false so the run stops.
 
 ## Before the first release
 
