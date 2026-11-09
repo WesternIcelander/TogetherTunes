@@ -78,14 +78,17 @@ Reference command (video item at 1080p30; the second loudnorm pass is shown). At
 
 ```sh
 ffmpeg -i src -map 0:v:0 -map 0:a:0 \
-  -vf "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" \
-  -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -pix_fmt yuv420p -bf 0 \
+  -vf "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2:out_color_matrix=bt709:out_range=tv,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" \
+  -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -pix_fmt yuv420p \
+  -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -chroma_sample_location left -bf 0 \
   -g 60 -keyint_min 60 -sc_threshold 0 -force_key_frames "expr:gte(t,n_forced*2)" -x264-params open-gop=0 \
   -crf 20 -maxrate 6M -bufsize 12M \
   -af "loudnorm=I=-14:TP=-1:LRA=11:measured_I=…:measured_TP=…:measured_LRA=…:measured_thresh=…:offset=…:linear=true,aresample=48000" \
   -c:a aac -b:a 192k -ar 48000 -ac 2 \
   -movflags +faststart mezz.mp4
 ```
+
+**The colour description is part of the profile:** x264 copies the source's colour tags (range, primaries, transfer, matrix) and chroma sample location into the SPS's VUI. Without the fixed `-color_*`/`-chroma_sample_location` options, a BT.709-tagged source (every YouTube download), a full-range or BT.601 source, or Motion JPEG (centre-sited chroma) would each produce a different avcC and fail the invariant check. The scale filter converts the pixels to limited-range BT.709 to match. HDR sources are not tone-mapped (they come out washed out, but valid).
 
 Then `audio.m4a` = `ffmpeg -i mezz.mp4 -map 0:a -c copy -movflags +faststart audio.m4a`.
 
@@ -157,7 +160,7 @@ Get avcC with a small MP4 box walker (`moov/trak/mdia/minf/stbl/stsd/avc1/avcC`)
 Steps: `probe → (download) → loudness pass 1 → encode → extract audio.m4a → card render+encode → index → verify → publish`.
 
 - **Source:** an upload job reads `<data>/tmp/ingest/<itemId>/source[.<ext>]`, where the upload code puts the file; an optional `cover.<ext>` next to it (e.g. a YouTube thumbnail) is used as artwork instead of the embedded picture. A `youtube`/`refetch` job downloads the canonical URL into its scratch directory `<data>/tmp/jobs/<jobId>/` first. The staging directory is deleted after a successful publish and kept when the job fails, so it can be retried.
-- **Probe:** a real video stream makes a video item; attached pictures and still-image codecs are cover art. No audio, or longer than `ingest.maxDurationSeconds`, fails the job.
+- **Probe:** a real video stream makes a video item; attached pictures and single still images in an image codec (MJPEG, PNG, …) are cover art. An image codec with more than one frame (`nb_frames`, or Matroska's `NUMBER_OF_FRAMES` tag; if unknown, a `duration`/`DURATION` tag over 0.5 s) is video, e.g. Motion JPEG from a camera. No audio, or longer than `ingest.maxDurationSeconds`, fails the job.
 - **Loudness pass 1:** `loudnorm=I=-14:TP=-1:LRA=11:print_format=json,aresample=48000` (the resampler only fixes ffmpeg's progress `out_time`). Silence measures `-inf`; it is encoded without normalisation and `loudness_lufs` stays null.
 - **Encode:** the pass-2 filter ends with `aresample=48000:first_pts=0`, so audio that starts after the file start is padded with silence and every `audio.m4a` starts at 0 like the video (ffmpeg's `fps` filter already fills video from 0). Metadata and chapters are dropped.
 - **Cover:** the staged cover, else the embedded picture, is converted to `cover.jpg` (at most 1200 px per side) and drawn on the card; without one the card gets the placeholder. A broken cover never fails the job.
