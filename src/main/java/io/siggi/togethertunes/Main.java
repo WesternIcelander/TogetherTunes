@@ -56,7 +56,6 @@ import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PackagerHook;
-import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomRequests;
 import io.siggi.togethertunes.rooms.RoomGuests;
@@ -210,8 +209,8 @@ public final class Main {
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
-        // Rooms come in M3: until then no item is current or next anywhere.
-        MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
+        // Guests may fetch the current and next items of any room (the room executors' live set).
+        MediaApi mediaApi = new MediaApi(database, dataDir, settings, roomRegistry.playingItems());
         try {
             int resumed = roomRegistry.resumePlaying();
             if (resumed > 0) {

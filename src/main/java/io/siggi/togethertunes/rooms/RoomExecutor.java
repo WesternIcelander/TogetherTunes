@@ -38,6 +38,10 @@ import java.util.function.Consumer;
  * ({@link Playback#advanceIfDue}); it is rescheduled after every committed change that re-anchors
  * the timeline, after a reload, and when a mutation asks for it. Created, started
  * ({@link #start}: {@link Playback#resume}) and closed by {@link RoomRegistry}.
+ *
+ * <p>After every mutation and scheduled task the executor publishes the room's current and next
+ * items to the registry's {@link LivePlayingItems} (the media access check), and withdraws them
+ * when it closes.
  */
 public final class RoomExecutor {
     private static final System.Logger LOG = System.getLogger(RoomExecutor.class.getName());
@@ -47,6 +51,7 @@ public final class RoomExecutor {
     private final RoomStore store;
     private final Clock clock;
     private final PackagerHook packager;
+    private final LivePlayingItems playing;
     private final Consumer<RoomExecutor> onClosed;
     private final ScheduledThreadPoolExecutor executor;
     private final List<RoomListener> listeners = new CopyOnWriteArrayList<>();
@@ -57,12 +62,13 @@ public final class RoomExecutor {
     private volatile boolean closed;
 
     RoomExecutor(RoomState initial, RoomStore store, Clock clock, PackagerHook packager,
-                 Consumer<RoomExecutor> onClosed) {
+                 LivePlayingItems playing, Consumer<RoomExecutor> onClosed) {
         this.state = Objects.requireNonNull(initial);
         this.roomId = initial.id();
         this.store = Objects.requireNonNull(store);
         this.clock = Objects.requireNonNull(clock);
         this.packager = Objects.requireNonNull(packager);
+        this.playing = Objects.requireNonNull(playing);
         this.onClosed = Objects.requireNonNull(onClosed);
         this.executor = new ScheduledThreadPoolExecutor(1, Thread.ofVirtual().name("room-" + roomId).factory());
         executor.setRemoveOnCancelPolicy(true);
@@ -122,12 +128,22 @@ public final class RoomExecutor {
                     return;
                 }
                 CURRENT.set(this);
+                T value = null;
+                Throwable failure = null;
                 try {
-                    future.complete(run(mutation));
+                    value = run(mutation);
                 } catch (Throwable t) {
-                    future.completeExceptionally(t);
+                    failure = t;
+                }
+                try {
+                    publishPlaying(); // before completing: the caller sees the set up to date
                 } finally {
                     CURRENT.remove();
+                }
+                if (failure != null) {
+                    future.completeExceptionally(failure);
+                } else {
+                    future.complete(value);
                 }
             });
         } catch (RejectedExecutionException e) {
@@ -184,6 +200,7 @@ public final class RoomExecutor {
                 } catch (Throwable t) {
                     LOG.log(System.Logger.Level.WARNING, "Scheduled task in room " + roomId + " failed", t);
                 } finally {
+                    publishPlaying();
                     CURRENT.remove();
                 }
             }, Math.max(0, delay.toMillis()), TimeUnit.MILLISECONDS);
@@ -329,11 +346,28 @@ public final class RoomExecutor {
         }
     }
 
+    /**
+     * Publishes the room's current and next items ({@link LivePlayingItems#of}) for the media
+     * access check. Runs after every mutation and scheduled task (whatever its outcome: a failure
+     * may have reloaded the state), on the executor thread; a no-op once closed.
+     */
+    private void publishPlaying() {
+        if (closed) {
+            return;
+        }
+        try {
+            playing.update(roomId, this, LivePlayingItems.of(state));
+        } catch (Throwable t) {
+            LOG.log(System.Logger.Level.WARNING, "Could not publish the playing items of room " + roomId, t);
+        }
+    }
+
     private void closeNow(boolean deleted) {
         if (closed) {
             return;
         }
         closed = true;
+        playing.remove(roomId, this);
         if (advanceTask != null) {
             advanceTask.cancel(false);
             advanceTask = null;

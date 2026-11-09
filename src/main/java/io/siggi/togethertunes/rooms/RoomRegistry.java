@@ -23,6 +23,7 @@ public final class RoomRegistry implements AutoCloseable {
     private final RoomStore store;
     private final Clock clock;
     private final PackagerHook packager;
+    private final LivePlayingItems playing = new LivePlayingItems();
     private final Map<String, RoomExecutor> executors = new ConcurrentHashMap<>();
     /** Serialises loading (a ReentrantLock, not synchronized: loading does JDBC on virtual threads). */
     private final ReentrantLock loadLock = new ReentrantLock();
@@ -57,7 +58,7 @@ public final class RoomRegistry implements AutoCloseable {
             if (state == null) {
                 throw new HttpError(404, "room_not_found", "No such room");
             }
-            e = new RoomExecutor(state, store, clock, packager, this::closed);
+            e = new RoomExecutor(state, store, clock, packager, playing, this::closed);
             executors.put(roomId, e);
             e.start(); // resume first: queued ahead of whatever the caller submits
             return e;
@@ -97,6 +98,14 @@ public final class RoomRegistry implements AutoCloseable {
             }
         }
         return loaded;
+    }
+
+    /**
+     * The current and next items of every loaded room, kept up to date by the room executors:
+     * what guests may fetch from {@code /media} when {@code guests.download} is off.
+     */
+    public PlayingItems playingItems() {
+        return playing;
     }
 
     /** The room's executor if it is loaded, else {@code null}. */

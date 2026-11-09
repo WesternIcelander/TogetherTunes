@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.TestClock;
@@ -418,5 +419,60 @@ abstract class PlaybackContract {
         assertEquals(a[0], t.entryId());
         assertEquals(0, t.positionAt(clock.millis()), "frozen, not treated as playing");
         assertEquals(-1, advanceDelay());
+    }
+
+    /** Whether the registry's live set lists each of these items, in order. */
+    private List<Boolean> listed(String... itemIds) {
+        PlayingItems playing = registry.playingItems();
+        List<Boolean> out = new ArrayList<>();
+        for (String id : itemIds) {
+            out.add(playing.isCurrentOrNext(id));
+        }
+        return out;
+    }
+
+    @Test
+    void theLiveSetFollowsTheCurrentAndNextEntries() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("processing", null);
+        String[] c = entry("ready", 60_000L);
+        String[] d = entry("ready", 60_000L);
+        assertEquals(List.of(false, false, false, false), listed(a[1], b[1], c[1], d[1]), "room not loaded");
+
+        registry.call(roomId, tx -> null); // loading the room publishes it
+        assertEquals(List.of(true, false, false, false), listed(a[1], b[1], c[1], d[1]), "idle: A is next");
+
+        registry.call(roomId, Playback::startIfIdle);
+        // A current; B is first in line but still processing, so C is what plays next: both count.
+        assertEquals(List.of(true, true, true, false), listed(a[1], b[1], c[1], d[1]));
+        registry.call(roomId, Playback::pause);
+        assertEquals(List.of(true, true, true, false), listed(a[1], b[1], c[1], d[1]), "paused: still current");
+
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(List.of(false, true, true, true), listed(a[1], b[1], c[1], d[1]));
+
+        // The advance task (a scheduled task, not a call) updates it too.
+        registry.call(roomId, Playback::play);
+        tick(60_000);
+        awaitTimeline(d[0]);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (registry.playingItems().isCurrentOrNext(c[1]) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(List.of(false, true, false, true), listed(a[1], b[1], c[1], d[1]));
+
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(Timeline.IDLE, timeline());
+        assertEquals(List.of(false, true, false, false), listed(a[1], b[1], c[1], d[1]), "idle: B waits");
+
+        // A failed mutation reloads the state and republishes the committed one.
+        assertThrows(IllegalStateException.class, () -> registry.call(roomId, tx -> {
+            tx.state().forget(b[0]);
+            throw new IllegalStateException("bug");
+        }));
+        assertEquals(List.of(false, true, false, false), listed(a[1], b[1], c[1], d[1]));
+
+        registry.close();
+        assertEquals(List.of(false, false, false, false), listed(a[1], b[1], c[1], d[1]), "closed: withdrawn");
     }
 }

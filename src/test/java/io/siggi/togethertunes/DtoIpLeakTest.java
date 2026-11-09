@@ -237,6 +237,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.Timeline", "in-memory room timeline; the WebSocket layer builds the"
                     + " messages"),
             Map.entry("io.siggi.togethertunes.rooms.RoomChange", "executor -> listeners/packager, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.LivePlayingItems$Published", "a room's current/next item ids, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RoomUpdated", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryStateChanged", "executor -> listeners, in memory only"),
