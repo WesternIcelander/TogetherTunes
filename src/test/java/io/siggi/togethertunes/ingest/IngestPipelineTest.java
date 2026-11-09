@@ -846,35 +846,51 @@ class IngestPipelineTest {
         IngestQueue uploads = queue(tools, reference, 1800);
         IngestQueue youtube = queue(fakeYtdlp(ytSource, "fake-yt-dlp-set"), reference, 1800);
 
-        record Case(String name, String staged, boolean video, List<String> encode) {
+        // original: the kept file and its codec for audio uploads, null for videos (none kept)
+        record Case(String name, String staged, String original, String codec, List<String> encode) {
+            boolean video() {
+                return original == null;
+            }
         }
         List<Case> cases = List.of(
-                new Case("mp3", "source.mp3", false, List.of("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3",
+                new Case("mp3", "source.mp3", "original.mp3", "mp3/mp3", List.of("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3",
                         "-c:a", "libmp3lame", "-b:a", "192k")),
-                new Case("flac+cover", "source.flac", false, List.of("-f", "lavfi", "-i", "sine=f=330:r=48000",
+                new Case("flac+cover", "source.flac", "original.flac", "flac/flac", List.of("-f", "lavfi", "-i", "sine=f=330:r=48000",
                         "-i", png.toString(), "-t", "3", "-map", "0:a", "-map", "1:v", "-c:a", "flac", "-c:v", "png",
                         "-disposition:v", "attached_pic")),
-                new Case("24fps", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24",
+                new Case("24fps", "source.mp4", null, null, List.of("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24",
                         "-f", "lavfi", "-i", "sine=f=220:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
                         "ultrafast", "-c:a", "aac")),
-                new Case("60fps", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=60",
+                new Case("60fps", "source.mp4", null, null, List.of("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=60",
                         "-f", "lavfi", "-i", "sine=f=250:r=44100", "-t", "3", "-c:v", "libx264", "-preset",
                         "ultrafast", "-c:a", "aac")),
-                new Case("portrait", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=30",
+                new Case("portrait", "source.mp4", null, null, List.of("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=30",
                         "-f", "lavfi", "-i", "sine=f=280:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
                         "ultrafast", "-c:a", "aac")));
         for (Case c : cases) {
             String item = fixtures.item("pending");
+            Path source = stage(item, c.staged());
             List<String> args = new ArrayList<>(c.encode());
-            args.add(stage(item, c.staged()).toString());
+            args.add(source.toString());
             ffmpeg(args.toArray(String[]::new));
+            byte[] uploaded = c.video() ? null : Files.readAllBytes(source);
+            Loudness.Measurement in = c.video() ? null : Loudness.measure(tools, source.toString(), "0:a:0", null, null);
             IngestJob job = run(uploads, Kind.UPLOAD, item);
             assertEquals(State.DONE, job.state(), c.name() + "\n" + job.log());
             assertSameAvcC(c.name(), item, c.video());
             if (c.video()) {
                 assertNoOriginal(item);
             } else {
-                assertNotNull(originalRow(item)[0], c.name());
+                // kept as uploaded, web-playable, with the gain that plays it like audio.m4a
+                Object[] original = originalRow(item);
+                assertEquals(c.original(), original[0], c.name());
+                assertEquals(c.codec(), original[1], c.name());
+                assertEquals(1, original[2], c.name() + " web-playable");
+                assertNotNull(original[3], c.name() + " gain");
+                assertEquals(Math.min(-14 - in.inputI(), -1 - in.inputTp()), (Double) original[3], 0.011,
+                        c.name() + " gain");
+                assertArrayEquals(uploaded, Files.readAllBytes(IngestPipeline.itemDir(data, item).resolve(c.original())),
+                        c.name() + " kept unchanged");
             }
         }
         String yt = fixtures.item("pending");
