@@ -171,7 +171,7 @@ public final class Library {
     }
 
     /** The search words of {@code query}: split at whitespace, at most {@link #QUERY_MAX_TERMS}. */
-    static List<String> terms(String query) {
+    public static List<String> terms(String query) {
         if (query == null) {
             return List.of();
         }

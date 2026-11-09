@@ -147,6 +147,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.rooms.Rooms$You",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBan",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBanPage",
+            "io.siggi.togethertunes.rooms.RequestSearch$Page",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -263,6 +264,10 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$Capabilities", "booleans; turned into a RoomActor and"
                     + " the WebSocket state's you object"),
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$BanSet", "ban's result; the API sends its ban"),
+            Map.entry("io.siggi.togethertunes.rooms.RequestSearch$Libraries", "user ids of the libraries in a room's"
+                    + " request scope; builds the query"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomQueue$Scope", "request scope and owner id, read on the"
+                    + " executor for the scope check"),
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$GuestRow", "guest name and kind (no IP column read)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Counts", "three counts; the WebSocket layer sends"
                     + " them as presence"),
@@ -571,6 +576,8 @@ class DtoIpLeakTest {
             io.siggi.togethertunes.rooms.RoomGuests.GuestBanPage bans = roomGuests.list(aliceActor, r.id(), null,
                     io.siggi.togethertunes.rooms.RoomGuests.LIST_MAX);
             produced.add(bans);
+            produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
+                    .search(aliceActor, r.id(), null, null, null, io.siggi.togethertunes.rooms.RequestSearch.LIST_MAX));
             for (io.siggi.togethertunes.rooms.RoomGuests.GuestBan b : bans.items()) {
                 produced.add(roomGuests.get(aliceActor, r.id(), b.guest().id()));
             }
@@ -714,7 +721,8 @@ class DtoIpLeakTest {
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
                 "/items/" + f.itemId, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
-                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId);
+                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
+                "/api/rooms/" + f.roomSlug + "/search?q=video");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -921,6 +929,7 @@ class DtoIpLeakTest {
         expect(201, alice, "PUT", "/api/rooms/" + roomSlug + "/members/" + adminId, "{\"role\":\"member\"}");
         expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/members", null);
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);
+        expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug + "/search", null);
         expect(200, anon, "GET", "/api/rooms", null);
         // guest bans: alice looks at the cookie guest, bans it, lists, lifts and bans it again (it stays banned)
         String cookieGuestId = json(expect(200, cookieGuest, "GET", "/api/me", null)).get("id").getAsString();

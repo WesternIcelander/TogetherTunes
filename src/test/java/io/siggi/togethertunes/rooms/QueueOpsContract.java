@@ -134,6 +134,8 @@ abstract class QueueOpsContract {
         sql("INSERT INTO items (id, kind, title, source, youtube_id, added_by_user_id, added_at, status,"
                 + " output_profile, last_referenced_at, duration_ms) VALUES (?, 'audio', 'Song', ?, ?, ?, 1, ?,"
                 + " '720p30', 1, 60000)", id, youtubeId == null ? "upload" : "youtube", youtubeId, aliceId, status);
+        // In the owner's library, so it is in the room's request scope.
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", aliceId, id);
         return id;
     }
 
@@ -270,6 +272,38 @@ abstract class QueueOpsContract {
         RoomActor libraryOnly = new RoomActor(null, guestId, null, true, false, false, true);
         assertEquals("guest_uploads_disabled", refused(() -> queue.add(roomId, guestActor, libraryOnly,
                 RoomQueue.Source.upload(UuidV7.newId()))));
+    }
+
+    @Test
+    void requestsByIdFollowTheRequestScope() throws Exception {
+        String owners = ready();
+        String bobs = ready();
+        sql("DELETE FROM library_entries WHERE item_id = ?", bobs);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", bobId, bobs);
+        String listed = ready();
+        sql("DELETE FROM library_entries WHERE item_id = ?", listed);
+        String playlist = UuidV7.newId();
+        sql("INSERT INTO playlists (id, owner_id, name, created_at, updated_at) VALUES (?, ?, 'Mix', 1, 1)",
+                playlist, aliceId);
+        sql("INSERT INTO playlist_entries (id, playlist_id, item_id, position, added_at) VALUES (?, ?, ?, 1, 1)",
+                UuidV7.newId(), playlist, listed);
+        // owner (the default): the owner's library and playlists
+        assertEquals("not_in_request_scope", refused(() -> add(bob, bobs)));
+        assertEquals("not_in_request_scope", refused(() -> add(guest, bobs)));
+        assertEquals("not_in_request_scope", refused(() -> add(bob, UuidV7.newId())), "same as out of scope");
+        add(guest, owners);
+        add(bob, listed);
+        // owner+self: also the requester's own library
+        settings("{\"requestScope\":\"owner+self\"}");
+        String e = add(bob, bobs);
+        assertEquals("not_in_request_scope", refused(() -> add(carol, bobs)), "not someone else's");
+        queue.remove(roomId, bob, e);
+        // none: no requests by id, but uploads and links still work; owner and moderators add anything
+        settings("{\"requestScope\":\"none\"}");
+        assertEquals("library_requests_disabled", refused(() -> add(bob, owners)));
+        assertEquals("library_requests_disabled", refused(() -> add(guest, owners)));
+        add(owner, bobs);
+        add(RoomActor.user(carolId, Rooms.Role.MODERATOR), ready());
     }
 
     @Test

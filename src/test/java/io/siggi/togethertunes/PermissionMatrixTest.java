@@ -298,6 +298,11 @@ class PermissionMatrixTest {
                     401, 401, 403, 201),
             row("DELETE /api/rooms/{room}/guest-bans/{guestId}", c -> Call.delete(c.rootRoomGuestBanPath(true)),
                     401, 401, 403, 204),
+            // Request search: anyone who may open the room and request from the library (guests and
+            // anonymous visitors by guests.canRequestLibrary, on by default). RequestSearchContract
+            // covers the scopes and refusals.
+            row("GET /api/rooms/{room}/search", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/search?q=x"),
+                    200, 200, 200, 200),
 
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),

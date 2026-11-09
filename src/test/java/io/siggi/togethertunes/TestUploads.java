@@ -116,8 +116,10 @@ public final class TestUploads {
         io.siggi.togethertunes.rooms.Rooms rooms = new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock);
         io.siggi.togethertunes.rooms.RoomRegistry registry = new io.siggi.togethertunes.rooms.RoomRegistry(db, clock,
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
-        return new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry, permissions,
-                new io.siggi.togethertunes.rooms.RoomGuests(db, settings, permissions, rooms, registry));
+        io.siggi.togethertunes.rooms.RoomGuests guests = new io.siggi.togethertunes.rooms.RoomGuests(db, settings,
+                permissions, rooms, registry);
+        return new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry, permissions, guests,
+                new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests));
     }
 
     /** An add-media policy without rooms (every room {@code 404 room_not_found}). */

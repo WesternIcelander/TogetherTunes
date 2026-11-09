@@ -67,8 +67,8 @@ class RoomsApiTest {
         Permissions permissions = new Permissions(db, settings);
         registry = new RoomRegistry(db, clock, PackagerHook.NONE);
         Rooms rooms = new Rooms(db, permissions, clock);
-        new RoomsApi(rooms, registry, permissions, new RoomGuests(db, settings, permissions, rooms, registry))
-                .register(router);
+        RoomGuests guests = new RoomGuests(db, settings, permissions, rooms, registry);
+        new RoomsApi(rooms, registry, permissions, guests, new RequestSearch(db, rooms, guests)).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         String rootId = accounts.createLocal("root", null, "root-password", false, null, "account.register").id(); // admin
@@ -283,6 +283,54 @@ class RoomsApiTest {
         assertEquals(201, call(alice, "PUT", "/api/rooms/set/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
         expectError(403, "forbidden", call(bob, "PATCH", "/api/rooms/set", "{\"settings\":{\"gapMs\":5}}"));
         assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
+    }
+
+    @Test
+    void requestSearch() throws Exception {
+        String slug = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Search Room\",\"visibility\":\"public\"}"))
+                .get("slug").getAsString();
+        String itemId = io.siggi.togethertunes.db.UuidV7.newId();
+        db.write(c -> {
+            try (var ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, source, added_by_user_id,"
+                    + " added_at, status, output_profile, last_referenced_at) VALUES (?, 'audio', 'Blue Monday',"
+                    + " 'New Order', 'upload', ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, itemId);
+                ps.setString(2, aliceId);
+                ps.executeUpdate();
+            }
+            try (var ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at, via)"
+                    + " VALUES (?, ?, 5, 'upload')")) {
+                ps.setString(1, aliceId);
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        String path = "/api/rooms/" + slug + "/search";
+        for (String token : java.util.Arrays.asList(alice, bob, null)) {
+            HttpResponse<String> r = call(token, "GET", path + "?q=monday", null);
+            assertEquals(200, r.statusCode(), r.body());
+            assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(null));
+            JsonObject body = json(r);
+            assertEquals(1, body.getAsJsonArray("items").size(), r.body());
+            JsonObject item = body.getAsJsonArray("items").get(0).getAsJsonObject();
+            assertEquals(itemId, item.get("id").getAsString());
+            assertFalse(item.has("addedAt") || item.has("via") || item.has("sharedBy"), r.body());
+        }
+        assertEquals(0, json(call(bob, "GET", path + "?q=nothing&kind=audio", null)).getAsJsonArray("items").size());
+        expectError(400, "invalid_limit", call(bob, "GET", path + "?limit=0", null));
+        expectError(400, "invalid_kind", call(bob, "GET", path + "?kind=x", null));
+        expectError(400, "invalid_cursor", call(bob, "GET", path + "?cursor=x", null));
+        expectError(404, "room_not_found", call(bob, "GET", "/api/rooms/no-such-room/search", null));
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"requestScope\":\"none\"}}")
+                .statusCode());
+        expectError(403, "library_requests_disabled", call(bob, "GET", path, null));
+        expectError(403, "library_requests_disabled", call(null, "GET", path, null));
+        assertEquals(1, json(call(alice, "GET", path, null)).getAsJsonArray("items").size());
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug,
+                "{\"settings\":{\"requestScope\":null,\"guests\":{\"canRequestLibrary\":false}}}").statusCode());
+        expectError(403, "guest_library_requests_disabled", call(null, "GET", path, null));
+        assertEquals(200, call(bob, "GET", path, null).statusCode());
     }
 
     @Test

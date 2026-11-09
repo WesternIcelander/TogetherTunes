@@ -56,6 +56,14 @@ import java.util.Set;
  *       "banned", "bannedAt"?, "warning"?, "ip"?}}: {@code warning} for an IP-mode guest (the ban
  *       covers everyone sharing its address), {@code ip} (the guest's last IP) only for
  *       {@code ip.view} holders.</li>
+ *   <li>{@code GET /api/rooms/{room}/search?q=&kind=&cursor=&limit=} → {@code {"items": [item],
+ *       "nextCursor"?}}: the request search within the room's {@code requestScope}
+ *       ({@link RequestSearch}); an item is only its metadata, as in the library, never where it
+ *       came from. Newest item first; {@code limit} 1..{@value RequestSearch#LIST_MAX}, default
+ *       {@value RequestSearch#LIST_DEFAULT}. Anyone who may open the room and request from the
+ *       library; {@code 403 guest_library_requests_disabled} / {@code library_requests_disabled};
+ *       {@code 400 invalid_query} / {@code invalid_kind} / {@code invalid_cursor} /
+ *       {@code invalid_limit}.</li>
  * </ul>
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
@@ -75,12 +83,15 @@ public final class RoomsApi {
     private final RoomRegistry registry;
     private final Permissions permissions;
     private final RoomGuests guests;
+    private final RequestSearch search;
 
-    public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests) {
+    public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
+                    RequestSearch search) {
         this.rooms = Objects.requireNonNull(rooms);
         this.registry = Objects.requireNonNull(registry);
         this.permissions = Objects.requireNonNull(permissions);
         this.guests = Objects.requireNonNull(guests);
+        this.search = Objects.requireNonNull(search);
     }
 
     /** The id of the room in the path ({@code {room}}: id or slug), else {@code 404 room_not_found}. */
@@ -130,6 +141,7 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/guest-bans/{guestId}", this::guestBan);
         router.put("/api/rooms/{room}/guest-bans/{guestId}", this::banGuest);
         router.delete("/api/rooms/{room}/guest-bans/{guestId}", this::unbanGuest);
+        router.get("/api/rooms/{room}/search", this::search);
     }
 
     private static Actor.User user(Request request) throws Exception {
@@ -164,6 +176,26 @@ public final class RoomsApi {
     private void list(Request request, Response response) throws Exception {
         int limit = limit(request);
         Rooms.Page page = rooms.list(ActorResolver.actor(request), cursor(request), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private void search(Request request, Response response) throws Exception {
+        String param = request.query("limit");
+        int limit = RequestSearch.LIST_DEFAULT;
+        if (param != null && !param.isEmpty()) {
+            try {
+                limit = Integer.parseInt(param);
+            } catch (NumberFormatException e) {
+                limit = -1;
+            }
+            if (limit < 1 || limit > RequestSearch.LIST_MAX) {
+                throw new HttpError(400, "invalid_limit", "limit must be 1.." + RequestSearch.LIST_MAX);
+            }
+        }
+        String kind = request.query("kind");
+        RequestSearch.Page page = search.search(ActorResolver.actor(request), request.pathParam("room"),
+                request.query("q"), kind == null || kind.isEmpty() ? null : kind, cursor(request), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

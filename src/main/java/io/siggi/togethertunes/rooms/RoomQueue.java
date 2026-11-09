@@ -58,6 +58,10 @@ public final class RoomQueue {
         }
     }
 
+    /** The room's request scope and owner, read on the executor with the cheap checks. */
+    private record Scope(RoomSettings.RequestScope requestScope, String ownerId) {
+    }
+
     public RoomQueue(RoomRegistry registry, Database db, Uploads uploads, YoutubeImports youtube, Playlists playlists,
                      AddMediaPolicy addMedia, Random random) {
         this.registry = Objects.requireNonNull(registry);
@@ -75,6 +79,9 @@ public final class RoomQueue {
      * @throws HttpError {@code 400 invalid_source} (not exactly one source), as
      *                   {@link ControlPolicy#requireSource} (the actor's right to this request path:
      *                   for a guest the effective guest capability) and {@link QueueOps#add};
+     *                   by item id, outside the owner and moderators, the room's request scope
+     *                   ({@link RequestSearch#requireInScope}: {@code 403 library_requests_disabled}
+     *                   / {@code not_in_request_scope});
      *                   for an upload {@code 404 upload_not_found} (not the actor's) and
      *                   {@code 409 upload_incomplete}; for a YouTube link (or a purged/failed
      *                   YouTube item) the import's errors and {@link AddMediaPolicy#requireYoutube}
@@ -86,10 +93,14 @@ public final class RoomQueue {
             throw new HttpError(400, "invalid_source", "Give exactly one of itemId, uploadId and youtubeUrl");
         }
         ControlPolicy.requireSource(a, source.via());
-        registry.call(roomId, tx -> QueueOps.checkAdd(tx.state(), a));
+        Scope scope = registry.call(roomId, tx -> {
+            QueueOps.checkAdd(tx.state(), a);
+            return new Scope(tx.state().settings().requestScope(), tx.state().ownerId());
+        });
         String itemId;
         if (source.itemId() != null) {
             itemId = source.itemId();
+            RequestSearch.requireInScope(db, scope.requestScope(), scope.ownerId(), a, itemId);
             refetchIfNeeded(roomId, actor, itemId);
         } else if (source.uploadId() != null) {
             Uploads.Upload upload = uploads.get(actor, source.uploadId());

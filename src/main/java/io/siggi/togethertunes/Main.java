@@ -57,6 +57,7 @@ import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.PlayingItems;
+import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomGuests;
 import io.siggi.togethertunes.rooms.RoomRegistry;
 import io.siggi.togethertunes.rooms.Rooms;
@@ -218,7 +219,8 @@ public final class Main {
         } catch (SQLException e) {
             System.err.println("WARNING: could not resume playing rooms: " + e.getMessage());
         }
-        RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests);
+        RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests,
+                new RequestSearch(database, rooms, roomGuests));
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
