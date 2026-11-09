@@ -2,8 +2,7 @@ package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorResolver;
-import io.siggi.togethertunes.auth.Permission;
-import io.siggi.togethertunes.auth.Permissions;
+import io.siggi.togethertunes.auth.Guests;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
@@ -18,8 +17,12 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code POST /api/uploads} {@code {filename, size, roomId?}} → {@code 201}
  *       {@code {uploadId, chunkSize, size}}. Errors: {@code 400 invalid_filename},
- *       {@code 400 invalid_size}, {@code 413 payload_too_large} (over {@code ingest.maxUploadBytes}),
- *       {@code 404 room_not_found} for a {@code roomId} (rooms come in M3).</li>
+ *       {@code 400 invalid_size}, {@code 413 payload_too_large} (over {@code ingest.maxUploadBytes},
+ *       or a guest's quota size), {@code 429 upload_quota_exceeded} (guests), and the
+ *       {@link AddMediaPolicy} errors. A user's {@code roomId} gets {@code 404 room_not_found} until
+ *       rooms exist (M3); a guest's goes through the guest rules, whose room half is a stub that
+ *       also answers {@code 404 room_not_found} until then. An anonymous visitor who passes every
+ *       check becomes a guest here ({@code gid} cookie in cookie mode).</li>
  *   <li>{@code PUT /api/uploads/{id}} with {@code Content-Range: bytes start-end/size} and the
  *       chunk as the body (any content type) → {@code 200 {receivedBytes, size}}. Idempotent: bytes
  *       already received are skipped. A chunk must start at or before {@code receivedBytes}
@@ -30,13 +33,14 @@ import java.util.Objects;
  *       optional) → {@code 200 {itemId, deduplicated}}; repeating it returns the same.</li>
  * </ul>
  *
- * <p>Uploads belong to whoever started them; anyone else gets {@code 404 upload_not_found}. Every
- * route needs {@code library.upload} ({@code 401} for guests and anonymous callers: guest uploads
- * are requests in a room, which come with rooms and the guest upload rules).
+ * <p>Uploads belong to whoever started them; anyone else gets {@code 404 upload_not_found}. Users
+ * need {@code library.upload} on every route; guests need the server's guest upload rules
+ * ({@link AddMediaPolicy#requireUploadOwner}) on the routes after {@code POST}.
  */
 public final class UploadsApi {
     private final Uploads uploads;
-    private final Permissions permissions;
+    private final AddMediaPolicy policy;
+    private final Guests guests;
 
     record CreateRequest(String filename, Long size, String roomId) {
     }
@@ -44,29 +48,45 @@ public final class UploadsApi {
     record CompleteRequest(String title, String artist, Boolean addToLibrary) {
     }
 
-    public UploadsApi(Uploads uploads, Permissions permissions) {
+    public UploadsApi(Uploads uploads, AddMediaPolicy policy, Guests guests) {
         this.uploads = Objects.requireNonNull(uploads);
-        this.permissions = Objects.requireNonNull(permissions);
+        this.policy = Objects.requireNonNull(policy);
+        this.guests = Objects.requireNonNull(guests);
     }
 
     public void register(Router router) {
-        router.post("/api/uploads", this::create, permissions.hook(Permission.LIBRARY_UPLOAD));
-        router.put("/api/uploads/{id}", this::chunk, permissions.hook(Permission.LIBRARY_UPLOAD));
-        router.get("/api/uploads/{id}", this::status, permissions.hook(Permission.LIBRARY_UPLOAD));
-        router.post("/api/uploads/{id}/complete", this::complete, permissions.hook(Permission.LIBRARY_UPLOAD));
+        router.post("/api/uploads", this::create);
+        router.put("/api/uploads/{id}", this::chunk, policy.uploadOwnerHook());
+        router.get("/api/uploads/{id}", this::status, policy.uploadOwnerHook());
+        router.post("/api/uploads/{id}/complete", this::complete, policy.uploadOwnerHook());
     }
 
     private void create(Request request, Response response) throws Exception {
-        CreateRequest body = request.readJson(CreateRequest.class);
         response.header("Cache-Control", "no-store");
-        if (body.roomId() != null) {
-            // TODO(rooms, M3): an upload as a request in a room, with the room's guest rules.
+        Actor actor = ActorResolver.actor(request);
+        if (actor instanceof Actor.User) {
+            policy.requireUpload(actor, null); // before the body, like a permission hook
+        }
+        CreateRequest body = request.readJson(CreateRequest.class);
+        String roomId = body.roomId();
+        if (!(actor instanceof Actor.User)) {
+            policy.requireUpload(actor, roomId);
+        }
+        if (roomId != null && actor instanceof Actor.User) {
+            // TODO(rooms, M3): a user's upload as a request in a room.
             throw new HttpError(404, "room_not_found", "No such room");
         }
         if (body.size() == null) {
             throw new HttpError(400, "invalid_size", "size is required");
         }
-        Uploads.Upload upload = uploads.create(ActorResolver.actor(request), body.filename(), body.size());
+        if (!(actor instanceof Actor.User)) {
+            String guestId = actor instanceof Actor.Guest g ? g.guestId() : null;
+            // Checked before an anonymous visitor becomes a guest; the quota again (and recorded) on insert.
+            uploads.validate(body.filename(), body.size());
+            uploads.guestQuota().check(guestId, request.clientIp(), body.size());
+            actor = guests.requireIdentity(request, response);
+        }
+        Uploads.Upload upload = uploads.create(actor, body.filename(), body.size(), roomId, request.clientIp());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("uploadId", upload.id());
         out.put("chunkSize", Uploads.CHUNK_SIZE);

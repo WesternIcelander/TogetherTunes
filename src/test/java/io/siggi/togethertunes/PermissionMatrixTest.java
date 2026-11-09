@@ -203,16 +203,18 @@ class PermissionMatrixTest {
             admin("GET /api/admin/audit", c -> Call.get("/api/admin/audit"), 200),
             admin("GET /api/admin/ip/sessions/{userId}", c -> Call.get("/api/admin/ip/sessions/" + c.targetUserId()), 200),
 
-            // Uploads: library.upload (the default user role has it). Guest uploads are room
-            // requests (M3). complete is sent before any chunk, so an allowed caller gets
-            // 409 upload_incomplete (a full complete needs ffprobe; UploadsApiTest covers it).
+            // Uploads: library.upload (the default user role has it). Guests upload only as a request
+            // in a room (no roomId here → 401), and with guests.canUpload off (the default) the
+            // routes of an upload in progress refuse them with 403 guest_uploads_disabled
+            // (GuestUploadsContract covers the guest path). complete is sent before any chunk, so an
+            // allowed caller gets 409 upload_incomplete (UploadsContract covers a full complete).
             row("POST /api/uploads", c -> Call.post("/api/uploads", "{\"filename\":\"song.mp3\",\"size\":10}"),
                     401, 401, 201, 201),
             row("PUT /api/uploads/{id}", c -> Call.put("/api/uploads/" + c.uploadId(), "hello")
-                    .withHeader("Content-Range", "bytes 0-4/10"), 401, 401, 200, 200),
-            row("GET /api/uploads/{id}", c -> Call.get("/api/uploads/" + c.uploadId()), 401, 401, 200, 200),
+                    .withHeader("Content-Range", "bytes 0-4/10"), 401, 403, 200, 200),
+            row("GET /api/uploads/{id}", c -> Call.get("/api/uploads/" + c.uploadId()), 401, 403, 200, 200),
             row("POST /api/uploads/{id}/complete", c -> Call.post("/api/uploads/" + c.uploadId() + "/complete", null),
-                    401, 401, 409, 409),
+                    401, 403, 409, 409),
 
             // YouTube imports: library.youtube (default user role), gated by ytdlp.enabled. Guests'
             // YouTube links are room requests (M3). A link that isn't a YouTube video gets an

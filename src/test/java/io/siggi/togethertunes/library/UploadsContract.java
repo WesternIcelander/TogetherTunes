@@ -16,6 +16,8 @@ import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.BuiltinRoles;
+import io.siggi.togethertunes.auth.GuestNames;
+import io.siggi.togethertunes.auth.Guests;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.auth.Sessions;
@@ -34,6 +36,7 @@ import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.ByteArrayInputStream;
 import java.io.File;
@@ -141,12 +144,13 @@ abstract class UploadsContract {
     private Uploads uploads() {
         Tools t = tools != null ? tools : new Tools(null, null, null);
         return new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
-        }, OutputProfile.P720_30, MAX_BYTES, MAX_SECONDS, clock);
+        }, OutputProfile.P720_30, MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
     }
 
     private WebServer start(Uploads u) throws Exception {
         Router router = new Router(actors.hook());
-        new UploadsApi(u, permissions).register(router);
+        new UploadsApi(u, new AddMediaPolicy(permissions, settings, RoomGuestRules.NO_ROOMS),
+                new Guests(db, settings, clock, false, GuestNames.bundled())).register(router);
         WebServer s = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         servers.add(s);
         return s;

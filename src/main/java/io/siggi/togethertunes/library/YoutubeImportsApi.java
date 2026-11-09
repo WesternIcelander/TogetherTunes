@@ -1,8 +1,6 @@
 package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.auth.ActorResolver;
-import io.siggi.togethertunes.auth.Permission;
-import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
@@ -17,23 +15,24 @@ import java.util.Objects;
  * {@link YoutubeImports}. {@code cached} is true when the item was already ready (nothing to
  * download); {@code status} is the item's status ({@code ready}, {@code pending} or
  * {@code processing}). Needs {@code library.youtube}, which the {@code ytdlp.enabled} switch gates
- * ({@code 403 feature_disabled} when it is off). Guests get {@code 401} here: their YouTube links
- * are requests inside a room (M3).
+ * ({@code 403 feature_disabled} when it is off; {@link AddMediaPolicy#requireYoutube}). Guests get
+ * {@code 401} here: their YouTube links are requests inside a room, made with the room's
+ * {@code queue.add} (M3), which checks {@link AddMediaPolicy#requireYoutube} with the room.
  */
 public final class YoutubeImportsApi {
     private final YoutubeImports imports;
-    private final Permissions permissions;
+    private final AddMediaPolicy policy;
 
     record ImportRequest(String url, Boolean presentAsAudio, Boolean addToLibrary) {
     }
 
-    public YoutubeImportsApi(YoutubeImports imports, Permissions permissions) {
+    public YoutubeImportsApi(YoutubeImports imports, AddMediaPolicy policy) {
         this.imports = Objects.requireNonNull(imports);
-        this.permissions = Objects.requireNonNull(permissions);
+        this.policy = Objects.requireNonNull(policy);
     }
 
     public void register(Router router) {
-        router.post("/api/imports/youtube", this::importUrl, permissions.hook(Permission.LIBRARY_YOUTUBE));
+        router.post("/api/imports/youtube", this::importUrl, policy.youtubeHook());
     }
 
     private void importUrl(Request request, Response response) throws Exception {

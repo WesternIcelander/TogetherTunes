@@ -110,6 +110,7 @@ public final class Uploads {
     private final long maxBytes;
     private final long maxDurationUs;
     private final Clock clock;
+    private final GuestUploadQuota guestQuota;
 
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
     /** Held around the content-hash lookup and the item insert. */
@@ -152,9 +153,10 @@ public final class Uploads {
      * @param profile        the output profile new items are recorded with
      * @param maxBytes       {@code ingest.maxUploadBytes}
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
+     * @param guestQuota     {@code guests.uploadQuota}, applied to uploads guests start
      */
     public Uploads(Database db, DataDir dataDir, Tools tools, IngestJobs jobs, Runnable wake, OutputProfile profile,
-                   long maxBytes, int maxDurationSec, Clock clock) {
+                   long maxBytes, int maxDurationSec, GuestUploadQuota guestQuota, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.dataDir = Objects.requireNonNull(dataDir);
         this.tools = Objects.requireNonNull(tools);
@@ -163,7 +165,13 @@ public final class Uploads {
         this.profile = Objects.requireNonNull(profile);
         this.maxBytes = maxBytes;
         this.maxDurationUs = maxDurationSec * 1_000_000L;
+        this.guestQuota = Objects.requireNonNull(guestQuota);
         this.clock = Objects.requireNonNull(clock);
+    }
+
+    /** The guest upload quota. */
+    public GuestUploadQuota guestQuota() {
+        return guestQuota;
     }
 
     /** {@code <data>/tmp/uploads}. */
@@ -181,14 +189,13 @@ public final class Uploads {
     // ------------------------------------------------------------------ create / read
 
     /**
-     * Starts an upload of {@code size} bytes for {@code owner} (a user or a guest).
+     * Checks the file name and size of a new upload, as {@link #create} does.
      *
+     * @return the file name as it is stored
      * @throws HttpError {@code 400 invalid_filename} / {@code 400 invalid_size}, or
      *                   {@code 413 payload_too_large} above {@code ingest.maxUploadBytes}
      */
-    public Upload create(Actor owner, String filename, long size) throws SQLException, IOException {
-        String userId = userId(owner);
-        String guestId = guestId(owner);
+    public String validate(String filename, long size) {
         String name = filename == null ? null : UploadMetadata.clean(filename);
         if (name == null) {
             throw new HttpError(400, "invalid_filename", "filename is required");
@@ -203,23 +210,54 @@ public final class Uploads {
         if (size > maxBytes) {
             throw HttpError.payloadTooLarge("The file is larger than the upload limit (" + maxBytes + " bytes)");
         }
+        return name;
+    }
+
+    /** {@link #create(Actor, String, long, String, String)} for a user, outside a room. */
+    public Upload create(Actor owner, String filename, long size) throws SQLException, IOException {
+        return create(owner, filename, size, null, null);
+    }
+
+    /**
+     * Starts an upload of {@code size} bytes for {@code owner} (a user or a guest). Who may do so
+     * is {@link AddMediaPolicy}'s business; a guest's upload also counts against the guest upload
+     * quota ({@link GuestUploadQuota}), checked and recorded in the same transaction as the row.
+     *
+     * @param roomId   the room the upload is a request in, or null
+     * @param clientIp the request's IP, for a guest's per-IP quota (never stored)
+     * @throws HttpError {@code 400 invalid_filename} / {@code 400 invalid_size}, or
+     *                   {@code 413 payload_too_large} above {@code ingest.maxUploadBytes} (or, for
+     *                   a guest, the quota's per-item size), {@code 429 upload_quota_exceeded}
+     */
+    public Upload create(Actor owner, String filename, long size, String roomId, String clientIp)
+            throws SQLException, IOException {
+        String userId = userId(owner);
+        String guestId = guestId(owner);
+        String name = validate(filename, size);
         maybeSweep();
         String id = UuidV7.newId();
         long now = EpochMs.now(clock);
         Files.createDirectories(dir());
         Files.newByteChannel(partFile(id), StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).close();
         String finalName = name;
+        if (guestId != null) {
+            guestQuota.lock().lock();
+        }
         try {
             db.write(c -> {
-                try (PreparedStatement ps = c.prepareStatement("INSERT INTO uploads (id, user_id, guest_id, filename,"
-                        + " size, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
+                if (guestId != null) {
+                    guestQuota.reserve(c, guestId, clientIp, size, now);
+                }
+                try (PreparedStatement ps = c.prepareStatement("INSERT INTO uploads (id, user_id, guest_id, room_id,"
+                        + " filename, size, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                     ps.setString(1, id);
                     ps.setString(2, userId);
                     ps.setString(3, guestId);
-                    ps.setString(4, finalName);
-                    ps.setLong(5, size);
-                    ps.setLong(6, now);
+                    ps.setString(4, roomId);
+                    ps.setString(5, finalName);
+                    ps.setLong(6, size);
                     ps.setLong(7, now);
+                    ps.setLong(8, now);
                     ps.executeUpdate();
                 }
                 return null;
@@ -227,6 +265,10 @@ public final class Uploads {
         } catch (SQLException | RuntimeException e) {
             Files.deleteIfExists(partFile(id));
             throw e;
+        } finally {
+            if (guestId != null) {
+                guestQuota.lock().unlock();
+            }
         }
         return new Upload(id, userId, guestId, finalName, size, now, now, null, false);
     }
@@ -716,11 +758,12 @@ public final class Uploads {
 
     /**
      * Deletes uploads not touched for {@link #STALE_AFTER} (with their part files) and part files
-     * that have no row. An upload a request is working on right now is skipped.
+     * that have no row, and guest quota rows that no longer count ({@link GuestUploadQuota#sweep}). An upload a request is working on right now is skipped.
      *
      * @return the number of uploads and stray files deleted
      */
     public int sweep() throws SQLException, IOException {
+        guestQuota.sweep();
         long cutoff = EpochMs.now(clock) - STALE_AFTER.toMillis();
         List<String> stale = db.read(c -> {
             List<String> ids = new ArrayList<>();

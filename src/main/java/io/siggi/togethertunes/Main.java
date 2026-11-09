@@ -37,10 +37,13 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.library.AddMediaPolicy;
+import io.siggi.togethertunes.library.GuestUploadQuota;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
+import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -161,7 +164,7 @@ public final class Main {
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
-        Uploads uploads = uploads(config, dataDir, database, ingest);
+        Uploads uploads = uploads(config, dataDir, database, ingest, settings);
         try {
             int swept = uploads.sweep();
             if (swept > 0) {
@@ -170,9 +173,11 @@ public final class Main {
         } catch (SQLException | IOException e) {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
-        UploadsApi uploadsApi = new UploadsApi(uploads, permissions);
+        // Rooms come in M3: until then no room lets guests add media.
+        AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, RoomGuestRules.NO_ROOMS);
+        UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports(config, database, ingest, cookiesFile),
-                permissions);
+                addMedia);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
@@ -239,11 +244,13 @@ public final class Main {
 
     /**
      * The upload service ({@link Uploads}): limits from the config, new items recorded for the
-     * configured output profile, and each queued job wakes the ingest workers.
+     * configured output profile, each queued job wakes the ingest workers, and the guest upload
+     * quota comes from the settings.
      */
-    static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest) {
+    static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest, Settings settings) {
         return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
-                config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(), Clock.systemUTC());
+                config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(),
+                new GuestUploadQuota(database, settings, Clock.systemUTC()), Clock.systemUTC());
     }
 
     /**

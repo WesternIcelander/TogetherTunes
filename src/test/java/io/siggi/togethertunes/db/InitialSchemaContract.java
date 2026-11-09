@@ -70,6 +70,7 @@ abstract class InitialSchemaContract {
                 "created_at");
         t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
                 "item_id", "deduplicated");
+        t("guest_upload_starts", "id", "guest_id", "ip_key_hash", "created_at");
     }
 
     private static void t(String table, String... columns) {
