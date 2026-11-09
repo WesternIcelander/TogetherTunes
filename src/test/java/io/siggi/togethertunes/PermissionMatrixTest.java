@@ -288,6 +288,16 @@ class PermissionMatrixTest {
                     + c.targetUserId(), "{\"role\":\"member\"}"), 401, 401, 403, 201),
             row("DELETE /api/rooms/{room}/members/{userId}", c -> Call.delete(c.rootRoomMemberPath()),
                     401, 401, 403, 204),
+            // Guest bans: owner and moderators (an admin through rooms.moderateAny). RoomGuestsContract
+            // covers moderators and members.
+            row("GET /api/rooms/{room}/guest-bans", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/guest-bans"),
+                    401, 401, 403, 200),
+            row("GET /api/rooms/{room}/guest-bans/{guestId}", c -> Call.get(c.rootRoomGuestBanPath(false)),
+                    401, 401, 403, 200),
+            row("PUT /api/rooms/{room}/guest-bans/{guestId}", c -> Call.put(c.rootRoomGuestBanPath(false), null),
+                    401, 401, 403, 201),
+            row("DELETE /api/rooms/{room}/guest-bans/{guestId}", c -> Call.delete(c.rootRoomGuestBanPath(true)),
+                    401, 401, 403, 204),
 
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
@@ -348,7 +358,7 @@ class PermissionMatrixTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, permissions, clock));
+                TestUploads.roomsApi(database, settings, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -661,6 +671,25 @@ class PermissionMatrixTest {
             try {
                 String path = "/api/rooms/" + rootRoomSlug() + "/members/" + targetUserId();
                 ok(Call.put(path, "{\"role\":\"member\"}"));
+                return path;
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * {@code /api/rooms/{room}/guest-bans/{guestId}} for a new public room of the setup admin and
+         * a new guest (made from another address); with {@code banned}, the guest is banned there.
+         */
+        String rootRoomGuestBanPath(boolean banned) {
+            try {
+                HttpResponse<String> r = send(null, "2001:db8:1:" + Integer.toHexString(n) + "::7",
+                        Call.post("/api/me/guest", null));
+                assertTrue(r.statusCode() / 100 == 2, r.body());
+                String path = "/api/rooms/" + rootRoomSlug() + "/guest-bans/" + json(r.body()).get("id").getAsString();
+                if (banned) {
+                    ok(Call.put(path, null));
+                }
                 return path;
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);

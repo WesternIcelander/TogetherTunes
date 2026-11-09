@@ -8,10 +8,8 @@ import java.sql.SQLException;
  * The room half of a guest capability ({@code docs/rooms.md#guests-in-rooms}): guests add media
  * only as a request inside a room, and only when the room allows it as well as the server.
  * {@code library.AddMediaPolicy} checks the server half (the {@code guests.*} settings) and then
- * asks this.
- *
- * <p>Rooms come in M3; until then {@link #NO_ROOMS} answers every room with
- * {@code 404 room_not_found}, so guests can't add media yet.
+ * asks this. Implemented by {@link RoomGuests}; {@link #NO_ROOMS} (every room
+ * {@code 404 room_not_found}) is for tests without rooms.
  */
 @FunctionalInterface
 public interface RoomGuestRules {
@@ -31,7 +29,7 @@ public interface RoomGuestRules {
      */
     void require(String roomId, Actor guest, Capability capability) throws SQLException;
 
-    /** No rooms exist yet (until M3): every room is {@code 404 room_not_found}. */
+    /** No rooms (tests): every room is {@code 404 room_not_found}. */
     RoomGuestRules NO_ROOMS = (roomId, guest, capability) -> {
         throw new HttpError(404, "room_not_found", "No such room");
     };

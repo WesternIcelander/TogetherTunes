@@ -53,6 +53,7 @@ class RoomsApiTest {
     private String alice;
     private String bob;
     private String noCreate; // a user whose roles lack rooms.create
+    private String root; // admin: ip.view, rooms.moderateAny
 
     @BeforeEach
     void setUp() throws Exception {
@@ -65,10 +66,12 @@ class RoomsApiTest {
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         Permissions permissions = new Permissions(db, settings);
         registry = new RoomRegistry(db, clock, PackagerHook.NONE);
-        new RoomsApi(new Rooms(db, permissions, clock), registry, permissions).register(router);
+        Rooms rooms = new Rooms(db, permissions, clock);
+        new RoomsApi(rooms, registry, permissions, new RoomGuests(db, settings, permissions, rooms, registry))
+                .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
-        accounts.createLocal("root", null, "root-password", false, null, "account.register"); // the first: admin
+        String rootId = accounts.createLocal("root", null, "root-password", false, null, "account.register").id(); // admin
         aliceId = accounts.createLocal("alice", "Alice", "alice-password", false, null, "account.register").id();
         bobId = accounts.createLocal("bob", "Bob", "bob-password", false, null, "account.register").id();
         String plainId = accounts.createLocal("plain", null, "plain-password", false, null, "account.register").id();
@@ -78,6 +81,7 @@ class RoomsApiTest {
         alice = sessions.create(aliceId, Actor.Via.BEARER, "test", null).token();
         bob = sessions.create(bobId, Actor.Via.BEARER, "test", null).token();
         noCreate = sessions.create(plainId, Actor.Via.BEARER, "test", null).token();
+        root = sessions.create(rootId, Actor.Via.BEARER, "test", null).token();
     }
 
     @AfterEach
@@ -323,5 +327,85 @@ class RoomsApiTest {
         assertNull(registry.loaded(id));
         expectError(404, "room_not_found", call(bob, "PATCH", "/api/rooms/" + id, "{\"name\":\"x\"}"));
         expectError(404, "room_not_found", call(bob, "DELETE", "/api/rooms/on-air", null));
+    }
+
+    private void sql(String statement, Object... args) throws Exception {
+        db.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement(statement)) {
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    @Test
+    void guestBans() throws Exception {
+        String id = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Bar\",\"visibility\":\"public\"}"))
+                .get("id").getAsString();
+        assertEquals(201, call(alice, "PUT", "/api/rooms/bar/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
+        String cookieGuest = io.siggi.togethertunes.db.UuidV7.newId();
+        String ipGuest = io.siggi.togethertunes.db.UuidV7.newId();
+        sql("INSERT INTO guests (id, kind, key_hash, ip_last, display_name, created_at, last_seen_at)"
+                + " VALUES (?, 'cookie', 'k1', '198.51.100.8', 'Quiet Walrus', 1, 1)", cookieGuest);
+        sql("INSERT INTO guests (id, kind, key_hash, ip_last, display_name, created_at, last_seen_at)"
+                + " VALUES (?, 'ip', 'k2', '203.0.113.77', 'Loud Heron', 1, 1)", ipGuest);
+
+        // Before banning: the state, with the IP-mode warning, never the address.
+        HttpResponse<String> r = call(alice, "GET", "/api/rooms/bar/guest-bans/" + ipGuest, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        JsonObject ban = json(r);
+        assertEquals(ipGuest, ban.getAsJsonObject("guest").get("id").getAsString());
+        assertEquals("guest", ban.getAsJsonObject("guest").get("kind").getAsString());
+        assertTrue(ban.getAsJsonObject("guest").get("isGuest").getAsBoolean());
+        assertEquals("ip", ban.get("identifiedBy").getAsString());
+        assertFalse(ban.get("banned").getAsBoolean());
+        assertEquals(RoomGuests.IP_MODE_WARNING, ban.get("warning").getAsString());
+        assertFalse(r.body().contains("203.0.113.77"), r.body());
+
+        r = call(alice, "PUT", "/api/rooms/bar/guest-bans/" + ipGuest, null);
+        assertEquals(201, r.statusCode(), r.body());
+        assertTrue(json(r).get("banned").getAsBoolean());
+        assertEquals(clock.millis(), json(r).get("bannedAt").getAsLong());
+        assertFalse(r.body().contains("203.0.113.77"), r.body());
+        assertEquals(200, call(bob, "PUT", "/api/rooms/" + id + "/guest-bans/" + ipGuest, null).statusCode());
+        r = call(bob, "PUT", "/api/rooms/bar/guest-bans/" + cookieGuest, null);
+        assertEquals(201, r.statusCode(), r.body());
+        assertFalse(json(r).has("warning"), "a cookie guest is one browser");
+
+        r = call(bob, "GET", "/api/rooms/bar/guest-bans?limit=1", null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals(1, json(r).getAsJsonArray("items").size());
+        assertTrue(json(r).has("nextCursor"));
+        r = call(alice, "GET", "/api/rooms/bar/guest-bans", null);
+        assertEquals(2, json(r).getAsJsonArray("items").size());
+        assertFalse(r.body().contains("203.0.113.77") || r.body().contains("198.51.100.8"), r.body());
+        // ip.view (the admin, a moderator everywhere through rooms.moderateAny) sees the last IP.
+        r = call(root, "GET", "/api/rooms/bar/guest-bans", null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertTrue(r.body().contains("\"ip\":\"203.0.113.77\""), r.body());
+        r = call(root, "GET", "/api/rooms/bar/guest-bans/" + cookieGuest, null);
+        assertEquals("198.51.100.8", json(r).get("ip").getAsString());
+
+        // Refusals.
+        expectError(401, "not_authenticated", call(null, "GET", "/api/rooms/bar/guest-bans", null));
+        expectError(401, "not_authenticated", call(null, "PUT", "/api/rooms/bar/guest-bans/" + cookieGuest, null));
+        expectError(403, "forbidden", call(noCreate, "GET", "/api/rooms/bar/guest-bans", null));
+        expectError(403, "forbidden", call(noCreate, "PUT", "/api/rooms/bar/guest-bans/" + cookieGuest, null));
+        expectError(403, "forbidden", call(noCreate, "DELETE", "/api/rooms/bar/guest-bans/" + cookieGuest, null));
+        expectError(404, "guest_not_found", call(alice, "PUT", "/api/rooms/bar/guest-bans/nope", null));
+        expectError(404, "guest_not_found", call(alice, "GET", "/api/rooms/bar/guest-bans/"
+                + io.siggi.togethertunes.db.UuidV7.newId(), null));
+        expectError(404, "room_not_found", call(alice, "PUT", "/api/rooms/nope/guest-bans/" + cookieGuest, null));
+        expectError(400, "invalid_cursor", call(alice, "GET", "/api/rooms/bar/guest-bans?cursor=x", null));
+        expectError(400, "invalid_limit", call(alice, "GET", "/api/rooms/bar/guest-bans?limit=0", null));
+
+        // Lifting a ban.
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/bar/guest-bans/" + cookieGuest, null).statusCode());
+        expectError(404, "ban_not_found", call(bob, "DELETE", "/api/rooms/bar/guest-bans/" + cookieGuest, null));
+        assertEquals(1, json(call(alice, "GET", "/api/rooms/bar/guest-bans", null)).getAsJsonArray("items").size());
     }
 }

@@ -368,6 +368,17 @@ abstract class QueueControlContract {
         assertEquals(List.of(b, c, s), order());
     }
 
+    /** Sets the presence to {@code n} identified listeners (connections {@code c0..}). */
+    private static void present(RoomTx tx, int n) {
+        RoomPresence p = tx.state().presence();
+        for (int i = 0; i < 16; i++) {
+            p.leave("c" + i);
+        }
+        for (int i = 0; i < n; i++) {
+            p.join("c" + i, "u:present-" + i, RoomPresence.Mode.LISTEN);
+        }
+    }
+
     @Test
     void voteSkipReachesTheThresholdOfPresentMembers() throws Exception {
         String a = queued()[0];
@@ -376,7 +387,7 @@ abstract class QueueControlContract {
         call(Playback::startIfIdle);
         assertEquals("identity_required", refused(tx -> QueueControl.voteSkip(tx, RoomActor.ANONYMOUS)).code());
         call(tx -> {
-            tx.state().presentIdentified(4);
+            present(tx, 4);
             return null;
         });
 
@@ -386,10 +397,10 @@ abstract class QueueControlContract {
                 "voting twice counts once");
         assertEquals(1L, count("SELECT COUNT(*) FROM skip_votes WHERE entry_id = ?", a));
 
-        reload(); // skip votes survive a reload (presence doesn't: the WebSocket layer sets it again)
+        reload(); // skip votes survive a reload (presence doesn't here: a new executor, no connections)
         assertEquals(1, (int) call(tx -> tx.state().skipVotes().size()));
         call(tx -> {
-            tx.state().presentIdentified(4);
+            present(tx, 4);
             return null;
         });
         changes.clear();
@@ -406,7 +417,7 @@ abstract class QueueControlContract {
         assertEquals(new QueueControl.VoteSkip(1, 2, false), call(tx -> QueueControl.voteSkip(tx, carol)));
         assertFalse(bool(QueueControl::checkVoteSkip));
         assertTrue(bool(tx -> {
-            tx.state().presentIdentified(2);
+            present(tx, 2);
             return QueueControl.checkVoteSkip(tx);
         }));
         assertEquals(c, call(tx -> tx.state().current().id()));

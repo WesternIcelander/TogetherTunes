@@ -72,7 +72,9 @@ public final class RoomQueue {
     /**
      * {@code queue.add}: see {@link QueueOps#add}.
      *
-     * @throws HttpError {@code 400 invalid_source} (not exactly one source), as {@link QueueOps#add};
+     * @throws HttpError {@code 400 invalid_source} (not exactly one source), as
+     *                   {@link ControlPolicy#requireSource} (the actor's right to this request path:
+     *                   for a guest the effective guest capability) and {@link QueueOps#add};
      *                   for an upload {@code 404 upload_not_found} (not the actor's) and
      *                   {@code 409 upload_incomplete}; for a YouTube link (or a purged/failed
      *                   YouTube item) the import's errors and {@link AddMediaPolicy#requireYoutube}
@@ -83,6 +85,7 @@ public final class RoomQueue {
         if (given != 1) {
             throw new HttpError(400, "invalid_source", "Give exactly one of itemId, uploadId and youtubeUrl");
         }
+        ControlPolicy.requireSource(a, source.via());
         registry.call(roomId, tx -> QueueOps.checkAdd(tx.state(), a));
         String itemId;
         if (source.itemId() != null) {

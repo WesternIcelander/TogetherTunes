@@ -11,7 +11,10 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -44,6 +47,15 @@ import java.util.Set;
  *       {@code 404 user_not_found}, {@code 409 cannot_change_own_role} / {@code user_disabled}.</li>
  *   <li>{@code DELETE /api/rooms/{room}/members/{userId}} → {@code 204}; also lifts a ban, and is
  *       how a user leaves a room. {@code 404 member_not_found}, {@code 409 owner_cannot_leave}.</li>
+ *   <li>{@code GET /api/rooms/{room}/guest-bans?cursor=&limit=} → {@code {"items": [ban],
+ *       "nextCursor"?}}, newest first; {@code GET /api/rooms/{room}/guest-bans/{guestId}} → the
+ *       guest's ban (also when not banned, so the UI can warn first); {@code PUT …/{guestId}} (no
+ *       body) → the ban ({@code 201} if new, else {@code 200}); {@code DELETE …/{guestId}} →
+ *       {@code 204}, {@code 404 ban_not_found}. Owner and moderators ({@link RoomGuests});
+ *       {@code 404 guest_not_found}. A ban is {@code {"guest": actor, "identifiedBy": "cookie"|"ip",
+ *       "banned", "bannedAt"?, "warning"?, "ip"?}}: {@code warning} for an IP-mode guest (the ban
+ *       covers everyone sharing its address), {@code ip} (the guest's last IP) only for
+ *       {@code ip.view} holders.</li>
  * </ul>
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
@@ -62,11 +74,13 @@ public final class RoomsApi {
     private final Rooms rooms;
     private final RoomRegistry registry;
     private final Permissions permissions;
+    private final RoomGuests guests;
 
-    public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions) {
+    public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests) {
         this.rooms = Objects.requireNonNull(rooms);
         this.registry = Objects.requireNonNull(registry);
         this.permissions = Objects.requireNonNull(permissions);
+        this.guests = Objects.requireNonNull(guests);
     }
 
     /** The id of the room in the path ({@code {room}}: id or slug), else {@code 404 room_not_found}. */
@@ -112,6 +126,10 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/members", this::members);
         router.put("/api/rooms/{room}/members/{userId}", this::setRole);
         router.delete("/api/rooms/{room}/members/{userId}", this::removeMember);
+        router.get("/api/rooms/{room}/guest-bans", this::guestBans);
+        router.get("/api/rooms/{room}/guest-bans/{guestId}", this::guestBan);
+        router.put("/api/rooms/{room}/guest-bans/{guestId}", this::banGuest);
+        router.delete("/api/rooms/{room}/guest-bans/{guestId}", this::unbanGuest);
     }
 
     private static Actor.User user(Request request) throws Exception {
@@ -253,6 +271,68 @@ public final class RoomsApi {
         Actor.User user = user(request);
         if (!rooms.removeMember(user, request.pathParam("room"), request.pathParam("userId"), request.clientIp())) {
             throw new HttpError(404, "member_not_found", "That user has no role in this room");
+        }
+        response.empty(204);
+    }
+
+    /** A ban as JSON, with the guest's {@code ip} added from {@code ips} (only ever filled for {@code ip.view}). */
+    private static Map<String, Object> banJson(RoomGuests.GuestBan ban, Map<String, String> ips) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("guest", ban.guest());
+        m.put("identifiedBy", ban.identifiedBy());
+        m.put("banned", ban.banned());
+        m.put("bannedAt", ban.bannedAt());
+        m.put("warning", ban.warning());
+        String ip = ips.get(ban.guest().id());
+        if (ip != null) {
+            m.put("ip", ip);
+        }
+        return m;
+    }
+
+    private Map<String, Object> banJson(Actor.User viewer, RoomGuests.GuestBan ban) throws Exception {
+        return banJson(ban, guests.ipsOf(viewer, List.of(ban.guest().id())));
+    }
+
+    private void guestBans(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        int limit = limit(request);
+        RoomGuests.GuestBanPage page = guests.list(user, request.pathParam("room"), cursor(request), limit);
+        List<String> ids = new ArrayList<>();
+        for (RoomGuests.GuestBan b : page.items()) {
+            ids.add(b.guest().id());
+        }
+        Map<String, String> ips = guests.ipsOf(user, ids);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (RoomGuests.GuestBan b : page.items()) {
+            items.add(banJson(b, ips));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("items", items);
+        body.put("nextCursor", page.nextCursor());
+        response.header("Cache-Control", "no-store");
+        response.json(body);
+    }
+
+    private void guestBan(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        RoomGuests.GuestBan ban = guests.get(user, request.pathParam("room"), request.pathParam("guestId"));
+        response.header("Cache-Control", "no-store");
+        response.json(banJson(user, ban));
+    }
+
+    private void banGuest(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        RoomGuests.BanSet set = guests.ban(user, request.pathParam("room"), request.pathParam("guestId"),
+                request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.json(set.created() ? 201 : 200, banJson(user, set.ban()));
+    }
+
+    private void unbanGuest(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        if (!guests.unban(user, request.pathParam("room"), request.pathParam("guestId"), request.clientIp())) {
+            throw new HttpError(404, "ban_not_found", "That guest isn't banned from this room");
         }
         response.empty(204);
     }

@@ -45,14 +45,50 @@ public final class ControlPolicy {
     }
 
     /** What the actor may do, for the {@code you} object of the room state. */
-    public record Capabilities(String role, boolean canVote, boolean canRequest, boolean canSkip) {
+    public record Capabilities(String role, boolean canVote, boolean canRequest, boolean canUpload,
+                               boolean canYoutube, boolean canSkip) {
     }
 
     public static Capabilities capabilities(RoomState s, RoomActor a) {
         return new Capabilities(a.role() == null ? null : a.role().wire(),
                 a.identified() && a.canVote() && s.controlMode() == Rooms.ControlMode.VOTE,
                 a.identified() && (a.moderates() || a.canRequest()),
+                a.identified() && a.canUpload(),
+                a.identified() && a.canYoutube(),
                 controlsPlayback(s, a));
+    }
+
+    /**
+     * The request path of an {@code add}: {@code via} is {@code library} (an item id),
+     * {@code upload} or {@code youtube} ({@link RoomQueue.Source#via}). A guest needs the matching
+     * effective capability ({@code 403 guest_library_requests_disabled} /
+     * {@code guest_uploads_disabled} / {@code guest_youtube_disabled}); a user the matching
+     * permission ({@code 403 forbidden}). The other checks of an add ({@link #add}) come on top.
+     */
+    public static void requireSource(RoomActor a, String via) {
+        a.requireIdentity();
+        boolean allowed = switch (via) {
+            case "library" -> a.canRequestLibrary();
+            case "upload" -> a.canUpload();
+            case "youtube" -> a.canYoutube();
+            default -> throw new IllegalArgumentException("unknown request path: " + via);
+        };
+        if (allowed || !a.canRequest() && !a.moderates()) {
+            return; // nothing to add here; add() refuses with cannot_request
+        }
+        if (!a.isGuest()) {
+            throw HttpError.forbidden(switch (via) {
+                case "upload" -> "You can't upload files";
+                case "youtube" -> "You can't add YouTube links";
+                default -> "You can't request from the library";
+            });
+        }
+        throw switch (via) {
+            case "upload" -> new HttpError(403, "guest_uploads_disabled", "Guests can't upload files in this room");
+            case "youtube" -> new HttpError(403, "guest_youtube_disabled", "Guests can't add YouTube links in this room");
+            default -> new HttpError(403, "guest_library_requests_disabled",
+                    "Guests can't request from the library in this room");
+        };
     }
 
     /**

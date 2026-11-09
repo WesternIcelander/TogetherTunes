@@ -100,7 +100,7 @@ class MeApiTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, permissions, clock)), dir.toFile());
+                TestUploads.roomsApi(database, settings, permissions, clock)), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
                 "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);

@@ -58,4 +58,23 @@ public interface RoomEvent {
     /** A queued entry was moved before {@code beforeEntryId} ({@code null}: to the end) of a manual queue. */
     record EntryMoved(String entryId, String beforeEntryId) implements RoomEvent {
     }
+
+    /** The presence counts changed (someone joined, left, switched mode or got an identity). */
+    record PresenceChanged(RoomPresence.Counts counts) implements RoomEvent {
+    }
+
+    /**
+     * A guest was banned from the room: {@code connectionIds} are its connections that were
+     * removed from the presence (the WebSocket layer closes them with {@code kicked}). In IP mode
+     * one guest is everyone sharing that address.
+     */
+    record GuestBanned(String guestId, java.util.List<String> connectionIds) implements RoomEvent {
+        public GuestBanned {
+            connectionIds = java.util.List.copyOf(connectionIds);
+        }
+    }
+
+    /** A guest's ban from the room was lifted. */
+    record GuestUnbanned(String guestId) implements RoomEvent {
+    }
 }

@@ -90,8 +90,9 @@ import org.junit.jupiter.api.io.TempDir;
  *       once while seeding, and every {@code GET} route is then called as an anonymous visitor, a
  *       cookie guest, an IP-mode guest, a user and an admin without {@code ip.view}. All bodies
  *       and headers are scanned. An {@code ip.view} holder is the control: it sees the seeded IPs,
- *       but only in fields named {@code ip}, and only on the {@code /api/admin} endpoints that
- *       {@link IpAccess} builds.</li>
+ *       but only in fields named {@code ip}, and only on the endpoints that {@link IpAccess} feeds
+ *       ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...} and a
+ *       room's {@code guest-bans}).</li>
  * </ul>
  */
 class DtoIpLeakTest {
@@ -144,6 +145,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.rooms.Rooms$Page",
             "io.siggi.togethertunes.rooms.Rooms$RoomView",
             "io.siggi.togethertunes.rooms.Rooms$You",
+            "io.siggi.togethertunes.rooms.RoomGuests$GuestBan",
+            "io.siggi.togethertunes.rooms.RoomGuests$GuestBanPage",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -256,7 +259,19 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomQueue$Source", "what a queue.add refers to (item, upload"
                     + " or link), input only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomStore$ItemRow", "item status/duration/source read by the"
-                    + " room executor"));
+                    + " room executor"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomGuests$Capabilities", "booleans; turned into a RoomActor and"
+                    + " the WebSocket state's you object"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomGuests$BanSet", "ban's result; the API sends its ban"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomGuests$GuestRow", "guest name and kind (no IP column read)"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Counts", "three counts; the WebSocket layer sends"
+                    + " them as presence"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Connection", "connection id -> actor key and mode,"
+                    + " in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$PresenceChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestBanned", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestUnbanned", "executor -> listeners, in memory"
+                    + " only"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
@@ -288,6 +303,8 @@ class DtoIpLeakTest {
     private Playlists playlists;
     private Shares shares;
     private io.siggi.togethertunes.rooms.Rooms rooms;
+    private io.siggi.togethertunes.rooms.RoomRegistry roomRegistry;
+    private io.siggi.togethertunes.rooms.RoomGuests roomGuests;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -329,6 +346,9 @@ class DtoIpLeakTest {
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
         playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         rooms = new io.siggi.togethertunes.rooms.Rooms(database, permissions, clock);
+        roomRegistry = new io.siggi.togethertunes.rooms.RoomRegistry(database, clock,
+                io.siggi.togethertunes.rooms.PackagerHook.NONE);
+        roomGuests = new io.siggi.togethertunes.rooms.RoomGuests(database, settings, permissions, rooms, roomRegistry);
         shares = new Shares(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
@@ -347,13 +367,14 @@ class DtoIpLeakTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, permissions, clock));
+                TestUploads.roomsApi(database, settings, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
     @AfterEach
     void tearDown() {
         server.close();
+        roomRegistry.close();
         staticFiles.close();
         database.close();
     }
@@ -547,6 +568,12 @@ class DtoIpLeakTest {
         for (io.siggi.togethertunes.rooms.Rooms.RoomView r : roomPage.items()) {
             produced.add(rooms.get(Actor.ANONYMOUS, r.slug()));
             produced.add(rooms.members(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.Rooms.LIST_MAX));
+            io.siggi.togethertunes.rooms.RoomGuests.GuestBanPage bans = roomGuests.list(aliceActor, r.id(), null,
+                    io.siggi.togethertunes.rooms.RoomGuests.LIST_MAX);
+            produced.add(bans);
+            for (io.siggi.togethertunes.rooms.RoomGuests.GuestBan b : bans.items()) {
+                produced.add(roomGuests.get(aliceActor, r.id(), b.guest().id()));
+            }
         }
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
@@ -662,7 +689,9 @@ class DtoIpLeakTest {
         for (String expected : List.of(
                 "/api/admin/guests " + V4_GUEST, "/api/admin/guests " + V6_GUEST,
                 "/api/admin/audit " + V4_SETUP, "/api/admin/audit " + V4_ALICE,
-                "/api/admin/ip/sessions/" + f.aliceId + " " + V4_ALICE)) {
+                "/api/admin/ip/sessions/" + f.aliceId + " " + V4_ALICE,
+                "/api/rooms/" + f.roomSlug + "/guest-bans " + V4_GUEST,
+                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId + " " + V4_GUEST)) {
             assertTrue(controlHits.contains(expected), expected + " in " + controlHits);
         }
         assertTrue(controlHits.stream().anyMatch(h -> h.startsWith("/api/admin/ip/sessions/" + f.aliceId + " 2001:db8:1234:5678:")),
@@ -684,7 +713,8 @@ class DtoIpLeakTest {
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
                 "/items/" + f.itemId, "/api/rooms", "/api/rooms/" + f.roomSlug,
-                "/api/rooms/" + f.roomSlug + "/members");
+                "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
+                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId);
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -697,7 +727,7 @@ class DtoIpLeakTest {
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
                            String aliceId, String roleId, String uploadId, String itemId, String playlistId,
-                           String roomSlug) {
+                           String roomSlug, String cookieGuestId) {
     }
 
     /**
@@ -892,12 +922,20 @@ class DtoIpLeakTest {
         expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/members", null);
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);
         expect(200, anon, "GET", "/api/rooms", null);
+        // guest bans: alice looks at the cookie guest, bans it, lists, lifts and bans it again (it stays banned)
+        String cookieGuestId = json(expect(200, cookieGuest, "GET", "/api/me", null)).get("id").getAsString();
+        String banPath = "/api/rooms/" + roomSlug + "/guest-bans/" + cookieGuestId;
+        expect(200, alice, "GET", banPath, null);
+        expect(201, alice, "PUT", banPath, null);
+        expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/guest-bans", null);
+        expect(204, alice, "DELETE", banPath, null);
+        expect(201, alice, "PUT", banPath, null);
         String doomedRoom = json(expect(201, alice, "POST", "/api/rooms", "{\"name\":\"Doomed\"}"))
                 .get("id").getAsString();
         expect(204, alice, "DELETE", "/api/rooms/" + doomedRoom, null);
 
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
-                playlistId, roomSlug);
+                playlistId, roomSlug, cookieGuestId);
     }
 
     /** A ready video item added by {@code userId}, in nobody's library. */
@@ -1039,7 +1077,7 @@ class DtoIpLeakTest {
             return;
         }
         boolean ipEndpoint = path.startsWith("/api/admin/guests") || path.startsWith("/api/admin/audit")
-                || path.startsWith("/api/admin/ip/");
+                || path.startsWith("/api/admin/ip/") || path.matches("/api/rooms/[^/]+/guest-bans(/[^/?]+)?(\\?.*)?");
         String bare = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
         walk(root, "$", (keyPath, key, value) -> {
             if (key != null && key.equals("ip")) {

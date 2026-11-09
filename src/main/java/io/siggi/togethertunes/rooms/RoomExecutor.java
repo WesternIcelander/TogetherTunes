@@ -319,6 +319,7 @@ public final class RoomExecutor {
             if (fresh == null) {
                 closeNow(true);
             } else {
+                fresh.adoptPresence(state); // the connections are still open
                 state = fresh;
                 rescheduleAdvance();
             }

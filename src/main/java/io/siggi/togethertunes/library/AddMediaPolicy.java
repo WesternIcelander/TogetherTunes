@@ -31,8 +31,9 @@ import java.util.Objects;
  * visitors without a room get {@code 401 not_authenticated} (as for any permission); with a room:
  * {@code 403 guests_disabled} ({@code guests.enabled} off), {@code 403 guest_banned} (banned
  * server-wide), {@code 403 guest_uploads_disabled} / {@code guest_youtube_disabled} (the server
- * setting is off), then the room ({@link RoomGuestRules}; until M3 every room is
- * {@code 404 room_not_found}). Nothing here creates a guest: callers do that after the checks,
+ * setting is off), then the room ({@link RoomGuestRules}, {@code rooms.RoomGuests}: {@code 404
+ * room_not_found}, {@code 403 banned_from_room}, {@code 403 guest_uploads_disabled} /
+ * {@code guest_youtube_disabled} when the room switches it off). Nothing here creates a guest: callers do that after the checks,
  * so a refused anonymous visitor doesn't become one.
  */
 public final class AddMediaPolicy {
@@ -49,7 +50,8 @@ public final class AddMediaPolicy {
     /**
      * Throws unless {@code actor} may start an upload. A user needs {@code library.upload}; a
      * guest or anonymous visitor needs a {@code roomId} and the guest rules (see the class
-     * comment). A user's {@code roomId} isn't checked here (room requests by users come with M3).
+     * comment). A user's {@code roomId} isn't checked here (a user's request is checked when it is
+     * added to the queue).
      */
     public void requireUpload(Actor actor, String roomId) throws SQLException {
         if (actor instanceof Actor.User) {
@@ -134,7 +136,7 @@ public final class AddMediaPolicy {
 
     /**
      * A per-route hook running {@link #requireYoutube} without a room (the REST import; guests'
-     * links come through a room's {@code queue.add}, M3).
+     * links come through a room's {@code queue.add}).
      */
     public Hook youtubeHook() {
         return (request, response, next) -> {

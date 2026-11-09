@@ -49,8 +49,9 @@ import java.util.regex.Pattern;
  * The owner is {@code rooms.owner_id} (mirrored by a {@code room_members} row with role
  * {@code owner}). Other users have the role of their {@code room_members} row, if any. A user
  * holding {@code rooms.moderateAny} is a {@code moderator} in every room they don't own, even
- * if the room banned them. Guests and anonymous visitors have no room role (guest bans are
- * {@code room_guest_bans}, handled with the guest rules).
+ * if the room banned them. Guests and anonymous visitors have no room role. A guest banned from
+ * a room ({@code room_guest_bans}, managed by {@link RoomGuests}) is treated like a banned user:
+ * {@code 403 banned_from_room}, and the room isn't listed for it.
  *
  * <h2>Who changes what</h2>
  * <ul>
@@ -376,7 +377,22 @@ public final class Rooms {
         Role stored = uid == null ? null : memberRole(c, room.id(), uid);
         Access a = new Access(room, effective(room, uid, stored, moderateAny));
         requireVisible(a);
+        if (actor instanceof Actor.Guest g && guestBanned(c, room.id(), g.guestId())) {
+            throw new HttpError(403, "banned_from_room", "You are banned from this room");
+        }
         return a;
+    }
+
+    /** Whether the room banned this guest ({@code room_guest_bans}). */
+    static boolean guestBanned(Connection c, String roomId, String guestId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM room_guest_bans WHERE room_id = ? AND guest_id = ?")) {
+            ps.setString(1, roomId);
+            ps.setString(2, guestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
     }
 
     /**
@@ -455,11 +471,13 @@ public final class Rooms {
         }
         boolean moderateAny = moderatesAny(actor);
         String uid = userId(actor);
+        String gid = actor instanceof Actor.Guest g ? g.guestId() : null;
         String sql = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility, r.control_mode,"
                 + " r.created_at, r.settings_json, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
                 + " LEFT JOIN room_members m ON m.room_id = r.id AND m.user_id = ?"
                 + " WHERE (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
-                + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')))"
+                + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')"
+                + " AND NOT EXISTS (SELECT 1 FROM room_guest_bans b WHERE b.room_id = r.id AND b.guest_id = ?)))"
                 + (cursorId != null ? " AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "")
                 + " ORDER BY r.created_at DESC, r.id DESC LIMIT " + (limit + 1);
         long at = cursorAt;
@@ -469,10 +487,11 @@ public final class Rooms {
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setString(1, uid == null ? "" : uid);
                 ps.setString(2, uid == null ? "" : uid);
+                ps.setString(3, gid == null ? "" : gid);
                 if (afterId != null) {
-                    ps.setLong(3, at);
                     ps.setLong(4, at);
-                    ps.setString(5, afterId);
+                    ps.setLong(5, at);
+                    ps.setString(6, afterId);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {

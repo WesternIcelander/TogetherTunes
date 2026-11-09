@@ -211,7 +211,40 @@ class ControlPolicyTest {
         assertTrue(c.canSkip());
         assertTrue(c.canRequest());
         c = ControlPolicy.capabilities(room(Rooms.ControlMode.VOTE), ANON);
-        assertFalse(c.canVote() || c.canRequest() || c.canSkip());
+        assertFalse(c.canVote() || c.canRequest() || c.canUpload() || c.canYoutube() || c.canSkip());
+        // A guest that may only upload: request rights, upload, no links.
+        RoomActor uploader = new RoomActor(null, "g-3", null, false, true, false, true);
+        c = ControlPolicy.capabilities(room(Rooms.ControlMode.VOTE), uploader);
+        assertTrue(c.canRequest() && c.canUpload() && c.canVote());
+        assertFalse(c.canYoutube());
+        c = ControlPolicy.capabilities(room(Rooms.ControlMode.OPEN), RoomActor.user("u-x", null, false, true));
+        assertTrue(c.canRequest() && c.canYoutube());
+        assertFalse(c.canUpload());
+    }
+
+    @Test
+    void requestPaths() {
+        RoomActor libraryOnly = new RoomActor(null, "g-3", null, true, false, false, true);
+        allowed(() -> ControlPolicy.requireSource(libraryOnly, "library"));
+        refused(403, "guest_uploads_disabled", () -> ControlPolicy.requireSource(libraryOnly, "upload"));
+        refused(403, "guest_youtube_disabled", () -> ControlPolicy.requireSource(libraryOnly, "youtube"));
+        RoomActor linksOnly = new RoomActor(null, "g-4", null, false, false, true, true);
+        refused(403, "guest_library_requests_disabled", () -> ControlPolicy.requireSource(linksOnly, "library"));
+        allowed(() -> ControlPolicy.requireSource(linksOnly, "youtube"));
+        for (String via : List.of("library", "upload", "youtube")) {
+            allowed(() -> ControlPolicy.requireSource(GUEST, via));
+            allowed(() -> ControlPolicy.requireSource(OWNER, via));
+            // No request rights at all: left to add(), which says cannot_request.
+            allowed(() -> ControlPolicy.requireSource(GUEST_NO_RIGHTS, via));
+            allowed(() -> ControlPolicy.requireSource(BANNED, via));
+            refused(401, "identity_required", () -> ControlPolicy.requireSource(ANON, via));
+        }
+        // A user (even a moderator) without the upload permission.
+        RoomActor modNoUpload = RoomActor.user("u-m", Rooms.Role.MODERATOR, false, false);
+        allowed(() -> ControlPolicy.requireSource(modNoUpload, "library"));
+        refused(403, "forbidden", () -> ControlPolicy.requireSource(modNoUpload, "upload"));
+        refused(403, "forbidden", () -> ControlPolicy.requireSource(modNoUpload, "youtube"));
+        assertThrows(IllegalArgumentException.class, () -> ControlPolicy.requireSource(GUEST, "carrier-pigeon"));
     }
 
     @Test

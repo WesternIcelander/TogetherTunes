@@ -16,8 +16,8 @@ import java.util.Set;
  * reference to it beyond that; copy what you need (for example the immutable {@link Timeline}).
  *
  * <p>Changes are made through a mutation, which also persists them ({@link RoomTx#persist}); the
- * executor then bumps {@link #version()} and broadcasts. Later M3 steps add history and presence
- * here.
+ * executor then bumps {@link #version()} and broadcasts. Presence ({@link #presence()}) lives in
+ * memory only. Later M3 steps add history here.
  */
 public final class RoomState {
     private final String id;
@@ -38,8 +38,8 @@ public final class RoomState {
     private final Map<String, Map<String, Integer>> votes = new HashMap<>();
     /** Voter keys of the skip votes on the current entry. */
     private final Set<String> skipVotes = new LinkedHashSet<>();
-    /** Identified members present (listen + remote); maintained by the WebSocket layer. */
-    private int presentIdentified;
+    /** Who is in the room (connections); maintained through {@link PresenceOps}, kept across reloads. */
+    private RoomPresence presence = new RoomPresence();
     private long version;
 
     RoomState(String id, String slug, String name, String ownerId, Rooms.Visibility visibility,
@@ -171,18 +171,20 @@ public final class RoomState {
 
     /** Identified members present (listen + remote), for the vote-skip threshold. */
     public int presentIdentified() {
-        return presentIdentified;
+        return presence.identified();
     }
 
     /**
-     * Sets the number of identified members present (the WebSocket layer, on join and leave). A
-     * drop can reach the vote-skip threshold: follow it with {@link QueueControl#checkVoteSkip}.
+     * Who is in the room. Change it through {@link PresenceOps} (which broadcasts new counts and
+     * re-checks the vote-skip threshold), not directly.
      */
-    public void presentIdentified(int count) {
-        if (count < 0) {
-            throw new IllegalArgumentException("count < 0");
-        }
-        this.presentIdentified = count;
+    public RoomPresence presence() {
+        return presence;
+    }
+
+    /** Takes over the presence of the state this one replaces (a reload: connections stay open). */
+    void adoptPresence(RoomState previous) {
+        this.presence = previous.presence;
     }
 
     /** The version of the last committed change; bumped by the executor, never by mutations. */

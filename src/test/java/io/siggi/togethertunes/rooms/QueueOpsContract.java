@@ -262,6 +262,14 @@ abstract class QueueOpsContract {
         assertEquals("media_expired", refused(() -> add(owner, item("purged", null))));
         assertEquals("invalid_source", refused(() -> queue.add(roomId, aliceActor, owner,
                 new RoomQueue.Source(i1, "x", null))));
+        // A guest needs the capability of the request path it uses (server AND room setting).
+        RoomActor uploadOnly = new RoomActor(null, guestId, null, false, true, false, true);
+        assertEquals("guest_library_requests_disabled", refused(() -> add(uploadOnly, i1)));
+        assertEquals("guest_youtube_disabled", refused(() -> queue.add(roomId, guestActor, uploadOnly,
+                RoomQueue.Source.youtube("https://youtu.be/dQw4w9WgXcQ"))));
+        RoomActor libraryOnly = new RoomActor(null, guestId, null, true, false, false, true);
+        assertEquals("guest_uploads_disabled", refused(() -> queue.add(roomId, guestActor, libraryOnly,
+                RoomQueue.Source.upload(UuidV7.newId()))));
     }
 
     @Test

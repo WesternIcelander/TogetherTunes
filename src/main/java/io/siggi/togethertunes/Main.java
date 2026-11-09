@@ -57,8 +57,8 @@ import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.PlayingItems;
+import io.siggi.togethertunes.rooms.RoomGuests;
 import io.siggi.togethertunes.rooms.RoomRegistry;
-import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.rooms.Rooms;
 import io.siggi.togethertunes.rooms.RoomsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
@@ -190,8 +190,12 @@ public final class Main {
         } catch (SQLException | IOException e) {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
-        // Rooms come in M3: until then no room lets guests add media.
-        AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, RoomGuestRules.NO_ROOMS);
+        // The packager comes in M4: until then room changes go nowhere but the room's listeners.
+        RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), PackagerHook.NONE);
+        Rooms rooms = new Rooms(database, permissions, Clock.systemUTC());
+        RoomGuests roomGuests = new RoomGuests(database, settings, permissions, rooms, roomRegistry);
+        // Guests add media only as a request in a room that allows it (server AND room setting).
+        AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
         YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
@@ -206,8 +210,6 @@ public final class Main {
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
         // Rooms come in M3: until then no item is current or next anywhere.
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
-        // The packager comes in M4: until then room changes go nowhere but the room's listeners.
-        RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), PackagerHook.NONE);
         try {
             int resumed = roomRegistry.resumePlaying();
             if (resumed > 0) {
@@ -216,8 +218,7 @@ public final class Main {
         } catch (SQLException e) {
             System.err.println("WARNING: could not resume playing rooms: " + e.getMessage());
         }
-        RoomsApi roomsApi = new RoomsApi(new Rooms(database, permissions, Clock.systemUTC()), roomRegistry,
-                permissions);
+        RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
