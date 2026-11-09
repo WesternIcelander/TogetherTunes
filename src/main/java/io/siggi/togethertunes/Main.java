@@ -29,8 +29,9 @@ import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.FillerCards;
-import io.siggi.togethertunes.ingest.IngestFailure;
+import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
+import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
@@ -116,13 +117,13 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(job steps): ingest and the overlay encoder verify every encode against this.
+        // TODO(overlay, M5): the overlay encoder verifies its encodes against this too.
         ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
         // TODO(packager, M4): the packager plays these when a room is paused, idle or loading.
         FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
         // TODO(packager, M4): repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
-        IngestQueue ingest = startIngest(config, database, System.err);
+        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -179,15 +180,22 @@ public final class Main {
 
     /**
      * Starts the ingest worker pool ({@code ingest.workers}) on the DB-backed queue; jobs left
-     * {@code running} by a crash are queued again first. A database error here is reported and
+     * {@code running} by a crash are queued again first, after cleaning up the directories such jobs
+     * left ({@link IngestPipeline#recoverDirectories}). A database error here is reported and
      * ingest stays off until the next start (the server still runs).
      */
-    static IngestQueue startIngest(Config config, Database database, PrintStream err) {
-        // TODO(job steps): the real pipeline (probe, download, loudnorm, encode, cards, index,
-        // verify, publish) replaces this placeholder, which fails every job it is given.
-        IngestQueue.Handler handler = job -> {
-            throw new IngestFailure("The ingest pipeline isn't implemented yet");
-        };
+    static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
+                                   PrintStream err) {
+        try {
+            int cleaned = IngestPipeline.recoverDirectories(dataDir);
+            if (cleaned > 0) {
+                err.println("Cleaned up " + cleaned + " directories left by interrupted ingest jobs");
+            }
+        } catch (IOException e) {
+            err.println("WARNING: could not clean up after interrupted ingest jobs: " + e.getMessage());
+        }
+        IngestQueue.Handler handler = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
+                referenceCard, config.ingestMaxDurationSeconds());
         IngestQueue queue = new IngestQueue(new IngestJobs(database), config.ingestWorkers(), handler);
         try {
             queue.start();

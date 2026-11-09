@@ -169,7 +169,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Recovered", "startup recovery counts, server log only"),
             Map.entry("io.siggi.togethertunes.media.Mp4Boxes$Box", "MP4 box position in a media file, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),
-            Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"));
+            Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.IngestItems$Item", "item columns an ingest job reads, server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.Loudness$Measurement", "loudnorm pass-1 result, server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.MediaProbe", "ffprobe result of a source file, server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.MediaProbe$Stream", "ffprobe stream of a source file, server-side only"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =

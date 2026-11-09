@@ -53,6 +53,50 @@ abstract class IngestJobsContract {
         }
     }
 
+    /** {@link IngestItems}: what the pipeline reads, and the columns its publish step writes. */
+    @Test
+    void ingestItemsReadAndPublish() throws SQLException {
+        IngestItems items = new IngestItems(db);
+        String item = fixtures.item("purged");
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET artist = 'Artist', youtube_id = 'dQw4w9WgXcQ',"
+                    + " source = 'youtube', purged_at = 5, loudness_lufs = -9 WHERE id = ?")) {
+                ps.setString(1, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(new IngestItems.Item(item, "audio", "Song", "Artist", null, "youtube", "dQw4w9WgXcQ", "purged"),
+                items.get(item).orElseThrow());
+        assertTrue(items.get("nope").isEmpty());
+
+        items.published(item, true, 61_234, io.siggi.togethertunes.config.OutputProfile.P1080_30, -17.25);
+        Object[] row = db.read(c -> {
+            try (var ps = c.prepareStatement("SELECT kind, duration_ms, output_profile, loudness_lufs, purged_at"
+                    + " FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return new Object[] {rs.getString(1), rs.getLong(2), rs.getString(3), rs.getDouble(4),
+                            rs.getObject(5)};
+                }
+            }
+        });
+        assertArrayEquals(new Object[] {"video", 61_234L, "1080p30", -17.25, null}, row);
+        items.published(item, false, 1, io.siggi.togethertunes.config.OutputProfile.P720_30, null);
+        assertNull(db.read(c -> {
+            try (var ps = c.prepareStatement("SELECT loudness_lufs FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getObject(1);
+                }
+            }
+        }));
+        assertThrows(SQLException.class, () -> items.published("nope", false, 1,
+                io.siggi.togethertunes.config.OutputProfile.P720_30, null));
+    }
+
     @Test
     void enqueueCreatesAQueuedJobAndAttachesToAnUnfinishedOne() throws SQLException {
         String item = fixtures.item("processing");

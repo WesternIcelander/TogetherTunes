@@ -50,6 +50,11 @@ public final class Tools {
         return ffprobe != null;
     }
 
+    /** The ffmpeg executable, or null if it isn't available (e.g. for yt-dlp's {@code --ffmpeg-location}). */
+    public String ffmpegExecutable() {
+        return ffmpeg;
+    }
+
     /** Whether yt-dlp is available. */
     public boolean hasYtdlp() {
         return ytdlp != null;
