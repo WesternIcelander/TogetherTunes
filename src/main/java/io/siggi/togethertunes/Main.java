@@ -28,6 +28,7 @@ import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
@@ -113,6 +114,8 @@ public final class Main {
         }
         // TODO(ingest queue): ingest and the overlay encoder verify every encode against this.
         ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
+        // TODO(packager, M4): the packager plays these when a room is paused, idle or loading.
+        FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -186,6 +189,29 @@ public final class Main {
         } catch (ToolException | IOException e) {
             err.println("WARNING: could not create the " + config.outputProfile()
                     + " reference card; ingest won't work: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Creates or refreshes the server filler cards for the configured output profile
+     * ({@link FillerCards#ensure}). Like the reference card, a failure is reported and the server
+     * keeps starting; returns null then (and when there is no reference card).
+     */
+    static FillerCards loadFillerCards(Config config, DataDir dataDir, ReferenceCard reference, PrintStream out,
+            PrintStream err) throws InterruptedException {
+        if (reference == null) {
+            return null;
+        }
+        try {
+            FillerCards cards = FillerCards.ensure(Tools.from(config), dataDir.cards(), reference, null);
+            if (cards.encoded() > 0) {
+                out.println("Encoded " + cards.encoded() + " " + config.outputProfile() + " filler card(s) in "
+                        + ReferenceCard.profileDir(dataDir.cards(), config.outputProfile()));
+            }
+            return cards;
+        } catch (ToolException | IOException | ReferenceCard.AvcCMismatchException e) {
+            err.println("WARNING: could not create the " + config.outputProfile() + " filler cards: " + e.getMessage());
             return null;
         }
     }

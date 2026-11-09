@@ -1,19 +1,15 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputProfile;
-import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
-import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
-import java.util.List;
 import javax.imageio.ImageIO;
 
 /**
@@ -37,8 +33,6 @@ public final class ReferenceCard {
     public static final String CARD_FILE = "reference.mp4";
     /** File name of the reference avcC (raw bytes of the {@code avcC} box payload). */
     public static final String AVCC_FILE = "reference.avcC";
-    /** Time limit for encoding the reference card (a 2 s still; takes well under a second). */
-    static final Duration ENCODE_TIMEOUT = Duration.ofMinutes(2);
 
     private final OutputProfile profile;
     private final Path card;
@@ -72,6 +66,7 @@ public final class ReferenceCard {
             throws ToolException, IOException, InterruptedException {
         Path dir = profileDir(cardsDir, profile);
         Files.createDirectories(dir);
+        deleteTempFiles(dir);
         Path card = dir.resolve(CARD_FILE);
         Path avcFile = dir.resolve(AVCC_FILE);
 
@@ -90,15 +85,15 @@ public final class ReferenceCard {
                     throw new IOException(avcFile + ": " + e.getMessage(), e);
                 }
                 if (!Files.exists(card) && Arrays.equals(stored, fresh)) {
-                    move(mp4, card);
+                    CardEncoder.move(mp4, card);
                 }
                 return new ReferenceCard(profile, card, stored, fresh, false);
             }
             Path avcTmp = Files.createTempFile(dir, ".reference-", ".avcC");
             try {
                 Files.write(avcTmp, fresh);
-                move(mp4, card);
-                move(avcTmp, avcFile);
+                CardEncoder.move(mp4, card);
+                CardEncoder.move(avcTmp, avcFile);
             } finally {
                 Files.deleteIfExists(avcTmp);
             }
@@ -109,11 +104,18 @@ public final class ReferenceCard {
         }
     }
 
-    private static void move(Path from, Path to) throws IOException {
-        try {
-            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-        } catch (AtomicMoveNotSupportedException e) {
-            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
+    /**
+     * Deletes temporary files (names starting with a dot) left in a profile's cards directory by
+     * an encode that was killed, e.g. when the server stopped during startup. Only called from
+     * {@link #ensure} at startup, before anything else writes there.
+     */
+    static void deleteTempFiles(Path dir) throws IOException {
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(dir, ".*")) {
+            for (Path file : files) {
+                if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
+                    Files.deleteIfExists(file);
+                }
+            }
         }
     }
 
@@ -125,26 +127,10 @@ public final class ReferenceCard {
         }
     }
 
-    /**
-     * The card command from {@code docs/library-and-ingest.md#cards}:
-     * {@code -loop 1 -framerate 30 -i card.png -t 2 -vf <scaleFilter> <profile args> -an}. The
-     * filter matters: a PNG without a {@code pHYs} chunk (Java2D's ImageIO writes none) has an
-     * unknown sample aspect ratio, and x264 then leaves the aspect ratio out of the SPS, so the
-     * avcC would differ from the mezzanines' ({@code setsar=1}). The scale/pad part is a no-op for
-     * an image at the profile size.
-     */
+    /** The card command ({@link CardEncoder#encodePng}); no avcC check, this card defines it. */
     static void encodeCard(Tools tools, Path png, Path out, OutputProfile profile, JobLog log)
             throws ToolException, InterruptedException {
-        List<String> args = new ArrayList<>(List.of("-y", "-loop", "1", "-framerate", Integer.toString(profile.fps()),
-                "-i", png.toString(), "-t", Integer.toString(EncodeProfile.GOP_MS / 1000),
-                "-vf", EncodeProfile.scaleFilter(profile)));
-        args.addAll(EncodeProfile.videoArgs(profile));
-        args.addAll(List.of("-an", "-f", "mp4", out.toString()));
-        ToolCall call = tools.ffmpeg(args).timeout(ENCODE_TIMEOUT);
-        if (log != null) {
-            call.log(log);
-        }
-        call.run();
+        CardEncoder.encodePng(tools, png, out, profile, log);
     }
 
     /**
