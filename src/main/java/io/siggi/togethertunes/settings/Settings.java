@@ -71,6 +71,11 @@ public final class Settings {
     public static final SettingKey<Integer> INGEST_MAX_DURATION_SECONDS = SettingKey.integer(
             "ingest.maxDurationSeconds", 1800, 1, Integer.MAX_VALUE);
 
+    // Rooms
+    /** Days a room's request history is kept ({@code room_requests}); 0 means never trim. */
+    public static final SettingKey<Integer> ROOMS_REQUEST_HISTORY_DAYS = SettingKey.integer(
+            "rooms.requestHistoryDays", 90, 0, 36_500);
+
     // Outputs
     public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
     public static final SettingKey<Boolean> OUTPUTS_TS_ENABLED = SettingKey.bool("outputs.ts.enabled", true);
@@ -89,6 +94,7 @@ public final class Settings {
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
+                ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OVERLAY_ENABLED)) {
             if (keys.put(k.name(), k) != null) {
@@ -309,6 +315,11 @@ public final class Settings {
     /** Days an unreferenced item is kept; 0 means never delete. */
     public int retentionUnreferencedDays() throws SQLException {
         return get(RETENTION_UNREFERENCED_DAYS);
+    }
+
+    /** Days a room's request history is kept; 0 means never trim. */
+    public int roomsRequestHistoryDays() throws SQLException {
+        return get(ROOMS_REQUEST_HISTORY_DAYS);
     }
 
     public int ingestMaxDurationSeconds() throws SQLException {

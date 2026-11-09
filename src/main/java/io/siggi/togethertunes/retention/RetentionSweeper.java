@@ -60,6 +60,18 @@ public final class RetentionSweeper implements AutoCloseable {
         int get() throws SQLException;
     }
 
+    /** Other housekeeping run after each scheduled sweep (e.g. trimming room request histories). */
+    @FunctionalInterface
+    public interface Chore {
+        /** @return how many rows or files it removed (logged when not 0) */
+        int run() throws Exception;
+    }
+
+    private record NamedChore(String name, Chore chore) {
+    }
+
+    private final List<NamedChore> chores = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     /** What one sweep did. */
     public record Result(int purged, int skipped, int failed) {
     }
@@ -106,6 +118,16 @@ public final class RetentionSweeper implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /**
+     * Runs {@code chore} after each scheduled sweep (also when the sweep failed or is disabled);
+     * a failing chore is logged and doesn't stop the others.
+     *
+     * @param name what it does, for the log (e.g. "trimmed request history rows")
+     */
+    public void alsoRun(String name, Chore chore) {
+        chores.add(new NamedChore(Objects.requireNonNull(name), Objects.requireNonNull(chore)));
+    }
+
     /** Starts sweeping: first after {@link #FIRST_DELAY}, then every {@link #INTERVAL}. */
     public synchronized void start() {
         if (scheduler != null) {
@@ -142,6 +164,24 @@ public final class RetentionSweeper implements AutoCloseable {
         } catch (Throwable t) {
             // Never let the schedule die; the next sweep tries again.
             LOG.log(System.Logger.Level.WARNING, "Retention sweep failed: " + t, t);
+        }
+        runChores();
+    }
+
+    /** Runs the chores added with {@link #alsoRun} once, each failure logged. */
+    void runChores() {
+        for (NamedChore c : chores) {
+            if (Thread.currentThread().isInterrupted()) {
+                return;
+            }
+            try {
+                int n = c.chore().run();
+                if (n > 0) {
+                    LOG.log(System.Logger.Level.INFO, "Retention: " + c.name() + ": " + n);
+                }
+            } catch (Throwable t) {
+                LOG.log(System.Logger.Level.WARNING, "Retention: " + c.name() + " failed: " + t, t);
+            }
         }
     }
 

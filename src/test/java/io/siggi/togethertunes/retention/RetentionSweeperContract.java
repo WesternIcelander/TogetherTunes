@@ -279,4 +279,23 @@ abstract class RetentionSweeperContract {
         assertEquals("ready", status(expired), "the first sweep waits FIRST_DELAY");
         assertNotNull(RetentionSweeper.INTERVAL);
     }
+
+    @Test
+    void choresRunAfterEachSweepAndFailIndependently() {
+        List<String> ran = new ArrayList<>();
+        sweeper.alsoRun("first", () -> {
+            ran.add("first");
+            return 2;
+        });
+        sweeper.alsoRun("broken", () -> {
+            ran.add("broken");
+            throw new SQLException("boom");
+        });
+        sweeper.alsoRun("last", () -> {
+            ran.add("last");
+            return 0;
+        });
+        sweeper.runChores();
+        assertEquals(List.of("first", "broken", "last"), ran, "a failing chore doesn't stop the others");
+    }
 }

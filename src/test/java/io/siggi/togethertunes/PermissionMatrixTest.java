@@ -303,6 +303,13 @@ class PermissionMatrixTest {
             // covers the scopes and refusals.
             row("GET /api/rooms/{room}/search", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/search?q=x"),
                     200, 200, 200, 200),
+            // Request history: owner and moderators read it (an admin through rooms.moderateAny);
+            // only the owner adds from it to their library (so an admin gets 403). RoomRequestsContract
+            // covers moderators, members and the results.
+            row("GET /api/rooms/{room}/requests", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/requests"),
+                    401, 401, 403, 200),
+            row("POST /api/rooms/{room}/requests/add-to-library", c -> Call.post("/api/rooms/" + c.rootRoomSlug()
+                    + "/requests/add-to-library", "{\"requestIds\":[\"" + c.itemId() + "\"]}"), 401, 401, 403, 403),
 
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
@@ -363,7 +370,7 @@ class PermissionMatrixTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, settings, permissions, clock));
+                TestUploads.roomsApi(database, config, settings, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",

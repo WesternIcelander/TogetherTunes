@@ -98,7 +98,7 @@ class AdminApiTest {
                 TestUploads.sharesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, settings, new Permissions(database, settings), clock)), dir.toFile());
+                TestUploads.roomsApi(database, config, settings, new Permissions(database, settings), clock)), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

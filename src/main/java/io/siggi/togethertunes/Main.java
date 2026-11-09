@@ -58,6 +58,7 @@ import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.rooms.RequestSearch;
+import io.siggi.togethertunes.rooms.RoomRequests;
 import io.siggi.togethertunes.rooms.RoomGuests;
 import io.siggi.togethertunes.rooms.RoomRegistry;
 import io.siggi.togethertunes.rooms.Rooms;
@@ -219,8 +220,10 @@ public final class Main {
         } catch (SQLException e) {
             System.err.println("WARNING: could not resume playing rooms: " + e.getMessage());
         }
+        RoomRequests roomRequests = new RoomRequests(database, rooms, library, addMedia,
+                settings::roomsRequestHistoryDays, Clock.systemUTC());
         RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests,
-                new RequestSearch(database, rooms, roomGuests));
+                new RequestSearch(database, rooms, roomGuests), roomRequests);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
@@ -237,6 +240,7 @@ public final class Main {
         }
         RetentionSweeper retention = new RetentionSweeper(database, items, settings::retentionUnreferencedDays,
                 Clock.systemUTC());
+        retention.alsoRun("trimmed request history rows", roomRequests::trim);
         retention.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();

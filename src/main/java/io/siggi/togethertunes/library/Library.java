@@ -37,6 +37,8 @@ public final class Library {
     public static final int QUERY_MAX_TERMS = 10;
     /** {@code library_entries.via} of an item added by id ({@code PUT /api/library/{itemId}}). */
     public static final String VIA_MANUAL = "manual";
+    /** {@code library_entries.via} of an item a room owner added from the room's request history. */
+    public static final String VIA_REQUEST = "request";
 
     private final Database db;
     private final YoutubeImports youtube;
@@ -230,6 +232,18 @@ public final class Library {
      */
     public Added add(Actor.User user, String itemId, YoutubeCheck mayFetchYoutube)
             throws SQLException, InterruptedException {
+        return add(user, itemId, VIA_MANUAL, mayFetchYoutube);
+    }
+
+    /**
+     * {@link #add(Actor.User, String, YoutubeCheck)} with the entry's {@code via}:
+     * {@link #VIA_MANUAL} or {@link #VIA_REQUEST} (from a room's request history).
+     */
+    public Added add(Actor.User user, String itemId, String via, YoutubeCheck mayFetchYoutube)
+            throws SQLException, InterruptedException {
+        if (!VIA_MANUAL.equals(via) && !VIA_REQUEST.equals(via)) {
+            throw new IllegalArgumentException("via must be manual or request: " + via);
+        }
         String userId = user.userId();
         ItemRow row = db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT source, youtube_id, status FROM items WHERE id = ?")) {
@@ -251,7 +265,7 @@ public final class Library {
             if (gone) {
                 mayFetchYoutube.check();
             }
-            youtube.addExisting(user, row.youtubeId(), VIA_MANUAL);
+            youtube.addExisting(user, row.youtubeId(), via);
         } else {
             if (row.status().equals("purged")) {
                 throw new HttpError(409, "media_expired",
@@ -267,7 +281,7 @@ public final class Library {
                     ps.setString(1, userId);
                     ps.setString(2, itemId);
                     ps.setLong(3, now);
-                    ps.setString(4, VIA_MANUAL);
+                    ps.setString(4, via);
                     ps.executeUpdate();
                 }
                 References.touch(c, itemId, now);

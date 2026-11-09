@@ -64,6 +64,18 @@ import java.util.Set;
  *       library; {@code 403 guest_library_requests_disabled} / {@code library_requests_disabled};
  *       {@code 400 invalid_query} / {@code invalid_kind} / {@code invalid_cursor} /
  *       {@code invalid_limit}.</li>
+ *   <li>{@code GET /api/rooms/{room}/requests?source=&requester=&cursor=&limit=} → {@code {"items":
+ *       [request], "nextCursor"?}}: the request history ({@link RoomRequests}), newest first; owner
+ *       and moderators (read-only). {@code source} {@code library}|{@code upload}|{@code youtube},
+ *       {@code requester} a user's or guest's id. A request is {@code {"id", "item", "requester"?:
+ *       actor, "requesterName", "via", "at", "entryId"?, "addedToOwnerLibrary", "inOwnerLibrary"}}
+ *       ({@code requester} is gone once the account or guest is; the name is the one it had then).
+ *       {@code 400 invalid_source} / {@code invalid_requester} / {@code invalid_cursor} /
+ *       {@code invalid_limit}.</li>
+ *   <li>{@code POST /api/rooms/{room}/requests/add-to-library} {@code {"requestIds": [id, …]}} (1..
+ *       {@value RoomRequests#ADD_MAX}) → {@code {"results": [{"requestId", "itemId"?, "created"?,
+ *       "error"?: {"code", "message"}}]}}: adds the items to the owner's library; the owner only.
+ *       Each request succeeds or fails on its own. {@code 400 invalid_request_ids}.</li>
  * </ul>
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
@@ -78,20 +90,23 @@ public final class RoomsApi {
     private static final Set<String> ROOM_FIELDS = Set.of("name", "slug", "visibility", "controlMode");
     private static final Set<String> UPDATE_FIELDS = Set.of("name", "slug", "visibility", "controlMode", "settings");
     private static final Set<String> ROLE_FIELDS = Set.of("role");
+    private static final Set<String> ADD_TO_LIBRARY_FIELDS = Set.of("requestIds");
 
     private final Rooms rooms;
     private final RoomRegistry registry;
     private final Permissions permissions;
     private final RoomGuests guests;
     private final RequestSearch search;
+    private final RoomRequests requests;
 
     public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
-                    RequestSearch search) {
+                    RequestSearch search, RoomRequests requests) {
         this.rooms = Objects.requireNonNull(rooms);
         this.registry = Objects.requireNonNull(registry);
         this.permissions = Objects.requireNonNull(permissions);
         this.guests = Objects.requireNonNull(guests);
         this.search = Objects.requireNonNull(search);
+        this.requests = Objects.requireNonNull(requests);
     }
 
     /** The id of the room in the path ({@code {room}}: id or slug), else {@code 404 room_not_found}. */
@@ -142,6 +157,8 @@ public final class RoomsApi {
         router.put("/api/rooms/{room}/guest-bans/{guestId}", this::banGuest);
         router.delete("/api/rooms/{room}/guest-bans/{guestId}", this::unbanGuest);
         router.get("/api/rooms/{room}/search", this::search);
+        router.get("/api/rooms/{room}/requests", this::requests);
+        router.post("/api/rooms/{room}/requests/add-to-library", this::addRequestsToLibrary);
     }
 
     private static Actor.User user(Request request) throws Exception {
@@ -198,6 +215,49 @@ public final class RoomsApi {
                 request.query("q"), kind == null || kind.isEmpty() ? null : kind, cursor(request), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
+    }
+
+    private void requests(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        String param = request.query("limit");
+        int limit = RoomRequests.LIST_DEFAULT;
+        if (param != null && !param.isEmpty()) {
+            try {
+                limit = Integer.parseInt(param);
+            } catch (NumberFormatException e) {
+                limit = -1;
+            }
+            if (limit < 1 || limit > RoomRequests.LIST_MAX) {
+                throw new HttpError(400, "invalid_limit", "limit must be 1.." + RoomRequests.LIST_MAX);
+            }
+        }
+        String source = request.query("source");
+        String requester = request.query("requester");
+        RoomRequests.Page page = requests.list(user, request.pathParam("room"),
+                source == null || source.isEmpty() ? null : source,
+                requester == null || requester.isEmpty() ? null : requester, cursor(request), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private void addRequestsToLibrary(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        JsonObject body = request.readJson(JsonObject.class);
+        fields(body, ADD_TO_LIBRARY_FIELDS);
+        JsonElement idsField = body.get("requestIds");
+        if (idsField == null || !idsField.isJsonArray()) {
+            throw new HttpError(400, "invalid_request_ids", "requestIds must be an array of request ids");
+        }
+        List<String> ids = new ArrayList<>();
+        for (JsonElement e : idsField.getAsJsonArray()) {
+            if (!(e instanceof JsonPrimitive p) || !p.isString()) {
+                throw new HttpError(400, "invalid_request_ids", "requestIds must be an array of request ids");
+            }
+            ids.add(p.getAsString());
+        }
+        RoomRequests.AddResults results = requests.addToLibrary(user, request.pathParam("room"), ids);
+        response.header("Cache-Control", "no-store");
+        response.json(results);
     }
 
     private void create(Request request, Response response) throws Exception {

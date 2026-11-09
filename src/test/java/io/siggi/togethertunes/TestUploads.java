@@ -111,15 +111,18 @@ public final class TestUploads {
     }
 
     /** The rooms API as {@code Main} builds it. */
-    public static io.siggi.togethertunes.rooms.RoomsApi roomsApi(Database db, Settings settings, Permissions permissions,
-                                                                 Clock clock) {
+    public static io.siggi.togethertunes.rooms.RoomsApi roomsApi(Database db, Config config, Settings settings,
+                                                                 Permissions permissions, Clock clock) {
         io.siggi.togethertunes.rooms.Rooms rooms = new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock);
         io.siggi.togethertunes.rooms.RoomRegistry registry = new io.siggi.togethertunes.rooms.RoomRegistry(db, clock,
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
         io.siggi.togethertunes.rooms.RoomGuests guests = new io.siggi.togethertunes.rooms.RoomGuests(db, settings,
                 permissions, rooms, registry);
+        Library library = new Library(db, youtube(db, config, Tools.from(config), clock), clock);
         return new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry, permissions, guests,
-                new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests));
+                new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
+                new io.siggi.togethertunes.rooms.RoomRequests(db, rooms, library,
+                        new AddMediaPolicy(permissions, settings, guests), settings::roomsRequestHistoryDays, clock));
     }
 
     /** An add-media policy without rooms (every room {@code 404 room_not_found}). */

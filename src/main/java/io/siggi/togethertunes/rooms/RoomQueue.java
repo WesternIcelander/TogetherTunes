@@ -74,7 +74,9 @@ public final class RoomQueue {
     }
 
     /**
-     * {@code queue.add}: see {@link QueueOps#add}.
+     * {@code queue.add}: see {@link QueueOps#add}. A request (not by the owner, nor by a moderator
+     * in {@code owner} mode) is written to the room's request history with its entry
+     * ({@link RoomRequests}).
      *
      * @throws HttpError {@code 400 invalid_source} (not exactly one source), as
      *                   {@link ControlPolicy#requireSource} (the actor's right to this request path:
@@ -112,7 +114,7 @@ public final class RoomQueue {
             addMedia.requireYoutube(actor, roomId);
             itemId = youtube.importUrl(actor, source.youtubeUrl(), null, false).itemId();
         }
-        return registry.call(roomId, tx -> QueueOps.add(tx, a, itemId));
+        return registry.call(roomId, tx -> QueueOps.add(tx, a, itemId, source.via()));
     }
 
     /**

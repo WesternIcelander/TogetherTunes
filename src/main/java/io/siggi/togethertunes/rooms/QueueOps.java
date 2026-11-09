@@ -66,6 +66,17 @@ public final class QueueOps {
      *                   refetches purged YouTube items first), {@code 409 recently_played}
      */
     public static Added add(RoomTx tx, RoomActor a, String itemId) throws SQLException {
+        return add(tx, a, itemId, null);
+    }
+
+    /**
+     * {@link #add(RoomTx, RoomActor, String)}, also writing the request to the room's request
+     * history ({@link RoomRequests#isRequest}: not for the owner, nor for a moderator in
+     * {@code owner} mode) in the same transaction as the entry.
+     *
+     * @param via {@code library}, {@code upload} or {@code youtube}; {@code null} writes no request
+     */
+    public static Added add(RoomTx tx, RoomActor a, String itemId, String via) throws SQLException {
         RoomState s = tx.state();
         ControlPolicy.AddAs as = checkAdd(s, a);
         RoomStore.ItemRow item = itemId == null || !UuidV7.isValid(itemId) ? null
@@ -84,6 +95,16 @@ public final class QueueOps {
             }
         }
         QueueEntry e = insert(tx, a, item, as.entryState(), QueueControl.endPosition(s));
+        if (via != null && RoomRequests.isRequest(s, a)) {
+            String requestId = UuidV7.newId();
+            String roomId = s.id();
+            long now = tx.now();
+            tx.persist(c -> {
+                RoomRequests.insert(c, requestId, roomId, a, item.id(), via, now, e.id());
+                return null;
+            });
+            tx.event(new RoomEvent.RequestAdded(requestId, e.id(), via));
+        }
         if (e.state() == QueueEntry.State.QUEUED) {
             Playback.startIfIdle(tx);
         }

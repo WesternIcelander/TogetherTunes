@@ -80,6 +80,7 @@ abstract class SettingsContract {
         assertNull(settings.ytdlpCookiesFile());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(1800, settings.ingestMaxDurationSeconds());
+        assertEquals(90, settings.roomsRequestHistoryDays());
         assertTrue(settings.outputsRtmpEnabled());
         assertTrue(settings.outputsTsEnabled());
         assertTrue(settings.outputsHlsEnabled());
@@ -90,7 +91,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(19, all.size());
+        assertEquals(20, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -194,7 +195,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(19, settings.all().size());
+        assertEquals(20, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());
