@@ -29,9 +29,9 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/api/library?q=&kind=&cursor=` | The caller's own library |
+| GET | `/api/library?q=&kind=&cursor=&limit=` | The caller's own library (users only; guests have none: `401`), most recently added first → `{items:[{item:{id, kind, title, artist?, album?, durationMs?, source, youtubeId?, status, presentAsAudio}, addedAt, via, sharedBy?: actor}], nextCursor?}`. `q`: every whitespace-separated word must appear (case-insensitive substring) in the title, artist or album (≤ 200 chars, first 10 words); `kind`: `audio`\|`video` (the stored kind); `limit` 1–200, default 50. `400 invalid_query` / `invalid_kind` / `invalid_cursor` / `invalid_limit` |
 | GET | `/api/users/{id}/library`, `/api/users/{id}/playlists` | `library.viewAll` only |
-| PUT / DELETE | `/api/library/{itemId}` | Add an item to, or remove it from, the caller's library |
+| PUT / DELETE | `/api/library/{itemId}` | Add an item to (`via:"manual"`; `201` entry, or `200` entry if already there, unchanged), or remove it from (`204`, `404 not_in_library`), the caller's library. `404 item_not_found`. A purged or failed upload can't be added (`409 media_expired` / `item_failed`); a purged or failed YouTube item is fetched again like an import of its link (needs `library.youtube`, so `403 feature_disabled` when `ytdlp.enabled` is off; `422 youtube_failed` within 10 min of a failure). Removing sets the item's `last_referenced_at` to now |
 | GET | `/api/items/{id}` | Item metadata, by direct link (any actor) |
 | PATCH | `/api/items/{id}` | Metadata, `presentAsAudio`: the adder or `library.editAny` |
 | DELETE | `/api/items/{id}` | Purge immediately: `library.purge` |
