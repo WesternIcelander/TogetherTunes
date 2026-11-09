@@ -11,6 +11,7 @@ import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
+import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.Playlists;
@@ -94,6 +95,16 @@ public final class TestUploads {
     public static ItemsApi itemsApi(Database db, Path dir, Permissions permissions, Clock clock) {
         try {
             return new ItemsApi(new Items(db, DataDir.create(dir.resolve("data")), clock), permissions);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /** The media files API with data in {@code <dir>/data}, rooms stubbed by {@code playing}. */
+    public static MediaApi mediaApi(Database db, Path dir, Settings settings,
+                                    io.siggi.togethertunes.rooms.PlayingItems playing) {
+        try {
+            return new MediaApi(db, DataDir.create(dir.resolve("data")), settings, playing);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

@@ -301,7 +301,8 @@ class DtoIpLeakTest {
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.sharesApi(database, config, permissions, clock),
-                TestUploads.userLibrariesApi(database, config, permissions, clock));
+                TestUploads.userLibrariesApi(database, config, permissions, clock),
+                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -627,7 +628,7 @@ class DtoIpLeakTest {
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
-                "/api/users/" + f.aliceId + "/playlists/" + f.playlistId);
+                "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -792,6 +793,10 @@ class DtoIpLeakTest {
         });
         expect(200, alice, "GET", "/api/items/" + itemId, null);
         expect(200, alice, "GET", "/api/items/" + itemId + "/job", null);
+        Path itemDir = dir.resolve("data").resolve("media").resolve(itemId);
+        Files.createDirectories(itemDir);
+        Files.write(itemDir.resolve("audio.m4a"), new byte[16]);
+        expect(200, alice, "GET", "/media/" + itemId + "/audio.m4a", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
 

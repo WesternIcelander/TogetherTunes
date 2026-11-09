@@ -98,7 +98,8 @@ class MainRouterTest {
                 TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock),
                 TestUploads.playlistsApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.sharesApi(database, config, new Permissions(database, settings), clock),
-                TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock)),
+                TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock),
+                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS)),
                 dir.toFile());
     }
 

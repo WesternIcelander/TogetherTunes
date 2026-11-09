@@ -238,6 +238,8 @@ class PermissionMatrixTest {
                     401, 401, 403, 200),
             row("DELETE /api/items/{id}", c -> Call.delete("/api/items/" + c.itemId()), 401, 401, 403, 204),
             row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
+            // Media files: users always; guests only with guests.download (off) or a playing item (no rooms yet).
+            row("GET /media/{id}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/audio.m4a"), 403, 403, 200, 200),
 
             // The caller's own playlists: users only (guests have none); someone else's playlist is
             // 404 (PlaylistsContract covers that). Adding the matrix item needs no permission.
@@ -323,7 +325,8 @@ class PermissionMatrixTest {
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.sharesApi(database, config, permissions, clock),
-                TestUploads.userLibrariesApi(database, config, permissions, clock));
+                TestUploads.userLibrariesApi(database, config, permissions, clock),
+                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -523,6 +526,19 @@ class PermissionMatrixTest {
             } catch (java.sql.SQLException e) {
                 throw new RuntimeException(e);
             }
+        }
+
+        /** A new ready audio item with an {@code audio.m4a} on disk. */
+        String mediaItemId() {
+            String id = itemId();
+            try {
+                Path itemDir = dir.resolve("data").resolve("media").resolve(id);
+                java.nio.file.Files.createDirectories(itemDir);
+                java.nio.file.Files.write(itemDir.resolve("audio.m4a"), new byte[16]);
+            } catch (IOException e) {
+                throw new RuntimeException(e);
+            }
+            return id;
         }
 
         /** A new item with a finished ingest job. */

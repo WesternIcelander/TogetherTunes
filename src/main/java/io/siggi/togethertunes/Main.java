@@ -44,6 +44,7 @@ import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
 import io.siggi.togethertunes.library.LibraryApi;
+import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.PlaylistsApi;
 import io.siggi.togethertunes.library.Shares;
@@ -53,6 +54,7 @@ import io.siggi.togethertunes.library.UserLibrariesApi;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
+import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
@@ -196,11 +198,13 @@ public final class Main {
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
+        // Rooms come in M3: until then no item is current or next anywhere.
+        MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
                             sessionsApi, me, admin, activity, uploadsApi, youtubeApi, libraryApi, itemsApi,
-                            playlistsApi, sharesApi, userLibrariesApi),
+                            playlistsApi, sharesApi, userLibrariesApi, mediaApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -397,13 +401,14 @@ public final class Main {
      * ({@code /api/library...}), {@link ItemsApi} items by id ({@code /api/items/...}),
      * {@link PlaylistsApi} the caller's playlists ({@code /api/playlists...}), {@link SharesApi}
      * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
-     * playlists for {@code library.viewAll} ({@code /api/users...}).
+     * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
+     * media files ({@code /media/{id}/{file}}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
                          UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library,
                          ItemsApi items, PlaylistsApi playlists, SharesApi shares,
-                         UserLibrariesApi userLibraries) {
+                         UserLibrariesApi userLibraries, MediaApi media) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -420,6 +425,7 @@ public final class Main {
         playlists.register(router);
         shares.register(router);
         userLibraries.register(router);
+        media.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);
