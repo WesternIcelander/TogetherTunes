@@ -70,31 +70,40 @@ abstract class IngestJobsContract {
                 items.get(item).orElseThrow());
         assertTrue(items.get("nope").isEmpty());
 
-        items.published(item, true, 61_234, io.siggi.togethertunes.config.OutputProfile.P1080_30, -17.25);
-        Object[] row = db.read(c -> {
-            try (var ps = c.prepareStatement("SELECT kind, duration_ms, output_profile, loudness_lufs, purged_at"
-                    + " FROM items WHERE id = ?")) {
+        items.published(item, false, 61_234, io.siggi.togethertunes.config.OutputProfile.P1080_30, -17.25,
+                new Originals.Original("original.flac", "flac/flac", true, 3.25));
+        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
+                publishedRow(item));
+        items.published(item, false, 1, io.siggi.togethertunes.config.OutputProfile.P720_30, null,
+                new Originals.Original("original.wma", "wmav2/asf", false, null));
+        assertArrayEquals(new Object[] {"audio", 1L, "720p30", null, null, "original.wma", "wmav2/asf", 0, null},
+                publishedRow(item));
+        // a video (or YouTube) publish clears an earlier original
+        items.published(item, true, 2, io.siggi.togethertunes.config.OutputProfile.P720_30, -9.5, null);
+        assertArrayEquals(new Object[] {"video", 2L, "720p30", -9.5, null, null, null, 0, null}, publishedRow(item));
+        assertThrows(SQLException.class, () -> items.published("nope", false, 1,
+                io.siggi.togethertunes.config.OutputProfile.P720_30, null, null));
+    }
+
+    private Object[] publishedRow(String item) throws SQLException {
+        return db.read(c -> {
+            try (var ps = c.prepareStatement("SELECT kind, duration_ms, output_profile, loudness_lufs, purged_at,"
+                    + " original_file, original_codec, original_web, original_gain_db FROM items WHERE id = ?")) {
                 ps.setString(1, item);
                 try (var rs = ps.executeQuery()) {
                     rs.next();
-                    return new Object[] {rs.getString(1), rs.getLong(2), rs.getString(3), rs.getDouble(4),
-                            rs.getObject(5)};
+                    double lufs = rs.getDouble(4);
+                    Object l = rs.wasNull() ? null : lufs;
+                    Object purged = rs.getObject(5);
+                    String file = rs.getString(6);
+                    String codec = rs.getString(7);
+                    int web = rs.getInt(8);
+                    double gain = rs.getDouble(9);
+                    Object g = rs.wasNull() ? null : gain;
+                    return new Object[] {rs.getString(1), rs.getLong(2), rs.getString(3), l, purged, file, codec, web, g};
                 }
             }
         });
-        assertArrayEquals(new Object[] {"video", 61_234L, "1080p30", -17.25, null}, row);
-        items.published(item, false, 1, io.siggi.togethertunes.config.OutputProfile.P720_30, null);
-        assertNull(db.read(c -> {
-            try (var ps = c.prepareStatement("SELECT loudness_lufs FROM items WHERE id = ?")) {
-                ps.setString(1, item);
-                try (var rs = ps.executeQuery()) {
-                    rs.next();
-                    return rs.getObject(1);
-                }
-            }
-        }));
-        assertThrows(SQLException.class, () -> items.published("nope", false, 1,
-                io.siggi.togethertunes.config.OutputProfile.P720_30, null));
     }
 
     @Test

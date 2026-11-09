@@ -50,30 +50,40 @@ public final class IngestItems {
 
     /**
      * Records what the publish step produced: the item's kind, the duration of its
-     * {@code audio.m4a}, the profile it was encoded for and the source's integrated loudness
-     * (null if it couldn't be measured, e.g. digital silence). A purged item that was fetched
-     * again is no longer purged. The status itself becomes {@code ready} when the queue marks the
-     * job done.
+     * {@code audio.m4a}, the profile it was encoded for, the source's integrated loudness
+     * (null if it couldn't be measured, e.g. digital silence) and the kept original (null if none:
+     * video uploads and YouTube items; the {@code original_*} columns are then cleared). A purged
+     * item that was fetched again is no longer purged. The status itself becomes {@code ready}
+     * when the queue marks the job done.
      */
-    public void published(String id, boolean video, long durationMs, OutputProfile profile, Double loudnessLufs)
-            throws SQLException {
+    public void published(String id, boolean video, long durationMs, OutputProfile profile, Double loudnessLufs,
+                          Originals.Original original) throws SQLException {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
-                    + " output_profile = ?, loudness_lufs = ?, purged_at = NULL WHERE id = ?")) {
+                    + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
+                    + " original_web = ?, original_gain_db = ?, purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
                 ps.setLong(2, durationMs);
                 ps.setString(3, profile.id());
-                if (loudnessLufs == null) {
-                    ps.setNull(4, Types.REAL);
-                } else {
-                    ps.setDouble(4, loudnessLufs);
-                }
-                ps.setString(5, id);
+                setDouble(ps, 4, loudnessLufs);
+                ps.setString(5, original == null ? null : original.file());
+                ps.setString(6, original == null ? null : original.codec());
+                ps.setInt(7, original != null && original.web() ? 1 : 0);
+                setDouble(ps, 8, original == null ? null : original.gainDb());
+                ps.setString(9, id);
                 if (ps.executeUpdate() != 1) {
                     throw new SQLException("item " + id + " no longer exists");
                 }
             }
             return null;
         });
+    }
+
+    private static void setDouble(PreparedStatement ps, int index, Double value) throws SQLException {
+        if (value == null) {
+            ps.setNull(index, Types.DOUBLE);
+        } else {
+            ps.setDouble(index, value);
+        }
     }
 }

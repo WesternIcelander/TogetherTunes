@@ -127,6 +127,30 @@ class IngestPipelineTest {
         });
     }
 
+    /** {original_file, original_codec, original_web, original_gain_db} of an item. */
+    private Object[] originalRow(String id) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT original_file, original_codec, original_web,"
+                    + " original_gain_db FROM items WHERE id = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    Object gain = rs.getObject(4);
+                    return new Object[] {rs.getString(1), rs.getString(2), rs.getInt(3),
+                            gain == null ? null : rs.getDouble(4)};
+                }
+            }
+        });
+    }
+
+    /** Asserts that an item kept no original. */
+    private void assertNoOriginal(String id) throws Exception {
+        assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(id));
+        for (String n : files(IngestPipeline.itemDir(data, id))) {
+            assertFalse(n.startsWith("original"), "unexpected " + n);
+        }
+    }
+
     private List<String> files(Path d) throws Exception {
         try (Stream<Path> s = Files.list(d)) {
             return s.map(p -> p.getFileName().toString()).sorted().toList();
@@ -152,11 +176,17 @@ class IngestPipelineTest {
         Path source = stage(item, "source.flac");
         ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-i", png.toString(), "-t", "4", "-map", "0:a", "-map", "1:v",
                 "-c:a", "flac", "-c:v", "png", "-disposition:v", "attached_pic", source.toString());
+        byte[] uploaded = Files.readAllBytes(source);
+        Loudness.Measurement in = Loudness.measure(tools, source.toString(), "0:a:0", null, null);
 
         IngestJob job = run(Kind.UPLOAD, item);
         assertEquals(State.DONE, job.state(), job.log());
         Path itemDir = IngestPipeline.itemDir(data, item);
-        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin"), files(itemDir));
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.flac"), files(itemDir));
+        Object[] original = originalRow(item);
+        assertEquals("original.flac", original[0]);
+        assertEquals("flac/flac", original[1]);
+        assertEquals(1, original[2], "a FLAC within 50 ms of audio.m4a is web-playable");
         Object[] row = itemRow(item);
         assertEquals("ready", row[0]);
         assertEquals("audio", row[1]);
@@ -173,6 +203,10 @@ class IngestPipelineTest {
         assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")));
         assertNotNull(CardRenderer.readImage(itemDir.resolve("cover.jpg")));
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)), "staging dir is deleted after publish");
+        assertArrayEquals(uploaded, Files.readAllBytes(itemDir.resolve("original.flac")), "the original is kept as uploaded");
+        double expectedGain = Math.min(-14 - in.inputI(), -1 - in.inputTp());
+        assertEquals(expectedGain, (Double) original[3], 0.011);
+        assertTrue(job.log().contains("kept the original as original.flac (flac/flac, web-playable"), job.log());
         assertNoLeftovers();
         for (String step : List.of("step: probe", "step: loudnorm pass 1", "step: encode", "step: card", "step: index",
                 "step: verify", "step: publish", "verified: audio")) {
@@ -208,6 +242,8 @@ class IngestPipelineTest {
         IngestJob job = run(Kind.UPLOAD, item);
         assertEquals(State.DONE, job.state(), job.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4"), files(old));
+        assertNoOriginal(item);
+        assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)), "the video upload is deleted after ingest");
         Object[] row = itemRow(item);
         assertEquals("ready", row[0]);
         assertEquals("video", row[1]);
@@ -266,6 +302,7 @@ class IngestPipelineTest {
         assertFalse(job.log().contains("42.0%"), "progress lines become progress, not log lines");
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4"), files(IngestPipeline.itemDir(data, item)));
         assertEquals("ready", itemRow(item)[0]);
+        assertNoOriginal(item);
         assertNoLeftovers();
     }
 
@@ -281,6 +318,71 @@ class IngestPipelineTest {
         assertNull(row[4]);
         assertTrue(job.log().contains("encoding without normalisation"));
         assertFalse(Files.exists(IngestPipeline.itemDir(data, item).resolve("cover.jpg")));
+        // the original is kept, but without a gain (nothing to measure)
+        assertArrayEquals(new Object[] {"original.wav", "pcm_s16le/wav", 1, null}, originalRow(item));
+    }
+
+    /**
+     * Originals of other audio formats: MP3 (also with no extension on the upload), Opus in Ogg
+     * and in WebM, AAC in M4A and ADTS are web-playable; Vorbis, AIFF, ALAC and Opus in a .mkv are
+     * kept but not web-playable.
+     */
+    @Test
+    void originalsOfAudioFormats() throws Exception {
+        record Case(String staged, String[] encode, String file, String codec, int web) {
+        }
+        List<Case> cases = List.of(
+                new Case("source.mp3", new String[] {"-c:a", "libmp3lame", "-b:a", "128k"}, "original.mp3", "mp3/mp3", 1),
+                new Case("source", new String[] {"-c:a", "libmp3lame", "-f", "mp3"}, "original.mp3", "mp3/mp3", 1),
+                new Case("source.ogg", new String[] {"-c:a", "libopus"}, "original.opus", "opus/ogg", 1),
+                new Case("source.webm", new String[] {"-c:a", "libopus"}, "original.webm", "opus/matroska,webm", 1),
+                new Case("source.mkv", new String[] {"-c:a", "libopus"}, "original.mkv", "opus/matroska,webm", 0),
+                new Case("source.m4a", new String[] {"-c:a", "aac"}, "original.m4a", "aac/mov,mp4,m4a,3gp,3g2,mj2", 1),
+                new Case("source.aac", new String[] {"-c:a", "aac", "-f", "adts"}, "original.aac", "aac/aac", 1),
+                new Case("source.ogg", new String[] {"-c:a", "libvorbis"}, "original.ogg", "vorbis/ogg", 0),
+                new Case("source.aiff", new String[] {"-c:a", "pcm_s16be"}, "original.aiff", "pcm_s16be/aiff", 0),
+                new Case("source.M4A", new String[] {"-c:a", "alac"}, "original.m4a", "alac/mov,mp4,m4a,3gp,3g2,mj2", 0));
+        IngestQueue q = queue(tools, reference, 1800);
+        for (Case c : cases) {
+            String item = fixtures.item("pending");
+            Path source = stage(item, c.staged());
+            List<String> args = new ArrayList<>(List.of("-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", "3"));
+            args.addAll(List.of(c.encode()));
+            args.add(source.toString());
+            ffmpeg(args.toArray(String[]::new));
+            byte[] uploaded = Files.readAllBytes(source);
+            IngestJob job = run(q, Kind.UPLOAD, item);
+            assertEquals(State.DONE, job.state(), c + "\n" + job.log());
+            Object[] original = originalRow(item);
+            assertEquals(c.file(), original[0], c.staged());
+            assertEquals(c.codec(), original[1], c.staged());
+            assertEquals(c.web(), original[2], c.staged() + "\n" + job.log());
+            assertNotNull(original[3], c.staged());
+            assertTrue((Double) original[3] > 0 && (Double) original[3] < 20, c.staged() + " gain " + original[3]);
+            Path itemDir = IngestPipeline.itemDir(data, item);
+            assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", c.file()), files(itemDir));
+            assertArrayEquals(uploaded, Files.readAllBytes(itemDir.resolve(c.file())), c.staged());
+            assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)));
+        }
+        assertNoLeftovers();
+    }
+
+    /** Re-ingesting an item as a video upload drops the original an earlier audio ingest kept. */
+    @Test
+    void videoReingestDropsTheOriginal() throws Exception {
+        IngestQueue q = queue(tools, reference, 1800);
+        String item = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=r=48000", "-t", "2", stage(item, "source.wav").toString());
+        assertEquals(State.DONE, run(q, Kind.UPLOAD, item).state());
+        assertEquals("original.wav", originalRow(item)[0]);
+
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=320x240:r=30", "-f", "lavfi", "-i", "sine=r=48000", "-t", "2",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(item, "source.mp4").toString());
+        IngestJob job = run(q, Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertEquals("video", itemRow(item)[1]);
+        assertNoOriginal(item);
+        assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)));
     }
 
     @Test

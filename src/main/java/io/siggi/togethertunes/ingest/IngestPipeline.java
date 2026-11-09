@@ -55,6 +55,11 @@ import java.util.regex.Pattern;
  * reading the old ones. {@link #recoverDirectories} cleans up after a crash in the middle. Then the
  * item row gets its kind, duration, profile and loudness; the queue marks it {@code ready}. The
  * staging directory is deleted after a successful publish.
+ *
+ * <p><b>Originals.</b> An audio upload keeps its source as {@code original.<ext>} in the item
+ * directory, with {@code original_codec}, {@code original_web} and {@code original_gain_db}
+ * ({@link Originals}). Video uploads and YouTube downloads keep no original (their source is
+ * deleted with the staging/scratch directory), and their {@code original_*} columns are cleared.
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -243,11 +248,23 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 + " frames with an IDR every 2 s");
         ctx.progress(after += stepShare);
 
+        // original (audio uploads only; the originals of video uploads and downloads are not kept)
+        Originals.Original original = null;
+        if (job.kind() == Kind.UPLOAD && !video) {
+            long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
+            original = Originals.describe(probe, source.getFileName().toString(), loudness, originalUs, durationUs);
+            linkOrCopy(source, work.resolve(original.file()));
+            log.append("[ingest] kept the original as " + original.file() + " (" + original.codec() + ", "
+                    + (original.web() ? "web-playable" : "not web-playable") + ", duration " + seconds(originalUs)
+                    + (original.gainDb() == null ? "" : String.format(Locale.ROOT, ", gain %.2f dB", original.gainDb()))
+                    + ")");
+        }
+
         // publish
         step(log, "publish");
         publish(work, itemDir(dataDir, item.id()), item.id(), job.id());
         Double lufs = loudness.usable() ? round2(loudness.inputI()) : null;
-        items.published(item.id(), video, durationUs / 1000, profile, lufs);
+        items.published(item.id(), video, durationUs / 1000, profile, lufs, original);
         deleteQuietly(staging);
         ctx.progress(1);
     }
@@ -448,6 +465,20 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         if (hadOld) {
             deleteQuietly(old);
+        }
+    }
+
+    /**
+     * Puts {@code source} at {@code target} as a hard link (both live in the data dir, usually on
+     * one file system), or as a copy if linking isn't possible. The staged source stays until
+     * the publish succeeded, so a failed job can be retried.
+     */
+    static void linkOrCopy(Path source, Path target) throws IOException {
+        try {
+            Files.createLink(target, source);
+        } catch (IOException | UnsupportedOperationException e) {
+            Files.deleteIfExists(target);
+            Files.copy(source, target);
         }
     }
 
