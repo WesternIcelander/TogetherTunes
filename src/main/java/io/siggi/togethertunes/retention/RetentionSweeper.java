@@ -1,0 +1,228 @@
+package io.siggi.togethertunes.retention;
+
+import io.siggi.togethertunes.auth.AuditLog;
+import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.EpochMs;
+import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.IngestJob;
+import io.siggi.togethertunes.library.Items;
+import java.io.IOException;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.time.Clock;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * The retention sweeper ({@code docs/libraries.md#retention}): once an hour it purges every
+ * {@code ready} item that nothing references and whose {@code last_referenced_at} is older than
+ * {@code retention.unreferencedDays} (read at each sweep; {@code 0} disables it).
+ *
+ * <p>Referenced means: in a library, in a playlist, queued/suggested/playing in a room, or with
+ * a running ingest job. Candidates are selected outside any transaction, then each one is purged
+ * through {@link Items#purge}, whose check re-runs the same predicate for that item inside the
+ * purge transaction, after the item row is locked ({@code FOR UPDATE} on PostgreSQL; SQLite
+ * serialises writers). An item that gained a reference, or was touched, in between is left
+ * alone. The purge deletes {@code media/<itemId>} (and later the item's overlay caches, which
+ * {@code Items.purge} owns), marks the row {@code purged} with {@code purged_at}, and writes an
+ * {@code item.purged} audit row without an actor ({@code reason: "retention"}).
+ *
+ * <p>Remaining race (both dialects, accepted): an add that read the item as {@code ready} just
+ * before the sweep commits its library/playlist entry just after it; the entry then shows the
+ * item as "media expired", as after a manual purge. It needs an item that was unreferenced for
+ * the whole retention period being added in the same instant.
+ */
+public final class RetentionSweeper implements AutoCloseable {
+    /** How often the sweeper runs. */
+    public static final Duration INTERVAL = Duration.ofHours(1);
+    /** Delay of the first sweep after start, so startup isn't slowed down by it. */
+    public static final Duration FIRST_DELAY = Duration.ofMinutes(1);
+    /** Details value of the sweeper's audit rows. */
+    public static final String REASON = "retention";
+
+    static final int PAGE = 500;
+    private static final long DAY_MS = 24L * 60 * 60 * 1000;
+
+    private static final System.Logger LOG = System.getLogger(RetentionSweeper.class.getName());
+
+    /** The {@code retention.unreferencedDays} setting, read at each sweep. */
+    @FunctionalInterface
+    public interface Days {
+        int get() throws SQLException;
+    }
+
+    /** What one sweep did. */
+    public record Result(int purged, int skipped, int failed) {
+    }
+
+    /** Thrown by the purge check to roll back the purge of an item that is referenced again. */
+    private static final class StillReferenced extends RuntimeException {
+        StillReferenced() {
+            super(null, null, false, false);
+        }
+    }
+
+    /**
+     * The retention predicate, on {@code items i}: ready, unreferenced, and last referenced
+     * before the cutoff (parameter 1).
+     */
+    private static final String ELIGIBLE = "i.status = 'ready' AND i.last_referenced_at < ?"
+            + " AND NOT EXISTS (SELECT 1 FROM library_entries le WHERE le.item_id = i.id)"
+            + " AND NOT EXISTS (SELECT 1 FROM playlist_entries pe WHERE pe.item_id = i.id)"
+            + " AND NOT EXISTS (SELECT 1 FROM queue_entries qe WHERE qe.item_id = i.id"
+            + " AND qe.state IN ('queued', 'suggested', 'playing'))"
+            + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state = '"
+            + IngestJob.State.RUNNING.wire() + "')";
+
+    private final Database db;
+    private final Items items;
+    private final Days days;
+    private final Clock clock;
+    private ScheduledExecutorService scheduler;
+
+    /** Tests: candidates per page. */
+    int pageSize = PAGE;
+    /** Tests: runs after each page of candidates is selected, before any of them is purged. */
+    volatile SelectHook afterSelect = ids -> { };
+
+    @FunctionalInterface
+    interface SelectHook {
+        void selected(List<String> ids) throws SQLException;
+    }
+
+    public RetentionSweeper(Database db, Items items, Days days, Clock clock) {
+        this.db = Objects.requireNonNull(db);
+        this.items = Objects.requireNonNull(items);
+        this.days = Objects.requireNonNull(days);
+        this.clock = Objects.requireNonNull(clock);
+    }
+
+    /** Starts sweeping: first after {@link #FIRST_DELAY}, then every {@link #INTERVAL}. */
+    public synchronized void start() {
+        if (scheduler != null) {
+            throw new IllegalStateException("already started");
+        }
+        scheduler = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofVirtual().name("retention-sweeper").factory());
+        scheduler.scheduleWithFixedDelay(this::sweepLogged, FIRST_DELAY.toMillis(), INTERVAL.toMillis(),
+                TimeUnit.MILLISECONDS);
+    }
+
+    /** Stops the schedule; a running sweep is interrupted and finishes its current item. */
+    @Override
+    public synchronized void close() {
+        if (scheduler == null) {
+            return;
+        }
+        scheduler.shutdownNow();
+        try {
+            scheduler.awaitTermination(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        scheduler = null;
+    }
+
+    private void sweepLogged() {
+        try {
+            Result r = sweep();
+            if (r.purged() > 0 || r.failed() > 0) {
+                LOG.log(System.Logger.Level.INFO, "Retention: purged " + r.purged() + " unreferenced items"
+                        + (r.failed() > 0 ? ", " + r.failed() + " failed" : ""));
+            }
+        } catch (Throwable t) {
+            // Never let the schedule die; the next sweep tries again.
+            LOG.log(System.Logger.Level.WARNING, "Retention sweep failed: " + t, t);
+        }
+    }
+
+    /**
+     * One sweep. Does nothing when {@code retention.unreferencedDays} is 0. An item whose purge
+     * fails (a file error, a database error) is logged and skipped; the next sweep tries again.
+     *
+     * @throws SQLException if the setting or the candidates can't be read
+     */
+    public Result sweep() throws SQLException {
+        int unreferencedDays = days.get();
+        if (unreferencedDays <= 0) {
+            return new Result(0, 0, 0);
+        }
+        long now = EpochMs.now(clock);
+        long cutoff = now - unreferencedDays * DAY_MS;
+        int purged = 0;
+        int skipped = 0;
+        int failed = 0;
+        String after = "";
+        while (!Thread.currentThread().isInterrupted()) {
+            List<String> page = candidates(cutoff, after, pageSize);
+            afterSelect.selected(page);
+            for (String itemId : page) {
+                if (Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+                try {
+                    items.purge(itemId, (c, id, status) -> {
+                        if (!stillEligible(c, id, cutoff)) {
+                            throw new StillReferenced();
+                        }
+                        Map<String, Object> details = new LinkedHashMap<>();
+                        details.put("previousStatus", status);
+                        details.put("reason", REASON);
+                        details.put("unreferencedDays", unreferencedDays);
+                        AuditLog.write(c, now, null, null, null, Items.AUDIT_PURGED, id, details);
+                    });
+                    purged++;
+                } catch (StillReferenced | HttpError e) {
+                    // Referenced again since the selection (an HttpError: a job started).
+                    skipped++;
+                } catch (SQLException | IOException | RuntimeException e) {
+                    failed++;
+                    LOG.log(System.Logger.Level.WARNING, "Retention: could not purge item " + itemId + ": " + e, e);
+                }
+            }
+            if (page.size() < pageSize) {
+                break;
+            }
+            after = page.get(page.size() - 1);
+        }
+        return new Result(purged, skipped, failed);
+    }
+
+    /** Eligible item ids after {@code after}, in id order. */
+    List<String> candidates(long cutoff, String after, int limit) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT i.id FROM items i WHERE " + ELIGIBLE
+                    + " AND i.id > ? ORDER BY i.id LIMIT ?")) {
+                ps.setLong(1, cutoff);
+                ps.setString(2, after);
+                ps.setInt(3, limit);
+                List<String> ids = new ArrayList<>();
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getString(1));
+                    }
+                }
+                return ids;
+            }
+        });
+    }
+
+    private static boolean stillEligible(Connection c, String itemId, long cutoff) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items i WHERE " + ELIGIBLE + " AND i.id = ?")) {
+            ps.setLong(1, cutoff);
+            ps.setString(2, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next();
+            }
+        }
+    }
+}

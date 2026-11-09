@@ -200,6 +200,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Items$Rights", "the caller's permissions, computed per request"),
             Map.entry("io.siggi.togethertunes.library.Items$Row", "items row; ItemPage is what is sent"),
             Map.entry("io.siggi.togethertunes.library.Items$Purged", "purge result; the API answers 204"),
+            Map.entry("io.siggi.togethertunes.retention.RetentionSweeper$Result", "sweep counts, logged only"),
             Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),

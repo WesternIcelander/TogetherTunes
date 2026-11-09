@@ -54,6 +54,7 @@ import io.siggi.togethertunes.library.UserLibrariesApi;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
+import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.secrets.SecretCipher;
@@ -192,7 +193,8 @@ public final class Main {
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
-        ItemsApi itemsApi = new ItemsApi(new Items(database, dataDir, Clock.systemUTC()), permissions);
+        Items items = new Items(database, dataDir, Clock.systemUTC());
+        ItemsApi itemsApi = new ItemsApi(items, permissions);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
@@ -214,8 +216,12 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
+        RetentionSweeper retention = new RetentionSweeper(database, items, settings::retentionUnreferencedDays,
+                Clock.systemUTC());
+        retention.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            retention.close();
             // Before the database: running jobs are put back in the queue on the way out.
             ingest.close();
             staticFiles.close();

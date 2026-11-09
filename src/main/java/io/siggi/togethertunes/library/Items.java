@@ -31,7 +31,7 @@ import java.util.Objects;
  * {@code library.editAny}. Guests have no library, so a guest who added an item can't edit it.
  * Editable: title, artist, album and {@code presentAsAudio} (video items only).
  *
- * <p><b>Purging</b> ({@code library.purge}, and later the retention sweeper): the item becomes
+ * <p><b>Purging</b> ({@code library.purge}, and the retention sweeper, {@code retention.RetentionSweeper}): the item becomes
  * {@code purged} (row and metadata kept, {@code purged_at} set) and its files are deleted. Queued
  * ingest jobs of the item are cancelled (marked {@code failed}); while a job is <em>running</em>,
  * the item can't be purged ({@code 409 item_busy}). In the same transaction the item directory
