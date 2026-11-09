@@ -758,7 +758,7 @@ class DtoIpLeakTest {
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
-                "/items/" + f.itemId, "/api/rooms", "/api/rooms/" + f.roomSlug,
+                "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/requests");
@@ -1163,7 +1163,8 @@ class DtoIpLeakTest {
         }
         headers.forEach(b::header);
         HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
-        if (r.statusCode() / 100 == 2) {
+        // The short link /r/{slug} only ever redirects (its Location is scanned like any header).
+        if (r.statusCode() / 100 == 2 || (r.statusCode() == 302 && path.startsWith("/r/"))) {
             succeeded.add(routeOf(method, path));
         }
         scan(who, method + " " + path, path, r);

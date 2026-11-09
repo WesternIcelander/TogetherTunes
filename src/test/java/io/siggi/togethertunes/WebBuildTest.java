@@ -113,7 +113,8 @@ class WebBuildTest {
         Map<String, String> pages = Map.of(
                 "web/library/index.html", "library",
                 "web/playlists/index.html", "playlists",
-                "web/item.html", "item");
+                "web/item.html", "item",
+                "web/room.html", "room");
         for (Map.Entry<String, String> e : pages.entrySet()) {
             String html = read(e.getKey());
             assertTrue(html.contains("src=\"/js/" + e.getValue() + ".js\""), html);
@@ -126,6 +127,10 @@ class WebBuildTest {
         assertFalse(read("web/js/item.js").contains("requireUser"));
         assertTrue(read("web/js/library.js").contains("\"/api/library?\""));
         assertTrue(read("web/js/item.js").contains("/api/items/"));
+        // The room page is open to anyone with the link, and honours ?mode=remote from /r/{slug}.
+        assertFalse(read("web/js/room.js").contains("requireUser"));
+        assertTrue(read("web/js/room.js").contains("\"/api/rooms/\""));
+        assertTrue(read("web/js/room.js").contains("\"remote\""));
         assertTrue(read("web/js/media.js").contains("/job"));
         String uploads = read("web/js/uploads.js");
         assertTrue(uploads.contains("\"/api/uploads\""), uploads);

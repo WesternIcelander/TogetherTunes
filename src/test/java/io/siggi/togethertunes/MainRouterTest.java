@@ -147,6 +147,44 @@ class MainRouterTest {
     }
 
     @Test
+    void shortLinkRedirectsToTheRoomPageInRemoteMode() throws Exception {
+        HttpResponse<String> redirect = get("/r/my-room");
+        assertEquals(302, redirect.statusCode());
+        assertEquals("/rooms/my-room?mode=remote", redirect.headers().firstValue("Location").orElse(""));
+        assertEquals("no-store", redirect.headers().firstValue("Cache-Control").orElse(""));
+        // Slugs are case-insensitive on input, like the API.
+        assertEquals("/rooms/my-room?mode=remote",
+                get("/r/My-Room").headers().firstValue("Location").orElse(""));
+        // HEAD answers like GET.
+        HttpResponse<Void> head = http.send(HttpRequest.newBuilder(
+                        URI.create("http://127.0.0.1:" + server.port() + "/r/my-room"))
+                .method("HEAD", HttpRequest.BodyPublishers.noBody()).build(), HttpResponse.BodyHandlers.discarding());
+        assertEquals(302, head.statusCode());
+        assertEquals("/rooms/my-room?mode=remote", head.headers().firstValue("Location").orElse(""));
+        // Not a slug: 404, never a redirect.
+        for (String path : List.of("/r/ab", "/r/-room", "/r/room-", "/r/r%C3%B6om",
+                "/r/0190abcd-ef01-7000-8000-000000000001", "/r/")) {
+            HttpResponse<String> bad = get(path);
+            assertTrue(bad.headers().firstValue("Location").isEmpty(), path);
+            assertEquals(404, bad.statusCode(), path);
+        }
+        // An encoded slash is refused by the router before the route runs.
+        HttpResponse<String> slash = get("/r/a%2Fb");
+        assertTrue(slash.headers().firstValue("Location").isEmpty());
+        assertEquals(400, slash.statusCode());
+        // Other methods aren't allowed.
+        HttpResponse<String> post = post("/r/my-room", "application/json", "{}");
+        assertTrue(post.statusCode() == 405 || post.statusCode() == 403, String.valueOf(post.statusCode()));
+        // The target is the room page (whether the room exists is the page's business).
+        HttpResponse<String> page = get("/rooms/my-room?mode=remote");
+        assertEquals(200, page.statusCode());
+        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
+        assertTrue(page.body().contains("src=\"/js/room.js\""), page.body());
+        assertEquals(200, get("/js/room.js").statusCode());
+        assertEquals(404, get("/api/rooms/my-room").statusCode());
+    }
+
+    @Test
     void plainGetOnTheEchoSocketIs426() throws Exception {
         assertEquals(426, get("/ws/echo").statusCode());
     }

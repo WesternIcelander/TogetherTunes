@@ -319,6 +319,10 @@ class PermissionMatrixTest {
 
             // The item page by direct link: open to everyone (the page then calls /api/items/{id}).
             row("GET /items/{id}", c -> Call.get("/items/" + c.itemId()), 200, 200, 200, 200),
+            // The room page and its QR short link (→ 302 to the page in remote mode): open to
+            // everyone; the page then calls /api/rooms/{room}, which applies the room's visibility.
+            row("GET /rooms/{room}", c -> Call.get("/rooms/" + c.rootRoomSlug()), 200, 200, 200, 200),
+            row("GET /r/{slug}", c -> Call.get("/r/" + c.rootRoomSlug()), 302, 302, 302, 302),
 
             // Static files.
             row("GET /{path...}", c -> Call.get("/test/ws-echo.html"), 200, 200, 200, 200));
