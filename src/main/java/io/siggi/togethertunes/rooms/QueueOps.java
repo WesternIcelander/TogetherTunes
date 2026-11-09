@@ -163,8 +163,7 @@ public final class QueueOps {
         String roomId = s.id();
         long now = tx.now();
         tx.persist(c -> {
-            RoomStore.setEntryState(c, roomId, e.id(), QueueEntry.State.REMOVED, null);
-            References.touch(c, e.itemId(), now);
+            RoomStore.setEntryState(c, roomId, e.id(), QueueEntry.State.REMOVED, null, now);
             return null;
         });
         s.forget(e.id());
@@ -329,7 +328,7 @@ public final class QueueOps {
                     .withPlace(frontPosition(s), s.controlMode() == Rooms.ControlMode.VOTE);
             tx.persist(c -> {
                 RoomStore.clearVotes(c, requeued.id());
-                RoomStore.setEntryState(c, roomId, requeued.id(), QueueEntry.State.QUEUED, null);
+                RoomStore.setEntryState(c, roomId, requeued.id(), QueueEntry.State.QUEUED, null, now);
                 QueueControl.setPlace(c, roomId, requeued);
                 return null;
             });
@@ -339,7 +338,7 @@ public final class QueueOps {
         QueueEntry playing = prev.withState(QueueEntry.State.PLAYING, now).withPlace(prev.position(), false);
         tx.persist(c -> {
             RoomStore.clearVotes(c, playing.id());
-            RoomStore.setEntryState(c, roomId, playing.id(), QueueEntry.State.PLAYING, now);
+            RoomStore.setEntryState(c, roomId, playing.id(), QueueEntry.State.PLAYING, now, now);
             QueueControl.setPlace(c, roomId, playing);
             return null;
         });

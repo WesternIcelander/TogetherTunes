@@ -105,7 +105,7 @@ public final class Playback {
         if (ended != null) {
             String id = ended.id();
             tx.persist(c -> {
-                RoomStore.setEntryState(c, roomId, id, endedAs, null);
+                RoomStore.setEntryState(c, roomId, id, endedAs, null, now);
                 return null;
             });
             tx.event(new RoomEvent.EntryStateChanged(id, endedAs));
@@ -117,7 +117,7 @@ public final class Playback {
         }
         QueueEntry playing = next.withState(QueueEntry.State.PLAYING, now);
         tx.persist(c -> {
-            RoomStore.setEntryState(c, roomId, playing.id(), QueueEntry.State.PLAYING, now);
+            RoomStore.setEntryState(c, roomId, playing.id(), QueueEntry.State.PLAYING, now, now);
             return null;
         });
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));

@@ -617,4 +617,45 @@ abstract class QueueOpsContract {
         assertTrue(queue.previous(roomId, owner));
         assertEquals(last, current());
     }
+
+    private long lastReferenced(String itemId) throws SQLException {
+        return ((Number) row("SELECT last_referenced_at FROM items WHERE id = ?", itemId).get(0)).longValue();
+    }
+
+    @Test
+    void everyQueueEntryStateChangeTouchesItsItem() throws Exception {
+        String i1 = ready();
+        String i2 = ready();
+        clock.advance(1_000);
+        long t = clock.millis();
+        String e1 = add(owner, i1); // queued, then playing (idle room)
+        String e2 = add(owner, i2);
+        assertEquals(List.of(t, t), List.of(lastReferenced(i1), lastReferenced(i2)), "added");
+
+        clock.advance(1_000);
+        queue.next(roomId, owner);
+        assertEquals("skipped", stateOf(e1));
+        assertEquals(t + 1_000, lastReferenced(i1), "skipped: no longer referenced");
+        assertEquals(t + 1_000, lastReferenced(i2), "started playing");
+
+        clock.advance(1_000);
+        assertTrue(queue.previous(roomId, owner));
+        assertEquals(List.of("playing", "queued"), List.of(stateOf(e1), stateOf(e2)));
+        assertEquals(t + 2_000, lastReferenced(i1), "playing again: referenced again");
+        assertEquals(t + 2_000, lastReferenced(i2), "back to the queue");
+
+        clock.advance(1_000);
+        call(tx -> {
+            QueueOps.remove(tx, owner, e2);
+            return null;
+        });
+        assertEquals("removed", stateOf(e2));
+        assertEquals(t + 3_000, lastReferenced(i2), "removed");
+
+        clock.advance(1_000);
+        assertNull(call(tx -> Playback.advance(tx, QueueEntry.State.PLAYED)));
+        assertEquals("played", stateOf(e1));
+        assertEquals(t + 4_000, lastReferenced(i1), "played to the end");
+        assertEquals(t + 3_000, lastReferenced(i2), "a finished entry isn't touched again");
+    }
 }

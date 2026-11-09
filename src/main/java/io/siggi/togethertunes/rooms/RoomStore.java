@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.rooms;
 
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -279,9 +280,14 @@ final class RoomStore {
         });
     }
 
-    /** Sets an entry's state (and {@code played_at}, if not {@code null}). */
-    static void setEntryState(Connection c, String roomId, String entryId, QueueEntry.State state, Long playedAt)
-            throws SQLException {
+    /**
+     * Sets an entry's state (and {@code played_at}, if not {@code null}), and touches its item's
+     * {@code last_referenced_at} ({@link References#touchQueueEntry}): every way an entry stops
+     * (played, skipped, removed, rejected) or starts again (previous) being a reference goes
+     * through here, so retention can't miss one.
+     */
+    static void setEntryState(Connection c, String roomId, String entryId, QueueEntry.State state, Long playedAt,
+                              long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("UPDATE queue_entries SET state = ?,"
                 + " played_at = COALESCE(?, played_at) WHERE id = ? AND room_id = ?")) {
             ps.setString(1, state.wire());
@@ -292,8 +298,11 @@ final class RoomStore {
             }
             ps.setString(3, entryId);
             ps.setString(4, roomId);
-            ps.executeUpdate();
+            if (ps.executeUpdate() == 0) {
+                return;
+            }
         }
+        References.touchQueueEntry(c, entryId, now);
     }
 
     /**

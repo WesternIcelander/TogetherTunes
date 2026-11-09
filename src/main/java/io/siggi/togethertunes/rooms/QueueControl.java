@@ -1,7 +1,6 @@
 package io.siggi.togethertunes.rooms;
 
 import io.siggi.togethertunes.http.HttpError;
-import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -108,8 +107,9 @@ public final class QueueControl {
         QueueEntry e = suggestion(s, entryId);
         QueueEntry queued = e.withState(QueueEntry.State.QUEUED, null).withPlace(endPosition(s), false);
         String roomId = s.id();
+        long now = tx.now();
         tx.persist(c -> {
-            RoomStore.setEntryState(c, roomId, queued.id(), QueueEntry.State.QUEUED, null);
+            RoomStore.setEntryState(c, roomId, queued.id(), QueueEntry.State.QUEUED, null, now);
             setPlace(c, roomId, queued);
             return null;
         });
@@ -131,8 +131,7 @@ public final class QueueControl {
         String roomId = s.id();
         long now = tx.now();
         tx.persist(c -> {
-            RoomStore.setEntryState(c, roomId, e.id(), QueueEntry.State.REMOVED, null);
-            References.touch(c, e.itemId(), now);
+            RoomStore.setEntryState(c, roomId, e.id(), QueueEntry.State.REMOVED, null, now);
             return null;
         });
         s.forget(e.id());

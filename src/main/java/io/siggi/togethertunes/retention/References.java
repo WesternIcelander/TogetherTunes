@@ -20,7 +20,8 @@ import java.util.Objects;
  *       {@code Shares});</li>
  *   <li>playlist entry added or removed, playlist deleted ({@code Playlists});</li>
  *   <li>ingest job finished or failed ({@code IngestJobs});</li>
- *   <li>queue entry finished (rooms, from M3).</li>
+ *   <li>queue entry added, or changing state ({@code RoomStore.setEntryState}: played, skipped,
+ *       removed, a rejected suggestion, back to queued or playing), room deleted ({@code Rooms}).</li>
  * </ul>
  * The value never moves backwards, so a stale clock or a reordered event can't shorten an
  * item's retention.
@@ -51,6 +52,40 @@ public final class References {
                 + " (SELECT item_id FROM playlist_entries WHERE playlist_id = ?) AND last_referenced_at < ?")) {
             ps.setLong(1, now);
             ps.setString(2, playlistId);
+            ps.setLong(3, now);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * {@code last_referenced_at = now} (never backwards) for the item of one queue entry. Called
+     * on every state change of the entry: a change between the referenced states
+     * ({@code queued}, {@code suggested}, {@code playing}) and the finished ones ({@code played},
+     * {@code skipped}, {@code removed}), either way, is a reference event; one within either
+     * group only extends retention, which is harmless.
+     */
+    public static void touchQueueEntry(Connection c, String entryId, long now) throws SQLException {
+        Objects.requireNonNull(entryId);
+        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET last_referenced_at = ? WHERE id IN"
+                + " (SELECT item_id FROM queue_entries WHERE id = ?) AND last_referenced_at < ?")) {
+            ps.setLong(1, now);
+            ps.setString(2, entryId);
+            ps.setLong(3, now);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * {@code last_referenced_at = now} (never backwards) for every item queued, suggested or
+     * playing in a room. Call it before the room (and with it its queue) is deleted.
+     */
+    public static void touchRoomQueue(Connection c, String roomId, long now) throws SQLException {
+        Objects.requireNonNull(roomId);
+        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET last_referenced_at = ? WHERE id IN"
+                + " (SELECT item_id FROM queue_entries WHERE room_id = ? AND state IN ('queued', 'suggested',"
+                + " 'playing')) AND last_referenced_at < ?")) {
+            ps.setLong(1, now);
+            ps.setString(2, roomId);
             ps.setLong(3, now);
             ps.executeUpdate();
         }

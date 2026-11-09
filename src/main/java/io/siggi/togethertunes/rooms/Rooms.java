@@ -12,6 +12,7 @@ import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.library.UploadMetadata;
+import io.siggi.togethertunes.retention.References;
 import java.security.SecureRandom;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -765,14 +766,7 @@ public final class Rooms {
             }
             String roomId = a.room().id();
             long now = EpochMs.now(clock);
-            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET last_referenced_at = ? WHERE id IN"
-                    + " (SELECT item_id FROM queue_entries WHERE room_id = ? AND state IN ('queued', 'suggested',"
-                    + " 'playing')) AND last_referenced_at < ?")) {
-                ps.setLong(1, now);
-                ps.setString(2, roomId);
-                ps.setLong(3, now);
-                ps.executeUpdate();
-            }
+            References.touchRoomQueue(c, roomId, now);
             try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET current_entry_id = NULL WHERE id = ?")) {
                 ps.setString(1, roomId);
                 ps.executeUpdate();
