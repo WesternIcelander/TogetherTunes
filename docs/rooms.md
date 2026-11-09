@@ -101,6 +101,13 @@ In the room settings UI, options the server has disabled are shown greyed out, w
 - Owners and moderators can **ban a guest** from the room (`room_guest_bans`). In IP mode this bans everyone sharing that IP or /64. The UI warns about this, but doesn't show the IP unless the viewer has `ip.view`.
 - Guests count towards vote-skip thresholds and presence once they have an identity. Anonymous listeners are counted separately ("+4 anonymous").
 
+As implemented (`RoomGuests`, `RoomPresence`, `PresenceOps`):
+
+- With `guests.enabled` off, or for a guest banned server-wide, no capability is effective. `guests.canYoutube` also needs `ytdlp.enabled`. An anonymous visitor is shown what it would get as a guest.
+- A request needs the capability of its path: by item id `canRequestLibrary`, by upload `canUpload`, by link `canYoutube` (`403 guest_library_requests_disabled` / `guest_uploads_disabled` / `guest_youtube_disabled`). "Request rights" (remove own entries, `open`-mode moves and playback) means any of the three. Users get upload/link rights from `library.upload` / `library.youtube`.
+- A guest banned from a room is treated like a banned user: `403 banned_from_room`, the room isn't listed for it, and it can't upload or add links for it. Banning removes its connections from presence (the WebSocket layer closes them). Its queue entries and votes stay, as for a banned user; moderators can remove entries.
+- Presence counts each identified actor once, however many sockets it has: `listening` if any of them listens, else `remote`. `anonymous` counts sockets. A change of the counts is broadcast with a new `version`; a drop in identified members re-checks the vote-skip threshold. Presence is in memory only (kept when the executor reloads its state, empty after a restart).
+
 ## Requests and the owner's request history
 
 A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from three sources:
