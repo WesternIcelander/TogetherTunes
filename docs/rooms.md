@@ -35,6 +35,13 @@ Every timeline change (play, pause, seek, skip, advance) **re-anchors** the time
 | `vote` | Members with request rights | By votes (descending), ties broken by time added. Owner and moderators can pin an entry to the top | Owner and moderators, or the vote-skip threshold |
 | `open` | Members with request rights | Manual; anyone with request rights can reorder or remove | Anyone with request rights |
 
+Details (as implemented):
+
+- "Who can skip" also covers `play`, `pause`, `seek` and `previous`.
+- Votes and vote-skip exist only in `vote` mode. Pinned entries play first, in the order they were pinned; owner and moderators can unpin.
+- Vote-skip needs `ceil(voteSkipThreshold × present identified members)` skip votes (at least 1). Each voter counts once per entry; skip votes reset when the entry changes, and a drop in presence can reach the threshold.
+- Changing the control mode keeps the current play order: queue positions are rewritten to it and pins are cleared. Suggestions left from `owner` mode stay, and the owner and moderators can still accept or reject them in any mode. An accepted suggestion joins the end of the queue.
+
 ## Room settings (`settings_json`)
 
 | Setting | Default | Notes |
