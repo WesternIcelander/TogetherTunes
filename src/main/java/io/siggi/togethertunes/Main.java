@@ -40,6 +40,8 @@ import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
 import io.siggi.togethertunes.library.Uploads;
+import io.siggi.togethertunes.library.Library;
+import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
@@ -176,12 +178,13 @@ public final class Main {
         // Rooms come in M3: until then no room lets guests add media.
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, RoomGuestRules.NO_ROOMS);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
-        YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports(config, database, ingest, cookiesFile),
-                addMedia);
+        YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
+        YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
+        LibraryApi libraryApi = new LibraryApi(new Library(database, youtubeImports, Clock.systemUTC()), addMedia);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
-                            sessionsApi, me, admin, activity, uploadsApi, youtubeApi),
+                            sessionsApi, me, admin, activity, uploadsApi, youtubeApi, libraryApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -374,11 +377,12 @@ public final class Main {
      * ({@code /api/admin/...}), {@link AdminActivityApi} the admin guest list, audit log and session
      * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}),
      * {@link UploadsApi} chunked uploads ({@code /api/uploads...}), {@link YoutubeImportsApi} YouTube
-     * imports ({@code /api/imports/youtube}).
+     * imports ({@code /api/imports/youtube}), {@link LibraryApi} the caller's library
+     * ({@code /api/library...}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
-                         UploadsApi uploads, YoutubeImportsApi youtube) {
+                         UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -390,6 +394,7 @@ public final class Main {
         activity.register(router);
         uploads.register(router);
         youtube.register(router);
+        library.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

@@ -43,6 +43,8 @@ import io.siggi.togethertunes.http.RateLimiter;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.lang.reflect.RecordComponent;
@@ -119,6 +121,9 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Users$RoleRef",
             "io.siggi.togethertunes.auth.Users$UserView",
             "io.siggi.togethertunes.http.EchoEndpoint$Closed",
+            "io.siggi.togethertunes.library.Library$Entry",
+            "io.siggi.togethertunes.library.Library$ItemView",
+            "io.siggi.togethertunes.library.Library$Page",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -176,6 +181,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe", "ffprobe result of a source file, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe$Stream", "ffprobe stream of a source file, server-side only"),
             Map.entry("io.siggi.togethertunes.library.UploadMetadata", "title/artist/album derived at upload, written to the item row"),
+            Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
+            Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
@@ -212,6 +219,7 @@ class DtoIpLeakTest {
     private Roles roles;
     private Guests guests;
     private Permissions permissions;
+    private Library library;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -249,6 +257,7 @@ class DtoIpLeakTest {
         roles = new Roles(database);
         permissions = new Permissions(database, settings);
         guests = new Guests(database, settings, config.secureCookies());
+        library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
         router = Main.router(config, staticFiles, actors,
@@ -259,7 +268,8 @@ class DtoIpLeakTest {
                 new AdminApi(database, accounts, users, roles, permissions, settings),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
-                TestUploads.youtubeApi(database, config, permissions, clock));
+                TestUploads.youtubeApi(database, config, permissions, clock),
+                TestUploads.libraryApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -426,6 +436,7 @@ class DtoIpLeakTest {
             produced.add(guests.get(g.guest().id()));
         }
         produced.add(new AuditEntries(database).list(null, null, null, 200));
+        produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -555,7 +566,8 @@ class DtoIpLeakTest {
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
-                "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId);
+                "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
+                "/api/library?q=video&kind=video");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -691,7 +703,40 @@ class DtoIpLeakTest {
         assertTrue(json(expect(200, alice, "POST", "/api/imports/youtube",
                 "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\"}")).get("cached").getAsBoolean());
 
+        // alice's library: listed, an item added by id and removed again, one shared by the admin
+        String extra = insertItem(adminId);
+        expect(201, alice, "PUT", "/api/library/" + extra, null);
+        expectOk(alice, "DELETE", "/api/library/" + extra, null);
+        String shared = insertItem(adminId);
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id,"
+                    + " added_at, via, shared_by_user_id) VALUES (?, ?, 5, 'share', ?)")) {
+                ps.setString(1, aliceId);
+                ps.setString(2, shared);
+                ps.setString(3, adminId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertTrue(json(expect(200, alice, "GET", "/api/library", null)).getAsJsonArray("items").size() >= 3);
+
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId);
+    }
+
+    /** A ready video item added by {@code userId}, in nobody's library. */
+    private String insertItem(String userId) throws Exception {
+        String id = io.siggi.togethertunes.db.UuidV7.newId();
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist,"
+                    + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                    + " VALUES (?, 'video', 'Some Video', 'Someone', 'upload', ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, id);
+                ps.setString(2, userId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
     }
 
     /** A ready YouTube item for {@code videoId}. */

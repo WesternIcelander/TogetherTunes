@@ -70,6 +70,8 @@ public final class YoutubeImports {
     /** {@code -J} output with every format listed is a few hundred KiB; this is plenty. */
     static final int METADATA_MAX_BYTES = 32 * 1024 * 1024;
     private static final int LOCK_STRIPES = 64;
+    /** {@code library_entries.via} of an entry made by an import. */
+    static final String VIA_IMPORT = "youtube";
 
     private static final System.Logger LOG = System.getLogger(YoutubeImports.class.getName());
 
@@ -143,7 +145,7 @@ public final class YoutubeImports {
         try {
             Existing existing = db.read(c -> find(c, videoId));
             if (existing != null) {
-                return existing(existing, userId, presentAsAudio, library);
+                return existing(existing, userId, presentAsAudio, library, VIA_IMPORT);
             }
             YoutubeMetadata meta = fetchMetadata(videoId);
             String itemId = UuidV7.newId();
@@ -152,7 +154,7 @@ public final class YoutubeImports {
                 insertItem(c, itemId, videoId, meta, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
                 jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE);
                 if (library) {
-                    addToLibrary(c, userId, itemId, now);
+                    addToLibrary(c, userId, itemId, now, VIA_IMPORT);
                 }
                 return null;
             });
@@ -163,8 +165,33 @@ public final class YoutubeImports {
         }
     }
 
-    private Imported existing(Existing existing, String userId, Boolean presentAsAudio, boolean library)
-            throws SQLException {
+    /**
+     * Adds the existing item that holds {@code videoId} to {@code user}'s library with {@code via},
+     * through the same cache rules as an import of its link: a ready, pending or processing item is
+     * just added; a purged one gets a {@code refetch} job, a failed one a new {@code youtube} job
+     * (subject to {@link #RETRY_FAILED_AFTER}). Never runs yt-dlp here. Used by
+     * {@code PUT /api/library/{itemId}} ({@link Library}).
+     *
+     * @throws HttpError {@code 404 item_not_found} if no item holds the ID (any more),
+     *                   {@code 422 youtube_failed}
+     */
+    public Imported addExisting(Actor.User user, String videoId, String via)
+            throws SQLException, InterruptedException {
+        ReentrantLock lock = locks[Math.floorMod(videoId.hashCode(), locks.length)];
+        lock.lockInterruptibly();
+        try {
+            Existing existing = db.read(c -> find(c, videoId));
+            if (existing == null) {
+                throw new HttpError(404, "item_not_found", "No such item");
+            }
+            return existing(existing, user.userId(), null, true, via);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private Imported existing(Existing existing, String userId, Boolean presentAsAudio, boolean library,
+                              String via) throws SQLException {
         String itemId = existing.id();
         long now = EpochMs.now(clock);
         switch (existing.status()) {
@@ -172,7 +199,7 @@ public final class YoutubeImports {
                 db.write(c -> {
                     referenced(c, itemId, now);
                     if (library) {
-                        addToLibrary(c, userId, itemId, now);
+                        addToLibrary(c, userId, itemId, now, via);
                     }
                     return null;
                 });
@@ -200,7 +227,7 @@ public final class YoutubeImports {
                     referenced(c, itemId, now);
                     jobs.enqueue(itemId, kind);
                     if (library) {
-                        addToLibrary(c, userId, itemId, now);
+                        addToLibrary(c, userId, itemId, now, via);
                     }
                     return null;
                 });
@@ -350,13 +377,14 @@ public final class YoutubeImports {
         }
     }
 
-    private void addToLibrary(Connection c, String userId, String itemId, long now) throws SQLException {
+    private void addToLibrary(Connection c, String userId, String itemId, long now, String via)
+            throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
                 List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
             ps.setString(1, userId);
             ps.setString(2, itemId);
             ps.setLong(3, now);
-            ps.setString(4, "youtube");
+            ps.setString(4, via);
             ps.executeUpdate();
         }
     }

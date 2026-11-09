@@ -1,0 +1,94 @@
+package io.siggi.togethertunes.library;
+
+import io.siggi.togethertunes.auth.Actor;
+import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.http.Request;
+import io.siggi.togethertunes.http.Response;
+import io.siggi.togethertunes.http.Router;
+import java.util.Objects;
+
+/**
+ * The caller's own library ({@code docs/api.md#items-libraries-playlists-sharing},
+ * {@link Library}). Users only: guests have no library, so a guest or anonymous request gets
+ * {@code 401 not_authenticated}. Responses are {@code Cache-Control: no-store}.
+ *
+ * <ul>
+ *   <li>{@code GET /api/library?q=&kind=&cursor=&limit=} → {@code {"items": [entry], "nextCursor"?}},
+ *       most recently added first. {@code q}: every word must appear in the title, artist or album
+ *       (case-insensitive, substring); {@code kind}: {@code audio} or {@code video}; {@code limit}
+ *       1..{@value Library#LIST_MAX}, default {@value Library#LIST_DEFAULT}. {@code 400
+ *       invalid_kind}, {@code invalid_query} (over {@value Library#QUERY_MAX_CHARS} chars),
+ *       {@code invalid_cursor}, {@code invalid_limit}.</li>
+ *   <li>{@code PUT /api/library/{itemId}} → {@code 201 entry} when added ({@code via: "manual"}),
+ *       {@code 200 entry} when it already was there (unchanged). {@code 404 item_not_found};
+ *       a purged/failed upload → {@code 409 media_expired} / {@code item_failed}; a purged or
+ *       failed YouTube item is fetched again, which needs {@code library.youtube} (and
+ *       {@code ytdlp.enabled}: {@code 403 feature_disabled}).</li>
+ *   <li>{@code DELETE /api/library/{itemId}} → {@code 204}; {@code 404 not_in_library}.</li>
+ * </ul>
+ * An entry is {@code {"item": {"id", "kind", "title", "artist"?, "album"?, "durationMs"?,
+ * "source", "youtubeId"?, "status", "presentAsAudio"}, "addedAt", "via", "sharedBy"?: actor}}.
+ */
+public final class LibraryApi {
+    private final Library library;
+    private final AddMediaPolicy policy;
+
+    public LibraryApi(Library library, AddMediaPolicy policy) {
+        this.library = Objects.requireNonNull(library);
+        this.policy = Objects.requireNonNull(policy);
+    }
+
+    public void register(Router router) {
+        router.get("/api/library", this::list);
+        router.put("/api/library/{itemId}", this::add);
+        router.delete("/api/library/{itemId}", this::remove);
+    }
+
+    private static Actor.User user(Request request) throws Exception {
+        if (ActorResolver.actor(request) instanceof Actor.User user) {
+            return user;
+        }
+        throw new HttpError(401, "not_authenticated", "Log in first");
+    }
+
+    private void list(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        int limit = Library.LIST_DEFAULT;
+        String limitParam = request.query("limit");
+        if (limitParam != null) {
+            try {
+                limit = Integer.parseInt(limitParam);
+            } catch (NumberFormatException e) {
+                limit = -1;
+            }
+            if (limit < 1 || limit > Library.LIST_MAX) {
+                throw new HttpError(400, "invalid_limit", "limit must be 1.." + Library.LIST_MAX);
+            }
+        }
+        Library.Page page = library.list(user.userId(), request.query("q"), emptyToNull(request.query("kind")),
+                emptyToNull(request.query("cursor")), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private void add(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        Library.Added added = library.add(user, request.pathParam("itemId"),
+                () -> policy.requireYoutube(user, null));
+        response.header("Cache-Control", "no-store");
+        response.json(added.created() ? 201 : 200, added.entry());
+    }
+
+    private void remove(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        if (!library.remove(user.userId(), request.pathParam("itemId"))) {
+            throw new HttpError(404, "not_in_library", "That item isn't in your library");
+        }
+        response.empty(204);
+    }
+
+    private static String emptyToNull(String s) {
+        return s == null || s.isEmpty() ? null : s;
+    }
+}

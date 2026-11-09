@@ -31,6 +31,7 @@ import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
+import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.RateLimiter;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
@@ -222,6 +223,12 @@ class PermissionMatrixTest {
             row("POST /api/imports/youtube", c -> Call.post("/api/imports/youtube", "{\"url\":\"https://example.com/\"}"),
                     401, 401, 400, 400),
 
+            // The caller's own library: users only (guests have no library).
+            row("GET /api/library", c -> Call.get("/api/library?q=song&kind=audio"), 401, 401, 200, 200),
+            row("PUT /api/library/{itemId}", c -> Call.put("/api/library/" + c.itemId(), null), 401, 401, 201, 201),
+            row("DELETE /api/library/{itemId}", c -> Call.delete("/api/library/" + c.libraryItemId()),
+                    401, 401, 204, 204),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -271,7 +278,8 @@ class PermissionMatrixTest {
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
-                TestUploads.youtubeApi(database, config, permissions, clock));
+                TestUploads.youtubeApi(database, config, permissions, clock),
+                TestUploads.libraryApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -445,6 +453,40 @@ class PermissionMatrixTest {
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }
+        }
+
+        /** A new ready audio item (in nobody's library). */
+        String itemId() {
+            try {
+                String id = UuidV7.newId();
+                database.write(c -> {
+                    try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title,"
+                            + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                            + " SELECT ?, 'audio', 'Song', 'upload', id, 1, 'ready', '720p30', 1 FROM users"
+                            + " WHERE username = 'root'")) {
+                        ps.setString(1, id);
+                        assertEquals(1, ps.executeUpdate());
+                    }
+                    return null;
+                });
+                return id;
+            } catch (java.sql.SQLException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** A new item in this caller's library (a user or admin), or in nobody's. */
+        String libraryItemId() {
+            String id = itemId();
+            try {
+                if (cookie != null && cookie.startsWith("sid=")) {
+                    HttpResponse<String> r = send(cookie, ip, Call.put("/api/library/" + id, null));
+                    assertEquals(201, r.statusCode(), r.body());
+                }
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+            return id;
         }
 
         /** A custom role nobody else touches. */

@@ -9,6 +9,8 @@ import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
+import io.siggi.togethertunes.library.Library;
+import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
@@ -52,6 +54,12 @@ public final class TestUploads {
 
     public static YoutubeImportsApi youtubeApi(Database db, Config config, Permissions permissions, Clock clock) {
         return new YoutubeImportsApi(youtube(db, config, Tools.from(config), clock),
+                policy(permissions, new Settings(db, config)));
+    }
+
+    /** The library API over YouTube imports with the configured tools. */
+    public static LibraryApi libraryApi(Database db, Config config, Permissions permissions, Clock clock) {
+        return new LibraryApi(new Library(db, youtube(db, config, Tools.from(config), clock), clock),
                 policy(permissions, new Settings(db, config)));
     }
 

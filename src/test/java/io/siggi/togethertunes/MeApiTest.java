@@ -93,7 +93,8 @@ class MeApiTest {
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
                 io.siggi.togethertunes.auth.AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
-                TestUploads.youtubeApi(database, config, permissions, clock)), dir.toFile());
+                TestUploads.youtubeApi(database, config, permissions, clock),
+                TestUploads.libraryApi(database, config, permissions, clock)), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
                 "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
