@@ -6,6 +6,7 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.Dialect;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -269,7 +270,7 @@ public final class Library {
                     ps.setString(4, VIA_MANUAL);
                     ps.executeUpdate();
                 }
-                touch(c, itemId, now);
+                References.touch(c, itemId, now);
                 return null;
             });
         }
@@ -298,22 +299,12 @@ public final class Library {
                 n = ps.executeUpdate();
             }
             if (n > 0) {
-                touch(c, itemId, now);
+                References.touch(c, itemId, now);
             }
             return n > 0;
         });
     }
 
-    /** {@code last_referenced_at = now} (never backwards). */
-    private static void touch(Connection c, String itemId, long now) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE items SET last_referenced_at = ? WHERE id = ? AND last_referenced_at < ?")) {
-            ps.setLong(1, now);
-            ps.setString(2, itemId);
-            ps.setLong(3, now);
-            ps.executeUpdate();
-        }
-    }
 
     /** A permission check that throws an {@link HttpError} to refuse. */
     @FunctionalInterface

@@ -15,6 +15,7 @@ import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.MediaProbe;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.retention.References;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -586,7 +587,7 @@ public final class Uploads {
     private Completed reuse(Upload upload, String itemId, boolean library) throws SQLException, IOException {
         long now = EpochMs.now(clock);
         db.write(c -> {
-            referenced(c, itemId, now);
+            References.touch(c, itemId, now);
             if (library) {
                 addToLibrary(c, upload.userId(), itemId, now);
             }
@@ -653,7 +654,7 @@ public final class Uploads {
                 if (reuseItemId == null) {
                     insertItem(c, itemId, probe.isVideo() ? "video" : "audio", meta, sha256, upload, now);
                 } else {
-                    referenced(c, itemId, now);
+                    References.touch(c, itemId, now);
                 }
                 jobs.enqueue(itemId, IngestJob.Kind.UPLOAD);
                 if (library) {
@@ -695,16 +696,6 @@ public final class Uploads {
         }
     }
 
-    /** Someone just added the item again: it is referenced now (retention counts from here). */
-    private static void referenced(Connection c, String itemId, long now) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE items SET last_referenced_at = ? WHERE id = ? AND last_referenced_at < ?")) {
-            ps.setLong(1, now);
-            ps.setString(2, itemId);
-            ps.setLong(3, now);
-            ps.executeUpdate();
-        }
-    }
 
     private void addToLibrary(Connection c, String userId, String itemId, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",

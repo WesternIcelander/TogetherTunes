@@ -7,6 +7,7 @@ import io.siggi.togethertunes.db.Dialect;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -192,13 +193,7 @@ public final class Shares {
                 ps.setLong(6, now);
                 ps.executeUpdate();
             }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE items SET last_referenced_at = ? WHERE id = ? AND last_referenced_at < ?")) {
-                ps.setLong(1, now);
-                ps.setString(2, itemId);
-                ps.setLong(3, now);
-                ps.executeUpdate();
-            }
+            References.touch(c, itemId, now);
             try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE s.id = ?")) {
                 ps.setString(1, shareId);
                 try (ResultSet rs = ps.executeQuery()) {

@@ -161,6 +161,8 @@ abstract class IngestJobsContract {
         assertEquals(NOW + 5000, done.finishedAt());
         assertEquals("all done\n", done.log());
         assertArrayEquals(new String[] {"ready", null}, fixtures.itemStatus(item));
+        // The running job referenced the item; finishing is an unreference event.
+        assertEquals(NOW + 5000, fixtures.lastReferencedAt(item));
 
         // Only a running job can finish.
         assertFalse(jobs.complete(job.id(), "again"));
@@ -189,6 +191,7 @@ abstract class IngestJobsContract {
         assertEquals(0.25, failed.progress(), 1e-9);
         assertNotNull(failed.finishedAt());
         assertArrayEquals(new String[] {"failed", "The video is a live stream"}, fixtures.itemStatus(item));
+        assertEquals(NOW, fixtures.lastReferencedAt(item));
 
         // A retry (e.g. a YouTube request after 10 minutes) clears the error.
         jobs.enqueue(item, Kind.YOUTUBE);
@@ -272,6 +275,7 @@ abstract class IngestJobsContract {
         jobs.claimNext();
         assertEquals("ready", fixtures.itemStatus(item)[0]);
         jobs.fail(job.id(), "encoder broke", null);
+        assertEquals(NOW, fixtures.lastReferencedAt(item), "any kind of job references its item");
         assertArrayEquals(new String[] {"ready", null}, fixtures.itemStatus(item));
         assertEquals(State.FAILED, jobs.get(job.id()).orElseThrow().state());
     }
@@ -347,6 +351,8 @@ abstract class IngestJobsContract {
         assertTrue(rb.log().contains("giving up"), rb.log());
         assertEquals("failed", fixtures.itemStatus(b)[0]);
         assertTrue(fixtures.itemStatus(b)[1].startsWith("Interrupted 3 times"), fixtures.itemStatus(b)[1]);
+        assertEquals(NOW + 2, fixtures.lastReferencedAt(b), "giving up ends the job's reference");
+        assertEquals(1_700_000_000_000L, fixtures.lastReferencedAt(a), "a requeued job still references its item");
 
         assertEquals(State.QUEUED, jobs.get(jc.id()).orElseThrow().state());
         assertEquals(new IngestJobs.Recovered(0, 0), jobs.recoverInterrupted());

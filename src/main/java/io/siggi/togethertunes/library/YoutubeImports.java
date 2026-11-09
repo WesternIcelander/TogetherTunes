@@ -13,6 +13,7 @@ import io.siggi.togethertunes.ingest.JobLog;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.retention.References;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -219,7 +220,7 @@ public final class YoutubeImports {
         switch (existing.status()) {
             case "ready", "pending", "processing" -> {
                 db.write(c -> {
-                    referenced(c, itemId, now);
+                    References.touch(c, itemId, now);
                     if (library) {
                         addToLibrary(c, userId, itemId, now, via);
                     }
@@ -246,7 +247,7 @@ public final class YoutubeImports {
                     if (presentAsAudio != null) {
                         setPresentAsAudio(c, itemId, presentAsAudio);
                     }
-                    referenced(c, itemId, now);
+                    References.touch(c, itemId, now);
                     jobs.enqueue(itemId, kind);
                     if (library) {
                         addToLibrary(c, userId, itemId, now, via);
@@ -388,16 +389,6 @@ public final class YoutubeImports {
         }
     }
 
-    /** Someone just added the item again: it is referenced now (retention counts from here). */
-    private static void referenced(Connection c, String itemId, long now) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE items SET last_referenced_at = ? WHERE id = ? AND last_referenced_at < ?")) {
-            ps.setLong(1, now);
-            ps.setString(2, itemId);
-            ps.setLong(3, now);
-            ps.executeUpdate();
-        }
-    }
 
     private void addToLibrary(Connection c, String userId, String itemId, long now, String via)
             throws SQLException {

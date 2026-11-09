@@ -54,6 +54,19 @@ final class IngestFixtures {
         return id;
     }
 
+    /** An item's {@code last_referenced_at}. */
+    long lastReferencedAt(String itemId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT last_referenced_at FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
     /** {status, error} of an item. */
     String[] itemStatus(String itemId) throws SQLException {
         return db.read(c -> {

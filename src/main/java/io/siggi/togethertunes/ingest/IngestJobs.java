@@ -7,6 +7,7 @@ import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
+import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -30,6 +31,9 @@ import java.util.Optional;
  * {@code reencode}), the item follows the job: {@code pending} when queued, {@code processing}
  * while running, {@code ready} when done and {@code failed} (with {@code items.error}) when it
  * fails. A {@code reencode} job leaves the item alone.
+ *
+ * <p>Retention: a running job references its item, so a job that finishes or fails (of any
+ * kind) sets the item's {@code last_referenced_at} to now ({@link References#touch}).
  */
 public final class IngestJobs {
     /** A job is started at most this many times; a crash during the last start fails it. */
@@ -260,6 +264,8 @@ public final class IngestJobs {
             if (job.kind().ownsItemStatus()) {
                 setItemStatus(c, job.itemId(), state == State.DONE ? "ready" : "failed", error);
             }
+            // A running job references its item; it stops doing so now.
+            References.touch(c, job.itemId(), now);
             return true;
         });
     }
@@ -311,10 +317,11 @@ public final class IngestJobs {
                 if (job.attempts() >= MAX_ATTEMPTS) {
                     String error = "Interrupted " + job.attempts() + " times (the server stopped during the job)";
                     log.append("[ingest] " + error + "; giving up");
+                    long now = EpochMs.now(clock);
                     try (PreparedStatement ps = c.prepareStatement(
                             "UPDATE ingest_jobs SET state = ?, finished_at = ?, log = ? WHERE id = ?")) {
                         ps.setString(1, State.FAILED.wire());
-                        ps.setLong(2, EpochMs.now(clock));
+                        ps.setLong(2, now);
                         ps.setString(3, log.tail());
                         ps.setString(4, job.id());
                         ps.executeUpdate();
@@ -322,6 +329,7 @@ public final class IngestJobs {
                     if (job.kind().ownsItemStatus()) {
                         setItemStatus(c, job.itemId(), "failed", error);
                     }
+                    References.touch(c, job.itemId(), now);
                     failed++;
                 } else {
                     log.append("[ingest] Interrupted (the server stopped during attempt " + job.attempts()

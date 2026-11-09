@@ -6,6 +6,7 @@ import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -302,13 +303,7 @@ public final class Playlists {
             if (!exists(c, ownerId, playlistId, true)) {
                 return false;
             }
-            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET last_referenced_at = ? WHERE id IN"
-                    + " (SELECT item_id FROM playlist_entries WHERE playlist_id = ?) AND last_referenced_at < ?")) {
-                ps.setLong(1, now);
-                ps.setString(2, playlistId);
-                ps.setLong(3, now);
-                ps.executeUpdate();
-            }
+            References.touchPlaylist(c, playlistId, now);
             try (PreparedStatement ps = c.prepareStatement("DELETE FROM playlist_entries WHERE playlist_id = ?")) {
                 ps.setString(1, playlistId);
                 ps.executeUpdate();
@@ -416,7 +411,7 @@ public final class Playlists {
                 ps.setLong(5, now);
                 ps.executeUpdate();
             }
-            touchItem(c, itemId, now);
+            References.touch(c, itemId, now);
             touchPlaylist(c, playlistId, now);
             return entry(c, entryId);
         });
@@ -476,7 +471,7 @@ public final class Playlists {
                 ps.setString(1, entryId);
                 ps.executeUpdate();
             }
-            touchItem(c, itemId, now);
+            References.touch(c, itemId, now);
             touchPlaylist(c, playlistId, now);
             return true;
         });
@@ -599,14 +594,4 @@ public final class Playlists {
         }
     }
 
-    /** {@code last_referenced_at = now} (never backwards). */
-    private static void touchItem(Connection c, String itemId, long now) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "UPDATE items SET last_referenced_at = ? WHERE id = ? AND last_referenced_at < ?")) {
-            ps.setLong(1, now);
-            ps.setString(2, itemId);
-            ps.setLong(3, now);
-            ps.executeUpdate();
-        }
-    }
 }
