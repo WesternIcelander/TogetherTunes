@@ -69,6 +69,8 @@ The check happens once, when the request starts. A Range response that is alread
 
 To keep the check fast, maintain an in-memory `Set<itemId>` of all rooms' current and next items, updated by the room executors.
 
+What counts per room: the current entry's item (playing or paused); the first queued entry in play order; and the first queued entry that is ready to play, if that's a different one (the first may still be ingesting and would be skipped over). Suggestions don't count. Each executor publishes its room's items after every change and withdraws them when it closes, so only loaded rooms count: every playing room is loaded at server start, and any room someone opens is loaded.
+
 ## Retention
 
 Items that nobody keeps are deleted, so that requests from guests don't fill the disk.
