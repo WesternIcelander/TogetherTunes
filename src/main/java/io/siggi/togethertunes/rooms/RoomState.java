@@ -164,6 +164,12 @@ public final class RoomState {
         return value == null ? 0 : value;
     }
 
+    /** The votes on an entry, voter key -> ±1 (a new map; empty if none). */
+    Map<String, Integer> votesOn(String entryId) {
+        Map<String, Integer> v = votes.get(entryId);
+        return v == null ? Map.of() : Map.copyOf(v);
+    }
+
     /** The voter keys of the skip votes on the current entry (unmodifiable view). */
     public Set<String> skipVotes() {
         return Collections.unmodifiableSet(skipVotes);

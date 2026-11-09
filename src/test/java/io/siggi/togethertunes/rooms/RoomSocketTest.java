@@ -1,0 +1,645 @@
+package io.siggi.togethertunes.rooms;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import io.siggi.simplewebsocket.SimpleWebsocket;
+import io.siggi.simplewebsocket.WebSocketConnector;
+import io.siggi.simplewebsocket.WebSocketMessage;
+import io.siggi.simplewebsocket.WebsocketHeaders;
+import io.siggi.togethertunes.TestClock;
+import io.siggi.togethertunes.TestUploads;
+import io.siggi.togethertunes.auth.Accounts;
+import io.siggi.togethertunes.auth.Actor;
+import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.auth.BuiltinRoles;
+import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.IdentityTickets;
+import io.siggi.togethertunes.auth.MeApi;
+import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.auth.Permissions;
+import io.siggi.togethertunes.auth.Sessions;
+import io.siggi.togethertunes.auth.Users;
+import io.siggi.togethertunes.config.Config;
+import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.MigrationRunner;
+import io.siggi.togethertunes.db.UuidV7;
+import io.siggi.togethertunes.http.Csrf;
+import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.settings.Settings;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.file.Path;
+import java.sql.PreparedStatement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+/**
+ * The room WebSocket ({@link RoomSocket}, {@code docs/api.md#websocket}) over a real socket:
+ * identity, time, join/leave/mode/sync, the identity ticket, queue and playback messages with
+ * {@code ack}/{@code error}, full state and deltas with consecutive versions, {@code request.new},
+ * kicks, and no IP address in any message.
+ */
+class RoomSocketTest {
+    private static final String ORIGIN = "https://tunes.example";
+    private static final String CLIENT_IP = "203.0.113.77";
+
+    @TempDir
+    Path dir;
+
+    private Database db;
+    private TestUploads.RoomsWiring wiring;
+    private WebServer server;
+    private final HttpClient http = HttpClient.newHttpClient();
+    private final TestClock clock = new TestClock(1_800_000_000_000L);
+    private final List<Client> clients = new ArrayList<>();
+    private final List<String> leaks = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private Sessions sessions;
+    private String aliceId;
+    private String bobId;
+    private String alice;
+    private String bob;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", ORIGIN), 4, dir)
+                .load(null).config();
+        db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
+        MigrationRunner.migrate(db);
+        BuiltinRoles.ensure(db);
+        Settings settings = new Settings(db, config);
+        ActorResolver actors = new ActorResolver(db, settings, clock, false);
+        Router router = new Router(actors.hook());
+        Permissions permissions = new Permissions(db, settings);
+        Passwords passwords = new Passwords(new Passwords.Params(64, 1, 1));
+        Accounts accounts = new Accounts(db, passwords, clock);
+        IdentityTickets tickets = new IdentityTickets(clock);
+        wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock);
+        wiring.api().register(router);
+        new MeApi(accounts, new Users(db, passwords, clock), permissions, new Guests(db, settings, false), settings,
+                tickets).register(router);
+        wiring.socket().register(router, new WebSockets(new Csrf(ORIGIN, List.of("sid", "gid"))));
+        server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
+        aliceId = accounts.createLocal("alice", "Alice", "alice-password", false, null, "account.register").id();
+        bobId = accounts.createLocal("bob", "Bob", "bob-password", false, null, "account.register").id();
+        sessions = new Sessions(db, clock);
+        alice = sessions.create(aliceId, Actor.Via.BEARER, "test", null).token();
+        bob = sessions.create(bobId, Actor.Via.BEARER, "test", null).token();
+    }
+
+    @AfterEach
+    void tearDown() {
+        for (Client c : clients) {
+            c.close();
+        }
+        server.close();
+        wiring.registry().close();
+        db.close();
+        assertEquals(List.of(), leaks, "messages with an IP address");
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /** A test client: a reader thread collects every message. */
+    private final class Client implements AutoCloseable {
+        final SimpleWebsocket ws;
+        final LinkedBlockingQueue<JsonObject> inbox = new LinkedBlockingQueue<>();
+        final List<JsonObject> seen = new ArrayList<>();
+        int rid;
+
+        Client(SimpleWebsocket ws) {
+            this.ws = ws;
+            Thread.ofVirtual().start(() -> {
+                try {
+                    WebSocketMessage m;
+                    while ((m = ws.read()) != null) {
+                        if (!m.isControlMessage()) {
+                            String text = m.getText();
+                            // invariant 5: no IP in any message (checked in tearDown)
+                            if (text.contains(CLIENT_IP) || text.contains("127.0.0.1")) {
+                                leaks.add(text);
+                            }
+                            inbox.add(JsonParser.parseString(text).getAsJsonObject());
+                        }
+                    }
+                } catch (IOException ignored) {
+                    // closed
+                }
+            });
+        }
+
+        void send(String json) throws IOException {
+            ws.send(WebSocketMessage.create(json));
+        }
+
+        /** Messages received and not consumed yet, oldest first. */
+        final List<JsonObject> pending = new ArrayList<>();
+
+        /** The oldest unconsumed message matching {@code p} (others stay unconsumed). */
+        JsonObject await(Predicate<JsonObject> p) throws InterruptedException {
+            for (int i = 0; i < pending.size(); i++) {
+                if (p.test(pending.get(i))) {
+                    return pending.remove(i);
+                }
+            }
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (true) {
+                JsonObject m = inbox.poll(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+                assertNotNull(m, () -> "timed out; unconsumed " + pending);
+                seen.add(m);
+                if (p.test(m)) {
+                    return m;
+                }
+                pending.add(m);
+            }
+        }
+
+        JsonObject await(String type) throws InterruptedException {
+            return await(m -> m.get("type").getAsString().equals(type));
+        }
+
+        /** The oldest unconsumed message, which must be of {@code type}. */
+        JsonObject next(String type) throws InterruptedException {
+            JsonObject m = pending.isEmpty() ? inbox.poll(5, TimeUnit.SECONDS) : pending.remove(0);
+            assertNotNull(m, "timed out waiting for " + type);
+            if (!seen.contains(m)) {
+                seen.add(m);
+            }
+            assertEquals(type, m.get("type").getAsString(), m.toString());
+            return m;
+        }
+
+        /** No new message of {@code type} comes within 300 ms. */
+        void quiet(String type) throws InterruptedException {
+            Thread.sleep(300);
+            List<JsonObject> fresh = new ArrayList<>();
+            inbox.drainTo(fresh);
+            seen.addAll(fresh);
+            pending.addAll(fresh);
+            for (JsonObject m : fresh) {
+                assertFalse(m.get("type").getAsString().equals(type), () -> "unexpected " + m);
+            }
+        }
+
+        /** Sends a request with a new rid and returns its ack or error. */
+        JsonObject request(String json) throws Exception {
+            int r = ++rid;
+            JsonObject o = JsonParser.parseString(json).getAsJsonObject();
+            o.addProperty("rid", r);
+            send(o.toString());
+            return await(m -> (m.get("type").getAsString().equals("ack") || m.get("type").getAsString().equals("error"))
+                    && m.has("rid") && m.get("rid").getAsInt() == r);
+        }
+
+        JsonObject ok(String json) throws Exception {
+            JsonObject r = request(json);
+            assertEquals("ack", r.get("type").getAsString(), r.toString());
+            return r;
+        }
+
+        void error(String code, String json) throws Exception {
+            JsonObject r = request(json);
+            assertEquals("error", r.get("type").getAsString(), r.toString());
+            assertEquals(code, r.get("code").getAsString(), r.toString());
+        }
+
+        @Override
+        public void close() {
+            try {
+                ws.close();
+            } catch (IOException | RuntimeException ignored) {
+                // gone
+            }
+        }
+    }
+
+    private Client connect(String bearer, String cookie) throws IOException {
+        WebsocketHeaders headers = new WebsocketHeaders();
+        headers.setHeader("Origin", ORIGIN);
+        headers.setHeader("X-Forwarded-For", CLIENT_IP);
+        if (bearer != null) {
+            headers.setHeader("Authorization", "Bearer " + bearer);
+        }
+        if (cookie != null) {
+            headers.setHeader("Cookie", cookie);
+        }
+        Client c = new Client(new WebSocketConnector().setMaxPayloadLength(1 << 22).connect(
+                URI.create("ws://127.0.0.1:" + server.port() + RoomSocket.PATH), headers));
+        clients.add(c);
+        return c;
+    }
+
+    private HttpResponse<String> call(String token, String method, String path, String body) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                        : HttpRequest.BodyPublishers.ofString(body));
+        if (body != null) {
+            b.header("Content-Type", "application/json");
+        }
+        if (token != null) {
+            b.header("Authorization", "Bearer " + token);
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static JsonObject json(HttpResponse<String> r) {
+        return JsonParser.parseString(r.body()).getAsJsonObject();
+    }
+
+    /** A room of alice's; returns its id. */
+    private String room(String slug, String visibility, String controlMode) throws Exception {
+        HttpResponse<String> r = call(alice, "POST", "/api/rooms", "{\"name\":\"" + slug + "\",\"slug\":\"" + slug
+                + "\",\"visibility\":\"" + visibility + "\",\"controlMode\":\"" + controlMode + "\"}");
+        assertEquals(201, r.statusCode(), r.body());
+        return json(r).get("id").getAsString();
+    }
+
+    /** A ready 60 s audio upload in alice's library (so in her rooms' request scope). */
+    private String item(String title) throws Exception {
+        String id = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, artist, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at, duration_ms, original_file, original_web, original_gain_db)"
+                + " VALUES (?, 'audio', ?, 'Artist', 'upload', ?, 1, 'ready', '720p30', 1, 60000, 'original.mp3', 1, -2.5)",
+                id, title, aliceId);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", aliceId, id);
+        return id;
+    }
+
+    private void sql(String statement, Object... args) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(statement)) {
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    private static long version(JsonObject m) {
+        return m.get("version").getAsLong();
+    }
+
+    // ------------------------------------------------------------------ tests
+
+    @Test
+    void identityTimeAndMessageHandling() throws Exception {
+        Client anon = connect(null, null);
+        JsonObject identity = anon.next("identity");
+        assertFalse(identity.has("actor"), identity.toString());
+        anon.send("{\"type\":\"time\",\"t0\":123456.7}");
+        JsonObject time = anon.next("time");
+        assertEquals(123456.7, time.get("t0").getAsDouble());
+        assertEquals(clock.millis(), time.get("ts").getAsLong());
+        // unknown types are ignored; broken messages get an error
+        anon.send("{\"type\":\"somethingNew\",\"rid\":9}");
+        anon.send("not json");
+        assertEquals("invalid_message", anon.next("error").get("code").getAsString());
+        anon.error("not_joined", "{\"type\":\"play\"}");
+        anon.error("not_joined", "{\"type\":\"sync\"}");
+        anon.error("invalid_message", "{\"type\":\"join\"}");
+        anon.error("room_not_found", "{\"type\":\"join\",\"room\":\"nope\"}");
+
+        Client user = connect(alice, null);
+        JsonObject who = user.next("identity").getAsJsonObject("actor");
+        assertEquals(aliceId, who.get("id").getAsString());
+        assertEquals("Alice", who.get("name").getAsString());
+        assertFalse(who.get("isGuest").getAsBoolean());
+
+        // a bearer client authenticates with its first message
+        Client bearer = connect(null, null);
+        bearer.next("identity");
+        bearer.error("invalid_token", "{\"type\":\"auth\",\"token\":\"nonsense\"}");
+        bearer.ok("{\"type\":\"auth\",\"token\":\"" + bob + "\"}");
+        assertEquals(bobId, bearer.await("identity").getAsJsonObject("actor").get("id").getAsString());
+
+        // an invalid bearer header never becomes a socket
+        assertThrows(IOException.class, () -> connect("nonsense", null));
+    }
+
+    @Test
+    void joinSendsTheStateThenEveryChangeWithTheNextVersion() throws Exception {
+        String roomId = room("party", "public", "owner");
+        String song1 = item("Song One");
+        String song2 = item("Song Two");
+        Client owner = connect(alice, null);
+        owner.next("identity");
+        JsonObject joined = owner.ok("{\"type\":\"join\",\"room\":\"party\",\"mode\":\"listen\"}");
+        assertEquals(roomId, joined.get("roomId").getAsString());
+        JsonObject state = owner.await("state");
+        long v = version(state);
+        JsonObject room = state.getAsJsonObject("room");
+        assertEquals("party", room.get("slug").getAsString());
+        assertEquals("owner", room.get("controlMode").getAsString());
+        JsonObject you = room.getAsJsonObject("you");
+        assertEquals("owner", you.get("role").getAsString());
+        assertTrue(you.get("canSkip").getAsBoolean());
+        assertTrue(you.get("canRequest").getAsBoolean());
+        assertEquals("idle", state.getAsJsonObject("timeline").get("state").getAsString());
+        assertFalse(state.has("current"));
+        assertEquals(0, state.getAsJsonArray("queue").size());
+        assertEquals(1, state.getAsJsonObject("presence").get("listening").getAsInt());
+        assertTrue(room.getAsJsonObject("settings").has("guests"));
+        // the join itself bumped the version (presence)
+        JsonObject presence = owner.next("presence");
+        assertEquals(v + 1, version(presence));
+        v++;
+
+        // add: ack with the entry, then the full state (it started playing at once)
+        JsonObject added = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song1 + "\"}");
+        String entry1 = added.get("entryId").getAsString();
+        assertEquals("queued", added.get("state").getAsString());
+        state = owner.await("state");
+        assertEquals(v + 1, version(state));
+        v = version(state);
+        JsonObject current = state.getAsJsonObject("current");
+        assertEquals(entry1, current.get("entryId").getAsString());
+        JsonObject item = current.getAsJsonObject("item");
+        assertEquals("Song One", item.get("title").getAsString());
+        assertEquals("/media/" + song1 + "/audio.m4a", item.get("audioUrl").getAsString());
+        assertEquals("/media/" + song1 + "/original", item.get("originalUrl").getAsString());
+        assertEquals(-2.5, item.get("originalGainDb").getAsDouble());
+        assertFalse(item.has("videoUrl"));
+        assertEquals("playing", state.getAsJsonObject("timeline").get("state").getAsString());
+
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song2 + "\"}");
+        state = owner.await("state");
+        assertEquals(v + 1, version(state));
+        v = version(state);
+        JsonArray queue = state.getAsJsonArray("queue");
+        assertEquals(1, queue.size());
+        JsonObject e2 = queue.get(0).getAsJsonObject();
+        assertEquals("ready", e2.get("status").getAsString());
+        assertEquals(aliceId, e2.getAsJsonObject("addedBy").get("id").getAsString());
+        assertEquals(0, e2.get("yourVote").getAsInt());
+
+        // pause and seek: timeline deltas
+        clock.advance(5000);
+        owner.ok("{\"type\":\"pause\"}");
+        JsonObject timeline = owner.await("timeline");
+        assertEquals(v + 1, version(timeline));
+        v++;
+        assertEquals("paused", timeline.getAsJsonObject("timeline").get("state").getAsString());
+        assertEquals(5000, timeline.getAsJsonObject("timeline").get("anchorPositionMs").getAsLong());
+        assertEquals(entry1, timeline.getAsJsonObject("current").get("entryId").getAsString());
+        owner.send("{\"type\":\"seek\",\"positionMs\":30000}"); // no rid: no ack
+        timeline = owner.next("timeline");
+        assertEquals(v + 1, version(timeline));
+        v++;
+        assertEquals(30000, timeline.getAsJsonObject("timeline").get("anchorPositionMs").getAsLong());
+        owner.error("invalid_position", "{\"type\":\"seek\",\"positionMs\":-1}");
+
+        // next: a new current entry (full state); previous goes back
+        owner.ok("{\"type\":\"next\"}");
+        state = owner.await("state");
+        assertEquals(v + 1, version(state));
+        v++;
+        assertEquals(song2, state.getAsJsonObject("current").getAsJsonObject("item").get("id").getAsString());
+        JsonArray history = state.getAsJsonArray("history");
+        assertEquals(1, history.size());
+        assertEquals(entry1, history.get(0).getAsJsonObject().get("entryId").getAsString());
+        assertEquals("skipped", history.get(0).getAsJsonObject().get("state").getAsString());
+
+        // a second socket: the owner sees the presence change; mode switches count too
+        Client listener = connect(bob, null);
+        listener.next("identity");
+        listener.ok("{\"type\":\"join\",\"room\":\"" + roomId + "\",\"mode\":\"remote\"}");
+        JsonObject bobState = listener.await("state");
+        assertFalse(bobState.getAsJsonObject("room").getAsJsonObject("you").has("role"));
+        assertFalse(bobState.getAsJsonObject("room").getAsJsonObject("you").get("canSkip").getAsBoolean());
+        presence = owner.await("presence");
+        assertEquals(v + 1, version(presence));
+        v++;
+        assertEquals(1, presence.getAsJsonObject("presence").get("remote").getAsInt());
+        listener.ok("{\"type\":\"mode\",\"mode\":\"listen\"}");
+        presence = owner.await("presence");
+        assertEquals(v + 1, version(presence));
+        v++;
+        assertEquals(2, presence.getAsJsonObject("presence").get("listening").getAsInt());
+        listener.error("forbidden", "{\"type\":\"next\"}");
+        listener.error("invalid_mode", "{\"type\":\"mode\",\"mode\":\"loud\"}");
+
+        // sync: the full state again, same version
+        owner.ok("{\"type\":\"sync\"}");
+        assertEquals(v, version(owner.await("state")));
+
+        // leave: the others see the presence drop
+        listener.ok("{\"type\":\"leave\"}");
+        presence = owner.await("presence");
+        assertEquals(v + 1, version(presence));
+        assertEquals(1, presence.getAsJsonObject("presence").get("listening").getAsInt());
+        listener.error("not_joined", "{\"type\":\"play\"}");
+        listener.quiet("presence");
+
+        // closing a socket leaves too
+        listener.ok("{\"type\":\"join\",\"room\":\"party\"}");
+        owner.await("presence");
+        listener.close();
+        presence = owner.await("presence");
+        assertEquals(1, presence.getAsJsonObject("presence").get("listening").getAsInt());
+    }
+
+    @Test
+    void anonymousSocketsBecomeGuestsWithATicket() throws Exception {
+        room("votes", "public", "vote");
+        String song = item("Song");
+        String other = item("Other");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"votes\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}");
+        String waiting = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + other + "\"}").get("entryId").getAsString();
+
+        Client anon = connect(null, null);
+        anon.ok("{\"type\":\"join\",\"room\":\"votes\",\"mode\":\"remote\"}");
+        JsonObject state = anon.await("state");
+        JsonObject you = state.getAsJsonObject("room").getAsJsonObject("you");
+        assertFalse(you.get("identified").getAsBoolean());
+        assertEquals(1, state.getAsJsonObject("presence").get("anonymous").getAsInt());
+        anon.error("identity_required", "{\"type\":\"vote\",\"entryId\":\"" + waiting + "\",\"value\":1}");
+        anon.error("identity_required", "{\"type\":\"voteSkip\"}");
+        anon.error("identity_required", "{\"type\":\"queue.add\",\"itemId\":\"" + other + "\"}");
+
+        // POST /api/me/guest gives a ticket; the socket redeems it
+        HttpResponse<String> created = call(null, "POST", "/api/me/guest", null);
+        assertEquals(201, created.statusCode(), created.body());
+        String ticket = json(created).get("identityTicket").getAsString();
+        String guestId = json(created).get("id").getAsString();
+        anon.error("invalid_ticket", "{\"type\":\"identity\",\"ticket\":\"" + "x".repeat(43) + "\"}");
+        anon.ok("{\"type\":\"identity\",\"ticket\":\"" + ticket + "\"}");
+        JsonObject identity = anon.await(m -> m.get("type").getAsString().equals("identity") && m.has("actor"));
+        assertEquals(guestId, identity.getAsJsonObject("actor").get("id").getAsString());
+        assertTrue(identity.getAsJsonObject("actor").get("isGuest").getAsBoolean());
+        state = anon.await("state");
+        you = state.getAsJsonObject("room").getAsJsonObject("you");
+        assertTrue(you.get("identified").getAsBoolean());
+        assertTrue(you.get("canVote").getAsBoolean());
+        assertEquals(1, state.getAsJsonObject("presence").get("remote").getAsInt());
+        assertEquals(0, state.getAsJsonObject("presence").get("anonymous").getAsInt());
+        // a ticket works once
+        anon.error("invalid_ticket", "{\"type\":\"identity\",\"ticket\":\"" + ticket + "\"}");
+
+        // now the guest votes; its own state shows yourVote, the owner's doesn't
+        assertEquals(1, anon.ok("{\"type\":\"vote\",\"entryId\":\"" + waiting + "\",\"value\":1}")
+                .get("votes").getAsInt());
+        JsonObject mine = anon.await(m -> m.get("type").getAsString().equals("state")
+                && !m.getAsJsonArray("queue").isEmpty() && m.getAsJsonArray("queue").get(0).getAsJsonObject().get("votes").getAsInt() == 1);
+        assertEquals(1, mine.getAsJsonArray("queue").get(0).getAsJsonObject().get("yourVote").getAsInt());
+        JsonObject theirs = owner.await(m -> m.get("type").getAsString().equals("state")
+                && !m.getAsJsonArray("queue").isEmpty() && m.getAsJsonArray("queue").get(0).getAsJsonObject().get("votes").getAsInt() == 1);
+        assertEquals(0, theirs.getAsJsonArray("queue").get(0).getAsJsonObject().get("yourVote").getAsInt());
+        anon.error("invalid_vote", "{\"type\":\"vote\",\"entryId\":\"" + waiting + "\",\"value\":2}");
+        JsonObject skip = anon.ok("{\"type\":\"voteSkip\"}");
+        assertEquals(1, skip.get("votes").getAsInt());
+
+        // banning the guest from the room kicks its socket
+        assertEquals(201, call(alice, "PUT", "/api/rooms/votes/guest-bans/" + guestId, null).statusCode());
+        assertEquals("banned_from_room", anon.await("kicked").get("reason").getAsString());
+        anon.error("not_joined", "{\"type\":\"sync\"}");
+        anon.error("banned_from_room", "{\"type\":\"join\",\"room\":\"votes\"}");
+    }
+
+    @Test
+    void requestsGoToTheOwnerAndModeratorsOnly() throws Exception {
+        String roomId = room("requests", "public", "vote");
+        String song = item("Requested");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"requests\"}");
+        Client member = connect(bob, null);
+        member.ok("{\"type\":\"join\",\"room\":\"" + roomId + "\"}");
+        JsonObject added = member.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}");
+        JsonObject req = owner.await("request.new").getAsJsonObject("request");
+        assertEquals(added.get("entryId").getAsString(), req.get("entryId").getAsString());
+        assertEquals("library", req.get("via").getAsString());
+        assertEquals(bobId, req.getAsJsonObject("by").get("id").getAsString());
+        assertEquals("Requested", req.getAsJsonObject("item").get("title").getAsString());
+        member.await("state");
+        member.quiet("request.new"); // not for a plain member
+
+        // the owner's own adds are no requests
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Own") + "\"}");
+        owner.quiet("request.new");
+    }
+
+    @Test
+    void roleChangesAndBansReachTheSockets() throws Exception {
+        String roomId = room("roles", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"roles\"}");
+        Client member = connect(bob, null);
+        member.ok("{\"type\":\"join\",\"room\":\"roles\"}");
+        JsonObject you = member.await("state").getAsJsonObject("room").getAsJsonObject("you");
+        assertFalse(you.has("role"));
+        assertFalse(you.get("canSkip").getAsBoolean());
+
+        // promoted: a new state with the new rights
+        assertEquals(201, call(alice, "PUT", "/api/rooms/roles/members/" + bobId, "{\"role\":\"moderator\"}")
+                .statusCode());
+        you = member.await("state").getAsJsonObject("room").getAsJsonObject("you");
+        assertEquals("moderator", you.get("role").getAsString());
+        assertTrue(you.get("canSkip").getAsBoolean());
+        member.ok("{\"type\":\"play\"}");
+
+        // banned: kicked, and out of the presence
+        assertEquals(200, call(alice, "PUT", "/api/rooms/roles/members/" + bobId, "{\"role\":\"banned\"}")
+                .statusCode());
+        assertEquals("banned_from_room", member.await("kicked").get("reason").getAsString());
+        JsonObject presence = owner.await(m -> m.get("type").getAsString().equals("presence")
+                && m.getAsJsonObject("presence").get("listening").getAsInt() == 1);
+        assertNotNull(presence);
+        member.error("banned_from_room", "{\"type\":\"join\",\"room\":\"" + roomId + "\"}");
+
+        // the room goes private: anonymous sockets lose it
+        Client anon = connect(null, null);
+        anon.ok("{\"type\":\"join\",\"room\":\"roles\"}");
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/roles", "{\"visibility\":\"private\"}").statusCode());
+        assertEquals("room_not_found", anon.await("kicked").get("reason").getAsString());
+
+        // deleted: everyone is kicked
+        assertEquals(204, call(alice, "DELETE", "/api/rooms/roles", null).statusCode());
+        assertEquals("room_deleted", owner.await("kicked").get("reason").getAsString());
+        owner.error("not_joined", "{\"type\":\"play\"}");
+    }
+
+    @Test
+    void aRevokedSessionEndsTheSocket() throws Exception {
+        room("revoke", "public", "owner");
+        Sessions.Created session = sessions.create(bobId, Actor.Via.BEARER, "test", null);
+        Client c = connect(session.token(), null);
+        c.ok("{\"type\":\"join\",\"room\":\"revoke\"}");
+        sessions.revoke(bobId, session.sessionId());
+        c.error("session_ended", "{\"type\":\"play\"}");
+        assertTrue(c.seen.stream().anyMatch(m -> m.get("type").getAsString().equals("kicked")
+                && m.get("reason").getAsString().equals("session_ended")), c.seen.toString());
+    }
+
+    @Test
+    void bigQueuesGetDeltas() throws Exception {
+        String roomId = room("big", "public", "owner");
+        String song = item("Many");
+        int n = RoomBroadcaster.FULL_STATE_MAX + 5;
+        List<String> entries = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            String id = UuidV7.newId();
+            entries.add(id);
+            sql("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id, added_at, state, position)"
+                    + " VALUES (?, ?, ?, ?, ?, 'queued', ?)", id, roomId, song, aliceId, 1000 + i, i + 1);
+        }
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"big\"}");
+        JsonObject state = owner.await("state");
+        assertEquals(n, state.getAsJsonArray("queue").size());
+        long v = version(owner.await("presence"));
+
+        // move the last entry to the front: a queue delta with the new order
+        owner.ok("{\"type\":\"queue.move\",\"entryId\":\"" + entries.get(n - 1) + "\",\"beforeEntryId\":\""
+                + entries.get(0) + "\"}");
+        JsonObject delta = owner.await("queue");
+        assertEquals(v + 1, version(delta));
+        JsonArray order = delta.getAsJsonArray("order");
+        assertEquals(n, order.size());
+        assertEquals(entries.get(n - 1), order.get(0).getAsString());
+        JsonArray upsert = delta.getAsJsonArray("upsert");
+        assertEquals(1, upsert.size());
+        assertEquals(entries.get(n - 1), upsert.get(0).getAsJsonObject().get("entryId").getAsString());
+        assertEquals(0, delta.getAsJsonArray("removed").size());
+
+        // remove one
+        owner.ok("{\"type\":\"queue.remove\",\"entryId\":\"" + entries.get(3) + "\"}");
+        delta = owner.await("queue");
+        assertEquals(v + 2, version(delta));
+        assertEquals(List.of(entries.get(3)), strings(delta.getAsJsonArray("removed")));
+        assertEquals(0, delta.getAsJsonArray("upsert").size());
+        assertEquals(n - 1, delta.getAsJsonArray("order").size());
+    }
+
+    private static List<String> strings(JsonArray a) {
+        List<String> out = new ArrayList<>();
+        for (JsonElement e : a) {
+            out.add(e.getAsString());
+        }
+        return out;
+    }
+}

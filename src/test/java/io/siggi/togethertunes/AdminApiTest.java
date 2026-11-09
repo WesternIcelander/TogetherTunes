@@ -82,6 +82,8 @@ class AdminApiTest {
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         AdminApi adminApi = new AdminApi(database, accounts, new Users(database, passwords, clock), new Roles(database),
                 new Permissions(database, settings), settings);
+        TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
+                new Permissions(database, settings), actors, new io.siggi.togethertunes.auth.IdentityTickets(), clock);
         server = WebServer.start("127.0.0.1", 0,
                 Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                         new MeApi(accounts, new Users(database, passwords, clock), new Permissions(database, settings),
@@ -98,7 +100,7 @@ class AdminApiTest {
                 TestUploads.sharesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, config, settings, new Permissions(database, settings), clock)), dir.toFile());
+                roomsWiring.api(), roomsWiring.socket()), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

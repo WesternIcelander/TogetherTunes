@@ -50,12 +50,17 @@ public final class ControlPolicy {
     }
 
     public static Capabilities capabilities(RoomState s, RoomActor a) {
+        return capabilities(s.controlMode(), a);
+    }
+
+    /** {@link #capabilities(RoomState, RoomActor)} in a room with this control mode (all it depends on). */
+    public static Capabilities capabilities(Rooms.ControlMode mode, RoomActor a) {
         return new Capabilities(a.role() == null ? null : a.role().wire(),
-                a.identified() && a.canVote() && s.controlMode() == Rooms.ControlMode.VOTE,
+                a.identified() && a.canVote() && mode == Rooms.ControlMode.VOTE,
                 a.identified() && (a.moderates() || a.canRequest()),
                 a.identified() && a.canUpload(),
                 a.identified() && a.canYoutube(),
-                controlsPlayback(s, a));
+                controlsPlayback(mode, a));
     }
 
     /**
@@ -189,7 +194,7 @@ public final class ControlPolicy {
      */
     public static void requireControlPlayback(RoomState s, RoomActor a) {
         a.requireIdentity();
-        if (controlsPlayback(s, a)) {
+        if (controlsPlayback(s.controlMode(), a)) {
             return;
         }
         throw HttpError.forbidden(switch (s.controlMode()) {
@@ -213,14 +218,14 @@ public final class ControlPolicy {
         }
     }
 
-    private static boolean controlsPlayback(RoomState s, RoomActor a) {
+    private static boolean controlsPlayback(Rooms.ControlMode mode, RoomActor a) {
         if (!a.identified()) {
             return false;
         }
         if (a.moderates()) {
             return true;
         }
-        return switch (s.controlMode()) {
+        return switch (mode) {
             case OWNER, VOTE -> false;
             case OPEN -> a.canRequest();
         };

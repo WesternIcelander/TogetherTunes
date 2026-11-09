@@ -86,6 +86,8 @@ class MainRouterTest {
         Passwords fastPasswords = new Passwords(new Passwords.Params(64, 1, 1));
         AdminApi admin = new AdminApi(database, accounts, new Users(database, fastPasswords, clock), new Roles(database),
                 new Permissions(database, settings), settings);
+        TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
+                new Permissions(database, settings), actors, new io.siggi.togethertunes.auth.IdentityTickets(), clock);
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors, setup, auth, sessionsApi,
                 new MeApi(accounts, new Users(database, fastPasswords, clock), new Permissions(database, settings),
                         new Guests(database, settings, config.secureCookies()), settings,
@@ -100,7 +102,7 @@ class MainRouterTest {
                 TestUploads.sharesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, config, settings, new Permissions(database, settings), clock)),
+                roomsWiring.api(), roomsWiring.socket()),
                 dir.toFile());
     }
 

@@ -110,6 +110,36 @@ public final class TestUploads {
         }
     }
 
+    /** The rooms API and the room WebSocket on one room registry, as {@code Main} builds them. */
+    public record RoomsWiring(io.siggi.togethertunes.rooms.RoomsApi api, io.siggi.togethertunes.rooms.RoomSocket socket,
+                              io.siggi.togethertunes.rooms.RoomRegistry registry) {
+    }
+
+    /** {@link RoomsWiring}: data in {@code <dir>/data}, {@code tickets} shared with the {@code MeApi}. */
+    public static RoomsWiring rooms(Database db, Path dir, Config config, Settings settings, Permissions permissions,
+                                    io.siggi.togethertunes.auth.ActorResolver actors,
+                                    io.siggi.togethertunes.auth.IdentityTickets tickets, Clock clock) {
+        io.siggi.togethertunes.rooms.Rooms rooms = new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock);
+        io.siggi.togethertunes.rooms.RoomRegistry registry = new io.siggi.togethertunes.rooms.RoomRegistry(db, clock,
+                io.siggi.togethertunes.rooms.PackagerHook.NONE);
+        io.siggi.togethertunes.rooms.RoomGuests guests = new io.siggi.togethertunes.rooms.RoomGuests(db, settings,
+                permissions, rooms, registry);
+        YoutubeImports youtube = youtube(db, config, Tools.from(config), clock);
+        Library library = new Library(db, youtube, clock);
+        AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, guests);
+        io.siggi.togethertunes.rooms.RoomsApi api = new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry,
+                permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
+                new io.siggi.togethertunes.rooms.RoomRequests(db, rooms, library, addMedia,
+                        settings::roomsRequestHistoryDays, clock));
+        io.siggi.togethertunes.rooms.RoomQueue queue = new io.siggi.togethertunes.rooms.RoomQueue(registry, db,
+                uploads(db, dir, config, Tools.from(config), clock), youtube,
+                new io.siggi.togethertunes.library.Playlists(db, youtube, clock), addMedia, new java.util.Random(1));
+        io.siggi.togethertunes.rooms.RoomSocket socket = new io.siggi.togethertunes.rooms.RoomSocket(actors, tickets,
+                new Guests(db, settings, clock, config.secureCookies(), GuestNames.bundled()), settings, rooms, guests,
+                registry, queue, db, clock);
+        return new RoomsWiring(api, socket, registry);
+    }
+
     /** The rooms API as {@code Main} builds it. */
     public static io.siggi.togethertunes.rooms.RoomsApi roomsApi(Database db, Config config, Settings settings,
                                                                  Permissions permissions, Clock clock) {

@@ -59,7 +59,9 @@ import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomRequests;
 import io.siggi.togethertunes.rooms.RoomGuests;
+import io.siggi.togethertunes.rooms.RoomQueue;
 import io.siggi.togethertunes.rooms.RoomRegistry;
+import io.siggi.togethertunes.rooms.RoomSocket;
 import io.siggi.togethertunes.rooms.Rooms;
 import io.siggi.togethertunes.rooms.RoomsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
@@ -70,6 +72,7 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.List;
@@ -177,7 +180,7 @@ public final class Main {
         Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
         Permissions permissions = new Permissions(database, settings);
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
-        // Shared with the WebSocket handler (M3), which redeems the tickets.
+        // Shared with the room WebSocket (RoomSocket), which redeems the tickets.
         IdentityTickets identityTickets = new IdentityTickets();
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
@@ -223,11 +226,15 @@ public final class Main {
                 settings::roomsRequestHistoryDays, Clock.systemUTC());
         RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests,
                 new RequestSearch(database, rooms, roomGuests), roomRequests);
+        RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
+                new SecureRandom());
+        RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
+                roomRegistry, roomQueue, database, Clock.systemUTC());
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
                             sessionsApi, me, admin, activity, uploadsApi, youtubeApi, libraryApi, itemsApi,
-                            playlistsApi, sharesApi, userLibrariesApi, mediaApi, roomsApi),
+                            playlistsApi, sharesApi, userLibrariesApi, mediaApi, roomsApi, roomSocket),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -436,14 +443,14 @@ public final class Main {
      * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
      * media files ({@code /media/{id}/{file}}), {@link RoomsApi} rooms and room roles
-     * ({@code /api/rooms...}). {@code GET /items/{id}} serves the item page
+     * ({@code /api/rooms...}), {@link RoomSocket} the room WebSocket ({@code /ws}). {@code GET /items/{id}} serves the item page
      * ({@link #ITEM_PAGE}) of the web UI.
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
                          UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library,
                          ItemsApi items, PlaylistsApi playlists, SharesApi shares,
-                         UserLibrariesApi userLibraries, MediaApi media, RoomsApi rooms) {
+                         UserLibrariesApi userLibraries, MediaApi media, RoomsApi rooms, RoomSocket roomSocket) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -464,6 +471,7 @@ public final class Main {
         rooms.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
+        roomSocket.register(router, webSockets);
         // The item page by direct link (docs/libraries.md#visibility); the page reads the id from the path.
         router.get("/items/{id}", staticFiles.page(ITEM_PAGE));
         staticFiles.register(router);

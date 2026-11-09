@@ -353,6 +353,8 @@ public final class RoomsApi {
         Rooms.RoleSet set = registry.call(id, tx -> {
             Rooms.RoleSet r = rooms.setRole(user, id, target, role, request.clientIp());
             syncRecord(tx);
+            // The WebSocket layer re-checks that user's sockets (role, capabilities, a ban).
+            tx.event(new RoomEvent.MemberChanged(target));
             return r;
         });
         response.header("Cache-Control", "no-store");
@@ -361,7 +363,17 @@ public final class RoomsApi {
 
     private void removeMember(Request request, Response response) throws Exception {
         Actor.User user = user(request);
-        if (!rooms.removeMember(user, request.pathParam("room"), request.pathParam("userId"), request.clientIp())) {
+        String id = roomId(request);
+        String target = request.pathParam("userId");
+        // Through the room's executor, so the WebSocket layer re-checks that user's sockets.
+        boolean removed = registry.call(id, tx -> {
+            if (!rooms.removeMember(user, id, target, request.clientIp())) {
+                return false;
+            }
+            tx.event(new RoomEvent.MemberChanged(target));
+            return true;
+        });
+        if (!removed) {
             throw new HttpError(404, "member_not_found", "That user has no role in this room");
         }
         response.empty(204);

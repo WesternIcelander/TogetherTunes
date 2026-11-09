@@ -288,7 +288,7 @@ class RoomsApiTest {
                 .getAsInt());
         assertEquals(201, call(alice, "PUT", "/api/rooms/set/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
         expectError(403, "forbidden", call(bob, "PATCH", "/api/rooms/set", "{\"settings\":{\"gapMs\":5}}"));
-        assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
+        assertEquals(3L, (long) registry.call(id, tx -> tx.state().version())); // 3: the role change
     }
 
     @Test
@@ -448,15 +448,23 @@ class RoomsApiTest {
                 tx.state().version())));
         // A PATCH that changes nothing doesn't bump the version.
         assertEquals(200, call(alice, "PATCH", "/api/rooms/on-air", "{\"name\":\"Live!\"}").statusCode());
-        // Neither does a role change that isn't an ownership transfer; a transfer does.
+        // A role change is a change (the sockets of that user are re-checked); a transfer also
+        // updates the room record.
         assertEquals(201, call(alice, "PUT", "/api/rooms/on-air/members/" + bobId, "{\"role\":\"member\"}").statusCode());
         assertEquals(200, call(alice, "PUT", "/api/rooms/on-air/members/" + bobId, "{\"role\":\"owner\"}").statusCode());
-        assertEquals(List.of(bobId, 2L), registry.call(id, tx -> List.of(tx.state().ownerId(), tx.state().version())));
-        assertEquals(2, changes.size());
-        assertEquals(List.of(new RoomEvent.RoomUpdated()), changes.get(1).events());
+        assertEquals(List.of(bobId, 3L), registry.call(id, tx -> List.of(tx.state().ownerId(), tx.state().version())));
+        assertEquals(3, changes.size());
+        assertEquals(List.of(new RoomEvent.MemberChanged(bobId)), changes.get(1).events());
+        assertEquals(List.of(new RoomEvent.RoomUpdated(), new RoomEvent.MemberChanged(bobId)), changes.get(2).events());
         // Refused changes leave it alone.
         expectError(403, "forbidden", call(alice, "PATCH", "/api/rooms/on-air", "{\"name\":\"Mine\"}"));
-        assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
+        expectError(403, "forbidden", call(alice, "PUT", "/api/rooms/on-air/members/" + bobId, "{\"role\":\"member\"}"));
+        assertEquals(3L, (long) registry.call(id, tx -> tx.state().version()));
+        // Removing a member goes through the executor too.
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/on-air/members/" + aliceId, null).statusCode());
+        assertEquals(List.of(new RoomEvent.MemberChanged(aliceId)), changes.get(3).events());
+        expectError(404, "member_not_found", call(bob, "DELETE", "/api/rooms/on-air/members/" + aliceId, null));
+        assertEquals(4L, (long) registry.call(id, tx -> tx.state().version()));
 
         RoomExecutor ex = registry.executor(id);
         assertEquals(204, call(bob, "DELETE", "/api/rooms/on-air", null).statusCode());

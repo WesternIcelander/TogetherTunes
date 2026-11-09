@@ -53,6 +53,7 @@ import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.lang.reflect.RecordComponent;
 import java.net.InetAddress;
+import java.io.IOException;
 import java.net.URI;
 import java.net.UnknownHostException;
 import java.net.http.HttpClient;
@@ -285,7 +286,24 @@ class DtoIpLeakTest {
                     + " log name"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestBanned", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestUnbanned", "executor -> listeners, in memory"
-                    + " only"));
+                    + " only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$MemberChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomSnapshot", "copy of the room state for the WebSocket"
+                    + " broadcaster (ids, entries, votes, counts); messages are built field by field and scanned"
+                    + " in the seeding"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Join", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Resend", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Leave", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Changed", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Closed", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomSocket$Joined", "a socket's room and executor, in memory"
+                    + " only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomViews$ItemRow", "items columns (no IP column read); the"
+                    + " WebSocket item JSON is built from it field by field"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomViews$HistoryRow", "queue_entries columns (no IP column"
+                    + " read); turned into the WebSocket history"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomViews$Lookup", "items and actor refs looked up for one"
+                    + " WebSocket message"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
@@ -366,6 +384,8 @@ class DtoIpLeakTest {
         shares = new Shares(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
+        TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
+                permissions, actors, new IdentityTickets(), clock);
         router = Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
@@ -381,7 +401,7 @@ class DtoIpLeakTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, config, settings, permissions, clock));
+                roomsWiring.api(), roomsWiring.socket());
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -726,7 +746,7 @@ class DtoIpLeakTest {
 
     /** GETs every GET route as {@code who} (whatever the status) and scans the answers. */
     private void sweep(Who who, Fixture f) throws Exception {
-        List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo",
+        List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo", "/ws",
                 "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
@@ -979,12 +999,64 @@ class DtoIpLeakTest {
                 .getAsJsonArray("items").size());
         expect(200, alice, "POST", "/api/rooms/" + roomSlug + "/requests/add-to-library",
                 "{\"requestIds\":[\"" + requestId + "\"]}");
+        // the room socket: alice joins and plays the requested item, an anonymous visitor follows;
+        // every message is scanned like a response body
+        try (SimpleWebsocket owner = roomSocket(alice); SimpleWebsocket visitor = roomSocket(anon.withForwarded(V4_GUEST))) {
+            owner.send(WebSocketMessage.create("{\"type\":\"join\",\"rid\":1,\"room\":\"" + roomSlug + "\"}"));
+            readSocketUntil(owner, "alice socket", "\"rid\":1");
+            visitor.send(WebSocketMessage.create("{\"type\":\"join\",\"rid\":1,\"room\":\"" + roomSlug
+                    + "\",\"mode\":\"remote\"}"));
+            readSocketUntil(visitor, "anonymous socket", "\"type\":\"state\"");
+            owner.send(WebSocketMessage.create("{\"type\":\"queue.add\",\"rid\":2,\"itemId\":\"" + requestedItem
+                    + "\"}"));
+            // the entry (queued or playing) with its item, in both sockets' state
+            readSocketUntil(owner, "alice socket", "\"id\":\"" + requestedItem + "\"");
+            readSocketUntil(visitor, "anonymous socket", "\"id\":\"" + requestedItem + "\"");
+        }
+        succeeded.add("GET /ws"); // the 101s above
         String doomedRoom = json(expect(201, alice, "POST", "/api/rooms", "{\"name\":\"Doomed\"}"))
                 .get("id").getAsString();
         expect(204, alice, "DELETE", "/api/rooms/" + doomedRoom, null);
 
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
                 playlistId, roomSlug, cookieGuestId);
+    }
+
+    /** A room socket ({@code /ws}) opened as {@code who}. */
+    private SimpleWebsocket roomSocket(Who who) throws IOException {
+        WebsocketHeaders headers = new WebsocketHeaders();
+        headers.setHeader("Origin", PUBLIC_BASE_URL);
+        if (who.cookie() != null) {
+            headers.setHeader("Cookie", who.cookie());
+        }
+        if (who.bearer() != null) {
+            headers.setHeader("Authorization", "Bearer " + who.bearer());
+        }
+        if (who.forwardedFor() != null) {
+            headers.setHeader("X-Forwarded-For", who.forwardedFor());
+        }
+        return new WebSocketConnector().setMaxPayloadLength(1 << 22)
+                .connect(URI.create("ws://127.0.0.1:" + server.port() + "/ws"), headers);
+    }
+
+    /** Reads (and scans) socket messages until one contains {@code marker}. */
+    private void readSocketUntil(SimpleWebsocket ws, String where, String marker) throws IOException {
+        for (int i = 0; i < 50; i++) {
+            WebSocketMessage m = ws.read();
+            assertNotNull(m, where + " closed");
+            if (m.isControlMessage()) {
+                continue;
+            }
+            String text = m.getText();
+            if (!ipsIn(text).isEmpty()) {
+                leaks.add(where + " message: " + ipsIn(text));
+            }
+            assertFalse(text.contains("\"type\":\"error\""), text);
+            if (text.contains(marker)) {
+                return;
+            }
+        }
+        throw new AssertionError(where + ": no message with " + marker);
     }
 
     /** A ready video item added by {@code userId}, in nobody's library. */

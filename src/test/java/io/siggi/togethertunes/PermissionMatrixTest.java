@@ -313,6 +313,7 @@ class PermissionMatrixTest {
 
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
+            row("GET /ws", c -> Call.socket("/ws"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
             row("POST /test/ws-echo/report", c -> Call.post("/test/ws-echo/report", "{\"ok\":true}"), 204, 204, 204, 204),
 
@@ -355,6 +356,8 @@ class PermissionMatrixTest {
         Guests guests = new Guests(database, settings, config.secureCookies());
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 100_000, 1, clock),
                 new RateLimiter("register", 100_000, 1, clock), new RateLimiter("login", 100_000, 1, clock));
+        TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
+                permissions, actors, new IdentityTickets(), clock);
         router = Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
@@ -370,7 +373,7 @@ class PermissionMatrixTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, config, settings, permissions, clock));
+                roomsWiring.api(), roomsWiring.socket());
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -738,8 +741,14 @@ class PermissionMatrixTest {
             }
             try (SimpleWebsocket ws = new WebSocketConnector()
                     .connect(URI.create("ws://127.0.0.1:" + server.port() + path + "?tag=matrix"), headers)) {
-                ws.send(WebSocketMessage.create("ping " + n));
-                assertEquals("ping " + n, ws.read().getText());
+                if (path.equals("/ws/echo")) {
+                    ws.send(WebSocketMessage.create("ping " + n));
+                    assertEquals("ping " + n, ws.read().getText());
+                } else {
+                    // the room socket starts by saying who it thinks the caller is
+                    String first = ws.read().getText();
+                    assertTrue(first.startsWith("{\"type\":\"identity\""), first);
+                }
                 return new Result(WS_UPGRADED, "");
             } catch (Exception e) {
                 return new Result(-1, String.valueOf(e));

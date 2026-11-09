@@ -85,4 +85,12 @@ public interface RoomEvent {
     /** A guest's ban from the room was lifted. */
     record GuestUnbanned(String guestId) implements RoomEvent {
     }
+
+    /**
+     * A user's role in the room was set or removed (a member added, promoted, demoted, banned,
+     * unbanned or gone). The WebSocket layer re-checks that user's sockets: new capabilities, or
+     * {@code kicked} if it may no longer see the room.
+     */
+    record MemberChanged(String userId) implements RoomEvent {
+    }
 }

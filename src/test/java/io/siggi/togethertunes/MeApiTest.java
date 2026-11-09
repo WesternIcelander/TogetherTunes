@@ -85,6 +85,8 @@ class MeApiTest {
         Permissions permissions = new Permissions(database, settings);
         guests = new Guests(database, settings, clock, config.secureCookies(), new Names());
         tickets = new IdentityTickets(clock);
+        TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
+                permissions, actors, tickets, clock);
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
@@ -100,7 +102,7 @@ class MeApiTest {
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
-                TestUploads.roomsApi(database, config, settings, permissions, clock)), dir.toFile());
+                roomsWiring.api(), roomsWiring.socket()), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
                 "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
