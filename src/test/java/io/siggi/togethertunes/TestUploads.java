@@ -9,6 +9,8 @@ import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
+import io.siggi.togethertunes.library.Items;
+import io.siggi.togethertunes.library.ItemsApi;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.Uploads;
@@ -61,6 +63,15 @@ public final class TestUploads {
     public static LibraryApi libraryApi(Database db, Config config, Permissions permissions, Clock clock) {
         return new LibraryApi(new Library(db, youtube(db, config, Tools.from(config), clock), clock),
                 policy(permissions, new Settings(db, config)));
+    }
+
+    /** The items API with data in {@code <dir>/data}. */
+    public static ItemsApi itemsApi(Database db, Path dir, Permissions permissions, Clock clock) {
+        try {
+            return new ItemsApi(new Items(db, DataDir.create(dir.resolve("data")), clock), permissions);
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     /** The add-media policy as {@code Main} builds it: no rooms yet. */

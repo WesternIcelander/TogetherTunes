@@ -383,8 +383,17 @@ class IngestStepsTest {
         Path staging = IngestPipeline.stagingDir(data, UuidV7.newId());
         Files.createDirectories(staging);
         Files.writeString(staging.resolve("source.mp3"), "upload");
+        // what a purge moved aside and didn't get to delete
+        Path purgedMedia = IngestPipeline.moveAside(Files.createDirectories(data.media().resolve(UuidV7.newId())));
+        Files.writeString(purgedMedia.resolve("audio.m4a"), "purged");
+        Path purgedStaging = IngestPipeline.moveAside(Files.createDirectories(
+                IngestPipeline.stagingDir(data, UuidV7.newId())));
+        assertTrue(purgedStaging.getFileName().toString().startsWith(IngestPipeline.PURGE_PREFIX));
+        assertNull(IngestPipeline.moveAside(data.media().resolve("missing")));
 
-        assertEquals(4, IngestPipeline.recoverDirectories(data));
+        assertEquals(6, IngestPipeline.recoverDirectories(data));
+        assertFalse(Files.exists(purgedMedia));
+        assertFalse(Files.exists(purgedStaging));
         try (var s = Files.list(data.media())) {
             assertEquals(List.of(kept, lost), s.map(p -> p.getFileName().toString()).sorted().toList());
         }

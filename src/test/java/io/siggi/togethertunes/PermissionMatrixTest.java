@@ -229,6 +229,16 @@ class PermissionMatrixTest {
             row("DELETE /api/library/{itemId}", c -> Call.delete("/api/library/" + c.libraryItemId()),
                     401, 401, 204, 204),
 
+            // Items by id: anyone reads an item page and its job by direct link; editing needs the
+            // adder (with the item in their library) or library.editAny (the matrix item was added
+            // by the setup admin, so only the admin column may edit it); purging needs library.purge.
+            // ItemsContract covers the adder rule.
+            row("GET /api/items/{id}", c -> Call.get("/api/items/" + c.itemId()), 200, 200, 200, 200),
+            row("PATCH /api/items/{id}", c -> Call.patch("/api/items/" + c.itemId(), "{\"title\":\"Renamed\"}"),
+                    401, 401, 403, 200),
+            row("DELETE /api/items/{id}", c -> Call.delete("/api/items/" + c.itemId()), 401, 401, 403, 204),
+            row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -279,7 +289,8 @@ class PermissionMatrixTest {
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
-                TestUploads.libraryApi(database, config, permissions, clock));
+                TestUploads.libraryApi(database, config, permissions, clock),
+                TestUploads.itemsApi(database, dir, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -473,6 +484,26 @@ class PermissionMatrixTest {
             } catch (java.sql.SQLException e) {
                 throw new RuntimeException(e);
             }
+        }
+
+        /** A new item with a finished ingest job. */
+        String jobItemId() {
+            String id = itemId();
+            try {
+                database.write(c -> {
+                    try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO ingest_jobs (id, item_id, kind,"
+                            + " state, attempts, progress, created_at, started_at, finished_at, log)"
+                            + " VALUES (?, ?, 'upload', 'done', 1, 1, 1, 1, 2, 'log')")) {
+                        ps.setString(1, UuidV7.newId());
+                        ps.setString(2, id);
+                        assertEquals(1, ps.executeUpdate());
+                    }
+                    return null;
+                });
+            } catch (java.sql.SQLException e) {
+                throw new RuntimeException(e);
+            }
+            return id;
         }
 
         /** A new item in this caller's library (a user or admin), or in nobody's. */

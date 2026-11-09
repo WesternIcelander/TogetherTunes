@@ -44,6 +44,7 @@ import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
@@ -121,6 +122,9 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Users$RoleRef",
             "io.siggi.togethertunes.auth.Users$UserView",
             "io.siggi.togethertunes.http.EchoEndpoint$Closed",
+            "io.siggi.togethertunes.library.Items$ItemPage",
+            "io.siggi.togethertunes.library.Items$JobView",
+            "io.siggi.togethertunes.library.Items$You",
             "io.siggi.togethertunes.library.Library$Entry",
             "io.siggi.togethertunes.library.Library$ItemView",
             "io.siggi.togethertunes.library.Library$Page",
@@ -181,6 +185,10 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe", "ffprobe result of a source file, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe$Stream", "ffprobe stream of a source file, server-side only"),
             Map.entry("io.siggi.togethertunes.library.UploadMetadata", "title/artist/album derived at upload, written to the item row"),
+            Map.entry("io.siggi.togethertunes.library.Items$Edit", "PATCH body, parsed"),
+            Map.entry("io.siggi.togethertunes.library.Items$Rights", "the caller's permissions, computed per request"),
+            Map.entry("io.siggi.togethertunes.library.Items$Row", "items row; ItemPage is what is sent"),
+            Map.entry("io.siggi.togethertunes.library.Items$Purged", "purge result; the API answers 204"),
             Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
@@ -220,6 +228,7 @@ class DtoIpLeakTest {
     private Guests guests;
     private Permissions permissions;
     private Library library;
+    private Items items;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -258,6 +267,7 @@ class DtoIpLeakTest {
         permissions = new Permissions(database, settings);
         guests = new Guests(database, settings, config.secureCookies());
         library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
+        items = new Items(database, DataDir.create(dir.resolve("data")), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
         router = Main.router(config, staticFiles, actors,
@@ -269,7 +279,8 @@ class DtoIpLeakTest {
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
-                TestUploads.libraryApi(database, config, permissions, clock));
+                TestUploads.libraryApi(database, config, permissions, clock),
+                TestUploads.itemsApi(database, dir, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -437,6 +448,15 @@ class DtoIpLeakTest {
         }
         produced.add(new AuditEntries(database).list(null, null, null, 200));
         produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
+        for (Library.Entry e : library.list(aliceId, null, null, null, Library.LIST_MAX).items()) {
+            Actor.User alice = new Actor.User(aliceId, "s", Actor.Via.BEARER);
+            produced.add(items.get(alice, e.item().id(), new Items.Rights(true, true)));
+            try {
+                produced.add(items.job(alice, e.item().id(), new Items.Rights(true, true)));
+            } catch (io.siggi.togethertunes.http.HttpError noJob) {
+                assertEquals("job_not_found", noJob.code());
+            }
+        }
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -567,7 +587,7 @@ class DtoIpLeakTest {
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
-                "/api/library?q=video&kind=video");
+                "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -579,7 +599,7 @@ class DtoIpLeakTest {
     }
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
-                           String aliceId, String roleId, String uploadId) {
+                           String aliceId, String roleId, String uploadId, String itemId) {
     }
 
     /**
@@ -720,7 +740,25 @@ class DtoIpLeakTest {
         });
         assertTrue(json(expect(200, alice, "GET", "/api/library", null)).getAsJsonArray("items").size() >= 3);
 
-        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId);
+        // items by id: alice's upload (deduplicated onto the admin's item, so it has no job of its
+        // own: give it one), read, its job, edited by the admin; another item purged
+        String itemId = json(expect(200, alice, "GET", "/api/uploads/" + uploadId, null)).get("itemId").getAsString();
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO ingest_jobs (id, item_id, kind,"
+                    + " state, attempts, progress, created_at, started_at, finished_at, log)"
+                    + " VALUES (?, ?, 'upload', 'done', 1, 1, 1, 1, 2, 'done')")) {
+                ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        expect(200, alice, "GET", "/api/items/" + itemId, null);
+        expect(200, alice, "GET", "/api/items/" + itemId + "/job", null);
+        expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
+        expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
+
+        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId);
     }
 
     /** A ready video item added by {@code userId}, in nobody's library. */

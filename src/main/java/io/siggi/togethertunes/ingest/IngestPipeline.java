@@ -2,6 +2,7 @@ package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.SampleIndex;
@@ -90,6 +91,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     static final String WORK_PREFIX = ".ingest-";
     static final String OLD_PREFIX = ".old-";
+    /**
+     * Prefix of a directory moved aside to be deleted ({@link #moveAside}): a purged item's
+     * {@code media/<itemId>} or staging directory. Leftovers are deleted by {@link #recoverDirectories}.
+     */
+    public static final String PURGE_PREFIX = ".purge-";
     /** Longest edge of {@code cover.jpg}. */
     static final int COVER_MAX = 1200;
 
@@ -709,7 +715,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     /**
      * Cleans up after jobs a crash or kill interrupted. Call at startup, before the queue starts:
-     * deletes half-built {@code media/.ingest-*} directories and {@code tmp/jobs/*}; an
+     * deletes half-built {@code media/.ingest-*} directories, {@code tmp/jobs/*} and the
+     * {@code .purge-*} directories a purge left in {@code media/} and {@code tmp/ingest/}; an
      * {@code media/.old-<itemId>-<jobId>} directory is put back if its item directory is missing
      * (the crash came between the two renames of a publish) and deleted otherwise.
      *
@@ -721,7 +728,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
             try (DirectoryStream<Path> dirs = Files.newDirectoryStream(dataDir.media(), ".*")) {
                 for (Path d : dirs) {
                     String n = d.getFileName().toString();
-                    if (n.startsWith(WORK_PREFIX)) {
+                    if (n.startsWith(WORK_PREFIX) || n.startsWith(PURGE_PREFIX)) {
                         deleteTree(d);
                         count++;
                     } else if (n.startsWith(OLD_PREFIX)) {
@@ -736,6 +743,15 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         }
                         count++;
                     }
+                }
+            }
+        }
+        Path staging = dataDir.tmp().resolve("ingest");
+        if (Files.isDirectory(staging)) {
+            try (DirectoryStream<Path> dirs = Files.newDirectoryStream(staging, PURGE_PREFIX + "*")) {
+                for (Path d : dirs) {
+                    deleteTree(d);
+                    count++;
                 }
             }
         }
@@ -760,8 +776,29 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return rest.substring(0, 36);
     }
 
+    /**
+     * Renames {@code dir} to {@code <parent>/.purge-<name>-<random>} (same file system, so the
+     * rename is atomic), to be deleted with {@link #deleteTree} later. Files already open keep
+     * working.
+     *
+     * @return the new path, or null if {@code dir} doesn't exist
+     */
+    public static Path moveAside(Path dir) throws IOException {
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) {
+            return null;
+        }
+        Path target = dir.resolveSibling(PURGE_PREFIX + dir.getFileName() + "-" + UuidV7.newId());
+        rename(dir, target);
+        return target;
+    }
+
+    /** Renames a directory {@link #moveAside moved aside} back to where it was. */
+    public static void moveBack(Path aside, Path dir) throws IOException {
+        rename(aside, dir);
+    }
+
     /** Deletes a file or directory tree (symlinks themselves, not their targets); no-op if missing. */
-    static void deleteTree(Path path) throws IOException {
+    public static void deleteTree(Path path) throws IOException {
         if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
