@@ -97,7 +97,8 @@ class MeApiTest {
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
-                TestUploads.sharesApi(database, config, permissions, clock)), dir.toFile());
+                TestUploads.sharesApi(database, config, permissions, clock),
+                TestUploads.userLibrariesApi(database, config, permissions, clock)), dir.toFile());
 
         HttpResponse<String> created = send(server, "POST", "/api/setup",
                 "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);

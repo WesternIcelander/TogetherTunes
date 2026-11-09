@@ -48,6 +48,7 @@ import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.Shares;
+import io.siggi.togethertunes.library.UserLibraries;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.lang.reflect.RecordComponent;
@@ -136,6 +137,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Playlists$PlaylistPage",
             "io.siggi.togethertunes.library.Shares$Page",
             "io.siggi.togethertunes.library.Shares$Share",
+            "io.siggi.togethertunes.library.UserLibraries$UserPage",
+            "io.siggi.togethertunes.library.UserLibraries$UserSummary",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -297,7 +300,8 @@ class DtoIpLeakTest {
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
-                TestUploads.sharesApi(database, config, permissions, clock));
+                TestUploads.sharesApi(database, config, permissions, clock),
+                TestUploads.userLibrariesApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -482,6 +486,13 @@ class DtoIpLeakTest {
         produced.add(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX));
         produced.add(shares.list(adminId, Shares.Direction.OUT, null, Shares.LIST_MAX));
         assertFalse(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX).items().isEmpty());
+        UserLibraries userLibraries = new UserLibraries(database, library, playlists);
+        UserLibraries.UserPage browse = userLibraries.users(null, null, UserLibraries.LIST_MAX);
+        produced.add(browse);
+        for (UserLibraries.UserSummary u : browse.items()) {
+            produced.add(userLibraries.library(u.id(), null, null, null, Library.LIST_MAX));
+            produced.add(userLibraries.playlists(u.id(), null, Playlists.LIST_MAX));
+        }
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -613,7 +624,10 @@ class DtoIpLeakTest {
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
-                "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out");
+                "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out",
+                "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
+                "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
+                "/api/users/" + f.aliceId + "/playlists/" + f.playlistId);
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -798,6 +812,12 @@ class DtoIpLeakTest {
         expect(204, alice, "DELETE", "/api/playlists/" + doomed, null);
         expect(200, alice, "GET", "/api/playlists", null);
         expect(200, alice, "GET", "/api/playlists/" + playlistId, null);
+
+        // the admin (library.viewAll) browses users, alice's library and her playlists
+        expect(200, admin, "GET", "/api/users?q=ali", null);
+        expect(200, admin, "GET", "/api/users/" + aliceId + "/library", null);
+        expect(200, admin, "GET", "/api/users/" + aliceId + "/playlists", null);
+        expect(200, admin, "GET", "/api/users/" + aliceId + "/playlists/" + playlistId, null);
 
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
                 playlistId);

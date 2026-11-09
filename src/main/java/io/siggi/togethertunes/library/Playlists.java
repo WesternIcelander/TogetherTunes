@@ -26,7 +26,7 @@ import java.util.Objects;
  *
  * <p>Every call names the owner: a playlist of somebody else is reported as missing
  * ({@code 404 playlist_not_found}), so its existence doesn't leak. ({@code library.viewAll}
- * read access is a separate step.) Entry changes run in one write transaction that first locks
+ * read access goes through {@link UserLibraries}, which names the owner the same way.) Entry changes run in one write transaction that first locks
  * the playlist row ({@code FOR UPDATE} on PostgreSQL; SQLite serialises writers anyway), so
  * concurrent changes to one playlist can't compute positions from a stale view.
  *

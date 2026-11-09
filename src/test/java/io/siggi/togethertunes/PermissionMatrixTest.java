@@ -261,6 +261,14 @@ class PermissionMatrixTest {
                     + "\",\"toUsername\":\"" + c.targetUsername() + "\"}"), 401, 401, 201, 201),
             row("POST /api/shares/seen", c -> Call.post("/api/shares/seen", "{\"all\":true}"), 401, 401, 200, 200),
 
+            // Other users' libraries and playlists, read-only: library.viewAll (admins only by
+            // default). UserLibrariesContract covers the contents.
+            admin("GET /api/users", c -> Call.get("/api/users?q=target&limit=10"), 200),
+            admin("GET /api/users/{id}/library", c -> Call.get("/api/users/" + c.targetUserId() + "/library?q=x"), 200),
+            admin("GET /api/users/{id}/playlists", c -> Call.get("/api/users/" + c.targetUserId() + "/playlists"),
+                    200),
+            admin("GET /api/users/{id}/playlists/{playlistId}", c -> Call.get(c.ownPlaylistPathForViewAll()), 200),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -314,7 +322,8 @@ class PermissionMatrixTest {
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
-                TestUploads.sharesApi(database, config, permissions, clock));
+                TestUploads.sharesApi(database, config, permissions, clock),
+                TestUploads.userLibrariesApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -559,6 +568,25 @@ class PermissionMatrixTest {
                 HttpResponse<String> r = send(cookie, ip, Call.post("/api/playlists", "{\"name\":\"List " + n + "\"}"));
                 assertEquals(201, r.statusCode(), r.body());
                 return json(r.body()).get("id").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * {@code /api/users/{id}/playlists/{playlistId}} for a new playlist of this caller (a user
+         * or admin), or made-up ids for other callers.
+         */
+        String ownPlaylistPathForViewAll() {
+            String playlistId = playlistId();
+            try {
+                String userId = "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5e";
+                if (cookie != null && cookie.startsWith("sid=")) {
+                    HttpResponse<String> r = send(cookie, ip, Call.get("/api/me"));
+                    assertEquals(200, r.statusCode(), r.body());
+                    userId = json(r.body()).get("id").getAsString();
+                }
+                return "/api/users/" + userId + "/playlists/" + playlistId;
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }
