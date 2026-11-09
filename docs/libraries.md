@@ -85,7 +85,9 @@ An item is **referenced** if any of these is true:
 3. deletes `media/<itemId>/` and any overlay caches for it;
 4. sets `status='purged'` and `purged_at`, keeping the row and its metadata.
 
-With `retention.unreferencedDays = 0`, nothing is ever deleted automatically.
+With `retention.unreferencedDays = 0`, nothing is ever deleted automatically. The setting is read at each sweep; the first sweep runs a minute after start.
+
+Implementation (`retention/RetentionSweeper`): steps 3 and 4 are one manual-style purge (`Items.purge`), so the order is the purge's: mark and move the files aside in the transaction, delete them after the commit (a crash never leaves a `ready` item without files). The re-check runs the selection predicate again for the item after its row is locked (`FOR UPDATE` on PostgreSQL), and an item that gained a reference or was touched since the selection is skipped. Queued ingest jobs don't protect an item (they are cancelled, as in any purge); a running one does. Each purge writes an `item.purged` audit row without an actor, with `reason: "retention"`. Accepted race: an add that read the item as `ready` just before the sweep may commit its entry just after it, which then shows "media expired".
 
 **Purged items:**
 
