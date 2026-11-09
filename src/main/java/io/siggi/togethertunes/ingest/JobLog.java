@@ -45,6 +45,32 @@ public final class JobLog {
         this.listener = listener;
     }
 
+    /**
+     * A log with the default size that continues {@code previousTail} (a {@link #tail()} read
+     * back from the database, e.g. when a job is started again after a restart). A leading
+     * {@link #TRUNCATED_MARKER} line is recognised, not kept as a line. {@code null} or empty
+     * gives an empty log.
+     */
+    public static JobLog resume(String previousTail) {
+        JobLog log = new JobLog();
+        if (previousTail == null || previousTail.isEmpty()) {
+            return log;
+        }
+        String text = previousTail.endsWith("\n") ? previousTail.substring(0, previousTail.length() - 1) : previousTail;
+        String[] parts = text.split("\n", -1);
+        int start = 0;
+        if (parts[0].equals(TRUNCATED_MARKER)) {
+            start = 1;
+            synchronized (log) {
+                log.dropped = true;
+            }
+        }
+        for (int i = start; i < parts.length; i++) {
+            log.appendOne(parts[i]);
+        }
+        return log;
+    }
+
     /** Appends one line (a {@code null} line is logged as {@code "null"}). Embedded line breaks split it. */
     public void append(String line) {
         String s = String.valueOf(line);

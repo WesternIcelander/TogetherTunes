@@ -29,6 +29,9 @@ import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.FillerCards;
+import io.siggi.togethertunes.ingest.IngestFailure;
+import io.siggi.togethertunes.ingest.IngestJobs;
+import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
@@ -113,12 +116,13 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(ingest queue): ingest and the overlay encoder verify every encode against this.
+        // TODO(job steps): ingest and the overlay encoder verify every encode against this.
         ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
         // TODO(packager, M4): the packager plays these when a room is paused, idle or loading.
         FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
         // TODO(packager, M4): repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
+        IngestQueue ingest = startIngest(config, database, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -156,6 +160,7 @@ public final class Main {
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
+            ingest.close();
             staticFiles.close();
             database.close();
             System.exit(EXIT_STARTUP);
@@ -163,11 +168,33 @@ public final class Main {
         }
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            // Before the database: running jobs are put back in the queue on the way out.
+            ingest.close();
             staticFiles.close();
             database.close();
         }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
         web.join();
+    }
+
+    /**
+     * Starts the ingest worker pool ({@code ingest.workers}) on the DB-backed queue; jobs left
+     * {@code running} by a crash are queued again first. A database error here is reported and
+     * ingest stays off until the next start (the server still runs).
+     */
+    static IngestQueue startIngest(Config config, Database database, PrintStream err) {
+        // TODO(job steps): the real pipeline (probe, download, loudnorm, encode, cards, index,
+        // verify, publish) replaces this placeholder, which fails every job it is given.
+        IngestQueue.Handler handler = job -> {
+            throw new IngestFailure("The ingest pipeline isn't implemented yet");
+        };
+        IngestQueue queue = new IngestQueue(new IngestJobs(database), config.ingestWorkers(), handler);
+        try {
+            queue.start();
+        } catch (SQLException | RuntimeException e) {
+            err.println("WARNING: could not start the ingest queue: " + e.getMessage());
+        }
+        return queue;
     }
 
     /**

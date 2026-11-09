@@ -48,4 +48,25 @@ class JobLogTest {
     void rejectsTinyLimit() {
         assertThrows(IllegalArgumentException.class, () -> new JobLog(10, null));
     }
+
+    @Test
+    void resumesAStoredTail() {
+        assertEquals("", JobLog.resume(null).tail());
+        assertEquals("", JobLog.resume("").tail());
+        JobLog plain = JobLog.resume("a\nb\n");
+        plain.append("c");
+        assertEquals("a\nb\nc\n", plain.tail());
+        assertFalse(plain.truncated());
+
+        JobLog cut = new JobLog();
+        for (int i = 0; i < 20_000; i++) {
+            cut.append("line " + i);
+        }
+        JobLog resumed = JobLog.resume(cut.tail());
+        assertTrue(resumed.truncated());
+        assertEquals(cut.tail(), resumed.tail(), "the marker isn't doubled");
+        resumed.append("more");
+        assertTrue(resumed.tail().startsWith(JobLog.TRUNCATED_MARKER + "\n"));
+        assertTrue(resumed.tail().endsWith("line 19999\nmore\n"));
+    }
 }
