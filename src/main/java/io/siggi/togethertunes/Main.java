@@ -55,7 +55,9 @@ import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
+import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.PlayingItems;
+import io.siggi.togethertunes.rooms.RoomRegistry;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.rooms.Rooms;
 import io.siggi.togethertunes.rooms.RoomsApi;
@@ -204,7 +206,10 @@ public final class Main {
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
         // Rooms come in M3: until then no item is current or next anywhere.
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
-        RoomsApi roomsApi = new RoomsApi(new Rooms(database, permissions, Clock.systemUTC()), permissions);
+        // The packager comes in M4: until then room changes go nowhere but the room's listeners.
+        RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), PackagerHook.NONE);
+        RoomsApi roomsApi = new RoomsApi(new Rooms(database, permissions, Clock.systemUTC()), roomRegistry,
+                permissions);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
@@ -224,6 +229,8 @@ public final class Main {
         retention.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            // After the web server (no new requests), before the database (rooms persist on the way out).
+            roomRegistry.close();
             retention.close();
             // Before the database: running jobs are put back in the queue on the way out.
             ingest.close();

@@ -380,6 +380,25 @@ public final class Rooms {
         return db.read(c -> access(c, actor, idOrSlug, false, moderateAny));
     }
 
+    /**
+     * The id of the room with this id or slug, or {@code null} if there is none. No visibility
+     * check: use it only to pick the room's executor, then check access there.
+     */
+    public String idOf(String idOrSlug) throws SQLException {
+        return db.read(c -> {
+            Room r = find(c, idOrSlug, false);
+            return r == null ? null : r.id();
+        });
+    }
+
+    /** The {@code rooms} row with this id, or {@code null}. No visibility check. */
+    public Room record(String roomId) throws SQLException {
+        if (roomId == null || !UUID_SHAPE.matcher(roomId).matches()) {
+            return null;
+        }
+        return db.read(c -> find(c, roomId, false));
+    }
+
     private static You you(Room room, Role role, boolean moderateAny) {
         return new You(role == null ? null : role.wire(), role == Role.OWNER, role == Role.OWNER || moderateAny,
                 role != null && role.moderates());

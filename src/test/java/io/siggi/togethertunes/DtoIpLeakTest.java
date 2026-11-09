@@ -224,7 +224,12 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Edit", "PATCH body, parsed"),
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Room", "rooms row; RoomView is what is sent"),
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Access", "a room and the caller's role, computed per request"),
-            Map.entry("io.siggi.togethertunes.rooms.Rooms$RoleSet", "setRole's result; the API sends its member"));
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$RoleSet", "setRole's result; the API sends its member"),
+            Map.entry("io.siggi.togethertunes.rooms.Timeline", "in-memory room timeline; the WebSocket layer builds the"
+                    + " messages"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomChange", "executor -> listeners/packager, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RoomUpdated", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =

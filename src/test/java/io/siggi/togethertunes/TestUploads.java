@@ -113,7 +113,8 @@ public final class TestUploads {
     /** The rooms API as {@code Main} builds it. */
     public static io.siggi.togethertunes.rooms.RoomsApi roomsApi(Database db, Permissions permissions, Clock clock) {
         return new io.siggi.togethertunes.rooms.RoomsApi(new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock),
-                permissions);
+                new io.siggi.togethertunes.rooms.RoomRegistry(db, clock,
+                        io.siggi.togethertunes.rooms.PackagerHook.NONE), permissions);
     }
 
     /** The add-media policy as {@code Main} builds it: no rooms yet. */

@@ -55,11 +55,40 @@ public final class RoomsApi {
     private static final Set<String> ROLE_FIELDS = Set.of("role");
 
     private final Rooms rooms;
+    private final RoomRegistry registry;
     private final Permissions permissions;
 
-    public RoomsApi(Rooms rooms, Permissions permissions) {
+    public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions) {
         this.rooms = Objects.requireNonNull(rooms);
+        this.registry = Objects.requireNonNull(registry);
         this.permissions = Objects.requireNonNull(permissions);
+    }
+
+    /** The id of the room in the path ({@code {room}}: id or slug), else {@code 404 room_not_found}. */
+    private String roomId(Request request) throws Exception {
+        String id = rooms.idOf(request.pathParam("room"));
+        if (id == null) {
+            throw new HttpError(404, "room_not_found", "No such room");
+        }
+        return id;
+    }
+
+    /**
+     * Takes the room record over into the live state after {@link Rooms} changed it, as a
+     * {@link RoomEvent.RoomUpdated} (only if something the state holds changed).
+     */
+    private void syncRecord(RoomTx tx) throws Exception {
+        Rooms.Room r = rooms.record(tx.roomId());
+        if (r == null) {
+            return;
+        }
+        RoomState s = tx.state();
+        if (r.slug().equals(s.slug()) && r.name().equals(s.name()) && r.ownerId().equals(s.ownerId())
+                && r.visibility() == s.visibility() && r.controlMode() == s.controlMode()) {
+            return;
+        }
+        s.record(r.slug(), r.name(), r.ownerId(), r.visibility(), r.controlMode());
+        tx.event(new RoomEvent.RoomUpdated());
     }
 
     public void register(Router router) {
@@ -148,15 +177,27 @@ public final class RoomsApi {
                 throw new HttpError(400, "invalid_slug", "The slug can't be empty");
             }
         }
-        Rooms.RoomView room = rooms.update(user, request.pathParam("room"), new Rooms.Edit(name, slug,
-                visibility(body.get("visibility")), controlMode(body.get("controlMode"))), request.clientIp());
+        Rooms.Edit edit = new Rooms.Edit(name, slug, visibility(body.get("visibility")),
+                controlMode(body.get("controlMode")));
+        String id = roomId(request);
+        // Through the room's executor, so the live state changes in step with the row.
+        Rooms.RoomView room = registry.call(id, tx -> {
+            Rooms.RoomView v = rooms.update(user, id, edit, request.clientIp());
+            syncRecord(tx);
+            return v;
+        });
         response.header("Cache-Control", "no-store");
         response.json(room);
     }
 
     private void delete(Request request, Response response) throws Exception {
         Actor.User user = user(request);
-        rooms.delete(user, request.pathParam("room"), request.clientIp());
+        String id = roomId(request);
+        registry.call(id, tx -> {
+            rooms.delete(user, id, request.clientIp());
+            tx.closeRoom();
+            return null;
+        });
         response.empty(204);
     }
 
@@ -176,8 +217,14 @@ public final class RoomsApi {
         if (role == null) {
             throw new HttpError(400, "invalid_role", "role must be owner, moderator, member or banned");
         }
-        Rooms.RoleSet set = rooms.setRole(user, request.pathParam("room"), request.pathParam("userId"), role,
-                request.clientIp());
+        String id = roomId(request);
+        String target = request.pathParam("userId");
+        // Through the room's executor: an ownership transfer changes the live state's owner.
+        Rooms.RoleSet set = registry.call(id, tx -> {
+            Rooms.RoleSet r = rooms.setRole(user, id, target, role, request.clientIp());
+            syncRecord(tx);
+            return r;
+        });
         response.header("Cache-Control", "no-store");
         response.json(set.created() ? 201 : 200, set.member());
     }

@@ -2,12 +2,12 @@ package io.siggi.togethertunes.rooms;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.siggi.togethertunes.TestClock;
-import io.siggi.togethertunes.TestUploads;
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorResolver;
@@ -29,6 +29,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -42,6 +44,7 @@ class RoomsApiTest {
     Path dir;
 
     private Database db;
+    private RoomRegistry registry;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
@@ -60,7 +63,9 @@ class RoomsApiTest {
         BuiltinRoles.ensure(db);
         Settings settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        TestUploads.roomsApi(db, new Permissions(db, settings), clock).register(router);
+        Permissions permissions = new Permissions(db, settings);
+        registry = new RoomRegistry(db, clock, PackagerHook.NONE);
+        new RoomsApi(new Rooms(db, permissions, clock), registry, permissions).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         accounts.createLocal("root", null, "root-password", false, null, "account.register"); // the first: admin
@@ -78,6 +83,7 @@ class RoomsApiTest {
     @AfterEach
     void tearDown() {
         server.close();
+        registry.close();
         db.close();
     }
 
@@ -211,5 +217,37 @@ class RoomsApiTest {
         expectError(401, "not_authenticated", call(null, "GET", "/api/rooms/open/members", null));
         expectError(401, "not_authenticated", call(null, "PUT", "/api/rooms/open/members/" + bobId, "{\"role\":\"member\"}"));
         expectError(401, "not_authenticated", call(null, "DELETE", "/api/rooms/open/members/" + bobId, null));
+    }
+
+    @Test
+    void changesGoThroughTheRoomExecutor() throws Exception {
+        String id = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Live\"}")).get("id").getAsString();
+        assertNull(registry.loaded(id), "rooms load on first use");
+        List<RoomChange> changes = Collections.synchronizedList(new ArrayList<>());
+        registry.executor(id).addListener((state, change) -> changes.add(change));
+
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/live", "{\"name\":\"Live!\",\"slug\":\"on-air\","
+                + "\"visibility\":\"public\",\"controlMode\":\"open\"}").statusCode());
+        assertEquals(List.of("on-air", "Live!", "public", "open", 1L), registry.call(id, tx -> List.of(
+                tx.state().slug(), tx.state().name(), tx.state().visibility().wire(), tx.state().controlMode().wire(),
+                tx.state().version())));
+        // A PATCH that changes nothing doesn't bump the version.
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/on-air", "{\"name\":\"Live!\"}").statusCode());
+        // Neither does a role change that isn't an ownership transfer; a transfer does.
+        assertEquals(201, call(alice, "PUT", "/api/rooms/on-air/members/" + bobId, "{\"role\":\"member\"}").statusCode());
+        assertEquals(200, call(alice, "PUT", "/api/rooms/on-air/members/" + bobId, "{\"role\":\"owner\"}").statusCode());
+        assertEquals(List.of(bobId, 2L), registry.call(id, tx -> List.of(tx.state().ownerId(), tx.state().version())));
+        assertEquals(2, changes.size());
+        assertEquals(List.of(new RoomEvent.RoomUpdated()), changes.get(1).events());
+        // Refused changes leave it alone.
+        expectError(403, "forbidden", call(alice, "PATCH", "/api/rooms/on-air", "{\"name\":\"Mine\"}"));
+        assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
+
+        RoomExecutor ex = registry.executor(id);
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/on-air", null).statusCode());
+        assertTrue(ex.isClosed());
+        assertNull(registry.loaded(id));
+        expectError(404, "room_not_found", call(bob, "PATCH", "/api/rooms/" + id, "{\"name\":\"x\"}"));
+        expectError(404, "room_not_found", call(bob, "DELETE", "/api/rooms/on-air", null));
     }
 }
