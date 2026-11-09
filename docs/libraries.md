@@ -108,3 +108,5 @@ The room owner (and moderators, read-only) sees the request history in the room'
 - the history is kept for `rooms.requestHistoryDays` (default 90) and then trimmed.
 
 Requests are shown even after the item has been purged. That lets the owner see what was requested while they were away, and re-fetch YouTube items.
+
+As implemented (`RoomRequests`): the row is written by `queue.add` in the same transaction as the queue entry (also when it becomes a suggestion), for adds by anyone but the room's owner, and in `owner` mode also not by moderators (who add directly there). Playlists added by the owner or moderators aren't requests. A `RoomEvent.RequestAdded` tells the WebSocket layer (`request.new`). `rooms.requestHistoryDays` is a server setting (default 90, 0 = keep forever, up to 36500): older rows are no longer listed or addable at once, and the hourly retention run deletes them. "Add to my library" adds with `via: "request"` and only the owner may do it (moderators and `rooms.moderateAny` read only); after an ownership transfer it adds to the new owner's library. The requester filter takes a user's or guest's id. The API is in [api.md](api.md#rooms).
