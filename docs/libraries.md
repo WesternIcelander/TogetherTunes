@@ -78,7 +78,7 @@ An item is **referenced** if any of these is true:
 - it is queued, suggested or playing in any room (`queue_entries.state in ('queued','suggested','playing')`);
 - an ingest job for it is running.
 
-`items.last_referenced_at` is updated whenever an item **stops** being referenced: a library entry removed, a playlist entry removed, or a queue entry finished. It is also updated when the item is first created. A periodic sweeper (hourly) then:
+`items.last_referenced_at` is updated whenever an item **stops** being referenced: a library entry removed, a playlist entry removed (or its playlist deleted), a queue entry finished, or an ingest job finished or failed. It is also updated when the item is first created, and whenever it gains a reference. It never moves backwards; `retention/References` is the one place that writes it. A periodic sweeper (hourly) then:
 
 1. selects items with `status='ready'` that are not referenced and have `last_referenced_at < now − retention.unreferencedDays`;
 2. re-checks that they are still unreferenced, inside a transaction;

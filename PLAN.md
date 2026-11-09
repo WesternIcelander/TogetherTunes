@@ -208,7 +208,8 @@ Libraries:
 
 Retention:
 
-- [ ] `last_referenced_at` maintenance on every unreference event and on creation.
+- [x] `last_referenced_at` maintenance on every unreference event and on creation.
+  - Done 2026-11-09 at main `d4b78c8`. `retention/References` (`touch(c, itemId, now)`, `touchPlaylist(c, playlistId, now)`; `UPDATE … WHERE last_referenced_at < now`, so never backwards) is now the only writer of `last_referenced_at` after creation, called inside the transaction that makes the change; it replaces five private copies in `Library`, `Playlists`, `Shares`, `Uploads` and `YoutubeImports`. Covered events: creation (the insert in `Uploads`/`YoutubeImports`), library entry add/remove, share, playlist entry add/remove, playlist delete (every item in it, before the entries go), dedupe/re-ingest/import of an existing item. **Added:** a running ingest job counts as a reference (`libraries.md#retention`), so a job that finishes or fails, of any kind, also bumps it (`IngestJobs.complete`/`fail`, and `recoverInterrupted` when it gives up; a requeued job still references the item, so no bump). Users are never hard-deleted, so the `ON DELETE CASCADE`s on library entries/playlists aren't an unreference path today. Queue entries finishing (M3) should call `References.touch` (noted for the "Retention integration for queue entry states" step). Tests: `ReferencesContract` (SQLite + PostgreSQL: forward only, playlist touches every item, others untouched), `IngestJobsContract` asserts the bump on complete/fail/give-up and none on requeue. `mvn verify` passes (758 unit + 225 integration).
 - [ ] Hourly sweeper: select, re-check in a transaction, delete files (and overlay caches), mark `purged`; `retention.unreferencedDays = 0` disables.
 
 UI:
