@@ -2,8 +2,8 @@ package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.media.EncodeProfile;
+import io.siggi.togethertunes.media.Mp4Boxes;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -64,8 +64,8 @@ public final class ReferenceCard {
      * if {@code <cardsDir>/<profile>/reference.avcC} exists, otherwise the fresh card, which is
      * then stored. Writes are atomic (temporary file, then rename).
      *
-     * @param log job log for the ffmpeg/ffprobe output, or null
-     * @throws ToolException if ffmpeg or ffprobe fail
+     * @param log job log for the ffmpeg output, or null
+     * @throws ToolException if ffmpeg fails
      * @throws IOException   if the files can't be written or read, or the stored avcC is malformed
      */
     public static ReferenceCard ensure(Tools tools, Path cardsDir, OutputProfile profile, JobLog log)
@@ -80,7 +80,7 @@ public final class ReferenceCard {
         try {
             writeBlackPng(png, profile);
             encodeCard(tools, png, mp4, profile, log);
-            byte[] fresh = probeAvcC(tools, mp4, log);
+            byte[] fresh = readAvcC(mp4);
 
             if (Files.exists(avcFile)) {
                 byte[] stored = Files.readAllBytes(avcFile);
@@ -148,47 +148,13 @@ public final class ReferenceCard {
     }
 
     /**
-     * The first video stream's codec extradata as reported by ffprobe. For H.264 in MP4 that is
-     * the {@code avcC} box payload (AVCDecoderConfigurationRecord).
+     * The avcC box payload (AVCDecoderConfigurationRecord) of an encode, read with the MP4 box
+     * walker and sanity-checked with {@link #checkAvcC}.
      */
-    static byte[] probeAvcC(Tools tools, Path mp4, JobLog log) throws ToolException, InterruptedException, IOException {
-        ToolCall call = tools.ffprobe("-v", "error", "-select_streams", "v:0", "-show_entries", "stream=extradata",
-                "-show_data", "-of", "default=noprint_wrappers=1", mp4.toString()).stdoutToString(1024 * 1024);
-        if (log != null) {
-            call.log(log);
-        }
-        byte[] avcC = parseHexDump(call.run().stdoutString());
+    static byte[] readAvcC(Path mp4) throws IOException {
+        byte[] avcC = Mp4Boxes.readAvcC(mp4);
         checkAvcC(avcC);
         return avcC;
-    }
-
-    /**
-     * Parses ffprobe's {@code extradata=} hex dump: lines {@code 00000010: 2dd8 0880 ...  ascii},
-     * with the hex area in columns 10 to 48.
-     */
-    static byte[] parseHexDump(String out) throws IOException {
-        int start = out.indexOf("extradata=");
-        if (start < 0) {
-            throw new IOException("ffprobe reported no extradata");
-        }
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        String[] lines = out.substring(start).split("\\R");
-        for (int i = 1; i < lines.length; i++) {
-            String line = lines[i];
-            if (!line.matches("^[0-9a-f]{8}: .*")) {
-                break;
-            }
-            if (Integer.parseInt(line.substring(0, 8), 16) != bytes.size()) {
-                throw new IOException("unexpected extradata offset: " + line);
-            }
-            String hex = line.substring(10, Math.min(line.length(), 49)).replace(" ", "");
-            try {
-                bytes.writeBytes(HexFormat.of().parseHex(hex));
-            } catch (IllegalArgumentException e) {
-                throw new IOException("bad extradata line: " + line, e);
-            }
-        }
-        return bytes.toByteArray();
     }
 
     /** Sanity checks on an AVCDecoderConfigurationRecord: version 1, High profile, one SPS. */

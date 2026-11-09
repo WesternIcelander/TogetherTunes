@@ -29,33 +29,6 @@ class ReferenceCardTest {
     @TempDir
     Path dir;
 
-    private static final String DUMP = "extradata=\n"
-            + "00000000: 0164 001f ffe1 0018 6764 001f acb4 0280  .d......gd......\n"
-            + "00000010: 2dd8 0880 0000 0300 8000 001e 078c 1950  -..............P\n"
-            + "00000020: 0100 0468 ef0f cbfd f8f8 00              ...h.......\n"
-            + "\n";
-
-    @Test
-    void parsesFfprobeHexDump() throws IOException {
-        byte[] bytes = ReferenceCard.parseHexDump(DUMP);
-        assertEquals(43, bytes.length);
-        assertEquals("0164001fffe1001867", HexFormat.of().formatHex(bytes, 0, 9));
-        assertEquals("f8f800", HexFormat.of().formatHex(bytes, 40, 43));
-        assertDoesNotThrow(() -> ReferenceCard.checkAvcC(bytes));
-        // Line endings from Windows builds of ffprobe.
-        byte[] crlf = ReferenceCard.parseHexDump(DUMP.replace("\n", "\r\n"));
-        assertArrayEquals(bytes, crlf);
-    }
-
-    @Test
-    void rejectsBadDumps() {
-        assertThrows(IOException.class, () -> ReferenceCard.parseHexDump("[STREAM]\n"));
-        assertThrows(IOException.class, () -> ReferenceCard.parseHexDump(
-                "extradata=\n00000010: 0164 001f\n"));
-        assertThrows(IOException.class, () -> ReferenceCard.parseHexDump(
-                "extradata=\n00000000: 01zz 001f\n"));
-    }
-
     @Test
     void checksTheAvcCRecord() {
         byte[] good = HexFormat.of().parseHex("0164001fffe1");
@@ -136,7 +109,7 @@ class ReferenceCardTest {
         assertTrue(probe.contains("has_b_frames=0"), probe);
 
         // A mezzanine-style encode of a different source has the same avcC.
-        byte[] video = ReferenceCard.probeAvcC(tools, encodeVideo(tools, profile), null);
+        byte[] video = ReferenceCard.readAvcC(encodeVideo(tools, profile));
         assertTrue(ref.matches(video));
         assertDoesNotThrow(() -> ref.verify(video, "video.mp4"));
 
