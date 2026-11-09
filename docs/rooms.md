@@ -176,6 +176,13 @@ These are performed by the executor; each one checks the actor's permissions and
 - `vote(entryId, ±1 | 0)`, `voteSkip()`.
 - `play()`, `pause()`, `seek(ms)`, `next()`, `previous()`.
 
+Details (as implemented):
+
+- `requestsPerActor` counts the actor's waiting entries (queued and suggested, not the one playing); `noRepeatWindow` refuses an item that started playing in the last N entries, the current one included. The owner and moderators are exempt from both.
+- Uploads and YouTube links are turned into items before the entry is made, outside the room's executor; the cheap checks (identity, request rights, `requestsPerActor`) run first, so a refused request starts no import. A YouTube request doesn't add the item to the requester's library.
+- `remove` works on queued entries and suggestions; the current entry is skipped with `next` instead.
+- `previous`: more than 3 s into the current entry restarts it. Otherwise the last played (or skipped) entry plays again from the start, and the current entry goes back to the front of the queue (in `vote` mode as the top pin). A paused room stays paused; an idle room replays the last entry.
+
 ## Broadcasting
 
 On every change, broadcast a full `state` (under about 200 queue entries) or typed deltas, with `version`. A client that sees a gap in `version` sends `{type:"sync"}`.
