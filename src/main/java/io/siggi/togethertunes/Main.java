@@ -57,6 +57,8 @@ import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
+import io.siggi.togethertunes.rooms.Rooms;
+import io.siggi.togethertunes.rooms.RoomsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -202,11 +204,12 @@ public final class Main {
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
         // Rooms come in M3: until then no item is current or next anywhere.
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
+        RoomsApi roomsApi = new RoomsApi(new Rooms(database, permissions, Clock.systemUTC()), permissions);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
                             sessionsApi, me, admin, activity, uploadsApi, youtubeApi, libraryApi, itemsApi,
-                            playlistsApi, sharesApi, userLibrariesApi, mediaApi),
+                            playlistsApi, sharesApi, userLibrariesApi, mediaApi, roomsApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -411,14 +414,15 @@ public final class Main {
      * {@link PlaylistsApi} the caller's playlists ({@code /api/playlists...}), {@link SharesApi}
      * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
-     * media files ({@code /media/{id}/{file}}). {@code GET /items/{id}} serves the item page
+     * media files ({@code /media/{id}/{file}}), {@link RoomsApi} rooms and room roles
+     * ({@code /api/rooms...}). {@code GET /items/{id}} serves the item page
      * ({@link #ITEM_PAGE}) of the web UI.
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
                          UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library,
                          ItemsApi items, PlaylistsApi playlists, SharesApi shares,
-                         UserLibrariesApi userLibraries, MediaApi media) {
+                         UserLibrariesApi userLibraries, MediaApi media, RoomsApi rooms) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -436,6 +440,7 @@ public final class Main {
         shares.register(router);
         userLibraries.register(router);
         media.register(router);
+        rooms.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         // The item page by direct link (docs/libraries.md#visibility); the page reads the id from the path.

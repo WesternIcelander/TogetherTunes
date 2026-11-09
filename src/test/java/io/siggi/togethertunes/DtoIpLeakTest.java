@@ -139,6 +139,11 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Shares$Share",
             "io.siggi.togethertunes.library.UserLibraries$UserPage",
             "io.siggi.togethertunes.library.UserLibraries$UserSummary",
+            "io.siggi.togethertunes.rooms.Rooms$Member",
+            "io.siggi.togethertunes.rooms.Rooms$MemberPage",
+            "io.siggi.togethertunes.rooms.Rooms$Page",
+            "io.siggi.togethertunes.rooms.Rooms$RoomView",
+            "io.siggi.togethertunes.rooms.Rooms$You",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -215,7 +220,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.YoutubeImports$Imported", "import result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.YoutubeImports$Existing", "youtube_id lookup"),
             Map.entry("io.siggi.togethertunes.library.YoutubeImportsApi$ImportRequest", "request body (inbound)"),
-            Map.entry("io.siggi.togethertunes.library.YoutubeMetadata", "parsed yt-dlp -J output; stored as items columns"));
+            Map.entry("io.siggi.togethertunes.library.YoutubeMetadata", "parsed yt-dlp -J output; stored as items columns"),
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$Edit", "PATCH body, parsed"),
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$Room", "rooms row; RoomView is what is sent"),
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$Access", "a room and the caller's role, computed per request"),
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$RoleSet", "setRole's result; the API sends its member"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
@@ -246,6 +255,7 @@ class DtoIpLeakTest {
     private Items items;
     private Playlists playlists;
     private Shares shares;
+    private io.siggi.togethertunes.rooms.Rooms rooms;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -286,6 +296,7 @@ class DtoIpLeakTest {
         library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
         playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
+        rooms = new io.siggi.togethertunes.rooms.Rooms(database, permissions, clock);
         shares = new Shares(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
@@ -303,7 +314,8 @@ class DtoIpLeakTest {
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
-                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS));
+                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
+                TestUploads.roomsApi(database, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -495,6 +507,15 @@ class DtoIpLeakTest {
             produced.add(userLibraries.library(u.id(), null, null, null, Library.LIST_MAX));
             produced.add(userLibraries.playlists(u.id(), null, Playlists.LIST_MAX));
         }
+        Actor.User aliceActor = new Actor.User(aliceId, "s", Actor.Via.BEARER);
+        io.siggi.togethertunes.rooms.Rooms.Page roomPage = rooms.list(aliceActor, null,
+                io.siggi.togethertunes.rooms.Rooms.LIST_MAX);
+        produced.add(roomPage);
+        assertFalse(roomPage.items().isEmpty());
+        for (io.siggi.togethertunes.rooms.Rooms.RoomView r : roomPage.items()) {
+            produced.add(rooms.get(Actor.ANONYMOUS, r.slug()));
+            produced.add(rooms.members(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.Rooms.LIST_MAX));
+        }
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -630,7 +651,8 @@ class DtoIpLeakTest {
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
-                "/items/" + f.itemId);
+                "/items/" + f.itemId, "/api/rooms", "/api/rooms/" + f.roomSlug,
+                "/api/rooms/" + f.roomSlug + "/members");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -642,7 +664,8 @@ class DtoIpLeakTest {
     }
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
-                           String aliceId, String roleId, String uploadId, String itemId, String playlistId) {
+                           String aliceId, String roleId, String uploadId, String itemId, String playlistId,
+                           String roomSlug) {
     }
 
     /**
@@ -826,8 +849,23 @@ class DtoIpLeakTest {
         expect(200, admin, "GET", "/api/users/" + aliceId + "/playlists", null);
         expect(200, admin, "GET", "/api/users/" + aliceId + "/playlists/" + playlistId, null);
 
+        // rooms: alice creates one (public), renames it, gives the help desk account a role and
+        // takes it away again, lets the admin in, lists its members; another is created and deleted
+        String roomSlug = json(expect(201, alice, "POST", "/api/rooms",
+                "{\"name\":\"Alice's Room\",\"visibility\":\"public\"}")).get("slug").getAsString();
+        expect(200, alice, "PATCH", "/api/rooms/" + roomSlug, "{\"name\":\"Alice's Lounge\"}");
+        expect(201, alice, "PUT", "/api/rooms/" + roomSlug + "/members/" + helpId, "{\"role\":\"moderator\"}");
+        expect(204, alice, "DELETE", "/api/rooms/" + roomSlug + "/members/" + helpId, null);
+        expect(201, alice, "PUT", "/api/rooms/" + roomSlug + "/members/" + adminId, "{\"role\":\"member\"}");
+        expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/members", null);
+        expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);
+        expect(200, anon, "GET", "/api/rooms", null);
+        String doomedRoom = json(expect(201, alice, "POST", "/api/rooms", "{\"name\":\"Doomed\"}"))
+                .get("id").getAsString();
+        expect(204, alice, "DELETE", "/api/rooms/" + doomedRoom, null);
+
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
-                playlistId);
+                playlistId, roomSlug);
     }
 
     /** A ready video item added by {@code userId}, in nobody's library. */

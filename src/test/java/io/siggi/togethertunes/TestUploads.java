@@ -110,6 +110,12 @@ public final class TestUploads {
         }
     }
 
+    /** The rooms API as {@code Main} builds it. */
+    public static io.siggi.togethertunes.rooms.RoomsApi roomsApi(Database db, Permissions permissions, Clock clock) {
+        return new io.siggi.togethertunes.rooms.RoomsApi(new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock),
+                permissions);
+    }
+
     /** The add-media policy as {@code Main} builds it: no rooms yet. */
     public static AddMediaPolicy policy(Permissions permissions, Settings settings) {
         return new AddMediaPolicy(permissions, settings, RoomGuestRules.NO_ROOMS);

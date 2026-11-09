@@ -271,6 +271,24 @@ class PermissionMatrixTest {
                     200),
             admin("GET /api/users/{id}/playlists/{playlistId}", c -> Call.get(c.ownPlaylistPathForViewAll()), 200),
 
+            // Rooms (M3). Everyone lists rooms and reads a public one; creating needs rooms.create
+            // (the default user role has it). The other rows act on a public room of the setup
+            // admin: changing it is the owner's alone (so even an admin gets 403); deleting it,
+            // its member list and its roles are open to its owner and moderators, which an admin
+            // is everywhere through rooms.moderateAny. RoomsContract covers the room roles.
+            row("GET /api/rooms", c -> Call.get("/api/rooms?limit=10"), 200, 200, 200, 200),
+            row("POST /api/rooms", c -> Call.post("/api/rooms", "{\"name\":\"Room " + c.n + "\"}"), 401, 401, 201, 201),
+            row("GET /api/rooms/{room}", c -> Call.get("/api/rooms/" + c.rootRoomSlug()), 200, 200, 200, 200),
+            row("PATCH /api/rooms/{room}", c -> Call.patch("/api/rooms/" + c.rootRoomSlug(), "{\"name\":\"Renamed\"}"),
+                    401, 401, 403, 403),
+            row("DELETE /api/rooms/{room}", c -> Call.delete("/api/rooms/" + c.rootRoomSlug()), 401, 401, 403, 204),
+            row("GET /api/rooms/{room}/members", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/members"),
+                    401, 401, 403, 200),
+            row("PUT /api/rooms/{room}/members/{userId}", c -> Call.put("/api/rooms/" + c.rootRoomSlug() + "/members/"
+                    + c.targetUserId(), "{\"role\":\"member\"}"), 401, 401, 403, 201),
+            row("DELETE /api/rooms/{room}/members/{userId}", c -> Call.delete(c.rootRoomMemberPath()),
+                    401, 401, 403, 204),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -329,7 +347,8 @@ class PermissionMatrixTest {
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
-                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS));
+                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
+                TestUploads.roomsApi(database, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -622,6 +641,27 @@ class PermissionMatrixTest {
                         "{\"itemId\":\"" + itemId() + "\"}"));
                 assertEquals(201, r.statusCode(), r.body());
                 return "/api/playlists/" + playlistId + "/entries/" + json(r.body()).get("id").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** The slug of a new public room of the setup admin. */
+        String rootRoomSlug() {
+            try {
+                return json(ok(Call.post("/api/rooms", "{\"name\":\"Root room " + n + "\",\"visibility\":\"public\"}"))
+                        .body()).get("slug").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** The member path of this cell's target user, a member of a new public room of the setup admin. */
+        String rootRoomMemberPath() {
+            try {
+                String path = "/api/rooms/" + rootRoomSlug() + "/members/" + targetUserId();
+                ok(Call.put(path, "{\"role\":\"member\"}"));
+                return path;
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }

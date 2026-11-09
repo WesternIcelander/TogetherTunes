@@ -67,7 +67,7 @@ public record UploadMetadata(String title, String artist, String album) {
     }
 
     /** Cleaned for display (see the class comment), or null if nothing is left. */
-    static String clean(String value) {
+    public static String clean(String value) {
         if (value == null) {
             return null;
         }
