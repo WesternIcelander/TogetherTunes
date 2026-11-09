@@ -142,6 +142,11 @@ per track:
 avcC length u16 | avcC bytes
 ```
 
+- `version` is 1. `profile` codes: `1` = 720p30, `2` = 1080p30 (never renumbered).
+- The file-ref table is `file count u8`, then per file `name length u16 | name` (UTF-8): a plain file name in the item directory, e.g. `mezz.mp4`, `card.mp4`, `audio.m4a`. A track's `file-ref` is its position in this table.
+- Samples are in file order, which is also PTS order (no B-frames); PTS strictly increases within a track. `index.bin` is written to a temp file and renamed into place.
+- The builder asks ffprobe for the stream time base in the same call (`-show_entries stream=time_base:packet=… -of csv`); the time base must be `1/N`, and `N` is the track timescale.
+
 Get avcC with a small MP4 box walker (`moov/trak/mdia/minf/stbl/stsd/avc1/avcC`). The audio config is fixed by the profile.
 
 ## Ingest job states
