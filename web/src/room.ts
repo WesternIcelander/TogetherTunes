@@ -5,10 +5,12 @@
 // queue (with votes, pins, moves and removals as the control mode and the viewer's rights allow),
 // suggestions (accept/reject for the owner and moderators), the request panel (search within the
 // room's request scope, upload, YouTube link, and a playlist for the owner and moderators), the
-// history and who is here. Playback itself (listen mode, clock sync) and the owner's management
-// view come with the later steps of M3.
+// history and who is here. The server's clock is estimated with ClockSync (clocksync.ts) on the
+// same socket. Playback itself (listen mode) and the owner's management view come with the later
+// steps of M3.
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
+import { ClockSync } from "./clocksync.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
 import {
@@ -48,14 +50,11 @@ export function modeFromLocation(): RoomMode | null {
   return mode === "remote" || mode === "listen" ? mode : null;
 }
 
-/**
- * The server clock as this page estimates it. The clock-sync step replaces the zero offset with
- * a measured one; until then the client's own clock is used.
- */
-const clock = { offsetMs: 0 };
+/** The server clock as this page estimates it (the client's wall clock until the first round). */
+let clock: ClockSync | undefined;
 
 function serverNow(): number {
-  return Date.now() + clock.offsetMs;
+  return clock !== undefined ? clock.serverNow() : Date.now();
 }
 
 let me: Me;
@@ -709,7 +708,9 @@ async function start(): Promise<void> {
       const status = element("room-status");
       if (connected) {
         status.hidden = true;
+        clock?.start();
       } else {
+        clock?.stop();
         status.hidden = false;
         status.textContent = "Connection lost. Reconnecting…";
       }
@@ -723,7 +724,16 @@ async function start(): Promise<void> {
     request: onRequest,
     identity: () => renderIdentity(),
     chooseGuestName: (generated) => askGuestName(generated),
+    time: (t0, ts, t1) => clock?.reply(t0, ts, t1),
   });
+  const c = new ClockSync((t0) => conn.sendTime(t0));
+  clock = c;
+  // The client's clock may have stepped while the device slept: measure again at once.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") c.syncNow();
+  });
+  // For checking sync by hand (two browsers within ~50 ms): the estimate is in the console.
+  (window as unknown as { togetherTunesClock: ClockSync }).togetherTunesClock = c;
   conn.actor = me.kind === "anonymous" ? undefined : { kind: me.kind, id: me.id, name: me.name, isGuest: me.isGuest };
   renderIdentity();
   conn.connect();

@@ -11,6 +11,7 @@
 // returned ticket on the open socket and retries once (see `ensureIdentity`).
 import { api, ApiError } from "./api.js";
 import type { ActorRef } from "./actor.js";
+import { clientNow } from "./clocksync.js";
 
 export type RoomMode = "listen" | "remote";
 
@@ -139,11 +140,6 @@ export interface RoomEvents {
   time?(t0: number, ts: number, t1: number): void;
 }
 
-/** The client's clock for clock sync: monotonic, in epoch milliseconds. */
-export function clientNow(): number {
-  return performance.timeOrigin + performance.now();
-}
-
 /** Where a timeline is at `serverNowMs` (docs/rooms.md#room-state). */
 export function positionAt(t: Timeline, serverNowMs: number): number {
   if (t.state === "playing") return Math.max(0, t.anchorPositionMs + (serverNowMs - t.anchorServerMs));
@@ -264,9 +260,9 @@ export class RoomConnection {
     return true;
   }
 
-  /** Sends `{type: "time", t0}` (clock sync). */
-  sendTime(): boolean {
-    return this.send({ type: "time", t0: clientNow() });
+  /** Sends `{type: "time", t0}` (clock sync; `t0` from `clientNow()`). */
+  sendTime(t0: number = clientNow()): boolean {
+    return this.send({ type: "time", t0 });
   }
 
   #request(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
