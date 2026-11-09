@@ -37,7 +37,18 @@ import java.util.regex.Pattern;
  * {@code source} or {@code source.<ext>}; a {@code cover.<ext>} next to it (e.g. a YouTube
  * thumbnail) is used as artwork instead of the cover embedded in the source. A {@code youtube}
  * or {@code refetch} job downloads {@code https://www.youtube.com/watch?v=<youtube_id>} with
- * yt-dlp into its scratch directory first. ({@code reencode} jobs are a later step.)
+ * yt-dlp into its scratch directory first.
+ *
+ * <p><b>Re-encodes.</b> A {@code reencode} job (queued at startup for every ready item encoded for
+ * another output profile, {@link IngestJobs#enqueueReencodes}) encodes a ready item again for the
+ * current profile: an audio upload from its kept original; a YouTube item by downloading it again
+ * (if that fails, from its old files, so the item isn't stuck on the old profile); a video upload
+ * (and anything else without a usable source) from its old {@code mezz.mp4}, or {@code audio.m4a}
+ * for an audio item. Old files were normalised when first ingested, so they are encoded without
+ * loudnorm and the stored {@code loudness_lufs} is kept. The item's {@code cover.jpg} is reused as
+ * the staged cover. The item stays {@code ready} with its old files until the publish swaps the new
+ * ones in. A job for an item that is no longer ready, or that is already encoded for the current
+ * profile, ends without doing anything. The duration limit isn't applied to re-encodes.
  *
  * <p><b>Steps.</b> ffprobe decides the item kind: a real video stream makes a video item
  * ({@code mezz.mp4} + {@code audio.m4a} copied out of it + {@code card.mp4}); otherwise it is an
@@ -139,7 +150,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
         IngestItems.Item item = items.get(job.itemId())
                 .orElseThrow(() -> new IngestFailure("The item no longer exists"));
         if (job.kind() == Kind.REENCODE) {
-            throw new IngestFailure("Re-encoding for a new output profile isn't implemented yet");
+            if (!"ready".equals(item.status())) {
+                log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
+                return;
+            }
+            if (reference.profile().id().equals(item.outputProfile())) {
+                log.append("[ingest] the item is already encoded for " + reference.profile().id());
+                return;
+            }
         }
         Path scratch = scratchDir(dataDir, job.id());
         Path work = dataDir.media().resolve(WORK_PREFIX + job.id());
@@ -155,32 +173,107 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
     }
 
+    /** Where a job's source file comes from. */
+    enum SourceKind {
+        /** The upload in the staging directory. */
+        STAGED,
+        /** Downloaded with yt-dlp. */
+        DOWNLOAD,
+        /** The kept original of an audio upload (re-encode). */
+        ORIGINAL,
+        /** The item's previous encode, {@code mezz.mp4} or {@code audio.m4a} (re-encode). */
+        PREVIOUS
+    }
+
+    /**
+     * Where a job takes its source from. For a re-encode: a YouTube item is downloaded again, an
+     * item with its original file present re-encodes from it, anything else from its old files.
+     */
+    static SourceKind sourceKind(Kind kind, IngestItems.Item item, Path itemDir) {
+        return switch (kind) {
+            case UPLOAD -> SourceKind.STAGED;
+            case YOUTUBE, REFETCH -> SourceKind.DOWNLOAD;
+            case REENCODE -> {
+                if (item.fromYoutube() && item.youtubeId() != null) {
+                    yield SourceKind.DOWNLOAD;
+                }
+                String original = item.originalFile();
+                if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))) {
+                    yield SourceKind.ORIGINAL;
+                }
+                yield SourceKind.PREVIOUS;
+            }
+        };
+    }
+
+    private static boolean isPlainName(String name) {
+        return !name.isEmpty() && !name.startsWith(".") && !name.contains("/") && !name.contains("\\");
+    }
+
+    /** The previous encode to re-encode from: {@code mezz.mp4}, else {@code audio.m4a}. */
+    static Path previousSource(Path itemDir) throws IngestFailure {
+        for (String name : List.of(MEZZ, AUDIO)) {
+            Path f = itemDir.resolve(name);
+            if (Files.isRegularFile(f)) {
+                return f;
+            }
+        }
+        throw new IngestFailure("The item has no files to re-encode from");
+    }
+
     private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work) throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
         OutputProfile profile = reference.profile();
+        boolean reencode = job.kind() == Kind.REENCODE;
         Path staging = stagingDir(dataDir, item.id());
-        boolean download = job.kind() == Kind.YOUTUBE || job.kind() == Kind.REFETCH;
+        Path itemDir = itemDir(dataDir, item.id());
+        SourceKind sourceKind = sourceKind(job.kind(), item, itemDir);
+        if (reencode) {
+            log.append("[ingest] re-encoding for " + profile.id() + " (was " + item.outputProfile() + ") from "
+                    + switch (sourceKind) {
+                        case DOWNLOAD -> "a new download";
+                        case ORIGINAL -> "the original " + item.originalFile();
+                        default -> "the previous encode";
+                    });
+        }
+        boolean download = sourceKind == SourceKind.DOWNLOAD;
         double base = download ? DOWNLOAD_SHARE : 0;
         double rest = 1 - base;
 
         // (download) / staged source
         Path source;
-        if (download) {
-            step(log, "download");
-            source = download(item, scratch, log, range(ctx, 0, base));
-        } else {
-            source = staged(staging, SOURCE_NAME);
-            if (source == null) {
-                throw new IngestFailure("The uploaded file is missing");
+        switch (sourceKind) {
+            case DOWNLOAD -> {
+                step(log, "download");
+                try {
+                    source = download(item, scratch, log, range(ctx, 0, base));
+                } catch (IngestFailure | ToolException | IOException e) {
+                    if (!reencode || Thread.currentThread().isInterrupted()) {
+                        throw e;
+                    }
+                    source = previousSource(itemDir);
+                    sourceKind = SourceKind.PREVIOUS;
+                    log.append("[ingest] the download failed (" + e.getMessage() + "); re-encoding from the previous "
+                            + source.getFileName() + " instead");
+                }
+            }
+            case ORIGINAL -> source = itemDir.resolve(item.originalFile());
+            case PREVIOUS -> source = previousSource(itemDir);
+            default -> {
+                source = staged(staging, SOURCE_NAME);
+                if (source == null) {
+                    throw new IngestFailure("The uploaded file is missing");
+                }
             }
         }
-        Path stagedCover = staged(staging, COVER_NAME);
+        boolean fromPrevious = sourceKind == SourceKind.PREVIOUS;
+        Path stagedCover = reencode ? existingFile(itemDir.resolve(COVER)) : staged(staging, COVER_NAME);
 
         // probe
         step(log, "probe");
         MediaProbe probe = MediaProbe.probe(tools, source, log);
-        checkProbe(probe);
+        checkProbe(probe, !reencode);
         boolean video = probe.isVideo();
         log.append("[ingest] " + (video ? "video" : "audio") + " item: audio stream " + probe.audio().index() + " ("
                 + probe.audio().codec() + ")" + (video ? ", video stream " + probe.video().index() + " ("
@@ -188,19 +281,27 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 + ", duration " + seconds(probe.durationUs()));
         long expectedUs = probe.durationUs() > 0 ? probe.durationUs() : probe.audioEndUs();
 
-        // loudnorm pass 1
-        step(log, "loudnorm pass 1");
+        // loudnorm pass 1 (not for a previous encode: its audio was normalised when first ingested)
         double measureFrom = base;
         double measureTo = base + rest * MEASURE_SHARE;
         DoubleConsumer measureProgress = range(ctx, measureFrom, measureTo);
         long[] decodedUs = {-1};
-        Loudness.Measurement loudness = Loudness.measure(tools, source.toString(), probe.audio().map(), log, p -> {
-            if (p.outTimeUs() > decodedUs[0]) {
-                decodedUs[0] = p.outTimeUs();
-            }
-            measureProgress.accept(p.fraction(expectedUs));
-        });
-        if (loudness.usable()) {
+        Loudness.Measurement loudness;
+        if (fromPrevious) {
+            loudness = NOT_MEASURED;
+            log.append("[ingest] the previous encode is already normalised; encoding without loudnorm");
+        } else {
+            step(log, "loudnorm pass 1");
+            loudness = Loudness.measure(tools, source.toString(), probe.audio().map(), log, p -> {
+                if (p.outTimeUs() > decodedUs[0]) {
+                    decodedUs[0] = p.outTimeUs();
+                }
+                measureProgress.accept(p.fraction(expectedUs));
+            });
+        }
+        if (fromPrevious) {
+            // nothing measured
+        } else if (loudness.usable()) {
             log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
                     loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
         } else {
@@ -257,7 +358,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // original (audio uploads only; the originals of video uploads and downloads are not kept)
         Originals.Original original = null;
-        if (job.kind() == Kind.UPLOAD && !video) {
+        if ((job.kind() == Kind.UPLOAD || sourceKind == SourceKind.ORIGINAL) && !video) {
             long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
             original = Originals.describe(probe, source.getFileName().toString(), loudness, originalUs, durationUs);
             linkOrCopy(source, work.resolve(original.file()));
@@ -269,10 +370,12 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // publish
         step(log, "publish");
-        publish(work, itemDir(dataDir, item.id()), item.id(), job.id());
-        Double lufs = loudness.usable() ? round2(loudness.inputI()) : null;
+        publish(work, itemDir, item.id(), job.id());
+        Double lufs = fromPrevious ? item.loudnessLufs() : loudness.usable() ? round2(loudness.inputI()) : null;
         items.published(item.id(), video, durationUs / 1000, profile, lufs, original);
-        deleteQuietly(staging);
+        if (!reencode) {
+            deleteQuietly(staging);
+        }
         ctx.progress(1);
     }
 
@@ -293,9 +396,25 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return f -> ctx.progress(from + (to - from) * Math.max(0, Math.min(1, f)));
     }
 
+    /** A measurement that isn't {@link Loudness.Measurement#usable() usable}: encode without loudnorm. */
+    static final Loudness.Measurement NOT_MEASURED =
+            new Loudness.Measurement(Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN);
+
+    private static Path existingFile(Path f) {
+        return Files.isRegularFile(f, LinkOption.NOFOLLOW_LINKS) ? f : null;
+    }
+
     void checkProbe(MediaProbe probe) throws IngestFailure {
+        checkProbe(probe, true);
+    }
+
+    /** @param limitDuration whether {@code ingest.maxDurationSeconds} applies (not for re-encodes) */
+    void checkProbe(MediaProbe probe, boolean limitDuration) throws IngestFailure {
         if (probe.audio() == null) {
             throw new IngestFailure("The file has no audio");
+        }
+        if (!limitDuration) {
+            return;
         }
         long duration = Math.max(probe.durationUs(), probe.audioEndUs());
         if (duration > maxDurationUs) {

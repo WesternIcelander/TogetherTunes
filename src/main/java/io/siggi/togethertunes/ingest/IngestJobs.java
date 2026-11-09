@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
+import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
@@ -83,6 +84,40 @@ public final class IngestJobs {
         });
     }
 
+    /**
+     * Queues a {@code reencode} job for every {@code ready} item whose files were encoded for
+     * another output profile than {@code profile}, unless the item already has an
+     * unfinished job. Purged items are skipped (a refetch or new upload encodes for the current
+     * profile anyway), and so are items that are pending, processing or failed (their next ingest
+     * does too). Run at startup, before the workers start; a re-encode that failed is therefore
+     * tried again at the next start.
+     *
+     * @return the number of jobs queued
+     */
+    public int enqueueReencodes(OutputProfile profile) throws SQLException {
+        Objects.requireNonNull(profile);
+        return db.write(c -> {
+            List<String> stale = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE status = 'ready'"
+                    + " AND output_profile <> ?"
+                    + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
+                    + " ORDER BY added_at, id")) {
+                ps.setString(1, profile.id());
+                ps.setString(2, State.QUEUED.wire());
+                ps.setString(3, State.RUNNING.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        stale.add(rs.getString(1));
+                    }
+                }
+            }
+            for (String itemId : stale) {
+                enqueue(itemId, Kind.REENCODE);
+            }
+            return stale.size();
+        });
+    }
+
     /** The job with this id. */
     public Optional<IngestJob> get(String id) throws SQLException {
         return db.read(c -> {
@@ -130,13 +165,17 @@ public final class IngestJobs {
      * Takes the oldest queued job: sets it {@code running}, counts the attempt, resets its
      * progress and marks its item {@code processing}. Returns null if nothing is queued. Safe
      * to call from several workers (and processes): a job is handed to exactly one of them.
+     * {@code reencode} jobs come after every other kind, so that a library re-encode after an
+     * output profile change doesn't hold up new uploads and imports.
      */
     public IngestJob claimNext() throws SQLException {
         while (true) {
             IngestJob candidate = db.read(c -> {
                 try (PreparedStatement ps = c.prepareStatement("SELECT " + COLUMNS
-                        + " FROM ingest_jobs WHERE state = ? ORDER BY created_at, id LIMIT 1")) {
+                        + " FROM ingest_jobs WHERE state = ?"
+                        + " ORDER BY CASE WHEN kind = ? THEN 1 ELSE 0 END, created_at, id LIMIT 1")) {
                     ps.setString(1, State.QUEUED.wire());
+                    ps.setString(2, Kind.REENCODE.wire());
                     try (ResultSet rs = ps.executeQuery()) {
                         return rs.next() ? row(rs) : null;
                     }

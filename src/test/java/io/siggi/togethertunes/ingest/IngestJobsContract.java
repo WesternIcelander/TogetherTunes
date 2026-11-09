@@ -66,7 +66,8 @@ abstract class IngestJobsContract {
             }
             return null;
         });
-        assertEquals(new IngestItems.Item(item, "audio", "Song", "Artist", null, "youtube", "dQw4w9WgXcQ", "purged"),
+        assertEquals(new IngestItems.Item(item, "audio", "Song", "Artist", null, "youtube", "dQw4w9WgXcQ", "purged",
+                "720p30", null, -9.0),
                 items.get(item).orElseThrow());
         assertTrue(items.get("nope").isEmpty());
 
@@ -207,6 +208,60 @@ abstract class IngestJobsContract {
         jobs.claimNext();
         jobs.fail(job2.id(), " ", null);
         assertEquals("Ingest failed", fixtures.itemStatus(other)[1]);
+    }
+
+    /** A profile change queues a re-encode for ready items of another (or no) profile, once. */
+    @Test
+    void enqueueReencodesQueuesReadyItemsOfAnotherProfile() throws SQLException {
+        String current = fixtures.item("ready");
+        String old = fixtures.item("ready");
+        String unknown = fixtures.item("ready");
+        String purged = fixtures.item("purged");
+        String failed = fixtures.item("failed");
+        String busy = fixtures.item("ready");
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET output_profile = ? WHERE id = ?")) {
+                for (String id : List.of(old, purged, failed, busy)) {
+                    ps.setString(1, "720p30");
+                    ps.setString(2, id);
+                    ps.executeUpdate();
+                }
+                ps.setString(1, "1080p30");
+                ps.setString(2, current);
+                ps.executeUpdate();
+                ps.setString(1, "480p25"); // a profile this version doesn't know
+                ps.setString(2, unknown);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        IngestJob busyJob = jobs.enqueue(busy, Kind.UPLOAD);
+        clock.advance(1000);
+
+        assertEquals(2, jobs.enqueueReencodes(io.siggi.togethertunes.config.OutputProfile.P1080_30));
+        List<IngestJob> queued = jobs.list(State.QUEUED, 10);
+        assertEquals(3, queued.size());
+        Set<String> reencoded = new HashSet<>();
+        for (IngestJob j : queued) {
+            if (j.kind() == Kind.REENCODE) {
+                reencoded.add(j.itemId());
+            }
+        }
+        assertEquals(Set.of(old, unknown), reencoded);
+        assertEquals("ready", fixtures.itemStatus(old)[0], "a re-encode leaves the item ready");
+        assertEquals("ready", fixtures.itemStatus(unknown)[0]);
+        // they already have unfinished jobs now
+        assertEquals(0, jobs.enqueueReencodes(io.siggi.togethertunes.config.OutputProfile.P1080_30));
+
+        // Other jobs are claimed first, even when they are newer.
+        clock.advance(1000);
+        String upload = fixtures.item("pending");
+        IngestJob newer = jobs.enqueue(upload, Kind.UPLOAD);
+        assertEquals(busyJob.id(), jobs.claimNext().id());
+        assertEquals(newer.id(), jobs.claimNext().id());
+        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
+        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
+        assertNull(jobs.claimNext());
     }
 
     @Test

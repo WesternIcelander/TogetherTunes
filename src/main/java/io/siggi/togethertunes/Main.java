@@ -181,7 +181,8 @@ public final class Main {
     /**
      * Starts the ingest worker pool ({@code ingest.workers}) on the DB-backed queue; jobs left
      * {@code running} by a crash are queued again first, after cleaning up the directories such jobs
-     * left ({@link IngestPipeline#recoverDirectories}). A database error here is reported and
+     * left ({@link IngestPipeline#recoverDirectories}). Items encoded for another output profile
+     * get a {@code reencode} job ({@link IngestJobs#enqueueReencodes}). A database error here is reported and
      * ingest stays off until the next start (the server still runs).
      */
     static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
@@ -196,7 +197,19 @@ public final class Main {
         }
         IngestQueue.Handler handler = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
                 referenceCard, config.ingestMaxDurationSeconds());
-        IngestQueue queue = new IngestQueue(new IngestJobs(database), config.ingestWorkers(), handler);
+        IngestJobs jobs = new IngestJobs(database);
+        IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
+        if (referenceCard != null) {
+            try {
+                int reencodes = jobs.enqueueReencodes(referenceCard.profile());
+                if (reencodes > 0) {
+                    err.println("Queued " + reencodes + " re-encode jobs for output profile "
+                            + referenceCard.profile().id() + " (items encoded for another profile)");
+                }
+            } catch (SQLException e) {
+                err.println("WARNING: could not queue re-encode jobs for the output profile: " + e.getMessage());
+            }
+        }
         try {
             queue.start();
         } catch (SQLException | RuntimeException e) {

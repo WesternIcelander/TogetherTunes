@@ -27,22 +27,32 @@ public final class IngestItems {
      * @param kind      {@code audio} | {@code video} (as stored; the probe decides it anew)
      * @param source    {@code upload} | {@code youtube}
      * @param youtubeId the video ID for YouTube items, else null
+     * @param outputProfile the profile its files were encoded for ({@code output_profile}), or null
+     * @param originalFile  the kept original in the item directory ({@code original_file}), or null
+     * @param loudnessLufs  the source's integrated loudness as measured at ingest, or null
      */
     public record Item(String id, String kind, String title, String artist, String album, String source,
-                       String youtubeId, String status) {
+                       String youtubeId, String status, String outputProfile, String originalFile,
+                       Double loudnessLufs) {
+        public boolean fromYoutube() {
+            return "youtube".equals(source);
+        }
     }
 
     public Optional<Item> get(String id) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, album, source, youtube_id,"
-                    + " status FROM items WHERE id = ?")) {
+                    + " status, output_profile, original_file, loudness_lufs FROM items WHERE id = ?")) {
                 ps.setString(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
                         return Optional.empty();
                     }
+                    double lufs = rs.getDouble(11);
+                    Double loudness = rs.wasNull() ? null : lufs;
                     return Optional.of(new Item(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8)));
+                            rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8), rs.getString(9),
+                            rs.getString(10), loudness));
                 }
             }
         });
