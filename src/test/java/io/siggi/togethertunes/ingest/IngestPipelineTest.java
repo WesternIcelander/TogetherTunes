@@ -385,6 +385,85 @@ class IngestPipelineTest {
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)));
     }
 
+    /** {@code codec_type} of every stream in a file, in order. */
+    private List<String> streamTypes(Path file) throws Exception {
+        ToolResult r = tools.ffprobe("-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
+                file.toString()).stdoutToString(4096).run();
+        return r.stdoutString().lines().map(String::strip).filter(l -> !l.isEmpty()).toList();
+    }
+
+    /** Number of frames of a file's first video stream (decoded). */
+    private int videoFrames(Path file) throws Exception {
+        ToolResult r = tools.ffprobe("-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
+                "stream=nb_read_frames", "-of", "csv=p=0", file.toString()).stdoutToString(4096).run();
+        return Integer.parseInt(r.stdoutString().strip());
+    }
+
+    /**
+     * The item directory follows the kind, also when one item is re-ingested as the other kind:
+     * an audio item is {@code audio.m4a} + {@code card.mp4} (+ index, cover, original) and never a
+     * {@code mezz.mp4}; a video item is {@code mezz.mp4} + {@code audio.m4a} + {@code card.mp4}.
+     * Cover art (an attached JPEG in MP3 and M4A) doesn't make a video item; Motion JPEG video
+     * (a camera AVI) does.
+     */
+    @Test
+    void itemLayoutFollowsTheKind() throws Exception {
+        IngestQueue q = queue(tools, reference, 1800);
+        String item = fixtures.item("pending");
+        Path itemDir = IngestPipeline.itemDir(data, item);
+        Path jpg = dir.resolve("art.jpg");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=300x300", "-frames:v", "1", jpg.toString());
+
+        // MP3 with an attached JPEG cover: audio item
+        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-i", jpg.toString(), "-t", "3", "-map", "0:a", "-map", "1:v",
+                "-c:a", "libmp3lame", "-c:v", "copy", "-disposition:v", "attached_pic", stage(item, "source.mp3").toString());
+        IngestJob job = run(q, Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertEquals("audio", itemRow(item)[1]);
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.mp3"), files(itemDir));
+        assertAudioLayout(itemDir);
+
+        // the same item re-ingested from a Motion JPEG AVI: video item, the audio-item files are gone
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=320x240:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
+                "-c:v", "mjpeg", "-c:a", "pcm_s16le", stage(item, "source.avi").toString());
+        job = run(q, Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertEquals("video", itemRow(item)[1]);
+        assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4"), files(itemDir));
+        assertNoOriginal(item);
+        SampleIndex index = SampleIndex.read(itemDir.resolve("index.bin"));
+        assertEquals(List.of("mezz.mp4", "audio.m4a"), index.files());
+        assertEquals(List.of("video", "audio"), streamTypes(itemDir.resolve("mezz.mp4")));
+        assertEquals(List.of("audio"), streamTypes(itemDir.resolve("audio.m4a")));
+        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("mezz.mp4")));
+        IngestVerifier.checkKeyframes(index, "mezz.mp4");
+        // the card is there for presentAsAudio and the transition card
+        assertEquals(List.of("video"), streamTypes(itemDir.resolve("card.mp4")));
+        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")));
+        assertEquals(60, videoFrames(itemDir.resolve("card.mp4")));
+
+        // and back to audio from an M4A with an attached JPEG cover: no mezz.mp4 is left behind
+        ffmpeg("-f", "lavfi", "-i", "sine=f=550:r=48000", "-i", jpg.toString(), "-t", "3", "-map", "0:a", "-map", "1:v",
+                "-c:a", "aac", "-c:v", "copy", "-disposition:v", "attached_pic", stage(item, "source.m4a").toString());
+        job = run(q, Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertEquals("audio", itemRow(item)[1]);
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.m4a"), files(itemDir));
+        assertAudioLayout(itemDir);
+        assertNoLeftovers();
+    }
+
+    private void assertAudioLayout(Path itemDir) throws Exception {
+        SampleIndex index = SampleIndex.read(itemDir.resolve("index.bin"));
+        assertEquals(List.of("card.mp4", "audio.m4a"), index.files());
+        assertEquals(List.of("audio"), streamTypes(itemDir.resolve("audio.m4a")));
+        assertEquals(List.of("video"), streamTypes(itemDir.resolve("card.mp4")));
+        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")));
+        assertEquals(60, videoFrames(itemDir.resolve("card.mp4")));
+        assertEquals(60, index.track(SampleIndex.Kind.VIDEO).sampleCount());
+        assertFalse(Files.exists(itemDir.resolve("mezz.mp4")));
+    }
+
     @Test
     void fileWithoutAudioFailsAndKeepsTheUpload() throws Exception {
         String item = fixtures.item("pending");

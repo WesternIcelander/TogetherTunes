@@ -19,6 +19,12 @@ import java.util.List;
  * 30 fps already, through {@link #scaleFilter(OutputProfile)} (mezzanines and cards), or as the
  * mezzanine itself (overlay re-encodes). The filter also sets SAR 1:1, which ends up in the SPS:
  * without it, an image with no aspect ratio (a PNG without {@code pHYs}) gives a different avcC.
+ *
+ * <p>The colour description is fixed too (limited range, BT.709 primaries/transfer/matrix,
+ * left-sited chroma): x264 copies the source's colour tags and chroma location into the SPS's
+ * VUI, so without this a BT.709-tagged video (any YouTube download), a full-range or BT.601 source
+ * or Motion JPEG (centre-sited chroma) would each get a different avcC. The scale filter converts
+ * the pixels to match ({@code out_color_matrix=bt709:out_range=tv}). HDR sources are not tone-mapped.
  * See {@code docs/library-and-ingest.md#the-mezzanine-profile}.
  */
 public final class EncodeProfile {
@@ -60,6 +66,11 @@ public final class EncodeProfile {
                 "-profile:v", "high",
                 "-level:v", level,
                 "-pix_fmt", "yuv420p",
+                "-color_range", "tv",
+                "-colorspace", "bt709",
+                "-color_primaries", "bt709",
+                "-color_trc", "bt709",
+                "-chroma_sample_location", "left",
                 "-bf", "0",
                 "-g", Integer.toString(GOP_FRAMES),
                 "-keyint_min", Integer.toString(GOP_FRAMES),
@@ -81,13 +92,15 @@ public final class EncodeProfile {
 
     /**
      * The {@code -vf} chain that brings any source video or card image to {@code profile}: scale to fit, pad to
-     * the exact size with black (centred), square pixels, constant frame rate. The scaled
+     * the exact size with black (centred), square pixels, constant frame rate, pixels converted to
+     * limited-range BT.709 (matching the colour description in the video args). The scaled
      * picture keeps even dimensions so the 4:2:0 padding stays centred on whole chroma samples.
      */
     public static String scaleFilter(OutputProfile profile) {
         int w = profile.width();
         int h = profile.height();
-        return "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        return "scale=" + w + ":" + h + ":force_original_aspect_ratio=decrease:force_divisible_by=2"
+                + ":out_color_matrix=bt709:out_range=tv,"
                 + "pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2,"
                 + "setsar=1,"
                 + "fps=" + profile.fps();

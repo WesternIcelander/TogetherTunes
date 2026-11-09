@@ -69,6 +69,39 @@ class IngestStepsTest {
     }
 
     @Test
+    void imageCodecsAreVideoOnlyWithMovingPictures() throws Exception {
+        record Case(String stream, boolean video) {
+        }
+        List<Case> cases = List.of(
+                // Motion JPEG from a camera (AVI/MOV report a frame count)
+                new Case("\"codec_name\": \"mjpeg\", \"nb_frames\": \"75\", \"duration\": \"3.000000\"", true),
+                // one JPEG frame muxed as a plain stream into MP4/AVI
+                new Case("\"codec_name\": \"mjpeg\", \"nb_frames\": \"1\", \"duration\": \"0.040000\"", false),
+                // Matroska: no nb_frames, the statistics tags decide
+                new Case("\"codec_name\": \"mjpeg\", \"tags\": {\"DURATION\": \"00:00:03.000000000\"}", true),
+                new Case("\"codec_name\": \"mjpeg\", \"tags\": {\"DURATION\": \"00:00:00.040000000\"}", false),
+                new Case("\"codec_name\": \"png\", \"tags\": {\"NUMBER_OF_FRAMES-eng\": \"90\", \"DURATION-eng\": \"00:00:03.000000000\"}", true),
+                new Case("\"codec_name\": \"png\", \"tags\": {\"NUMBER_OF_FRAMES-eng\": \"1\", \"DURATION-eng\": \"00:00:03.000000000\"}", false),
+                // nothing known: a still
+                new Case("\"codec_name\": \"gif\"", false),
+                new Case("\"codec_name\": \"mjpeg\", \"duration\": \"N/A\", \"tags\": {\"DURATION\": \"garbage\"}", false),
+                // an attached picture is a cover whatever it says
+                new Case("\"codec_name\": \"mjpeg\", \"nb_frames\": \"75\", \"disposition\": {\"attached_pic\": 1}", false),
+                // a real video codec is video even with one frame
+                new Case("\"codec_name\": \"h264\", \"nb_frames\": \"1\"", true));
+        for (Case c : cases) {
+            MediaProbe p = MediaProbe.parse("{\"streams\": [{\"index\": 0, \"codec_type\": \"audio\", \"codec_name\": \"aac\"},"
+                    + " {\"index\": 1, \"codec_type\": \"video\", " + c.stream() + "}], \"format\": {}}");
+            assertEquals(c.video(), p.isVideo(), c.stream());
+            assertEquals(c.video() ? null : 1, p.cover() == null ? null : p.cover().index(), c.stream());
+        }
+        assertEquals(3_000_000, MediaProbe.clockMicros("00:00:03.000000000"));
+        assertEquals(3_723_500_000L, MediaProbe.clockMicros("01:02:03.5"));
+        assertEquals(-1, MediaProbe.clockMicros("3.0"));
+        assertEquals(-1, MediaProbe.clockMicros("00:61:00"));
+    }
+
+    @Test
     void lateAudioStartCountsTowardsItsEnd() throws Exception {
         MediaProbe p = MediaProbe.parse("""
                 {"streams": [{"index": 0, "codec_type": "audio", "codec_name": "aac", "start_time": "1.500000", "duration": "2.000000"},

@@ -45,6 +45,11 @@ class EncodeProfileTest {
         assertEquals("veryfast", option(args, "-preset"));
         assertEquals("high", option(args, "-profile:v"));
         assertEquals("yuv420p", option(args, "-pix_fmt"));
+        assertEquals("tv", option(args, "-color_range"));
+        assertEquals("bt709", option(args, "-colorspace"));
+        assertEquals("bt709", option(args, "-color_primaries"));
+        assertEquals("bt709", option(args, "-color_trc"));
+        assertEquals("left", option(args, "-chroma_sample_location"));
         assertEquals("0", option(args, "-bf"));
         assertEquals("60", option(args, "-g"));
         assertEquals("60", option(args, "-keyint_min"));
@@ -72,10 +77,12 @@ class EncodeProfileTest {
 
     @Test
     void scaleFilter() {
-        assertEquals("scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        assertEquals("scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                        + ":out_color_matrix=bt709:out_range=tv,"
                         + "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
                 EncodeProfile.scaleFilter(OutputProfile.P720_30));
-        assertEquals("scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        assertEquals("scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"
+                        + ":out_color_matrix=bt709:out_range=tv,"
                         + "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
                 EncodeProfile.scaleFilter(OutputProfile.P1080_30));
     }
@@ -212,6 +219,49 @@ class EncodeProfileTest {
         String reference = extradata(tools, card);
         assertEquals(reference, extradata(tools, landscape24), "24 fps landscape vs card");
         assertEquals(reference, extradata(tools, portrait60), "60 fps portrait vs card");
+    }
+
+    /**
+     * x264 writes the source's colour tags and chroma location into the VUI; the profile fixes
+     * them, so sources tagged BT.709 (YouTube), BT.601 interlaced SD, full-range, Motion JPEG
+     * (centre-sited chroma) and 10-bit HDR all get the card's extradata and BT.709 tags.
+     */
+    @Test
+    @Timeout(180)
+    void colourTagsOfTheSourceDontChangeTheExtradata() throws Exception {
+        Tools tools = tools();
+        OutputProfile profile = OutputProfile.P720_30;
+        String reference = extradata(tools, encodeCard(tools, profile));
+        String src = "testsrc2=size=640x360:rate=30:duration=2";
+        List<List<String>> sources = List.of(
+                List.of("-c:v", "libx264", "-preset", "ultrafast", "-color_primaries", "bt709", "-color_trc", "bt709",
+                        "-colorspace", "bt709"),
+                List.of("-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-top", "1", "-color_primaries", "smpte170m",
+                        "-color_trc", "smpte170m", "-colorspace", "smpte170m"),
+                List.of("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuvj420p", "-color_range", "pc"),
+                List.of("-c:v", "mjpeg"),
+                List.of("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le", "-color_primaries",
+                        "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"));
+        int n = 0;
+        for (List<String> encode : sources) {
+            Path in = dir.resolve("tagged" + n + (encode.contains("mjpeg") ? ".avi" : ".mkv"));
+            List<String> args = new ArrayList<>(List.of("-f", "lavfi", "-i", src));
+            args.addAll(encode);
+            args.add(in.toString());
+            tools.ffmpeg(args).run();
+            Path out = dir.resolve("tagged" + n + "-out.mp4");
+            args = new ArrayList<>(List.of("-i", in.toString(), "-vf", EncodeProfile.scaleFilter(profile)));
+            args.addAll(EncodeProfile.videoArgs(profile));
+            args.addAll(List.of("-an", out.toString()));
+            tools.ffmpeg(args).run();
+            assertEquals(reference, extradata(tools, out), encode.toString());
+            String tags = probe(tools, out, "-show_entries",
+                    "stream=color_range,color_space,color_primaries,color_transfer,chroma_location",
+                    "-of", "default=noprint_wrappers=1");
+            assertEquals(List.of("chroma_location=left", "color_primaries=bt709", "color_range=tv", "color_space=bt709",
+                    "color_transfer=bt709"), tags.lines().map(String::strip).sorted().toList(), encode.toString());
+            n++;
+        }
     }
 
     @Test

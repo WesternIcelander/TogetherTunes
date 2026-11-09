@@ -18,8 +18,10 @@ import java.util.Set;
  * pipeline needs (which streams to encode, where the cover art is, how long it is).
  *
  * <p>Runs {@code ffprobe -v error -show_format -show_streams -of json FILE}. A video stream that
- * is an attached picture (cover art in an MP3/FLAC/M4A), or a still-image codec, is a cover, not
- * video; a file with only such streams is an audio item.
+ * is an attached picture (cover art in an MP3/FLAC/M4A), or a single still image in an image
+ * codec, is a cover, not video; a file with only such streams is an audio item (see
+ * {@link #isStillImage}). An image codec with moving pictures (Motion JPEG from a camera, a
+ * looped still in Matroska) is video.
  *
  * @param formatName  ffprobe's {@code format_name}, e.g. {@code mov,mp4,m4a,3gp,3g2,mj2}
  * @param startUs     the container start time in microseconds ({@code start_time}; ffmpeg shifts
@@ -197,7 +199,7 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
                     audio = stream;
                 }
             } else if ("video".equals(type)) {
-                if (attachedPic(s) || IMAGE_CODECS.contains(codec.toLowerCase(Locale.ROOT))) {
+                if (attachedPic(s) || isStillImage(s, codec)) {
                     if (cover == null) {
                         cover = stream;
                     }
@@ -207,6 +209,82 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
             }
         }
         return new MediaProbe(formatName == null ? "" : formatName, start, duration, audio, video, cover);
+    }
+
+    /** Above this length an image-codec stream of unknown frame count is taken as moving pictures. */
+    static final long STILL_MAX_US = 500_000;
+
+    /**
+     * Whether a video stream that is not an attached picture is a still image (a cover) rather
+     * than video: its codec is an image codec ({@link #IMAGE_CODECS}) and it has at most one frame
+     * ({@code nb_frames}, or Matroska's {@code NUMBER_OF_FRAMES} statistics tag). If the frame
+     * count is unknown, it is a still unless it lasts longer than {@link #STILL_MAX_US}
+     * ({@code duration}, or Matroska's {@code DURATION} tag); with neither, a still.
+     */
+    static boolean isStillImage(JsonObject stream, String codec) {
+        if (!IMAGE_CODECS.contains(codec.toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        long frames = count(string(stream, "nb_frames"));
+        if (frames < 0) {
+            frames = count(tag(stream, "NUMBER_OF_FRAMES"));
+        }
+        if (frames >= 0) {
+            return frames <= 1;
+        }
+        long duration = micros(string(stream, "duration"));
+        if (duration < 0) {
+            duration = clockMicros(tag(stream, "DURATION"));
+        }
+        return duration <= STILL_MAX_US;
+    }
+
+    private static String tag(JsonObject stream, String name) {
+        if (!stream.has("tags") || !stream.get("tags").isJsonObject()) {
+            return null;
+        }
+        for (var e : stream.getAsJsonObject("tags").entrySet()) {
+            if (e.getKey().equalsIgnoreCase(name) || e.getKey().toUpperCase(Locale.ROOT).startsWith(name + "-")) {
+                JsonElement v = e.getValue();
+                return v.isJsonPrimitive() ? v.getAsString() : null;
+            }
+        }
+        return null;
+    }
+
+    /** A non-negative integer, or -1 if missing or not one. */
+    static long count(String s) {
+        if (s == null) {
+            return -1;
+        }
+        try {
+            long n = Long.parseLong(s.strip());
+            return n < 0 ? -1 : n;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /** {@code HH:MM:SS.fraction} (Matroska's {@code DURATION} tag) to microseconds; -1 if missing or malformed. */
+    static long clockMicros(String s) {
+        if (s == null) {
+            return -1;
+        }
+        String[] parts = s.strip().split(":");
+        if (parts.length != 3) {
+            return -1;
+        }
+        try {
+            long h = Long.parseLong(parts[0]);
+            long m = Long.parseLong(parts[1]);
+            long sec = micros(parts[2]);
+            if (h < 0 || m < 0 || m >= 60 || sec < 0) {
+                return -1;
+            }
+            return (h * 3600 + m * 60) * 1_000_000 + sec;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     private static boolean attachedPic(JsonObject stream) {
