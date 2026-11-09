@@ -191,6 +191,26 @@ public final class StaticFiles implements Handler, AutoCloseable {
         return this;
     }
 
+    /**
+     * A handler that serves one fixed file of the web UI for any path it is mounted on, e.g. the
+     * item page {@code item.html} for {@code GET /items/{id}} (the page reads the id from the
+     * URL). Same headers and method check as {@link #handle}; {@code 404} if the file is missing.
+     */
+    public Handler page(String file) {
+        return (request, response) -> {
+            String method = request.method();
+            if (!method.equals("GET") && !method.equals("HEAD")) {
+                response.header("Allow", "GET, HEAD, OPTIONS");
+                throw new HttpError(405, "method_not_allowed", "Method " + method + " is not allowed here");
+            }
+            Path resolved = resolve("/" + file);
+            if (resolved == null || !Files.isRegularFile(resolved)) {
+                throw HttpError.notFound();
+            }
+            serve(resolved, response);
+        };
+    }
+
     /** The directory files are served from. */
     public Path root() {
         return root;
@@ -218,6 +238,10 @@ public final class StaticFiles implements Handler, AutoCloseable {
             }
             throw HttpError.notFound();
         }
+        serve(file, response);
+    }
+
+    private static void serve(Path file, Response response) throws IOException {
         response.header("Cache-Control", CACHE_CONTROL);
         response.header("X-Content-Type-Options", "nosniff");
         response.raw().returnFile(file.toFile(), contentType(file.getFileName().toString()));

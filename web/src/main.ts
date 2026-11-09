@@ -3,8 +3,8 @@
 import { setupNeeded } from "./api.js";
 import { actorLabel } from "./actor.js";
 import {
-  ACCOUNT_PAGE, ADMIN_PAGE, checkPasswordChange, isAdmin, loadMe, LOGIN_PAGE, message, onReady, REGISTER_PAGE,
-  renderNav,
+  ACCOUNT_PAGE, ADMIN_PAGE, checkPasswordChange, isAdmin, LIBRARY_PAGE, loadMe, LOGIN_PAGE, message, onReady,
+  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav,
 } from "./session.js";
 import { describeVersion } from "./version.js";
 
@@ -37,7 +37,8 @@ async function start(): Promise<void> {
     if (links !== null) {
       const items: (Node | string)[] = [];
       if (me.kind === "user") {
-        items.push(link(ACCOUNT_PAGE, "Your account"));
+        items.push(link(LIBRARY_PAGE, "Your library"), " · ", link(PLAYLISTS_PAGE, "Playlists"), " · ",
+          link(ACCOUNT_PAGE, "Your account"));
         if (isAdmin(me)) items.push(" · ", link(ADMIN_PAGE, "Administration"));
       } else {
         items.push(link(LOGIN_PAGE, "Log in"), " · ", link(REGISTER_PAGE, "Register"));

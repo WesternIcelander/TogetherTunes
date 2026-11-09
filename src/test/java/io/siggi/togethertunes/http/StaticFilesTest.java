@@ -80,7 +80,12 @@ class StaticFilesTest {
         Files.createSymbolicLink(root.resolve("inside.css"), root.resolve("css/main.css"));
 
         Router router = new Router();
-        StaticFiles.of(root).register(router);
+        StaticFiles files = StaticFiles.of(root);
+        router.get("/items/{id}", files.page("index.html"));
+        router.get("/gone/{id}", files.page("missing.html"));
+        router.get("/out/{id}", files.page("../secret.txt"));
+        router.get("/hidden/{id}", files.page(".hidden"));
+        files.register(router);
         router.get("/api/ping", (rq, rs) -> rs.text(200, "pong"));
         server = WebServer.start("127.0.0.1", 0, router, tmp.toFile());
     }
@@ -342,6 +347,26 @@ class StaticFilesTest {
             assertArrayEquals(a.content(), b.content(), e.getKey().toString());
             assertEquals(a.mtime(), b.mtime(), e.getKey().toString());
         }
+    }
+
+    @Test
+    void pageServesOneFixedFileForEveryPathItIsMountedOn() throws IOException {
+        Reply page = request("GET", "/items/0190abcd-ef01-7000-8000-000000000001");
+        assertEquals(200, page.status());
+        assertEquals(INDEX, page.text());
+        assertEquals("text/html; charset=utf-8", page.header("Content-Type"));
+        assertEquals("no-cache", page.header("Cache-Control"));
+        assertEquals("nosniff", page.header("X-Content-Type-Options"));
+        assertEquals(200, request("HEAD", "/items/x").status());
+        assertEquals(304, request("GET", "/items/y", "If-None-Match: " + page.header("ETag")).status());
+        // Only GET/HEAD reach it; the file is never written.
+        assertEquals(405, request("PUT", "/items/x", "data".getBytes(StandardCharsets.UTF_8)).status());
+        assertEquals(405, request("DELETE", "/items/x").status());
+        assertEquals(INDEX, Files.readString(root.resolve("index.html")));
+        // Missing files, paths out of the root and hidden files are 404s, as for any static file.
+        assertEquals(404, request("GET", "/gone/x").status());
+        assertEquals(404, request("GET", "/out/x").status());
+        assertEquals(404, request("GET", "/hidden/x").status());
     }
 
     @Test

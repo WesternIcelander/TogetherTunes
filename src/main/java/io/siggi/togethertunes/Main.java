@@ -389,6 +389,9 @@ public final class Main {
         return loaded.cipher();
     }
 
+    /** The web UI file served for {@code /items/{id}}. */
+    static final String ITEM_PAGE = "item.html";
+
     /**
      * The application's routes. Router-wide hooks: actor resolution ({@link ActorResolver#hook()};
      * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check ({@link Csrf}:
@@ -408,7 +411,8 @@ public final class Main {
      * {@link PlaylistsApi} the caller's playlists ({@code /api/playlists...}), {@link SharesApi}
      * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
-     * media files ({@code /media/{id}/{file}}).
+     * media files ({@code /media/{id}/{file}}). {@code GET /items/{id}} serves the item page
+     * ({@link #ITEM_PAGE}) of the web UI.
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
@@ -434,6 +438,8 @@ public final class Main {
         media.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
+        // The item page by direct link (docs/libraries.md#visibility); the page reads the id from the path.
+        router.get("/items/{id}", staticFiles.page(ITEM_PAGE));
         staticFiles.register(router);
         return router;
     }

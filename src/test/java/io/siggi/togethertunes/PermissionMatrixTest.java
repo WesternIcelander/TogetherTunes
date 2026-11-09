@@ -276,6 +276,9 @@ class PermissionMatrixTest {
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
             row("POST /test/ws-echo/report", c -> Call.post("/test/ws-echo/report", "{\"ok\":true}"), 204, 204, 204, 204),
 
+            // The item page by direct link: open to everyone (the page then calls /api/items/{id}).
+            row("GET /items/{id}", c -> Call.get("/items/" + c.itemId()), 200, 200, 200, 200),
+
             // Static files.
             row("GET /{path...}", c -> Call.get("/test/ws-echo.html"), 200, 200, 200, 200));
 

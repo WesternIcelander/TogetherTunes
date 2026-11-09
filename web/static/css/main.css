@@ -177,3 +177,235 @@ table.sessions tbody tr:hover {
     display: none;
   }
 }
+
+/* Library, item and playlist pages (web/src/library.ts, item.ts, playlists.ts, addmedia.ts). */
+.small {
+  font-size: 0.875em;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.grow {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.notice {
+  padding: 0.25rem 0.5rem;
+  border-left: 3px solid currentColor;
+  opacity: 0.85;
+}
+
+table.library tbody tr,
+table.playlists tbody tr,
+table.entries tbody tr {
+  vertical-align: top;
+}
+
+table.library tbody tr,
+table.entries tbody tr {
+  cursor: default;
+}
+
+td.actions {
+  text-align: right;
+}
+
+td.actions .row {
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+.item-title a {
+  font-weight: 600;
+}
+
+.clamp {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 30rem;
+}
+
+.badge-status {
+  border: 1px solid currentColor;
+}
+
+.badge-failed {
+  color: #c62828;
+}
+
+.badge-purged {
+  opacity: 0.7;
+}
+
+.badge-count:empty {
+  display: none;
+}
+
+.badge-count {
+  background: #c62828;
+  color: #fff;
+}
+
+button.icon {
+  min-width: 2em;
+}
+
+button.danger {
+  color: #c62828;
+}
+
+.check {
+  display: inline-flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.form label.check {
+  flex-direction: row;
+}
+
+.dropzone {
+  display: block;
+  padding: 1rem;
+  border: 2px dashed rgba(128, 128, 128, 0.5);
+  border-radius: 0.5rem;
+  cursor: pointer;
+  margin: 0.5rem 0;
+}
+
+.dropzone.dragging {
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.add-upload input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.add-youtube {
+  margin: 0.5rem 0;
+}
+
+ul.activity,
+ul.shares {
+  list-style: none;
+  padding: 0;
+}
+
+ul.activity > li,
+ul.shares > li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+ul.activity progress {
+  width: 10rem;
+}
+
+.share-message {
+  margin: 0.25rem 0 0 1rem;
+  white-space: pre-line;
+}
+
+.description {
+  white-space: pre-line;
+}
+
+/* Item page */
+.item-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.item-head h1 {
+  margin: 0 0 0.25rem;
+}
+
+.item-artist {
+  font-size: 1.2em;
+  margin: 0 0 0.5rem;
+}
+
+img.cover {
+  width: 10rem;
+  max-width: 40vw;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 0.5rem;
+  background: rgba(128, 128, 128, 0.15);
+}
+
+dl.fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.15rem 1rem;
+  margin: 0;
+}
+
+dl.fields .field {
+  display: contents;
+}
+
+dl.fields dt {
+  opacity: 0.7;
+}
+
+dl.fields dd {
+  margin: 0;
+}
+
+.player {
+  margin: 1rem 0;
+}
+
+.player video {
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
+}
+
+.player audio {
+  width: 100%;
+}
+
+.item-actions {
+  margin: 1rem 0;
+}
+
+pre.job-log {
+  max-height: 20rem;
+  overflow: auto;
+  font-size: 0.8em;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+details.panel > summary {
+  cursor: pointer;
+  padding: 0.5rem 0;
+  font-weight: 600;
+}
+
+@media (max-width: 40rem) {
+  table.library th:nth-child(2),
+  table.library td:nth-child(2),
+  table.library th:nth-child(5),
+  table.library td:nth-child(5),
+  table.entries th:nth-child(3),
+  table.entries td:nth-child(3) {
+    display: none;
+  }
+
+  td.actions .row {
+    flex-wrap: wrap;
+  }
+}

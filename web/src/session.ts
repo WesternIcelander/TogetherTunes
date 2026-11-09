@@ -40,6 +40,8 @@ export const REGISTER_PAGE = "/register.html";
 export const PASSWORD_PAGE = "/password.html";
 export const ACCOUNT_PAGE = "/account/";
 export const ADMIN_PAGE = "/admin/";
+export const LIBRARY_PAGE = "/library/";
+export const PLAYLISTS_PAGE = "/playlists/";
 
 export async function loadMe(): Promise<Me> {
   return api<Me>("GET", "/api/me");
@@ -117,7 +119,7 @@ function link(href: string, text: string): HTMLAnchorElement {
 }
 
 /**
- * Fills `<nav id="site-nav">`: the front page, then Account / Administration / Log out for a
+ * Fills `<nav id="site-nav">`: the front page, then Library / Playlists / Account / Administration / Log out for a
  * user, or Log in / Register otherwise. Names are set as text, never parsed as HTML.
  */
 export function renderNav(me: Me): void {
@@ -125,7 +127,7 @@ export function renderNav(me: Me): void {
   if (nav === null) return;
   const items: Node[] = [link("/", "TogetherTunes")];
   if (me.kind === "user") {
-    items.push(link(ACCOUNT_PAGE, "Account"));
+    items.push(link(LIBRARY_PAGE, "Library"), link(PLAYLISTS_PAGE, "Playlists"), link(ACCOUNT_PAGE, "Account"));
     if (isAdmin(me)) {
       items.push(link(ADMIN_PAGE, "Administration"));
     }

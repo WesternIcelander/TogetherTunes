@@ -108,6 +108,34 @@ class WebBuildTest {
         assertTrue(read("web/admin/index.html").contains("id=\"site-nav\""));
     }
 
+    @Test
+    void libraryPagesArePackaged() throws IOException {
+        Map<String, String> pages = Map.of(
+                "web/library/index.html", "library",
+                "web/playlists/index.html", "playlists",
+                "web/item.html", "item");
+        for (Map.Entry<String, String> e : pages.entrySet()) {
+            String html = read(e.getKey());
+            assertTrue(html.contains("src=\"/js/" + e.getValue() + ".js\""), html);
+            assertTrue(html.contains("id=\"site-nav\""), html);
+            assertTrue(read("web/js/" + e.getValue() + ".js").contains("from \"./session.js\""), e.getValue());
+        }
+        // Library and playlists need an account; the item page is open to anyone with the link.
+        assertTrue(read("web/js/library.js").contains("requireUser"));
+        assertTrue(read("web/js/playlists.js").contains("requireUser"));
+        assertFalse(read("web/js/item.js").contains("requireUser"));
+        assertTrue(read("web/js/library.js").contains("\"/api/library?\""));
+        assertTrue(read("web/js/item.js").contains("/api/items/"));
+        assertTrue(read("web/js/media.js").contains("/job"));
+        String uploads = read("web/js/uploads.js");
+        assertTrue(uploads.contains("\"/api/uploads\""), uploads);
+        assertTrue(uploads.contains("Content-Range"), uploads);
+        assertTrue(uploads.contains("localStorage"), uploads); // resumable after a reload
+        assertTrue(read("web/js/addmedia.js").contains("\"/api/imports/youtube\""));
+        String session = read("web/js/session.js");
+        assertTrue(session.contains("\"/library/\"") && session.contains("\"/playlists/\""), session);
+    }
+
     /**
      * Features the browser baseline (iOS 15 / Safari 15.0, see docs/architecture.md) lacks and
      * tsc doesn't reject with {@code lib: ES2021}: class static blocks (Safari 16.4) pass through

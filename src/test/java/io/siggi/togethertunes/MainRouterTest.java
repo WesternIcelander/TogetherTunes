@@ -130,6 +130,20 @@ class MainRouterTest {
     }
 
     @Test
+    void itemPageIsServedForItsDirectLink() throws Exception {
+        HttpResponse<String> page = get("/items/0190abcd-ef01-7000-8000-000000000001");
+        assertEquals(200, page.statusCode());
+        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
+        assertTrue(page.body().contains("src=\"/js/item.js\""), page.body());
+        assertEquals(200, get("/js/item.js").statusCode());
+        // The API and media routes stay more specific than the page.
+        assertEquals(404, get("/api/items/0190abcd-ef01-7000-8000-000000000001").statusCode());
+        for (String path : List.of("/library/", "/playlists/")) {
+            assertEquals(200, get(path).statusCode(), path);
+        }
+    }
+
+    @Test
     void plainGetOnTheEchoSocketIs426() throws Exception {
         assertEquals(426, get("/ws/echo").statusCode());
     }
