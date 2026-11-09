@@ -50,7 +50,9 @@ Every timeline change (play, pause, seek, skip, advance) **re-anchors** the time
 | `overlay.*` | off | See [overlay.md](overlay.md) |
 | `estimatedDelayMs` | per output | Used by remote mode; the owner can override it |
 
-Roles in a room: `owner` (exactly one; transferable), `moderator`, `member`, `banned`. Users with `rooms.moderateAny` act as moderators everywhere. Visibility: `public` (listed), `unlisted` (anyone with the link), `private` (invited users only; **no guests**).
+Roles in a room: `owner` (exactly one; transferable), `moderator`, `member`, `banned`. Users with `rooms.moderateAny` act as moderators everywhere (even in a room that banned them). Visibility: `public` (listed), `unlisted` (anyone with the link), `private` (invited users only; **no guests**). New rooms default to `unlisted` and `vote`.
+
+Who does what with the room itself (see [api.md](api.md#rooms) for the details): only the **owner** changes its name, slug, visibility and control mode, and hands it over (`PUT …/members/{userId}` with role `owner`; the old owner becomes a moderator). The owner or `rooms.moderateAny` deletes it. Owner and moderators see the member list; the owner gives any role, moderators only make users members or ban them (never touching the owner or other moderators). Nobody changes their own role, but anyone except the owner and banned users can leave. `rooms.owner_id` is the owner; `room_members` mirrors it with an `owner` row.
 
 ## Guests in rooms
 
