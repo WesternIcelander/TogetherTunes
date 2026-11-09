@@ -13,7 +13,8 @@ import { api, ApiError } from "./api.js";
 import type { ActorRef } from "./actor.js";
 import { clientNow } from "./clocksync.js";
 
-export type RoomMode = "listen" | "remote";
+export type { RoomMode } from "./remote.js";
+import type { OutputView, RoomMode } from "./remote.js";
 
 /** `PlaybackState` on the wire. Unknown states are treated like `paused` (docs/rooms.md#room-state). */
 export type TimelineState = "idle" | "playing" | "paused" | string;
@@ -111,6 +112,8 @@ export interface RoomState {
   history: HistoryEntry[];
   skipVotes?: SkipVotes;
   presence: Presence;
+  /** The program outputs and their estimated delays (empty until M4). */
+  outputs?: OutputView[];
 }
 
 export interface NewRequest {

@@ -6,25 +6,28 @@
 // suggestions (accept/reject for the owner and moderators), the request panel (search within the
 // room's request scope, upload, YouTube link, and a playlist for the owner and moderators), the
 // history and who is here. The server's clock is estimated with ClockSync (clocksync.ts) on the
-// same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); the owner's
-// management view comes with a later step of M3.
+// same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); in remote mode
+// (remote.ts) it loads no media and shows the timeline delayed by the active output's
+// estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
+// room; `?mode=` wins. The owner's management view comes with a later step of M3.
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { ClockSync } from "./clocksync.js";
 import { ListenPlayer } from "./listen.js";
+import {
+  chooseMode, DelayedTimeline, effectiveDelay, formatSeconds, modeKey, nudgeKey, outputDelay, parseNudge, stepNudge,
+  type RoomMode,
+} from "./remote.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
 import {
   positionAt, RoomConnection, type CurrentEntry, type HistoryEntry, type NewRequest, type RoomItem, type RoomState,
-  type WaitingEntry,
+  type Timeline, type WaitingEntry,
 } from "./roomclient.js";
 import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
-
-/** A connection's mode (docs/rooms.md#web-and-app-playback). */
-export type RoomMode = "listen" | "remote";
 
 interface RoomResponse {
   id: string;
@@ -71,6 +74,23 @@ export function modeFromLocation(): RoomMode | null {
   return mode === "remote" || mode === "listen" ? mode : null;
 }
 
+function storageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key: string, value: string | null): void {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch {
+    // Private mode or blocked storage: the choice lasts for this page only.
+  }
+}
+
 /** The server clock as this page estimates it (the client's wall clock until the first round). */
 let clock: ClockSync | undefined;
 
@@ -80,8 +100,14 @@ function serverNow(): number {
 
 let me: Me;
 let conn: RoomConnection;
-/** Plays the room in listen mode; undefined in remote mode. */
+/** The page's mode: listen (plays the room) or remote (no media, delayed view). */
+let mode: RoomMode = "listen";
+/** Plays the room in listen mode; created on first entering listen mode, stopped in remote mode. */
 let player: ListenPlayer | undefined;
+/** The timeline as it was a while ago, for remote mode's delayed view. */
+const delayed = new DelayedTimeline<CurrentEntry | undefined>();
+/** The user's nudge of the remote delay for this room (ms, whole 0.5 s steps). */
+let nudge = 0;
 let roomId = "";
 /** The last state shown, for the progress timer. */
 let shown: RoomState | undefined;
@@ -227,7 +253,32 @@ let seekBar: HTMLInputElement | undefined;
 let seeking = false;
 let positionText: HTMLElement | undefined;
 
+/** What the now-playing panel shows: the timeline now, or in remote mode as it was `delay` ago. */
+interface NowView {
+  timeline: Timeline;
+  current: CurrentEntry | undefined;
+}
+
+/** The output delay and the delay the remote view uses (output delay + nudge). */
+function remoteDelays(s: RoomState | undefined): { kind: string; outputMs: number; totalMs: number } {
+  const out = outputDelay(s?.outputs, s?.room.settings);
+  return { kind: out.kind, outputMs: out.delayMs, totalMs: effectiveDelay(out.delayMs, nudge) };
+}
+
+function nowView(s: RoomState): NowView {
+  if (mode === "remote") {
+    const v = delayed.atTime(serverNow() - remoteDelays(s).totalMs);
+    if (v !== undefined) return { timeline: v.timeline as Timeline, current: v.value };
+  }
+  return { timeline: s.timeline, current: s.current };
+}
+
+/** The view the panel was last drawn with, so the timer can tell when the delayed view moved on. */
+let drawn: NowView | undefined;
+
 function renderNowPlaying(s: RoomState): void {
+  const view = nowView(s);
+  drawn = view;
   const el = element("room-now");
   progressBar = undefined;
   seekBar = undefined;
@@ -247,7 +298,7 @@ function renderNowPlaying(s: RoomState): void {
     controls.append(h("span", { class: "muted small", text: "Skip votes: " + s.skipVotes.votes + "/" + s.skipVotes.needed }));
   }
 
-  const c = s.current;
+  const c = view.current;
   if (c === undefined) {
     el.replaceChildren(h("h2", { text: "Now playing" }),
       h("p", { class: "muted", text: s.queue.length > 0 ? "Nothing is playing." : "Nothing is playing. The queue is empty." }),
@@ -256,7 +307,8 @@ function renderNowPlaying(s: RoomState): void {
     return;
   }
   const item = c.item;
-  const stateText = s.timeline.state === "playing" ? "Playing" : s.timeline.state === "paused" ? "Paused" : s.timeline.state;
+  const st = view.timeline.state;
+  const stateText = st === "playing" ? "Playing" : st === "paused" ? "Paused" : st;
   positionText = h("span", { class: "small num" });
   const duration = item.durationMs ?? 0;
   let bar: HTMLElement;
@@ -289,9 +341,21 @@ function renderNowPlaying(s: RoomState): void {
 /** Moves the progress bar along (four times a second). */
 function tick(): void {
   const s = shown;
-  if (s === undefined || s.current === undefined || positionText === undefined) return;
-  const duration = s.current.item.durationMs ?? 0;
-  let pos = positionAt(s.timeline, serverNow());
+  if (s === undefined) return;
+  let view = drawn;
+  if (mode === "remote") {
+    // The delayed view reached another change: draw the panel again.
+    const v = nowView(s);
+    if (view === undefined || v.timeline !== view.timeline || v.current !== view.current) {
+      renderNowPlaying(s);
+      return; // renderNowPlaying ticks
+    }
+    view = v;
+  }
+  if (view === undefined || view.current === undefined || positionText === undefined) return;
+  const duration = view.current.item.durationMs ?? 0;
+  const delay = mode === "remote" ? remoteDelays(s).totalMs : 0;
+  let pos = positionAt(view.timeline, serverNow() - delay);
   if (duration > 0) pos = Math.min(pos, duration);
   positionText.textContent = formatDuration(pos) + (duration > 0 ? " / " + formatDuration(duration) : "");
   if (progressBar !== undefined) progressBar.value = pos;
@@ -661,6 +725,7 @@ function playlistPanel(): HTMLElement {
 function render(s: RoomState): void {
   shown = s;
   roomId = s.room.id;
+  delayed.push(s.timeline, s.current, serverNow());
   renderHeader(s);
   renderIdentity();
   renderNowPlaying(s);
@@ -668,8 +733,86 @@ function render(s: RoomState): void {
   renderSuggestions(s);
   renderRequests(s);
   renderHistory(s);
+  renderRemoteDelay();
   element("room-main").hidden = false;
-  player?.update(s);
+  if (mode === "listen") player?.update(s);
+}
+
+// ------------------------------------------------------------------ mode and remote delay
+
+/** The remote delay line: "Delay 5.0 s (RTMP)", the user's nudge, and −/+ 0.5 s buttons. */
+function renderRemoteDelay(): void {
+  const d = remoteDelays(shown);
+  element("room-delay-total").textContent = formatSeconds(d.totalMs);
+  const kind = { rtmp: "RTMP", ts: ".ts", hls: "HLS" }[d.kind] ?? d.kind;
+  element("room-delay-detail").textContent = "(" + kind + " " + formatSeconds(d.outputMs)
+    + (nudge !== 0 ? ", your nudge " + formatSeconds(nudge, true) : "") + ")";
+  (element("room-delay-reset") as HTMLButtonElement).hidden = nudge === 0;
+  (element("room-delay-less") as HTMLButtonElement).disabled = stepNudge(nudge, -1, d.outputMs) === nudge;
+  (element("room-delay-more") as HTMLButtonElement).disabled = stepNudge(nudge, 1, d.outputMs) === nudge;
+}
+
+function setNudge(n: number): void {
+  nudge = n;
+  storageSet(nudgeKey(roomId), n === 0 ? null : String(n));
+  renderRemoteDelay();
+  if (shown !== undefined) renderNowPlaying(shown);
+}
+
+/** Shows the controls of a mode and starts or stops local playback. */
+function applyMode(m: RoomMode): void {
+  mode = m;
+  element("room-body").dataset["mode"] = m;
+  element("room-mode").textContent = m === "remote" ? "Remote mode" : "Listen mode";
+  const toggle = element("room-mode-toggle") as HTMLButtonElement;
+  toggle.textContent = m === "remote" ? "Listen here instead" : "I'm listening in VRChat (remote mode)";
+  element("room-listen-controls").hidden = m !== "listen";
+  element("room-remote-controls").hidden = m !== "remote";
+  if (m === "listen") {
+    const p = player ?? createPlayer();
+    p.update(shown);
+  } else {
+    // Remote mode loads no media: every element is stopped and emptied.
+    player?.stop();
+  }
+  renderRemoteDelay();
+  if (shown !== undefined) renderNowPlaying(shown);
+}
+
+/** The toggle: remember the choice for this room, tell the server, switch. */
+function switchMode(m: RoomMode): void {
+  if (m === mode) return;
+  storageSet(modeKey(roomId), m);
+  // The URL's ?mode= would win over the remembered choice on the next visit.
+  const url = new URL(location.href);
+  if (url.searchParams.has("mode")) {
+    url.searchParams.delete("mode");
+    try {
+      history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+    } catch {
+      // Not allowed (e.g. a file:// page): harmless.
+    }
+  }
+  conn.mode = m;
+  if (conn.joined) conn.request({ type: "mode", mode: m }).catch(showError);
+  applyMode(m);
+  // The toggle click is a user gesture: let the new player play at once.
+  if (m === "listen") player?.unlock();
+}
+
+function createPlayer(): ListenPlayer {
+  const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly());
+  player = p;
+  const toggle = element("room-audio-only") as HTMLInputElement;
+  toggle.checked = p.audioOnly;
+  toggle.addEventListener("change", () => {
+    p.setAudioOnly(toggle.checked);
+    saveAudioOnly(toggle.checked);
+  });
+  window.setInterval(() => { if (mode === "listen") p.tick(); }, 250);
+  // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
+  (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
+  return p;
 }
 
 function onRequest(r: NewRequest): void {
@@ -718,9 +861,8 @@ async function start(): Promise<void> {
   roomId = room.id;
   document.title = room.name + " · TogetherTunes";
   element("room-name").textContent = room.name;
-  const mode = modeFromLocation() ?? "listen";
-  element("room-body").dataset["mode"] = mode;
-  element("room-mode").textContent = mode === "remote" ? "Remote mode" : "Listen mode";
+  mode = chooseMode(modeFromLocation(), storageGet(modeKey(room.id)));
+  nudge = parseNudge(storageGet(nudgeKey(room.id)));
   element("room-status").textContent = "Connecting…";
 
   conn = new RoomConnection(room.id, mode, {
@@ -753,22 +895,13 @@ async function start(): Promise<void> {
   });
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;
-  if (mode === "listen") {
-    const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly());
-    player = p;
-    const toggle = element("room-audio-only") as HTMLInputElement;
-    toggle.checked = p.audioOnly;
-    toggle.addEventListener("change", () => {
-      p.setAudioOnly(toggle.checked);
-      saveAudioOnly(toggle.checked);
-    });
-    element("room-listen-controls").hidden = false;
-    // A better clock estimate moves the target: correct at once instead of at the next tick.
-    c.onUpdate = () => p.tick();
-    window.setInterval(() => p.tick(), 250);
-    // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
-    (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
-  }
+  // A better clock estimate moves the target: correct at once instead of at the next tick.
+  c.onUpdate = () => { if (mode === "listen") player?.tick(); };
+  element("room-mode-toggle").addEventListener("click", () => switchMode(mode === "remote" ? "listen" : "remote"));
+  element("room-delay-less").addEventListener("click", () => setNudge(stepNudge(nudge, -1, remoteDelays(shown).outputMs)));
+  element("room-delay-more").addEventListener("click", () => setNudge(stepNudge(nudge, 1, remoteDelays(shown).outputMs)));
+  element("room-delay-reset").addEventListener("click", () => setNudge(0));
+  applyMode(mode);
   // The client's clock may have stepped while the device slept: measure again at once.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") c.syncNow();
