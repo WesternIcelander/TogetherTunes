@@ -165,7 +165,9 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.SetupApi$SetupRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.ingest.FfmpegProgress", "tool output, turned into a job's progress number"),
             Map.entry("io.siggi.togethertunes.ingest.ToolResult", "tool output, server-side only"),
-            Map.entry("io.siggi.togethertunes.media.Mp4Boxes$Box", "MP4 box position in a media file, server-side only"));
+            Map.entry("io.siggi.togethertunes.media.Mp4Boxes$Box", "MP4 box position in a media file, server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
