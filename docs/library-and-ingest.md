@@ -116,6 +116,8 @@ Don't rely on colour alone to convey anything: use text labels and strong contra
 
 One pre-encoded **AAC silence frame** (48 kHz stereo), generated at startup from `anullsrc` and taken from after the encoder priming. The packager pairs it with cards whenever the room is paused, idle or loading.
 
+It is encoded with the same AAC arguments as every other encode (a shared constant next to the x264 lists): 16 frames to ADTS, in memory. The priming packet, the first real frame (its MDCT window overlaps the priming) and the last frame (flush) are dropped, and the frames in between must be byte-identical; that steady-state frame is kept, without its ADTS header. Repeated, it decodes to exact digital silence.
+
 ## Sample index (`index.bin`)
 
 At ingest, build an index from ffprobe, so the packager never parses MP4 at playback time:
