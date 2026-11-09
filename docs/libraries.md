@@ -16,6 +16,8 @@ An **item** is a media object stored once on the server: its files, metadata and
 ## Playlists
 
 - Owned by one user, private, and made of ordered `playlist_entries` (fractional `position`). An item can appear in a playlist more than once.
+- Ordering: an entry added at the end gets the last position + 1 (rounded down to a whole number first); one added or moved before another entry gets the midpoint between that entry and its predecessor (or that entry's position − 1 at the front). When two neighbours are too close for a midpoint (about 50 insertions into one gap), the playlist is renumbered 1..n in the same transaction. Entry changes lock the playlist row first (`FOR UPDATE` on PostgreSQL), so concurrent edits of one playlist can't pick the same position. Clients only see the order, never the positions.
+- Adding follows the same item rules as adding to a library: a purged or failed upload can't be added; a purged or failed YouTube item is fetched again. Limits: 1000 playlists per user, 10 000 entries per playlist.
 - Adding an item to a playlist does **not** add it to your library, but it does protect the item from retention (see below).
 - In a room, the owner and moderators can enqueue a whole playlist, or shuffle it into the queue. In `vote` mode, playlist entries are added as normal queued entries with zero votes.
 - Sharing playlists is out of scope for v1; sharing works per item.
