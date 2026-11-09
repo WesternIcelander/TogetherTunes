@@ -244,7 +244,17 @@ class DtoIpLeakTest {
                     + " with it"),
             Map.entry("io.siggi.togethertunes.rooms.QueueEntry", "queue_entries row held by the room executor; the"
                     + " WebSocket layer builds the client view (no IP columns exist on it)"),
-            Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"));
+            Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryAdded", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryMoved", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.QueueOps$Added", "entry/item ids and state; the WebSocket layer"
+                    + " acks with it"),
+            Map.entry("io.siggi.togethertunes.rooms.QueueOps$PlaylistAdded", "entry ids and a count; the WebSocket"
+                    + " layer acks with it"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomQueue$Source", "what a queue.add refers to (item, upload"
+                    + " or link), input only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomStore$ItemRow", "item status/duration/source read by the"
+                    + " room executor"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =

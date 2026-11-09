@@ -261,7 +261,7 @@ public final class QueueControl {
         return e;
     }
 
-    private static void setPlace(Connection c, String roomId, QueueEntry e) throws SQLException {
+    static void setPlace(Connection c, String roomId, QueueEntry e) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("UPDATE queue_entries SET position = ?, pinned = ?"
                 + " WHERE id = ? AND room_id = ?")) {
             ps.setDouble(1, e.position());

@@ -149,23 +149,118 @@ final class RoomStore {
             ps.setString(2, currentId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    QueueEntry.State state = QueueEntry.State.parse(rs.getString(6));
-                    if (state == null) {
-                        LOG.log(System.Logger.Level.WARNING, "Queue entry " + rs.getString(1) + " in room " + roomId
-                                + " has unknown state '" + rs.getString(6) + "'; ignoring it");
-                        continue;
+                    QueueEntry e = entry(rs, roomId);
+                    if (e != null) {
+                        out.add(e);
                     }
-                    long playedAt = rs.getLong(9);
-                    Long played = rs.wasNull() ? null : playedAt;
-                    long duration = rs.getLong(11);
-                    Long durationMs = rs.wasNull() ? null : duration;
-                    out.add(new QueueEntry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                            rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, rs.getString(10),
-                            durationMs));
                 }
             }
         }
         return out;
+    }
+
+    /** The entry of an {@link #ENTRY_COLUMNS} row, or {@code null} (logged) if its state is unknown. */
+    private static QueueEntry entry(ResultSet rs, String roomId) throws SQLException {
+        QueueEntry.State state = QueueEntry.State.parse(rs.getString(6));
+        if (state == null) {
+            LOG.log(System.Logger.Level.WARNING, "Queue entry " + rs.getString(1) + " in room " + roomId
+                    + " has unknown state '" + rs.getString(6) + "'; ignoring it");
+            return null;
+        }
+        long playedAt = rs.getLong(9);
+        Long played = rs.wasNull() ? null : playedAt;
+        long duration = rs.getLong(11);
+        Long durationMs = rs.wasNull() ? null : duration;
+        return new QueueEntry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
+                rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, rs.getString(10),
+                durationMs);
+    }
+
+    /**
+     * The entry that played (or was skipped) most recently, other than {@code exceptId}, with its
+     * item; {@code null} if there is none. For {@code previous}.
+     */
+    static QueueEntry lastPlayed(Connection c, String roomId, String exceptId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT " + ENTRY_COLUMNS
+                + " FROM queue_entries q JOIN items i ON i.id = q.item_id"
+                + " WHERE q.room_id = ? AND q.state IN ('played', 'skipped') AND q.played_at IS NOT NULL"
+                + " AND q.id <> ? ORDER BY q.played_at DESC, q.id DESC LIMIT 1")) {
+            ps.setString(1, roomId);
+            ps.setString(2, exceptId == null ? "" : exceptId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? entry(rs, roomId) : null;
+            }
+        }
+    }
+
+    /**
+     * The items of the last {@code n} entries that started playing (the current one included),
+     * most recent first. For {@code noRepeatWindow}.
+     */
+    static List<String> recentlyPlayedItems(Connection c, String roomId, int n) throws SQLException {
+        List<String> out = new ArrayList<>();
+        if (n <= 0) {
+            return out;
+        }
+        try (PreparedStatement ps = c.prepareStatement("SELECT item_id FROM queue_entries"
+                + " WHERE room_id = ? AND played_at IS NOT NULL ORDER BY played_at DESC, id DESC LIMIT ?")) {
+            ps.setString(1, roomId);
+            ps.setInt(2, n);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getString(1));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** An item as a queue entry needs it. */
+    record ItemRow(String id, String status, Long durationMs, String source) {
+    }
+
+    /** The item, or {@code null} if there is no such item. */
+    static ItemRow item(Connection c, String itemId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT id, status, duration_ms, source FROM items"
+                + " WHERE id = ?")) {
+            ps.setString(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                long d = rs.getLong(3);
+                Long duration = rs.wasNull() ? null : d;
+                return new ItemRow(rs.getString(1), rs.getString(2), duration, rs.getString(4));
+            }
+        }
+    }
+
+    /** Inserts a new {@code queue_entries} row for {@code e} in the room. */
+    static void insertEntry(Connection c, String roomId, QueueEntry e) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id,"
+                + " added_by_user_id, added_by_guest_id, added_at, state, position, pinned, played_at)"
+                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")) {
+            ps.setString(1, e.id());
+            ps.setString(2, roomId);
+            ps.setString(3, e.itemId());
+            ps.setString(4, e.addedByUserId());
+            ps.setString(5, e.addedByGuestId());
+            ps.setLong(6, e.addedAt());
+            ps.setString(7, e.state().wire());
+            ps.setDouble(8, e.position());
+            ps.setInt(9, e.pinned() ? 1 : 0);
+            ps.executeUpdate();
+        }
+    }
+
+    /** Deletes the votes and skip votes on an entry (it is becoming current, or going back to the queue). */
+    static void clearVotes(Connection c, String entryId) throws SQLException {
+        for (String table : new String[] {"votes", "skip_votes"}) {
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM " + table + " WHERE entry_id = ?")) {
+                ps.setString(1, entryId);
+                ps.executeUpdate();
+            }
+        }
     }
 
     /**

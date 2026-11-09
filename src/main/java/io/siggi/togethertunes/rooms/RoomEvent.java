@@ -40,4 +40,12 @@ public interface RoomEvent {
     /** Someone voted to skip the current entry: {@code votes} of {@code needed} skip votes. */
     record SkipVotesChanged(String entryId, int votes, int needed) implements RoomEvent {
     }
+
+    /** An entry joined the queue ({@code queued}) or the suggestions ({@code suggested}). */
+    record EntryAdded(String entryId, QueueEntry.State state) implements RoomEvent {
+    }
+
+    /** A queued entry was moved before {@code beforeEntryId} ({@code null}: to the end) of a manual queue. */
+    record EntryMoved(String entryId, String beforeEntryId) implements RoomEvent {
+    }
 }

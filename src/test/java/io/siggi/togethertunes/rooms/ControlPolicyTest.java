@@ -223,6 +223,16 @@ class ControlPolicyTest {
         assertEquals(new ControlSettings(true, null), ControlSettings.parse("{\"allowDownvotes\":true,"
                 + "\"voteSkipThreshold\":\"off\"}"));
         assertEquals(new ControlSettings(false, 0.3), ControlSettings.parse("{\"voteSkipThreshold\":0.3}"));
+        assertEquals(3, ControlSettings.DEFAULTS.requestsPerActor());
+        assertEquals(10, ControlSettings.DEFAULTS.noRepeatWindow());
+        assertEquals(new ControlSettings(false, 0.5, 7, 0), ControlSettings.parse("{\"requestsPerActor\":7,"
+                + "\"noRepeatWindow\":0}"));
+        assertEquals(ControlSettings.DEFAULTS, ControlSettings.parse("{\"requestsPerActor\":0,"
+                + "\"noRepeatWindow\":-1}"), "out of range");
+        assertEquals(ControlSettings.DEFAULTS, ControlSettings.parse("{\"requestsPerActor\":2.5,"
+                + "\"noRepeatWindow\":\"5\"}"), "not a whole number");
+        assertEquals(ControlSettings.DEFAULTS, ControlSettings.parse("{\"requestsPerActor\":1001,"
+                + "\"noRepeatWindow\":1001}"), "too large");
         ControlSettings half = ControlSettings.DEFAULTS;
         assertEquals(1, half.skipVotesNeeded(0));
         assertEquals(1, half.skipVotesNeeded(1));
