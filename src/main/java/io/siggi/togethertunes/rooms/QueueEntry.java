@@ -56,6 +56,11 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
                 newPlayedAt, itemStatus, durationMs);
     }
 
+    public QueueEntry withPlace(double newPosition, boolean newPinned) {
+        return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, newPosition, newPinned,
+                playedAt, itemStatus, durationMs);
+    }
+
     public QueueEntry withItem(String newStatus, Long newDurationMs) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt,
                 newStatus, newDurationMs);

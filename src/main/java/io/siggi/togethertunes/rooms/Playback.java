@@ -25,19 +25,52 @@ public final class Playback {
     }
 
     /**
-     * Play order of the queued entries: pinned entries first, then by queue position, then by
-     * time added. The control-mode step refines this per mode (votes in {@code vote} mode).
+     * Manual play order ({@code owner} and {@code open} modes): by queue position, then time
+     * added. The pinned flag doesn't count here (pins are a {@code vote} mode thing).
      */
-    static final Comparator<QueueEntry> PLAY_ORDER = Comparator
-            .comparing((QueueEntry e) -> !e.pinned())
-            .thenComparingDouble(QueueEntry::position)
+    static final Comparator<QueueEntry> MANUAL_ORDER = Comparator
+            .comparingDouble(QueueEntry::position)
             .thenComparingLong(QueueEntry::addedAt)
             .thenComparing(QueueEntry::id);
+
+    /** Order of the suggestions: oldest first. */
+    static final Comparator<QueueEntry> SUGGESTION_ORDER = Comparator
+            .comparingLong(QueueEntry::addedAt)
+            .thenComparing(QueueEntry::id);
+
+    /**
+     * Play order in {@code vote} mode: pinned entries first (in the order they were pinned, kept
+     * in their positions), then by votes, descending, ties broken by time added.
+     */
+    static Comparator<QueueEntry> voteOrder(RoomState state) {
+        return Comparator
+                .comparing((QueueEntry e) -> !e.pinned())
+                .thenComparingDouble(e -> e.pinned() ? e.position() : 0)
+                .thenComparingInt(e -> e.pinned() ? 0 : -state.voteTotal(e.id()))
+                .thenComparingLong(QueueEntry::addedAt)
+                .thenComparingDouble(QueueEntry::position)
+                .thenComparing(QueueEntry::id);
+    }
+
+    /** The order the room's control mode plays the queue in ({@code docs/rooms.md#control-modes}). */
+    static Comparator<QueueEntry> order(RoomState state) {
+        return switch (state.controlMode()) {
+            case OWNER, OPEN -> MANUAL_ORDER;
+            case VOTE -> voteOrder(state);
+        };
+    }
 
     /** The queued entries in the order they will play (a new list). */
     public static List<QueueEntry> playOrder(RoomState state) {
         List<QueueEntry> out = new ArrayList<>(state.queue());
-        out.sort(PLAY_ORDER);
+        out.sort(order(state));
+        return out;
+    }
+
+    /** The suggestions, oldest first (a new list). */
+    public static List<QueueEntry> suggestionOrder(RoomState state) {
+        List<QueueEntry> out = new ArrayList<>(state.suggestions());
+        out.sort(SUGGESTION_ORDER);
         return out;
     }
 
@@ -88,7 +121,7 @@ public final class Playback {
             return null;
         });
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
-        s.removeFromQueue(playing.id());
+        s.forget(playing.id());
         s.current(playing);
         tx.timeline(Timeline.playing(playing.id(), now, 0));
         return playing;

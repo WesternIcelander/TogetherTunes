@@ -7,9 +7,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Loads a {@link RoomState} from the {@code rooms} row and its queue entries, and writes its
@@ -62,9 +64,12 @@ final class RoomStore {
                     List<QueueEntry> entries = entries(c, roomId, entryId);
                     QueueEntry current = null;
                     List<QueueEntry> queue = new ArrayList<>();
+                    List<QueueEntry> suggestions = new ArrayList<>();
                     for (QueueEntry e : entries) {
                         if (e.id().equals(entryId)) {
                             current = e;
+                        } else if (e.state() == QueueEntry.State.SUGGESTED) {
+                            suggestions.add(e);
                         } else {
                             queue.add(e);
                         }
@@ -77,8 +82,13 @@ final class RoomStore {
                     if (timeline.entryId() == null) {
                         current = null;
                     }
+                    Map<String, Map<String, Integer>> votes = votes(c, roomId);
+                    if (current != null) {
+                        votes.remove(current.id());
+                    }
+                    Set<String> skipVotes = current == null ? Set.of() : skipVotes(c, current.id());
                     return new RoomState(roomId, slug, name, ownerId, visibility, mode, settings, timeline, version,
-                            current, queue);
+                            current, queue, suggestions, votes, skipVotes);
                 }
             }
         });
@@ -87,16 +97,53 @@ final class RoomStore {
     private static final String ENTRY_COLUMNS = "q.id, q.item_id, q.added_by_user_id, q.added_by_guest_id,"
             + " q.added_at, q.state, q.position, q.pinned, q.played_at, i.status, i.duration_ms";
 
+    /** Votes on the room's queued and suggested entries: entryId -> voter key -> value. */
+    private static Map<String, Map<String, Integer>> votes(Connection c, String roomId) throws SQLException {
+        Map<String, Map<String, Integer>> out = new HashMap<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT v.entry_id, v.voter_user_id, v.voter_guest_id, v.value"
+                + " FROM votes v JOIN queue_entries q ON q.id = v.entry_id"
+                + " WHERE q.room_id = ? AND q.state IN ('queued', 'suggested') AND v.value <> 0")) {
+            ps.setString(1, roomId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.computeIfAbsent(rs.getString(1), k -> new HashMap<>())
+                            .put(voterKey(rs.getString(2), rs.getString(3)), Integer.signum(rs.getInt(4)));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** Voter keys of the skip votes on an entry. */
+    private static Set<String> skipVotes(Connection c, String entryId) throws SQLException {
+        Set<String> out = new LinkedHashSet<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT voter_user_id, voter_guest_id FROM skip_votes"
+                + " WHERE entry_id = ? ORDER BY at")) {
+            ps.setString(1, entryId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(voterKey(rs.getString(1), rs.getString(2)));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** The key {@link RoomActor#key} gives the voter with these columns. */
+    static String voterKey(String userId, String guestId) {
+        return userId != null ? "u:" + userId : "g:" + guestId;
+    }
+
     /**
-     * The room's {@code queued} entries and the entry {@code currentId} (whatever its state; may
-     * be {@code null}), with their items' status and duration. Entries with a state this version
+     * The room's {@code queued} and {@code suggested} entries and the entry {@code currentId}
+     * (whatever its state; may be {@code null}), with their items' status and duration. Entries with a state this version
      * doesn't know are left out (logged).
      */
     static List<QueueEntry> entries(Connection c, String roomId, String currentId) throws SQLException {
         List<QueueEntry> out = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement("SELECT " + ENTRY_COLUMNS
                 + " FROM queue_entries q JOIN items i ON i.id = q.item_id"
-                + " WHERE q.room_id = ? AND (q.state = 'queued' OR q.id = ?)"
+                + " WHERE q.room_id = ? AND (q.state IN ('queued', 'suggested') OR q.id = ?)"
                 + " ORDER BY q.position, q.added_at, q.id")) {
             ps.setString(1, roomId);
             ps.setString(2, currentId);

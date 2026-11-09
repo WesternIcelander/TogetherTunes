@@ -24,4 +24,20 @@ public interface RoomEvent {
      */
     record EntryStateChanged(String entryId, QueueEntry.State state) implements RoomEvent {
     }
+
+    /** The votes on a queued entry changed; {@code total} is their new sum (the play order may have changed). */
+    record VotesChanged(String entryId, int total) implements RoomEvent {
+    }
+
+    /** A queued entry was pinned or unpinned ({@code vote} mode). */
+    record EntryPinned(String entryId, boolean pinned) implements RoomEvent {
+    }
+
+    /** Queue positions were rewritten (the control mode changed and the old play order was kept). */
+    record QueueReordered() implements RoomEvent {
+    }
+
+    /** Someone voted to skip the current entry: {@code votes} of {@code needed} skip votes. */
+    record SkipVotesChanged(String entryId, int votes, int needed) implements RoomEvent {
+    }
 }

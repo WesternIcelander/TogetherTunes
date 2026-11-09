@@ -87,6 +87,7 @@ public final class RoomsApi {
                 && r.visibility() == s.visibility() && r.controlMode() == s.controlMode()) {
             return;
         }
+        QueueControl.controlModeChanging(tx, r.controlMode());
         s.record(r.slug(), r.name(), r.ownerId(), r.visibility(), r.controlMode());
         tx.event(new RoomEvent.RoomUpdated());
     }

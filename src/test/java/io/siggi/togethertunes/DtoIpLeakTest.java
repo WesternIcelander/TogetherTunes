@@ -231,6 +231,17 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RoomUpdated", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryStateChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$VotesChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryPinned", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$QueueReordered", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$SkipVotesChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomActor", "who acts on a room queue (ids and rights), built per"
+                    + " action, never sent"),
+            Map.entry("io.siggi.togethertunes.rooms.ControlSettings", "parsed from settings_json, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.ControlPolicy$Capabilities", "booleans and a role; the WebSocket"
+                    + " state's you object is built from it (no ids)"),
+            Map.entry("io.siggi.togethertunes.rooms.QueueControl$VoteSkip", "counts only; the WebSocket layer acks"
+                    + " with it"),
             Map.entry("io.siggi.togethertunes.rooms.QueueEntry", "queue_entries row held by the room executor; the"
                     + " WebSocket layer builds the client view (no IP columns exist on it)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"));
