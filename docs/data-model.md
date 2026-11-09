@@ -66,6 +66,12 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
 ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch'
       state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL)
 
+uploads(id PK, user_id NULL, guest_id NULL,  -- exactly one owner
+      room_id NULL,                         -- set when the upload is a room request (M3)
+      filename, size BIGINT, created_at, updated_at,
+      item_id NULL,                         -- set by `complete`; the bytes are then gone
+      deduplicated INTEGER)                 -- 1 if `complete` reused an existing item
+
 library_entries(user_id FK, item_id FK, added_at,
       via TEXT,                             -- 'upload'|'youtube'|'request'|'share'|'manual'
       shared_by_user_id NULL,

@@ -13,11 +13,12 @@ Guest uploads are subject to `guests.uploadQuota`, counted per guest and per IP.
 
 ## Upload
 
-1. `POST /api/uploads` returns an upload id. The client then sends the file in chunks with `PUT /api/uploads/{id}` and `Content-Range`, which makes uploads resumable. Chunks are written to `tmp/`; the SHA-256 is computed as they arrive.
+1. `POST /api/uploads` returns an upload id (an `uploads` row). The client then sends the file in chunks with `PUT /api/uploads/{id}` and `Content-Range`, which makes uploads resumable. Chunks are appended in order to `tmp/uploads/<id>.part`; a chunk may repeat or overlap bytes already received (they are skipped). The SHA-256 is computed as they arrive (after a restart, once more from the part file). Uploads untouched for 24 h are deleted.
 2. On `complete`:
-   - If `content_sha256` matches an existing item, reuse that item and discard the upload. If the existing item is `purged`, re-ingest into it.
-   - Otherwise run ffprobe, and reject the file if it has no audio, can't be parsed, or is too long. Create the item (`pending`) and an ingest job.
-3. Metadata comes from container tags, falling back to the filename. Cover art comes from the embedded picture.
+   - If `content_sha256` matches an existing upload item that is ready, pending or processing, reuse that item and discard the upload. If the existing item is `purged` (or `failed`), re-ingest into it (same row and metadata; the response says `deduplicated: true`, since no new item is made).
+   - Otherwise run ffprobe, and reject the file if it has no audio, can't be parsed, or is too long (the upload is deleted). Create the item (`pending`) and an ingest job; the file moves to the item's staging directory as `source.<ext>`.
+   - Completes are serialised around the hash lookup, so two uploads of the same file make one item. The item, its job, the uploader's library entry and the upload's result are written in one transaction, and `last_referenced_at` becomes now.
+3. Metadata comes from what the uploader typed in `complete`, then container tags (`title`, `artist` or `album_artist`, `album`; the first audio stream's tags count too, e.g. Ogg/Opus), falling back to the file name without its extension for the title. Cover art comes from the embedded picture.
 4. For an audio file, the upload is kept as the item's original ([below](#originals-audio-uploads)). For a video file, it is deleted once ingest has finished.
 
 ## Originals (audio uploads)
