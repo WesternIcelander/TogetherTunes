@@ -28,6 +28,8 @@ An **item** is a media object stored once on the server: its files, metadata and
 - The share adds the item to the recipient's library immediately (`via='share'`, `shared_by_user_id` set), and they get a notification. They can remove it like any other entry.
 - The recipient's library is not visible to the sender. The sender only sees "shared with X", in their own share history.
 - Users can't share with guests. To give a guest an item, send them the item's direct link.
+- The notification is the share itself: it stays unseen until the recipient marks it seen (`POST /api/shares/seen`); `GET /api/shares` returns the unseen count for a badge. (Pushing it live over the WebSocket can come with M3's socket; nothing else is needed for that.) Sharing an item the recipient already has makes a new notification but leaves their entry as it is.
+- Item rules are those of adding to a library: a purged or failed upload can't be shared; a purged or failed YouTube item is fetched again. A share references the item for retention. A sender can make at most 100 shares per rolling hour, so shares can't be used to flood someone with notifications.
 
 ## Visibility
 
