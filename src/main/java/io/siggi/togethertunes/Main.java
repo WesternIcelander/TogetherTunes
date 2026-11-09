@@ -28,6 +28,9 @@ import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.ingest.ReferenceCard;
+import io.siggi.togethertunes.ingest.ToolException;
+import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -67,6 +70,8 @@ public final class Main {
     }
 
     public static void main(String[] args) throws InterruptedException {
+        // Cards are rendered with Java2D; never open a window or a Dock icon.
+        System.setProperty("java.awt.headless", "true");
         Startup startup = load(args, ConfigLoader.forProcess(), System.out, System.err);
         if (startup.status() != 0) {
             System.exit(startup.status());
@@ -106,6 +111,8 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
+        // TODO(ingest queue): ingest and the overlay encoder verify every encode against this.
+        ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -155,6 +162,32 @@ public final class Main {
         }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
         web.join();
+    }
+
+    /**
+     * Creates or checks the reference card for the configured output profile
+     * ({@link ReferenceCard#ensure}). Without a working ffmpeg/ffprobe the server still starts
+     * (nothing can be ingested then), so this reports problems and returns null instead of failing.
+     */
+    static ReferenceCard loadReferenceCard(Config config, DataDir dataDir, PrintStream out, PrintStream err)
+            throws InterruptedException {
+        Tools tools = Tools.from(config);
+        try {
+            ReferenceCard card = ReferenceCard.ensure(tools, dataDir.cards(), config.outputProfile(), null);
+            if (card.created()) {
+                out.println("Created the " + config.outputProfile() + " reference card in " + card.card());
+            }
+            if (card.encoderChanged()) {
+                err.println("WARNING: ffmpeg/x264 no longer reproduces the " + config.outputProfile()
+                        + " reference card's avcC (" + ReferenceCard.profileDir(dataDir.cards(), config.outputProfile())
+                        + "). New encodes will fail the avcC check until the library is re-encoded against a new reference.");
+            }
+            return card;
+        } catch (ToolException | IOException e) {
+            err.println("WARNING: could not create the " + config.outputProfile()
+                    + " reference card; ingest won't work: " + e.getMessage());
+            return null;
+        }
     }
 
     /**

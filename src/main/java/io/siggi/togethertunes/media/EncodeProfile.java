@@ -13,11 +13,12 @@ import java.util.List;
  * DTS), closed 60-frame GOPs with an IDR forced every 2 s from t = 0 and no scene-cut keyframes
  * (invariant 2), CRF 20 with a VBV cap. They contain only output (encoder) options, so a call
  * site puts them after its inputs and filters, e.g.
- * {@code ffmpeg -loop 1 -framerate 30 -i card.png -t 2 <videoArgs> -an card.mp4}.
+ * {@code ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf <scaleFilter> <videoArgs> -an card.mp4}.
  *
  * <p>The frame size and rate are not set here: the input has to arrive at the profile's size and
- * 30 fps already, from {@link #scaleFilter(OutputProfile)} (mezzanines), a card image rendered at
- * the profile size with {@code -framerate 30}, or the mezzanine itself (overlay re-encodes).
+ * 30 fps already, through {@link #scaleFilter(OutputProfile)} (mezzanines and cards), or as the
+ * mezzanine itself (overlay re-encodes). The filter also sets SAR 1:1, which ends up in the SPS:
+ * without it, an image with no aspect ratio (a PNG without {@code pHYs}) gives a different avcC.
  * See {@code docs/library-and-ingest.md#the-mezzanine-profile}.
  */
 public final class EncodeProfile {
@@ -61,7 +62,7 @@ public final class EncodeProfile {
     }
 
     /**
-     * The {@code -vf} chain that brings any source video to {@code profile}: scale to fit, pad to
+     * The {@code -vf} chain that brings any source video or card image to {@code profile}: scale to fit, pad to
      * the exact size with black (centred), square pixels, constant frame rate. The scaled
      * picture keeps even dimensions so the 4:2:0 padding stays centred on whole chroma samples.
      */
