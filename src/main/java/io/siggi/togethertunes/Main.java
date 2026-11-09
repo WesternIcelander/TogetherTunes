@@ -30,6 +30,7 @@ import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.ReferenceCard;
+import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.secrets.SecretCipher;
@@ -116,6 +117,8 @@ public final class Main {
         ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
         // TODO(packager, M4): the packager plays these when a room is paused, idle or loading.
         FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
+        // TODO(packager, M4): repeated next to the filler cards.
+        SilenceFrame silence = loadSilenceFrame(config, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -212,6 +215,19 @@ public final class Main {
             return cards;
         } catch (ToolException | IOException | ReferenceCard.AvcCMismatchException e) {
             err.println("WARNING: could not create the " + config.outputProfile() + " filler cards: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Encodes the AAC silence frame ({@link SilenceFrame#generate}). Like the cards, a failure is
+     * reported and the server keeps starting; returns null then.
+     */
+    static SilenceFrame loadSilenceFrame(Config config, PrintStream err) throws InterruptedException {
+        try {
+            return SilenceFrame.generate(Tools.from(config), null);
+        } catch (ToolException | IllegalStateException e) {
+            err.println("WARNING: could not create the AAC silence frame: " + e.getMessage());
             return null;
         }
     }

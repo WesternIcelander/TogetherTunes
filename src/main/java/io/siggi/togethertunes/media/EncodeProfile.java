@@ -32,6 +32,24 @@ public final class EncodeProfile {
     /** x264 arguments for {@link OutputProfile#P1080_30}. */
     public static final List<String> VIDEO_ARGS_1080P30 = videoArgs("4.1", "6M", "12M");
 
+    /** AAC sample rate of every encode; one AAC frame is 1024 samples = 1920 ticks at 90 kHz. */
+    public static final int AUDIO_SAMPLE_RATE = 48000;
+    /** Audio channel count of every encode (stereo). */
+    public static final int AUDIO_CHANNELS = 2;
+    /** Samples per AAC-LC frame. */
+    public static final int AAC_FRAME_SAMPLES = 1024;
+
+    /**
+     * The AAC arguments shared by every audio encode (mezzanine audio, audio items, the silence
+     * frame): AAC-LC, 48 kHz, stereo, 192 kb/s. Output options only, like the video lists. The
+     * packager's ADTS header is fixed to this configuration ({@code docs/program-output.md}).
+     */
+    public static final List<String> AUDIO_ARGS = List.of(
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", Integer.toString(AUDIO_SAMPLE_RATE),
+            "-ac", Integer.toString(AUDIO_CHANNELS));
+
     private EncodeProfile() {
     }
 
