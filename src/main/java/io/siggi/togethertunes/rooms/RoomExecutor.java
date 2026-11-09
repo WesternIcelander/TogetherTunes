@@ -7,6 +7,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Objects;
+import java.util.OptionalLong;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -32,8 +33,11 @@ import java.util.function.Consumer;
  * write or event), or the transaction fails, the state is reloaded from the database, so memory
  * never runs ahead of what was committed; nothing is broadcast and the version stays.
  *
- * <p>The thread is a virtual thread. Timed work (the advance task) uses {@link #schedule}, so it
- * also runs here. Created and closed by {@link RoomRegistry}.
+ * <p>The thread is a virtual thread. Timed work uses {@link #schedule}, so it also runs here.
+ * The executor keeps one <b>advance task</b> scheduled for when the current entry ends
+ * ({@link Playback#advanceIfDue}); it is rescheduled after every committed change that re-anchors
+ * the timeline, after a reload, and when a mutation asks for it. Created, started
+ * ({@link #start}: {@link Playback#resume}) and closed by {@link RoomRegistry}.
  */
 public final class RoomExecutor {
     private static final System.Logger LOG = System.getLogger(RoomExecutor.class.getName());
@@ -48,6 +52,8 @@ public final class RoomExecutor {
     private final List<RoomListener> listeners = new CopyOnWriteArrayList<>();
     /** Only touched on the executor thread. */
     private RoomState state;
+    /** The pending advance task, or {@code null}. Only touched on the executor thread. */
+    private ScheduledFuture<?> advanceTask;
     private volatile boolean closed;
 
     RoomExecutor(RoomState initial, RoomStore store, Clock clock, PackagerHook packager,
@@ -66,6 +72,18 @@ public final class RoomExecutor {
 
     public String roomId() {
         return roomId;
+    }
+
+    /**
+     * Queues the start-up work: {@link Playback#resume} (a playing room continues, or restarts its
+     * entry if the server was down past its end) and the first advance task. Called once by the
+     * registry right after creating the executor, before anything else is submitted.
+     */
+    CompletableFuture<Void> start() {
+        return submit(tx -> {
+            Playback.resume(tx);
+            return null;
+        });
     }
 
     /** Whether this executor stopped taking work. */
@@ -207,7 +225,7 @@ public final class RoomExecutor {
     // ------------------------------------------------------------------ on the executor thread
 
     private <T> T run(RoomMutation<T> mutation) throws Exception {
-        RoomTx tx = new RoomTx(state, EpochMs.now(clock));
+        RoomTx tx = new RoomTx(state, EpochMs.now(clock), store);
         T value;
         try {
             value = mutation.apply(tx);
@@ -222,6 +240,9 @@ public final class RoomExecutor {
             return value;
         }
         if (!tx.changed()) {
+            if (tx.reschedulesAdvance()) {
+                rescheduleAdvance();
+            }
             return value;
         }
         RoomState s = state;
@@ -256,7 +277,39 @@ public final class RoomExecutor {
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING, "Packager hook failed in room " + roomId, t);
         }
+        if (change.timelineChanged() || tx.reschedulesAdvance()) {
+            rescheduleAdvance();
+        }
         return value;
+    }
+
+    /**
+     * Cancels the advance task and schedules a new one for when the current entry ends, if the
+     * timeline is moving towards an end ({@link Playback#advanceDelayMs}).
+     */
+    private void rescheduleAdvance() {
+        if (advanceTask != null) {
+            advanceTask.cancel(false);
+            advanceTask = null;
+        }
+        if (closed) {
+            return;
+        }
+        OptionalLong delay = Playback.advanceDelayMs(state, EpochMs.now(clock));
+        if (delay.isPresent()) {
+            advanceTask = schedule(Duration.ofMillis(delay.getAsLong()), tx -> {
+                Playback.advanceIfDue(tx);
+                return null;
+            });
+        }
+    }
+
+    /** The delay until the pending advance task runs, in ms, or {@code -1} if there is none (tests). */
+    long advanceTaskDelayMs() throws Exception {
+        return call(tx -> {
+            ScheduledFuture<?> f = advanceTask;
+            return f == null || f.isDone() ? -1L : f.getDelay(TimeUnit.MILLISECONDS);
+        });
     }
 
     /** Replaces the in-memory state with the committed one; closes the executor if that fails. */
@@ -267,6 +320,7 @@ public final class RoomExecutor {
                 closeNow(true);
             } else {
                 state = fresh;
+                rescheduleAdvance();
             }
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING, "Could not reload room " + roomId + "; closing its executor", t);
@@ -279,6 +333,10 @@ public final class RoomExecutor {
             return;
         }
         closed = true;
+        if (advanceTask != null) {
+            advanceTask.cancel(false);
+            advanceTask = null;
+        }
         executor.shutdown(); // queued work fails with RoomClosedException; delayed tasks are dropped
         onClosed.accept(this);
         for (RoomListener listener : listeners) {

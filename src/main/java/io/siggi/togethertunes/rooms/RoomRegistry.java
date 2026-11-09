@@ -59,10 +59,44 @@ public final class RoomRegistry implements AutoCloseable {
             }
             e = new RoomExecutor(state, store, clock, packager, this::closed);
             executors.put(roomId, e);
+            e.start(); // resume first: queued ahead of whatever the caller submits
             return e;
         } finally {
             loadLock.unlock();
         }
+    }
+
+    /**
+     * Run once at server start: loads every room whose timeline was playing, so each one resumes
+     * ({@link Playback#resume}) and its advance task runs without waiting for someone to open the
+     * room. Rooms that fail to load are logged and skipped.
+     *
+     * @return how many rooms were loaded
+     */
+    public int resumePlaying() throws SQLException {
+        List<String> ids = store.db().read(c -> {
+            List<String> out = new ArrayList<>();
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT id FROM rooms WHERE playback_state = ? ORDER BY id")) {
+                ps.setString(1, PlaybackState.PLAYING.wire());
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.add(rs.getString(1));
+                    }
+                }
+            }
+            return out;
+        });
+        int loaded = 0;
+        for (String id : ids) {
+            try {
+                executor(id);
+                loaded++;
+            } catch (SQLException | RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not resume room " + id, e);
+            }
+        }
+        return loaded;
     }
 
     /** The room's executor if it is loaded, else {@code null}. */

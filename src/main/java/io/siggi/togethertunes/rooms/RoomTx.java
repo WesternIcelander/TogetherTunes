@@ -16,10 +16,17 @@ public final class RoomTx {
     private final List<RoomEvent> events = new ArrayList<>();
     private boolean touched;
     private boolean closeRoom;
+    private boolean rescheduleAdvance;
+    private final RoomStore store;
 
-    RoomTx(RoomState state, long now) {
+    RoomTx(RoomState state, long now, RoomStore store) {
         this.state = state;
         this.now = now;
+        this.store = store;
+    }
+
+    RoomStore store() {
+        return store;
     }
 
     /** The room's state; change it only after every check has passed. */
@@ -53,7 +60,10 @@ public final class RoomTx {
         return this;
     }
 
-    /** Sets the timeline (re-anchoring it) and adds {@link RoomEvent.TimelineChanged}. */
+    /**
+     * Sets the timeline (re-anchoring it) and adds {@link RoomEvent.TimelineChanged}. Once the
+     * change is committed, the executor reschedules the advance task for the new anchor.
+     */
     public RoomTx timeline(Timeline timeline) {
         state().timeline(timeline);
         return event(new RoomEvent.TimelineChanged());
@@ -67,6 +77,18 @@ public final class RoomTx {
     void closeRoom() {
         touched = true;
         closeRoom = true;
+    }
+
+    /**
+     * Asks the executor to reschedule the advance task after this mutation even if the timeline
+     * didn't change (resume after a restart; an advance task that ran a little early).
+     */
+    void rescheduleAdvance() {
+        rescheduleAdvance = true;
+    }
+
+    boolean reschedulesAdvance() {
+        return rescheduleAdvance;
     }
 
     boolean touched() {

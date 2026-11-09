@@ -229,7 +229,11 @@ class DtoIpLeakTest {
                     + " messages"),
             Map.entry("io.siggi.togethertunes.rooms.RoomChange", "executor -> listeners/packager, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RoomUpdated", "executor -> listeners, in memory only"),
-            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"));
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryStateChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.QueueEntry", "queue_entries row held by the room executor; the"
+                    + " WebSocket layer builds the client view (no IP columns exist on it)"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =

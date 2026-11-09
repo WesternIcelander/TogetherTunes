@@ -208,6 +208,14 @@ public final class Main {
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, PlayingItems.NO_ROOMS);
         // The packager comes in M4: until then room changes go nowhere but the room's listeners.
         RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), PackagerHook.NONE);
+        try {
+            int resumed = roomRegistry.resumePlaying();
+            if (resumed > 0) {
+                System.out.println("Resumed " + resumed + " playing rooms");
+            }
+        } catch (SQLException e) {
+            System.err.println("WARNING: could not resume playing rooms: " + e.getMessage());
+        }
         RoomsApi roomsApi = new RoomsApi(new Rooms(database, permissions, Clock.systemUTC()), roomRegistry,
                 permissions);
         WebServer web;

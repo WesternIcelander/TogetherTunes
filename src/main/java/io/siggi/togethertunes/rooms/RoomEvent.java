@@ -17,4 +17,11 @@ public interface RoomEvent {
     /** The timeline was re-anchored; the new anchor is {@link RoomChange#timeline()}. */
     record TimelineChanged() implements RoomEvent {
     }
+
+    /**
+     * A queue entry moved to another state (for example {@code queued -> playing} when the
+     * timeline advanced to it, {@code playing -> played} when it ended).
+     */
+    record EntryStateChanged(String entryId, QueueEntry.State state) implements RoomEvent {
+    }
 }
