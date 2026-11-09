@@ -830,4 +830,71 @@ class IngestPipelineTest {
         assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(item));
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")));
     }
+
+    /**
+     * The M2 "done when" set on one queue: an MP3, a FLAC with cover art, 24 fps and 60 fps
+     * videos, a portrait video and a YouTube download (fake yt-dlp) all become ready, and every
+     * card, mezzanine and index carries the reference card's avcC byte for byte.
+     */
+    @Test
+    void milestoneSetIngestsWithOneAvcC() throws Exception {
+        Path png = dir.resolve("cover.png");
+        ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=400x400", "-frames:v", "1", png.toString());
+        Path ytSource = dir.resolve("yt.webm");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
+                "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", ytSource.toString());
+        IngestQueue uploads = queue(tools, reference, 1800);
+        IngestQueue youtube = queue(fakeYtdlp(ytSource, "fake-yt-dlp-set"), reference, 1800);
+
+        record Case(String name, String staged, boolean video, List<String> encode) {
+        }
+        List<Case> cases = List.of(
+                new Case("mp3", "source.mp3", false, List.of("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3",
+                        "-c:a", "libmp3lame", "-b:a", "192k")),
+                new Case("flac+cover", "source.flac", false, List.of("-f", "lavfi", "-i", "sine=f=330:r=48000",
+                        "-i", png.toString(), "-t", "3", "-map", "0:a", "-map", "1:v", "-c:a", "flac", "-c:v", "png",
+                        "-disposition:v", "attached_pic")),
+                new Case("24fps", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24",
+                        "-f", "lavfi", "-i", "sine=f=220:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-c:a", "aac")),
+                new Case("60fps", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=60",
+                        "-f", "lavfi", "-i", "sine=f=250:r=44100", "-t", "3", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-c:a", "aac")),
+                new Case("portrait", "source.mp4", true, List.of("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=30",
+                        "-f", "lavfi", "-i", "sine=f=280:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
+                        "ultrafast", "-c:a", "aac")));
+        for (Case c : cases) {
+            String item = fixtures.item("pending");
+            List<String> args = new ArrayList<>(c.encode());
+            args.add(stage(item, c.staged()).toString());
+            ffmpeg(args.toArray(String[]::new));
+            IngestJob job = run(uploads, Kind.UPLOAD, item);
+            assertEquals(State.DONE, job.state(), c.name() + "\n" + job.log());
+            assertSameAvcC(c.name(), item, c.video());
+            if (c.video()) {
+                assertNoOriginal(item);
+            } else {
+                assertNotNull(originalRow(item)[0], c.name());
+            }
+        }
+        String yt = fixtures.item("pending");
+        makeYoutube(yt);
+        IngestJob job = run(youtube, Kind.YOUTUBE, yt);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertSameAvcC("youtube", yt, true);
+        assertNoOriginal(yt);
+        assertNoLeftovers();
+    }
+
+    private void assertSameAvcC(String name, String item, boolean video) throws Exception {
+        assertEquals("ready", itemRow(item)[0], name);
+        assertEquals(video ? "video" : "audio", itemRow(item)[1], name);
+        Path itemDir = IngestPipeline.itemDir(data, item);
+        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")), name + " card");
+        assertArrayEquals(reference.avcC(), SampleIndex.read(itemDir.resolve("index.bin")).avcC(), name + " index");
+        assertEquals(video, Files.exists(itemDir.resolve("mezz.mp4")), name);
+        if (video) {
+            assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("mezz.mp4")), name + " mezz");
+        }
+    }
 }
