@@ -97,8 +97,12 @@ For **audio items**, encode only the audio, straight to `audio.m4a`; there is no
 A card is a still image encoded as one 2 s GOP with the **same encoder arguments** as the mezzanine: one IDR followed by 59 P-frames of about 70 bytes each. A whole card is about 40–100 KB.
 
 ```sh
-ffmpeg -loop 1 -framerate 30 -i card.png -t 2 <PROFILE_VIDEO_ARGS> -an card.mp4
+ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf "<scale/pad/setsar=1/fps filter>" <PROFILE_VIDEO_ARGS> -an card.mp4
 ```
+
+The filter is the mezzanine's scale filter. `setsar=1` matters: a PNG without a `pHYs` chunk (Java2D writes none) has an unknown aspect ratio, x264 then omits it from the SPS, and the avcC differs from the mezzanines'.
+
+**Reference card:** at startup the server makes sure `cards/<profile>/reference.mp4` and `reference.avcC` exist (a black card). The stored avcC is the invariant reference for that profile. Each start also encodes a fresh card; if its avcC differs (e.g. after an ffmpeg/x264 upgrade), the server warns, keeps the stored reference, and new encodes fail the check until the library is re-encoded.
 
 The image is rendered with Java2D at the output resolution:
 
