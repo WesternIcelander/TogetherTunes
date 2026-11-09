@@ -100,14 +100,14 @@ A card is a still image encoded as one 2 s GOP with the **same encoder arguments
 ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf "<scale/pad/setsar=1/fps filter>" <PROFILE_VIDEO_ARGS> -an card.mp4
 ```
 
-The filter is the mezzanine's scale filter. `setsar=1` matters: a PNG without a `pHYs` chunk (Java2D writes none) has an unknown aspect ratio, x264 then omits it from the SPS, and the avcC differs from the mezzanines'.
+The filter is the mezzanine's scale filter. Every card's avcC is checked against the reference card before the card is moved into place. `setsar=1` matters: a PNG without a `pHYs` chunk (Java2D writes none) has an unknown aspect ratio, x264 then omits it from the SPS, and the avcC differs from the mezzanines'.
 
 **Reference card:** at startup the server makes sure `cards/<profile>/reference.mp4` and `reference.avcC` exist (a black card). The stored avcC is the invariant reference for that profile. Each start also encodes a fresh card; if its avcC differs (e.g. after an ffmpeg/x264 upgrade), the server warns, keeps the stored reference, and new encodes fail the check until the library is re-encoded.
 
 The image is rendered with Java2D at the output resolution:
 
 - **Item card:** artwork, title, artist and album. The text must fit (shrink, then ellipsize).
-- **Server filler cards:** "Paused", "Queue is empty", "Loading…".
+- **Server filler cards:** "Paused", "Queue is empty", "Loading…". Stored as `cards/<profile>/paused.mp4`, `idle.mp4` and `loading.mp4`, each with a `.key` fingerprint (pixels, encoder arguments, reference avcC); startup re-encodes only the ones whose fingerprint or avcC no longer matches.
 - **Room cards:** the idle card with the room's name; with the QR overlay enabled, overlaid versions of every card ([overlay.md](overlay.md)).
 
 Don't rely on colour alone to convey anything: use text labels and strong contrast.

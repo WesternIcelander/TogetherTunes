@@ -51,7 +51,7 @@
     index.bin             packager sample index (see library-and-ingest.md)
     cover.jpg             artwork (embedded, from YouTube thumbnail, or generated)
     original.<ext>        original file of an audio upload (audio uploads only) — played by the web client
-  cards/                  server-wide filler cards (paused, idle, "loading") per output profile
+  cards/<profile>/        reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     cards/<key>.mp4       per-room cards: idle (room name), filler cards and item cards with the overlay
