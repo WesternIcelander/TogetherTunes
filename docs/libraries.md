@@ -50,6 +50,8 @@ Item pages can be opened from a direct link, but there is no global listing or s
 
 Search results return only item metadata. They don't say which library an item came from, so nothing about a library's contents leaks beyond what the scope allows.
 
+As implemented (`RequestSearch`): `owner` covers the owner's library and the items in the owner's playlists; `owner+self` adds the searching user's library (guests have none). An item appears once however many of these hold it, ordered by item id (newest item first), never by when a library got it; results carry no `addedAt`, `via` or `sharedBy`. The same scope applies to **requests by item id** (`queue.add` with `itemId`) from anyone but the owner and moderators: `403 not_in_request_scope` (the same for an unknown item, so it only answers what the search already shows) and, with `none`, `403 library_requests_disabled`. Owner and moderators add any item. With `none` the owner can still search their own library; moderators can't.
+
 ## Media access rules
 
 `GET /media/{itemId}/{file}` (`audio.m4a`, `mezz.mp4`, `original`, `cover.jpg`) is decided as follows:
