@@ -131,6 +131,25 @@ class WebBuildTest {
         assertFalse(read("web/js/room.js").contains("requireUser"));
         assertTrue(read("web/js/room.js").contains("\"/api/rooms/\""));
         assertTrue(read("web/js/room.js").contains("\"remote\""));
+        // The room page talks to the room over /ws: every action of docs/api.md#websocket the page
+        // offers, the request search, and the guest identity flow.
+        String room = read("web/js/room.js");
+        for (String type : List.of("queue.add", "queue.addPlaylist", "queue.remove", "queue.move", "queue.pin",
+                "vote", "suggest.accept", "suggest.reject", "play", "pause", "seek", "next", "previous",
+                "voteSkip")) {
+            assertTrue(room.contains("type: \"" + type + "\""), type);
+        }
+        assertTrue(room.contains("/search?"), room);
+        assertTrue(room.contains("uploadId"), room);
+        assertTrue(room.contains("youtubeUrl"), room);
+        String client = read("web/js/roomclient.js");
+        assertTrue(client.contains("\"/ws\""), client);
+        assertTrue(client.contains("type: \"join\""), client);
+        assertTrue(client.contains("type: \"sync\""), client); // a missed delta asks for the full state
+        assertTrue(client.contains("\"/api/me/guest\""), client);
+        assertTrue(client.contains("type: \"identity\""), client);
+        assertTrue(client.contains("identity_required"), client);
+        assertTrue(read("web/room.html").contains("id=\"room-queue\""));
         assertTrue(read("web/js/media.js").contains("/job"));
         String uploads = read("web/js/uploads.js");
         assertTrue(uploads.contains("\"/api/uploads\""), uploads);

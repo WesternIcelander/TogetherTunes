@@ -118,11 +118,18 @@ export class Upload {
   #onProgress: (p: UploadProgress) => void;
   /** Metadata for `complete`; the server reads tags and the file name when left out. */
   addToLibrary = true;
+  /** The room this upload is a request in (`POST /api/uploads {roomId}`); needed for guests. */
+  roomId: string | undefined;
 
   constructor(file: File, onProgress: (p: UploadProgress) => void) {
     this.file = file;
     this.key = fileKey(file);
     this.#onProgress = onProgress;
+  }
+
+  /** The server's id for this upload, once started (what `queue.add {uploadId}` takes). */
+  get uploadId(): string | undefined {
+    return this.#uploadId;
   }
 
   get state(): UploadState {
@@ -224,7 +231,8 @@ export class Upload {
     }
     if (this.#uploadId === undefined) {
       this.#report("starting");
-      const created = await api<Created>("POST", "/api/uploads", { filename: this.file.name, size });
+      const created = await api<Created>("POST", "/api/uploads", 
+        this.roomId === undefined ? { filename: this.file.name, size } : { filename: this.file.name, size, roomId: this.roomId });
       this.#uploadId = created.uploadId;
       if (created.chunkSize > 0) this.#chunkSize = created.chunkSize;
       this.#sent = 0;

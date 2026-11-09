@@ -10,8 +10,24 @@
 </head>
 <body>
   <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
-  <p id="room-status" role="status">Loading...</p>
-  <p id="room-error" class="error" role="alert"></p>
-  <div id="room-body"></div>
+  <div id="room-body">
+    <header class="room-head">
+      <h1 id="room-name">Room</h1>
+      <p class="muted small"><span id="room-mode"></span> · <span id="room-meta"></span></p>
+      <p id="room-presence" class="small" aria-live="polite"></p>
+      <p id="room-identity"></p>
+      <div id="room-guest-name" class="panel" hidden></div>
+    </header>
+    <p id="room-status" role="status">Loading...</p>
+    <p id="room-error" class="error" role="alert"></p>
+    <ul id="room-notices" class="notices" aria-live="polite"></ul>
+    <div id="room-main" class="room-main" hidden>
+      <section id="room-now" class="panel room-now"></section>
+      <section id="room-queue" class="room-queue"></section>
+      <section id="room-suggestions" class="room-suggestions" hidden></section>
+      <section id="room-request" class="panel room-request"></section>
+      <section id="room-history" class="room-history"></section>
+    </div>
+  </div>
 </body>
 </html>
