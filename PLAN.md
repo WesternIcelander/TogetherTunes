@@ -220,7 +220,8 @@ UI:
 
 **Done when:**
 
-- [ ] An MP3, a FLAC with cover art, 24 fps and 60 fps videos, a portrait video and a YouTube URL all ingest, with byte-identical avcC.
+- [x] An MP3, a FLAC with cover art, 24 fps and 60 fps videos, a portrait video and a YouTube URL all ingest, with byte-identical avcC.
+  - Checked 2026-11-09 at main `e079740`. **Live run** against the real jar (SQLite, 720p30, real ffmpeg 8 / yt-dlp 2026.03.17) through the HTTP API (setup, bearer token, chunked `/api/uploads`, `/api/imports/youtube`): a 12 s stereo MP3 (192k), a 10 s FLAC with an attached PNG cover, 1920x1080 24 fps (9 s), 1280x720 60 fps (8.5 s), 1080x1920 portrait 30 fps (7.3 s) and the real YouTube video `jNQXAC9IVRw` (19 s) all became `ready` (durations 12000 / 10000 / 9002 / 8522 / 7317 / 19012 ms). Every `card.mp4` and `mezz.mp4` is 1280x720 30/1 with no B-frames and an avcC byte-identical (49 bytes) to `cards/720p30/reference.mp4` (checked with an independent Python box walker). Layouts: MP3 `audio.m4a card.mp4 index.bin original.mp3`; FLAC the same plus `cover.jpg` with `original.flac`; videos `audio.m4a card.mp4 index.bin mezz.mp4`; YouTube the same plus `cover.jpg`. **Regression test:** `IngestPipelineTest.milestoneSetIngestsWithOneAvcC` runs the same set (3 s each, YouTube via a fake yt-dlp serving a VP9/Opus WebM) on one queue and asserts the reference avcC in every card, mezzanine and `index.bin`. `mvn verify` passes (767 unit + 230 integration).
 - [ ] The MP3 and FLAC keep their originals (web-playable, with a gain); the video uploads and the YouTube item keep none.
 - [ ] A second form of the same YouTube URL (`youtu.be`, `shorts`, with `&t=`) reuses the item without starting yt-dlp.
 - [ ] An unreferenced item is purged after the (shortened) retention period, and a purged YouTube item refetches into the same row.
