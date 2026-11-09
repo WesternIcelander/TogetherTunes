@@ -162,7 +162,9 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.AuthApi$PasswordChangeRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.auth.MeApi$GuestRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.auth.MeApi$PatchRequest", "request body (inbound)"),
-            Map.entry("io.siggi.togethertunes.auth.SetupApi$SetupRequest", "request body (inbound)"));
+            Map.entry("io.siggi.togethertunes.auth.SetupApi$SetupRequest", "request body (inbound)"),
+            Map.entry("io.siggi.togethertunes.ingest.FfmpegProgress", "tool output, turned into a job's progress number"),
+            Map.entry("io.siggi.togethertunes.ingest.ToolResult", "tool output, server-side only"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
