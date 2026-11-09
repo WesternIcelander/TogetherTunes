@@ -287,10 +287,43 @@ class IngestStepsTest {
         assertEquals("--", args.get(args.size() - 2));
         assertEquals("bv*[height<=1080]+ba/b", args.get(args.indexOf("-f") + 1));
         assertEquals("mkv", args.get(args.indexOf("--merge-output-format") + 1));
-        assertEquals("/data/tmp/jobs/j/src.%(ext)s", args.get(args.indexOf("-o") + 1));
+        assertEquals("/data/tmp/jobs/j/src.%(ext)s", args.get(args.lastIndexOf("-o") + 1));
+        // the best thumbnail, next to the download, becomes the cover
+        assertTrue(args.contains("--write-thumbnail"));
+        assertEquals("thumbnail:/data/tmp/jobs/j/cover.%(ext)s", args.get(args.indexOf("-o") + 1));
         assertTrue(args.contains("--no-playlist"));
         assertEquals("/opt/bin/ffmpeg", args.get(args.indexOf("--ffmpeg-location") + 1));
+        assertFalse(args.contains("--cookies"));
         assertFalse(IngestPipeline.downloadArgs("dQw4w9WgXcQ", Path.of("x"), "ffmpeg").contains("--ffmpeg-location"));
+
+        List<String> withCookies = IngestPipeline.downloadArgs("dQw4w9WgXcQ", Path.of("x"), "ffmpeg",
+                Path.of("/etc/tt/cookies.txt"));
+        assertEquals("/etc/tt/cookies.txt", withCookies.get(withCookies.indexOf("--cookies") + 1));
+        assertTrue(withCookies.indexOf("--cookies") < withCookies.indexOf("--"), "options before --");
+        assertThrows(IllegalArgumentException.class, () -> IngestPipeline.downloadArgs("not-an-id", Path.of("x"), "ffmpeg"));
+    }
+
+    @Test
+    void metadataUsesTheCanonicalUrl() {
+        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+                IngestPipeline.metadataArgs("dQw4w9WgXcQ", null));
+        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--cookies", "/c.txt", "--",
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ"), IngestPipeline.metadataArgs("dQw4w9WgXcQ", Path.of("/c.txt")));
+        assertThrows(IllegalArgumentException.class, () -> IngestPipeline.metadataArgs("https://youtu.be/dQw4w9WgXcQ", null));
+    }
+
+    @Test
+    void cookiesFileIsUsedOnlyWhenReadable() throws Exception {
+        List<String> warnings = new java.util.ArrayList<>();
+        assertNull(IngestPipeline.cookiesFile(null, warnings::add));
+        assertNull(IngestPipeline.cookiesFile("  ", warnings::add));
+        assertTrue(warnings.isEmpty(), "no setting, no warning");
+        assertNull(IngestPipeline.cookiesFile(dir.resolve("missing.txt").toString(), warnings::add));
+        assertEquals(1, warnings.size());
+        assertTrue(warnings.get(0).contains("missing.txt"), warnings.toString());
+        assertNull(IngestPipeline.cookiesFile(dir.toString(), warnings::add), "a directory isn't a cookies file");
+        Path cookies = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
+        assertEquals(cookies, IngestPipeline.cookiesFile(" " + cookies + " ", warnings::add));
     }
 
     // ------------------------------------------------------------------ files

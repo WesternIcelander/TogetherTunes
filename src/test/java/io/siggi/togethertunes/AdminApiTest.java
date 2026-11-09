@@ -90,7 +90,8 @@ class AdminApiTest {
                         io.siggi.togethertunes.auth.AdminActivityApi.create(database,
                                 new Guests(database, settings, config.secureCookies()), new Permissions(database, settings),
                                 clock),
-                        TestUploads.api(database, dir, config, new Permissions(database, settings), clock)), dir.toFile());
+                        TestUploads.api(database, dir, config, new Permissions(database, settings), clock),
+                TestUploads.youtubeApi(database, config, new Permissions(database, settings), clock)), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

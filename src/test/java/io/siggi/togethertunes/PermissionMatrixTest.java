@@ -214,6 +214,12 @@ class PermissionMatrixTest {
             row("POST /api/uploads/{id}/complete", c -> Call.post("/api/uploads/" + c.uploadId() + "/complete", null),
                     401, 401, 409, 409),
 
+            // YouTube imports: library.youtube (default user role), gated by ytdlp.enabled. Guests'
+            // YouTube links are room requests (M3). A link that isn't a YouTube video gets an
+            // allowed caller 400 without running yt-dlp (YoutubeImportsContract covers the rest).
+            row("POST /api/imports/youtube", c -> Call.post("/api/imports/youtube", "{\"url\":\"https://example.com/\"}"),
+                    401, 401, 400, 400),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -262,7 +268,8 @@ class PermissionMatrixTest {
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
                 AdminActivityApi.create(database, guests, permissions, clock),
-                TestUploads.api(database, dir, config, permissions, clock));
+                TestUploads.api(database, dir, config, permissions, clock),
+                TestUploads.youtubeApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",

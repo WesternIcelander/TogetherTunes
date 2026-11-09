@@ -92,7 +92,8 @@ class MainRouterTest {
                         new io.siggi.togethertunes.auth.IdentityTickets()), admin,
                 io.siggi.togethertunes.auth.AdminActivityApi.create(database,
                         new Guests(database, settings, config.secureCookies()), new Permissions(database, settings), clock),
-                TestUploads.api(database, dir, config, new Permissions(database, settings), clock)),
+                TestUploads.api(database, dir, config, new Permissions(database, settings), clock),
+                TestUploads.youtubeApi(database, config, new Permissions(database, settings), clock)),
                 dir.toFile());
     }
 

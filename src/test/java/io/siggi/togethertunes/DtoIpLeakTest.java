@@ -181,7 +181,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Existing", "content-hash lookup"),
             Map.entry("io.siggi.togethertunes.library.UploadsApi$CreateRequest", "request body (inbound)"),
-            Map.entry("io.siggi.togethertunes.library.UploadsApi$CompleteRequest", "request body (inbound)"));
+            Map.entry("io.siggi.togethertunes.library.UploadsApi$CompleteRequest", "request body (inbound)"),
+            Map.entry("io.siggi.togethertunes.library.YoutubeImports$Imported", "import result; the API builds its own map"),
+            Map.entry("io.siggi.togethertunes.library.YoutubeImports$Existing", "youtube_id lookup"),
+            Map.entry("io.siggi.togethertunes.library.YoutubeImportsApi$ImportRequest", "request body (inbound)"),
+            Map.entry("io.siggi.togethertunes.library.YoutubeMetadata", "parsed yt-dlp -J output; stored as items columns"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
@@ -254,7 +258,8 @@ class DtoIpLeakTest {
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, roles, permissions, settings),
                 AdminActivityApi.create(database, guests, permissions, clock),
-                TestUploads.api(database, dir, config, permissions, clock));
+                TestUploads.api(database, dir, config, permissions, clock),
+                TestUploads.youtubeApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -681,7 +686,27 @@ class DtoIpLeakTest {
         assertTrue(json(expect(200, alice, "POST", "/api/uploads/" + uploadId + "/complete", null))
                 .get("deduplicated").getAsBoolean());
 
+        // a YouTube import by alice of a video that is already ready (cached, so no yt-dlp)
+        insertYoutubeItem(adminId, "dQw4w9WgXcQ");
+        assertTrue(json(expect(200, alice, "POST", "/api/imports/youtube",
+                "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\"}")).get("cached").getAsBoolean());
+
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId);
+    }
+
+    /** A ready YouTube item for {@code videoId}. */
+    private void insertYoutubeItem(String userId, String videoId) throws Exception {
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source,"
+                    + " youtube_id, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                    + " VALUES (?, 'video', 'Video', 'youtube', ?, ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
+                ps.setString(2, videoId);
+                ps.setString(3, userId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
     }
 
     /** A ready upload item whose content hash is that of {@code content}. */

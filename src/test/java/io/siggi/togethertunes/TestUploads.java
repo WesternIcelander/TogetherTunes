@@ -7,12 +7,17 @@ import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.UploadsApi;
+import io.siggi.togethertunes.library.YoutubeImports;
+import io.siggi.togethertunes.library.YoutubeImportsApi;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 
-/** The upload service and API for router tests: data in {@code <dir>/data}, jobs queued without workers. */
+/**
+ * The upload and YouTube import services and APIs for router tests: data in {@code <dir>/data},
+ * jobs queued without workers.
+ */
 public final class TestUploads {
     private TestUploads() {
     }
@@ -28,5 +33,15 @@ public final class TestUploads {
 
     public static UploadsApi api(Database db, Path dir, Config config, Permissions permissions, Clock clock) {
         return new UploadsApi(uploads(db, dir, config, Tools.from(config), clock), permissions);
+    }
+
+    /** YouTube imports with the configured tools (no cookies file). */
+    public static YoutubeImports youtube(Database db, Config config, Tools tools, Clock clock) {
+        return new YoutubeImports(db, tools, new IngestJobs(db, clock), () -> {
+        }, config.outputProfile(), config.ingestMaxDurationSeconds(), () -> null, clock);
+    }
+
+    public static YoutubeImportsApi youtubeApi(Database db, Config config, Permissions permissions, Clock clock) {
+        return new YoutubeImportsApi(youtube(db, config, Tools.from(config), clock), permissions);
     }
 }

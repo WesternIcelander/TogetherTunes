@@ -23,6 +23,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -37,7 +38,9 @@ import java.util.regex.Pattern;
  * {@code source} or {@code source.<ext>}; a {@code cover.<ext>} next to it (e.g. a YouTube
  * thumbnail) is used as artwork instead of the cover embedded in the source. A {@code youtube}
  * or {@code refetch} job downloads {@code https://www.youtube.com/watch?v=<youtube_id>} with
- * yt-dlp into its scratch directory first.
+ * yt-dlp into its scratch directory first, together with the video's best thumbnail, which becomes
+ * the cover. yt-dlp gets {@code --cookies <file>} when the {@code ytdlp.cookiesFile} setting names
+ * a readable file ({@link #cookiesArgs}).
  *
  * <p><b>Re-encodes.</b> A {@code reencode} job (queued at startup for every ready item encoded for
  * another output profile, {@link IngestJobs#enqueueReencodes}) encodes a ready item again for the
@@ -102,19 +105,29 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final IngestItems items;
     private final ReferenceCard reference;
     private final long maxDurationUs;
+    private final Supplier<String> cookiesFile;
+
+    /** Without a cookies file. */
+    public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
+                          int maxDurationSec) {
+        this(tools, dataDir, items, reference, maxDurationSec, () -> null);
+    }
 
     /**
      * @param reference      the reference card of the configured output profile; null if it could
      *                       not be made at startup (then every job fails with a clear message)
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
+     * @param cookiesFile    the {@code ytdlp.cookiesFile} setting, read for every download (null or
+     *                       blank = none)
      */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
-                          int maxDurationSec) {
+                          int maxDurationSec, Supplier<String> cookiesFile) {
         this.tools = Objects.requireNonNull(tools);
         this.dataDir = Objects.requireNonNull(dataDir);
         this.items = Objects.requireNonNull(items);
         this.reference = reference;
         this.maxDurationUs = maxDurationSec * 1_000_000L;
+        this.cookiesFile = Objects.requireNonNull(cookiesFile);
     }
 
     /** The staging directory of an item's upload: {@code <data>/tmp/ingest/<itemId>}. */
@@ -268,7 +281,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
             }
         }
         boolean fromPrevious = sourceKind == SourceKind.PREVIOUS;
-        Path stagedCover = reencode ? existingFile(itemDir.resolve(COVER)) : staged(staging, COVER_NAME);
+        // the item's own cover for a re-encode; the downloaded thumbnail for a YouTube item
+        Path stagedCover = reencode ? existingFile(itemDir.resolve(COVER)) : null;
+        if (stagedCover == null) {
+            stagedCover = staged(sourceKind == SourceKind.DOWNLOAD ? scratch : staging, COVER_NAME);
+        }
 
         // probe
         step(log, "probe");
@@ -488,15 +505,77 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     static List<String> downloadArgs(String youtubeId, Path dir, String ffmpeg) {
+        return downloadArgs(youtubeId, dir, ffmpeg, null);
+    }
+
+    /**
+     * The download command ({@code docs/library-and-ingest.md#youtube-caching}, step 4), plus the
+     * best thumbnail as {@code cover.<ext>} next to {@code src.<ext>}.
+     *
+     * @param cookies a cookies file for {@code --cookies}, or null
+     */
+    static List<String> downloadArgs(String youtubeId, Path dir, String ffmpeg, Path cookies) {
         List<String> args = new ArrayList<>(List.of("--no-playlist", "--newline", "--no-mtime",
                 "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mkv",
+                "--write-thumbnail", "-o", "thumbnail:" + dir.resolve(COVER_NAME + ".%(ext)s"),
                 "-o", dir.resolve("src.%(ext)s").toString()));
         if (ffmpeg != null && ffmpeg.contains("/")) {
             args.addAll(List.of("--ffmpeg-location", ffmpeg));
         }
+        args.addAll(cookiesArgs(cookies));
         args.add("--");
-        args.add("https://www.youtube.com/watch?v=" + youtubeId);
+        args.add(canonicalUrl(youtubeId));
         return args;
+    }
+
+    /**
+     * The metadata command: {@code yt-dlp -J --no-playlist} on the canonical URL (never the URL
+     * as pasted), with the cookies file if there is one.
+     */
+    public static List<String> metadataArgs(String youtubeId, Path cookies) {
+        List<String> args = new ArrayList<>(List.of("-J", "--no-playlist", "--no-warnings"));
+        args.addAll(cookiesArgs(cookies));
+        args.add("--");
+        args.add(canonicalUrl(youtubeId));
+        return args;
+    }
+
+    /** {@code https://www.youtube.com/watch?v=<id>}; the ID must be 11 characters of [A-Za-z0-9_-]. */
+    static String canonicalUrl(String youtubeId) {
+        if (youtubeId == null || !youtubeId.matches("[A-Za-z0-9_-]{11}")) {
+            throw new IllegalArgumentException("Not a YouTube video ID: " + youtubeId);
+        }
+        return "https://www.youtube.com/watch?v=" + youtubeId;
+    }
+
+    /** {@code --cookies <file>}, or nothing. */
+    static List<String> cookiesArgs(Path cookies) {
+        return cookies == null ? List.of() : List.of("--cookies", cookies.toString());
+    }
+
+    /**
+     * The cookies file named by the {@code ytdlp.cookiesFile} setting, if it is a readable regular
+     * file; null if the setting is empty. A file that is missing or unreadable is reported to
+     * {@code warn} and ignored (yt-dlp then runs without cookies), so a mistyped path doesn't stop
+     * every import. yt-dlp writes refreshed cookies back to the file, so the server should be able
+     * to write it too.
+     */
+    public static Path cookiesFile(String setting, Consumer<String> warn) {
+        if (setting == null || setting.isBlank()) {
+            return null;
+        }
+        Path file;
+        try {
+            file = Path.of(setting.strip());
+        } catch (RuntimeException e) {
+            warn.accept("the cookies file setting (ytdlp.cookiesFile) isn't a valid path; continuing without cookies");
+            return null;
+        }
+        if (!Files.isRegularFile(file) || !Files.isReadable(file)) {
+            warn.accept("the cookies file " + file + " (ytdlp.cookiesFile) can't be read; continuing without cookies");
+            return null;
+        }
+        return file;
     }
 
     // ------------------------------------------------------------------ steps
@@ -518,7 +597,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append(line);
             }
         };
-        tools.ytdlp(downloadArgs(id, scratch, tools.ffmpegExecutable())).log(log).stdoutLines(lines).run();
+        Path cookies = cookiesFile(cookiesFile.get(), w -> log.append("[ingest] " + w));
+        tools.ytdlp(downloadArgs(id, scratch, tools.ffmpegExecutable(), cookies)).log(log).stdoutLines(lines).run();
         Path file = null;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(scratch, "src.*")) {
             for (Path f : files) {
@@ -535,6 +615,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
             throw new IngestFailure("yt-dlp finished but produced no file");
         }
         log.append("[ingest] downloaded " + file.getFileName() + " (" + Files.size(file) + " bytes)");
+        Path thumbnail = staged(scratch, COVER_NAME);
+        log.append(thumbnail == null ? "[ingest] no thumbnail" : "[ingest] thumbnail " + thumbnail.getFileName());
         return file;
     }
 

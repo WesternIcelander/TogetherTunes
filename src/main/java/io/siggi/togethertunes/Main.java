@@ -39,6 +39,8 @@ import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.UploadsApi;
+import io.siggi.togethertunes.library.YoutubeImports;
+import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -51,6 +53,7 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * Entry point of the runnable jar.
@@ -125,7 +128,9 @@ public final class Main {
         FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
         // TODO(packager, M4): repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
-        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, System.err);
+        Settings settings = new Settings(database, config);
+        Supplier<String> cookiesFile = cookiesFile(settings);
+        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, cookiesFile, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -136,7 +141,6 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        Settings settings = new Settings(database, config);
         ActorResolver actors = new ActorResolver(database, settings, config.secureCookies());
         Accounts accounts = new Accounts(database, Passwords.DEFAULT);
         AuthRateLimits limits = AuthRateLimits.defaults(Clock.systemUTC());
@@ -167,10 +171,12 @@ public final class Main {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
         UploadsApi uploadsApi = new UploadsApi(uploads, permissions);
+        YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports(config, database, ingest, cookiesFile),
+                permissions);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
-                            sessionsApi, me, admin, activity, uploadsApi),
+                            sessionsApi, me, admin, activity, uploadsApi, youtubeApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -199,7 +205,7 @@ public final class Main {
      * ingest stays off until the next start (the server still runs).
      */
     static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
-                                   PrintStream err) {
+                                   Supplier<String> cookiesFile, PrintStream err) {
         try {
             int cleaned = IngestPipeline.recoverDirectories(dataDir);
             if (cleaned > 0) {
@@ -209,7 +215,7 @@ public final class Main {
             err.println("WARNING: could not clean up after interrupted ingest jobs: " + e.getMessage());
         }
         IngestQueue.Handler handler = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
-                referenceCard, config.ingestMaxDurationSeconds());
+                referenceCard, config.ingestMaxDurationSeconds(), cookiesFile);
         IngestJobs jobs = new IngestJobs(database);
         IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
         if (referenceCard != null) {
@@ -238,6 +244,32 @@ public final class Main {
     static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest) {
         return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
                 config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(), Clock.systemUTC());
+    }
+
+    /**
+     * The YouTube import service ({@link YoutubeImports}): the duration limit from the config, new
+     * items recorded for the configured output profile, each queued job wakes the ingest workers.
+     */
+    static YoutubeImports youtubeImports(Config config, Database database, IngestQueue ingest,
+                                         Supplier<String> cookiesFile) {
+        return new YoutubeImports(database, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
+                config.ingestMaxDurationSeconds(), cookiesFile, Clock.systemUTC());
+    }
+
+    /**
+     * The {@code ytdlp.cookiesFile} setting, read each time yt-dlp runs (so an admin's change
+     * applies to the next import); null if it can't be read.
+     */
+    static Supplier<String> cookiesFile(Settings settings) {
+        return () -> {
+            try {
+                return settings.ytdlpCookiesFile();
+            } catch (SQLException e) {
+                System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
+                        "Could not read ytdlp.cookiesFile: " + e.getMessage());
+                return null;
+            }
+        };
     }
 
     /**
@@ -334,11 +366,12 @@ public final class Main {
      * {@code /api/me/guest}), {@link AdminApi} the admin API for users, roles and settings
      * ({@code /api/admin/...}), {@link AdminActivityApi} the admin guest list, audit log and session
      * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}),
-     * {@link UploadsApi} chunked uploads ({@code /api/uploads...}).
+     * {@link UploadsApi} chunked uploads ({@code /api/uploads...}), {@link YoutubeImportsApi} YouTube
+     * imports ({@code /api/imports/youtube}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
-                         UploadsApi uploads) {
+                         UploadsApi uploads, YoutubeImportsApi youtube) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -349,6 +382,7 @@ public final class Main {
         admin.register(router);
         activity.register(router);
         uploads.register(router);
+        youtube.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

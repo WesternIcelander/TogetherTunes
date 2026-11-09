@@ -75,7 +75,12 @@ class IngestPipelineTest {
     }
 
     private IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds) throws Exception {
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, maxSeconds);
+        return queue(tools, reference, maxSeconds, () -> null);
+    }
+
+    private IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds,
+                              java.util.function.Supplier<String> cookies) throws Exception {
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, maxSeconds, cookies);
         IngestQueue q = new IngestQueue(jobs, 1, pipeline, Clock.systemUTC(), Duration.ofHours(1), Duration.ZERO);
         queues.add(q);
         q.start();
@@ -314,7 +319,10 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
-    /** A YouTube job downloads from the canonical URL (fake yt-dlp) and ingests the result. */
+    /**
+     * A YouTube job downloads from the canonical URL (fake yt-dlp, with the cookies file) and
+     * ingests the result; the downloaded thumbnail (WebP) becomes {@code cover.jpg}.
+     */
     @Test
     void youtubeJobDownloadsThenIngests() throws Exception {
         String item = fixtures.item("pending");
@@ -330,30 +338,56 @@ class IngestPipelineTest {
         Path fixture = dir.resolve("yt.mkv");
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=426x240:r=30", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
                 "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "libopus", fixture.toString());
+        Path thumbnail = dir.resolve("thumb.webp");
+        String thumbExt = "webp";
+        try {
+            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=320x180", "-frames:v", "1", thumbnail.toString());
+        } catch (ToolException e) { // no WebP encoder in this ffmpeg
+            thumbnail = dir.resolve("thumb.png");
+            thumbExt = "png";
+            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=320x180", "-frames:v", "1", thumbnail.toString());
+        }
+        Path cookies = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
         Path argsFile = dir.resolve("ytdlp-args.txt");
         Path script = dir.resolve("fake-yt-dlp");
         Files.writeString(script, "#!/bin/sh\n"
                 + "printf '%s\\n' \"$@\" > '" + argsFile + "'\n"
-                + "out=''\n"
-                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi; shift; done\n"
+                + "out=''\nthumb=''\n"
+                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then case \"$2\" in thumbnail:*) thumb=\"${2#thumbnail:}\";;"
+                + " *) out=\"$2\";; esac; shift; fi; shift; done\n"
                 + "echo '[youtube] dQw4w9WgXcQ: Downloading webpage'\n"
                 + "echo '[download]  42.0% of 1.00MiB at 1.00MiB/s ETA 00:01'\n"
                 + "echo '[download] 100% of 1.00MiB'\n"
+                + "cp '" + thumbnail + "' \"$(echo \"$thumb\" | sed 's/%(ext)s/" + thumbExt + "/')\"\n"
                 + "cp '" + fixture + "' \"$(echo \"$out\" | sed 's/%(ext)s/mkv/')\"\n", StandardCharsets.UTF_8);
         Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
         Tools withYtdlp = new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
 
-        IngestJob job = run(queue(withYtdlp, reference, 1800), Kind.YOUTUBE, item);
+        IngestJob job = run(queue(withYtdlp, reference, 1800, cookies::toString), Kind.YOUTUBE, item);
         assertEquals(State.DONE, job.state(), job.log());
         List<String> args = Files.readAllLines(argsFile);
         assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ", args.get(args.size() - 1));
+        assertEquals(cookies.toString(), args.get(args.indexOf("--cookies") + 1));
+        assertTrue(job.log().contains("thumbnail cover." + thumbExt), job.log());
         assertTrue(job.log().contains("step: download"));
         assertTrue(job.log().contains("[youtube] dQw4w9WgXcQ: Downloading webpage"), job.log());
         assertFalse(job.log().contains("42.0%"), "progress lines become progress, not log lines");
-        assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4"), files(IngestPipeline.itemDir(data, item)));
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "mezz.mp4"),
+                files(IngestPipeline.itemDir(data, item)));
+        java.awt.image.BufferedImage cover = CardRenderer.readImage(IngestPipeline.itemDir(data, item).resolve("cover.jpg"));
+        assertEquals(320, cover.getWidth());
+        int rgb = cover.getRGB(160, 90);
+        assertTrue(((rgb >> 16) & 0xff) > 200 && ((rgb >> 8) & 0xff) < 60, "the thumbnail is the cover: " + Integer.toHexString(rgb));
         assertEquals("ready", itemRow(item)[0]);
         assertNoOriginal(item);
         assertNoLeftovers();
+
+        // a cookies setting that points nowhere is reported and ignored
+        IngestJob again = run(queue(withYtdlp, reference, 1800, () -> dir.resolve("gone.txt").toString()),
+                Kind.REFETCH, item);
+        assertEquals(State.DONE, again.state(), again.log());
+        assertFalse(Files.readAllLines(argsFile).contains("--cookies"));
+        assertTrue(again.log().contains("gone.txt (ytdlp.cookiesFile) can't be read"), again.log());
     }
 
     /** Digital silence can't be measured; it is encoded without normalisation and no loudness is stored. */
