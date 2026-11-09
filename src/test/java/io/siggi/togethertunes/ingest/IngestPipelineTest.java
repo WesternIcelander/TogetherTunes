@@ -9,14 +9,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import io.siggi.togethertunes.DataDir;
+import io.siggi.togethertunes.TestClock;
+import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.db.SqliteDialect;
+import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
+import io.siggi.togethertunes.library.Items;
+import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
+import io.siggi.togethertunes.retention.RetentionSweeper;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -900,6 +906,134 @@ class IngestPipelineTest {
         assertSameAvcC("youtube", yt, true);
         assertNoOriginal(yt);
         assertNoLeftovers();
+    }
+
+    /**
+     * The M2 "done when" retention check, end to end: with {@code retention.unreferencedDays}
+     * shortened to 1, a ready upload and a ready YouTube item that nothing references are kept
+     * until a day after their last reference and purged by the sweeper after it (files gone, row
+     * and metadata kept), while a library item stays. Importing the purged YouTube link again
+     * queues a {@code refetch} into the same row (no new item, no metadata request) that downloads
+     * and ingests it back to ready with the reference avcC.
+     */
+    @Test
+    void unreferencedItemsArePurgedAndYoutubeRefetchesIntoTheSameRow() throws Exception {
+        Path ytSource = dir.resolve("yt-retention.webm");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
+                "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", ytSource.toString());
+        Path calls = dir.resolve("yt-calls.txt");
+        Path script = dir.resolve("fake-yt-dlp-retention");
+        Files.writeString(script, "#!/bin/sh\n"
+                + "printf '%s\\n' \"$@\" >> '" + calls + "'\n"
+                + "echo '----' >> '" + calls + "'\n"
+                + "out=''\n"
+                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi; shift; done\n"
+                + "[ -n \"$out\" ] || { echo 'unexpected call' >&2; exit 1; }\n"
+                + "cp '" + ytSource + "' \"$(echo \"$out\" | sed 's/%(ext)s/webm/')\"\n", StandardCharsets.UTF_8);
+        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
+        Tools ytTools = new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
+        IngestQueue q = queue(ytTools, reference, 1800);
+
+        // a ready upload, a ready YouTube item and a ready upload in someone's library
+        String upload = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3", "-c:a", "libmp3lame",
+                stage(upload, "source.mp3").toString());
+        assertEquals(State.DONE, run(q, Kind.UPLOAD, upload).state());
+        String yt = fixtures.item("pending");
+        makeYoutube(yt);
+        assertEquals(State.DONE, run(q, Kind.YOUTUBE, yt).state());
+        String kept = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "3", stage(kept, "source.wav").toString());
+        assertEquals(State.DONE, run(q, Kind.UPLOAD, kept).state());
+        String user = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO users (id, username, display_name, created_at,"
+                    + " disabled) VALUES (?, 'listener', 'listener', 1, 0)")) {
+                ps.setString(1, user);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at,"
+                    + " via) VALUES (?, ?, 1, 'manual')")) {
+                ps.setString(1, user);
+                ps.setString(2, kept);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        for (String id : List.of(upload, yt, kept)) {
+            assertEquals("ready", itemRow(id)[0]);
+        }
+        Path ytDir = IngestPipeline.itemDir(data, yt);
+        Path uploadDir = IngestPipeline.itemDir(data, upload);
+        Object[] ytBefore = itemRow(yt);
+        // the finished job was the last reference
+        long firstRef = Math.min(fixtures.lastReferencedAt(upload), fixtures.lastReferencedAt(yt));
+        long lastRef = Math.max(fixtures.lastReferencedAt(upload), fixtures.lastReferencedAt(yt));
+
+        TestClock clock = new TestClock(firstRef + 24L * 60 * 60 * 1000);
+        Items items = new Items(db, data, clock);
+        try (RetentionSweeper sweeper = new RetentionSweeper(db, items, () -> 1, clock)) {
+            assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep(), "not yet a day");
+            clock.set(lastRef + 24L * 60 * 60 * 1000 + 1);
+            assertEquals(new RetentionSweeper.Result(2, 0, 0), sweeper.sweep());
+        }
+        for (String id : List.of(upload, yt)) {
+            assertEquals("purged", itemRow(id)[0]);
+            assertFalse(Files.exists(IngestPipeline.itemDir(data, id)), "files of " + id + " deleted");
+        }
+        assertEquals("Song", db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT title FROM items WHERE id = ?")) {
+                ps.setString(1, yt);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        }), "row and metadata kept");
+        assertEquals("ready", itemRow(kept)[0]);
+        assertTrue(Files.exists(IngestPipeline.itemDir(data, kept).resolve("audio.m4a")));
+        assertFalse(Files.exists(uploadDir));
+        long ytCallsBefore = Files.readAllLines(calls).stream().filter("----"::equals).count();
+
+        // the YouTube link again: the same row, refetched
+        YoutubeImports imports = new YoutubeImports(db, ytTools, jobs, q::wake, OutputProfile.P720_30, 1800,
+                () -> null, clock);
+        YoutubeImports.Imported again = imports.importUrl(new Actor.User(user, "s", Actor.Via.BEARER),
+                "https://youtu.be/dQw4w9WgXcQ?t=7", null, null);
+        assertEquals(new YoutubeImports.Imported(yt, false, "pending"), again);
+        IngestJob refetch = jobs.latestForItem(yt).orElseThrow();
+        assertEquals(Kind.REFETCH, refetch.kind());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(150);
+        while (!jobs.get(refetch.id()).orElseThrow().state().finished()) {
+            assertTrue(System.nanoTime() < deadline, "refetch did not finish");
+            Thread.sleep(50);
+        }
+        refetch = jobs.get(refetch.id()).orElseThrow();
+        assertEquals(State.DONE, refetch.state(), refetch.log());
+        assertTrue(refetch.log().contains("step: download"), refetch.log());
+        assertEquals(Integer.valueOf(1), db.<Integer>read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM items WHERE youtube_id = ?")) {
+                ps.setString(1, "dQw4w9WgXcQ");
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }), "one row per video ID");
+        List<String> after = Files.readAllLines(calls);
+        assertEquals(ytCallsBefore + 1, after.stream().filter("----"::equals).count(), "only the download ran");
+        assertFalse(after.contains("-J"), "no metadata request");
+        assertTrue(after.contains("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "canonical URL: " + after);
+        Object[] ytAfter = itemRow(yt);
+        assertEquals("ready", ytAfter[0]);
+        assertEquals(ytBefore[1], ytAfter[1]);
+        assertEquals(ytBefore[3], ytAfter[3]);
+        assertSameAvcC("refetched youtube", yt, true);
+        assertNoOriginal(yt);
+        assertNoLeftovers();
+        // the purged upload has nothing to refetch from; it stays purged
+        assertEquals("purged", itemRow(upload)[0]);
+        assertTrue(fixtures.lastReferencedAt(yt) >= clock.millis(), "the import counts as a reference");
     }
 
     private void assertSameAvcC(String name, String item, boolean video) throws Exception {
