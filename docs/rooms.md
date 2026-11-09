@@ -135,6 +135,8 @@ The client estimates `offset = serverClock − clientClock` over the WebSocket:
 3. When the reply arrives at `t1`: `rtt = t1 − t0`, `offset = ts − (t0 + t1)/2`.
 4. Do 8 exchanges on connect, keep the sample with the lowest RTT, and repeat every 30 s. Smooth with an EMA, ignoring samples whose RTT is above 2× the minimum.
 
+As implemented (web, `web/src/clocksync.ts`): the 8 exchanges of a round go one after the other (2 s reply timeout); a round runs on every (re)connect, every 30 s, and when the page becomes visible again. EMA weight 0.3 over the rounds' best samples. The minimum RTT is taken over the last 10 rounds, and a round passes when its best RTT is at most `max(2 × min, min + 5 ms)`. A sample more than 1 s away from the smoothed offset replaces it (the client's clock stepped, e.g. after sleep). Until the first round the client uses its own wall clock.
+
 ## Web and app playback
 
 Each connection is in one of two modes, chosen with a toggle and remembered per room in localStorage. Visiting through the QR link (`/r/{slug}`) defaults to remote mode.
