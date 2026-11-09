@@ -51,7 +51,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 | PUT | `/api/uploads/{id}` | Chunk with `Content-Range: bytes start-end/size` → `{receivedBytes, size}`; idempotent (bytes already received are skipped); a chunk must start at or before `receivedBytes` (else `409 upload_offset_mismatch`) |
 | GET | `/api/uploads/{id}` | `{receivedBytes, size, itemId?}` (`itemId` once completed) |
 | POST | `/api/uploads/{id}/complete` | `{title?, artist?, addToLibrary?}` → `{itemId, deduplicated}`; repeatable. `422 unreadable_media` / `no_audio` / `too_long` (the upload is deleted) |
-| POST | `/api/imports/youtube` | `{url, presentAsAudio?, addToLibrary?}` → `{itemId, cached: true\|false}` |
+| POST | `/api/imports/youtube` | `{url, presentAsAudio?, addToLibrary?}` → `{itemId, cached: true\|false, status}` (`cached`: the item was already ready; `status`: `ready`, `pending` or `processing`). `400 invalid_youtube_url`, `422 youtube_live` / `too_long` / `youtube_unavailable` (yt-dlp's error), `422 youtube_failed` with `Retry-After` (failed less than 10 min ago), `503 ytdlp_unavailable`, `504 youtube_timeout` |
 
 Inside a room, requests made by upload or YouTube go through the WebSocket `queue.add` message, which references an `uploadId` or a `youtubeUrl`. That is what writes the request and queue entry.
 

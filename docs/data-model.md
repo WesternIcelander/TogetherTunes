@@ -60,6 +60,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       original_codec TEXT NULL,             -- ffprobe codec/container of the original
       original_web INTEGER,                 -- 1 if browsers can play the original
       original_gain_db REAL NULL,           -- gain the web client applies to the original
+      present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
 

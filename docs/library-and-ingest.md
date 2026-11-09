@@ -35,22 +35,24 @@ An **audio item that came from an upload** keeps its original file as `media/<it
 
 The YouTube **video ID** is the cache key. Every YouTube item stores it in `items.youtube_id`, which is unique.
 
-1. **Normalise** the pasted URL to the 11-character video ID before anything else. Accept `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`, `music.youtube.com`, and `m.` variants; ignore `t=`, `list=` and tracking parameters. Reject anything that doesn't yield an ID.
+1. **Normalise** the pasted URL to the 11-character video ID before anything else. Accept `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`, `music.youtube.com`, and `m.` variants (also `/v/` and `youtube-nocookie.com/embed/`; with or without `https://`); ignore `t=`, `list=` and tracking parameters. Reject anything that doesn't yield an ID, including a bare ID without a link. The pasted URL is never passed to yt-dlp: every yt-dlp call uses the canonical `https://www.youtube.com/watch?v=<id>`.
 2. **Look up** `items.youtube_id`:
    - `ready` → use the cached item immediately. No network access at all.
    - `pending` / `processing` → attach the request to the job that's already running. The queue entry shows "processing", and becomes playable when the job finishes.
    - `purged` → start a `refetch` job on the **same row**. History links stay valid.
-   - `failed` → retry, if the last attempt was more than 10 minutes ago.
+   - `failed` → retry (a new `youtube` job on the same row), if the last attempt ended at least 10 minutes ago; until then the import is refused with `422 youtube_failed` and `Retry-After`.
    - not found → create the item and an ingest job.
-3. Only on a cache miss: fetch metadata with `yt-dlp -J --no-playlist <url>`. Reject live streams and videos over the duration limit.
-4. Download with `yt-dlp --no-playlist -f "bv*[height<=1080]+ba/b" --merge-output-format mkv -o <tmp>/src.%(ext)s https://www.youtube.com/watch?v=<id>`. Always download from the canonical URL built from the ID.
-5. Title and artist come from `track`/`artist` when present, otherwise from `title`/`uploader`. Cover art is the best thumbnail.
 
-Because one ID maps to one item, the "audio only" choice is not a separate item. Every video item can be **presented as audio**: an item flag `presentAsAudio` makes the packager use the item's card instead of its video. It's useful for "Topic" uploads, which are just a still image. Anyone who can edit the item's metadata can set it, and the importer can set it at import time.
+   Every accepted import bumps `last_referenced_at` and, for a user, adds the item to their library (`via='youtube'`) unless `addToLibrary` is false. Imports of the same ID are serialised, so concurrent requests for a new video run `-J` once and make one item.
+3. Only on a cache miss: fetch metadata with `yt-dlp -J --no-playlist <canonical url>`, synchronously in the import request. Reject live streams (`is_live`, or `live_status` `is_live`, `is_upcoming` or `post_live`) and videos over the duration limit; a video yt-dlp can't read is refused with yt-dlp's `ERROR:` message. Nothing is created for a refused import. The new item is a `pending` `video` item with the metadata's duration until ingest measures it; `metadata_json` keeps `{"youtube": {id, uploader, durationSec}}`.
+4. Download with `yt-dlp --no-playlist -f "bv*[height<=1080]+ba/b" --merge-output-format mkv -o <tmp>/src.%(ext)s https://www.youtube.com/watch?v=<id>`. Always download from the canonical URL built from the ID. The same call writes the best thumbnail (`--write-thumbnail -o "thumbnail:<tmp>/cover.%(ext)s"`, usually WebP), which becomes `cover.jpg` and the card's artwork.
+5. Title and artist come from `track`/`artist` when present (yt-dlp's newer `artists` list counts as `artist`), otherwise from `title`/`uploader` (or `channel`). An uploader named "<name> - Topic" (YouTube's auto-generated music channels) becomes "<name>". The album comes from `album`. Values are cleaned like upload metadata. Cover art is the best thumbnail.
+
+Because one ID maps to one item, the "audio only" choice is not a separate item. Every video item can be **presented as audio**: an item flag `presentAsAudio` (`items.present_as_audio`) makes the packager use the item's card instead of its video. It's useful for "Topic" uploads, which are just a still image. Anyone who can edit the item's metadata can set it, and the importer can set it at import time: when the import creates the item, or brings a purged or failed one back. Importing an item that already exists ignores it (changing it is a metadata edit).
 
 Operational notes:
 
-- YouTube often blocks datacenter IPs. Support an optional cookies file.
+- YouTube often blocks datacenter IPs. Support an optional cookies file: the `ytdlp.cookiesFile` setting (a Netscape-format cookies file on the server), passed as `--cookies` to every `-J` and download. It is read for each call, so a change applies to the next import. A path that isn't a readable file is logged and ignored. yt-dlp writes refreshed cookies back to the file, so the server should be able to write it.
 - Keep yt-dlp up to date: an admin button runs `yt-dlp -U`.
 - Surface yt-dlp's stderr in the job log.
 
