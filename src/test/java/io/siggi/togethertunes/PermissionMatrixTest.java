@@ -288,6 +288,12 @@ class PermissionMatrixTest {
                     + c.targetUserId(), "{\"role\":\"member\"}"), 401, 401, 403, 201),
             row("DELETE /api/rooms/{room}/members/{userId}", c -> Call.delete(c.rootRoomMemberPath()),
                     401, 401, 403, 204),
+            // Adding a member by username: as PUT by id (owner and moderators).
+            row("POST /api/rooms/{room}/members", c -> Call.post("/api/rooms/" + c.rootRoomSlug() + "/members",
+                    "{\"username\":\"" + c.targetUsername() + "\",\"role\":\"member\"}"), 401, 401, 403, 201),
+            // The server switches behind the room settings, for the management view: owner and moderators.
+            row("GET /api/rooms/{room}/server-switches", c -> Call.get("/api/rooms/" + c.rootRoomSlug()
+                    + "/server-switches"), 401, 401, 403, 200),
             // Guest bans: owner and moderators (an admin through rooms.moderateAny). RoomGuestsContract
             // covers moderators and members.
             row("GET /api/rooms/{room}/guest-bans", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/guest-bans"),
@@ -323,6 +329,8 @@ class PermissionMatrixTest {
             // everyone; the page then calls /api/rooms/{room}, which applies the room's visibility.
             row("GET /rooms/{room}", c -> Call.get("/rooms/" + c.rootRoomSlug()), 200, 200, 200, 200),
             row("GET /r/{slug}", c -> Call.get("/r/" + c.rootRoomSlug()), 302, 302, 302, 302),
+            // The management view's page: served to anyone, the page checks through the API.
+            row("GET /rooms/{room}/manage", c -> Call.get("/rooms/" + c.rootRoomSlug() + "/manage"), 200, 200, 200, 200),
 
             // Static files.
             row("GET /{path...}", c -> Call.get("/test/ws-echo.html"), 200, 200, 200, 200));

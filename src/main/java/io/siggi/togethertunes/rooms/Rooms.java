@@ -7,6 +7,7 @@ import io.siggi.togethertunes.auth.AuditLog;
 import io.siggi.togethertunes.auth.Permission;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.Dialect;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
@@ -955,6 +956,30 @@ public final class Rooms {
                 }
             }
             return new RoleSet(member(c, room.id(), targetUserId), created);
+        });
+    }
+
+    /**
+     * The id of the user with this username (case-insensitive, disabled accounts too, so
+     * {@link #setRole} gives its usual answers), or {@code null} if there is none. For adding a
+     * member by name from the room's management view.
+     */
+    public String userIdByUsername(String username) throws SQLException {
+        if (username == null) {
+            return null;
+        }
+        String name = username.strip();
+        if (name.isEmpty() || name.length() > 100) {
+            return null;
+        }
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM users WHERE "
+                    + db.dialect().equalsIgnoreCase("username"))) {
+                ps.setString(1, Dialect.foldCase(name));
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
         });
     }
 

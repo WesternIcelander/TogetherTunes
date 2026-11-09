@@ -57,6 +57,7 @@ class RoomsApiTest {
     private String bob;
     private String noCreate; // a user whose roles lack rooms.create
     private String root; // admin: ip.view, rooms.moderateAny
+    private Settings settings;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -65,7 +66,7 @@ class RoomsApiTest {
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
-        Settings settings = new Settings(db, config);
+        settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         Permissions permissions = new Permissions(db, settings);
         registry = new RoomRegistry(db, clock, PackagerHook.NONE);
@@ -179,6 +180,75 @@ class RoomsApiTest {
 
         assertEquals(204, call(bob, "DELETE", "/api/rooms/" + id, null).statusCode());
         expectError(404, "room_not_found", call(bob, "GET", "/api/rooms/" + id, null));
+    }
+
+    @Test
+    void membersAreAddedByUsername() throws Exception {
+        HttpResponse<String> created = call(alice, "POST", "/api/rooms", "{\"name\":\"Club\"}");
+        String id = json(created).get("id").getAsString();
+        String path = "/api/rooms/club/members";
+        // As PUT …/members/{userId}, for the user with that name (case-insensitive).
+        HttpResponse<String> r = call(alice, "POST", path, "{\"username\":\"  BOB \",\"role\":\"moderator\"}");
+        assertEquals(201, r.statusCode(), r.body());
+        assertEquals(bobId, json(r).getAsJsonObject("user").get("id").getAsString());
+        assertEquals("moderator", json(r).get("role").getAsString());
+        r = call(alice, "POST", path, "{\"username\":\"bob\",\"role\":\"member\"}");
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("member", json(r).get("role").getAsString());
+        assertTrue(registry.call(id, tx -> tx.state().version()) >= 2, "role changes go through the executor");
+        expectError(404, "user_not_found", call(alice, "POST", path, "{\"username\":\"nobody\",\"role\":\"member\"}"));
+        expectError(400, "invalid_username", call(alice, "POST", path, "{\"role\":\"member\"}"));
+        expectError(400, "invalid_username", call(alice, "POST", path, "{\"username\":\" \",\"role\":\"member\"}"));
+        expectError(400, "invalid_role", call(alice, "POST", path, "{\"username\":\"bob\",\"role\":\"boss\"}"));
+        expectError(400, "unknown_field", call(alice, "POST", path, "{\"username\":\"bob\",\"role\":\"member\",\"x\":1}"));
+        expectError(409, "cannot_change_own_role", call(alice, "POST", path, "{\"username\":\"alice\",\"role\":\"member\"}"));
+        // Bob is a member now: no role changes for him.
+        expectError(403, "forbidden", call(bob, "POST", path, "{\"username\":\"plain\",\"role\":\"member\"}"));
+        expectError(401, "not_authenticated", call(null, "POST", path, "{\"username\":\"bob\",\"role\":\"member\"}"));
+        expectError(404, "room_not_found", call(alice, "POST", "/api/rooms/no-such-room/members",
+                "{\"username\":\"bob\",\"role\":\"member\"}"));
+        // A private room stays hidden from outsiders, whatever the username.
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/club", "{\"visibility\":\"private\"}").statusCode());
+        expectError(404, "room_not_found", call(noCreate, "POST", path, "{\"username\":\"nobody\",\"role\":\"member\"}"));
+        // Ownership transfer by name, too.
+        r = call(alice, "POST", path, "{\"username\":\"bob\",\"role\":\"owner\"}");
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("owner", json(r).get("role").getAsString());
+        assertEquals(bobId, json(call(bob, "GET", "/api/rooms/club", null)).getAsJsonObject("owner").get("id").getAsString());
+    }
+
+    @Test
+    void serverSwitches() throws Exception {
+        assertEquals(201, call(alice, "POST", "/api/rooms", "{\"name\":\"Switches\"}").statusCode());
+        String path = "/api/rooms/switches/server-switches";
+        HttpResponse<String> r = call(alice, "GET", path, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        assertEquals(JsonParser.parseString("{\"guests\":{\"enabled\":true,\"canVote\":true,\"canRequestLibrary\":true,"
+                + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{\"rtmp\":"
+                + "{\"enabled\":true},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true}}}"), JsonParser.parseString(r.body()));
+        settings.set(Settings.GUESTS_ENABLED, false);
+        settings.set(Settings.GUESTS_CAN_UPLOAD, true);
+        settings.set(Settings.GUESTS_CAN_YOUTUBE, true);
+        settings.set(Settings.YTDLP_ENABLED, false); // canYoutube needs yt-dlp too
+        settings.set(Settings.OVERLAY_ENABLED, true);
+        settings.set(Settings.OUTPUTS_TS_ENABLED, false);
+        JsonObject sw = json(call(alice, "GET", path, null));
+        assertFalse(sw.getAsJsonObject("guests").get("enabled").getAsBoolean());
+        assertTrue(sw.getAsJsonObject("guests").get("canUpload").getAsBoolean());
+        assertFalse(sw.getAsJsonObject("guests").get("canYoutube").getAsBoolean());
+        assertTrue(sw.getAsJsonObject("overlay").get("enabled").getAsBoolean());
+        assertFalse(sw.getAsJsonObject("outputs").getAsJsonObject("ts").get("enabled").getAsBoolean());
+        assertTrue(sw.getAsJsonObject("outputs").getAsJsonObject("hls").get("enabled").getAsBoolean());
+        // Owner and moderators (an admin through rooms.moderateAny); not members, guests or anonymous.
+        assertEquals(201, call(alice, "PUT", "/api/rooms/switches/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
+        assertEquals(200, call(bob, "GET", path, null).statusCode());
+        assertEquals(200, call(root, "GET", path, null).statusCode());
+        assertEquals(200, call(alice, "PUT", "/api/rooms/switches/members/" + bobId, "{\"role\":\"member\"}").statusCode());
+        expectError(403, "forbidden", call(bob, "GET", path, null));
+        expectError(403, "forbidden", call(noCreate, "GET", path, null));
+        expectError(401, "not_authenticated", call(null, "GET", path, null));
+        expectError(404, "room_not_found", call(alice, "GET", "/api/rooms/no-such-room/server-switches", null));
     }
 
     @Test

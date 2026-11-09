@@ -45,6 +45,10 @@ import java.util.Set;
  *       "member"|"banned"}} → the member ({@code 201} if the user had no row, else {@code 200}).
  *       {@code "owner"} transfers the room (owner only; the old owner becomes a moderator).
  *       {@code 404 user_not_found}, {@code 409 cannot_change_own_role} / {@code user_disabled}.</li>
+ *   <li>{@code POST /api/rooms/{room}/members} {@code {"username", "role"}} → as {@code PUT
+ *       …/members/{userId}} for the user with that username (case-insensitive; {@code 404
+ *       user_not_found}, {@code 400 invalid_username}), so the management view can add members by
+ *       name.</li>
  *   <li>{@code DELETE /api/rooms/{room}/members/{userId}} → {@code 204}; also lifts a ban, and is
  *       how a user leaves a room. {@code 404 member_not_found}, {@code 409 owner_cannot_leave}.</li>
  *   <li>{@code GET /api/rooms/{room}/guest-bans?cursor=&limit=} → {@code {"items": [ban],
@@ -72,6 +76,12 @@ import java.util.Set;
  *       ({@code requester} is gone once the account or guest is; the name is the one it had then).
  *       {@code 400 invalid_source} / {@code invalid_requester} / {@code invalid_cursor} /
  *       {@code invalid_limit}.</li>
+ *   <li>{@code GET /api/rooms/{room}/server-switches} → {@code {"guests": {"enabled", "canVote",
+ *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled"}, "outputs": {"rtmp":
+ *       {"enabled"}, "ts": {"enabled"}, "hls": {"enabled"}}}}: the server switches behind the room
+ *       settings, so the management view can grey out what the server turned off (the guest
+ *       capabilities are each the server's setting alone; {@code guests.enabled} off turns them
+ *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}). Owner and moderators.</li>
  *   <li>{@code POST /api/rooms/{room}/requests/add-to-library} {@code {"requestIds": [id, …]}} (1..
  *       {@value RoomRequests#ADD_MAX}) → {@code {"results": [{"requestId", "itemId"?, "created"?,
  *       "error"?: {"code", "message"}}]}}: adds the items to the owner's library; the owner only.
@@ -90,6 +100,7 @@ public final class RoomsApi {
     private static final Set<String> ROOM_FIELDS = Set.of("name", "slug", "visibility", "controlMode");
     private static final Set<String> UPDATE_FIELDS = Set.of("name", "slug", "visibility", "controlMode", "settings");
     private static final Set<String> ROLE_FIELDS = Set.of("role");
+    private static final Set<String> ADD_MEMBER_FIELDS = Set.of("username", "role");
     private static final Set<String> ADD_TO_LIBRARY_FIELDS = Set.of("requestIds");
 
     private final Rooms rooms;
@@ -150,6 +161,7 @@ public final class RoomsApi {
         router.patch("/api/rooms/{room}", this::update);
         router.delete("/api/rooms/{room}", this::delete);
         router.get("/api/rooms/{room}/members", this::members);
+        router.post("/api/rooms/{room}/members", this::addMemberByUsername);
         router.put("/api/rooms/{room}/members/{userId}", this::setRole);
         router.delete("/api/rooms/{room}/members/{userId}", this::removeMember);
         router.get("/api/rooms/{room}/guest-bans", this::guestBans);
@@ -158,6 +170,7 @@ public final class RoomsApi {
         router.delete("/api/rooms/{room}/guest-bans/{guestId}", this::unbanGuest);
         router.get("/api/rooms/{room}/search", this::search);
         router.get("/api/rooms/{room}/requests", this::requests);
+        router.get("/api/rooms/{room}/server-switches", this::serverSwitches);
         router.post("/api/rooms/{room}/requests/add-to-library", this::addRequestsToLibrary);
     }
 
@@ -340,15 +353,19 @@ public final class RoomsApi {
     }
 
     private void setRole(Request request, Response response) throws Exception {
-        Actor.User user = user(request);
+        user(request);
         JsonObject body = request.readJson(JsonObject.class);
         fields(body, ROLE_FIELDS);
         Rooms.Role role = Rooms.Role.parse(string(body.get("role"), "invalid_role"));
         if (role == null) {
             throw new HttpError(400, "invalid_role", "role must be owner, moderator, member or banned");
         }
-        String id = roomId(request);
-        String target = request.pathParam("userId");
+        setRole(request, response, roomId(request), request.pathParam("userId"), role);
+    }
+
+    private void setRole(Request request, Response response, String id, String target, Rooms.Role role)
+            throws Exception {
+        Actor.User user = user(request);
         // Through the room's executor: an ownership transfer changes the live state's owner.
         Rooms.RoleSet set = registry.call(id, tx -> {
             Rooms.RoleSet r = rooms.setRole(user, id, target, role, request.clientIp());
@@ -359,6 +376,53 @@ public final class RoomsApi {
         });
         response.header("Cache-Control", "no-store");
         response.json(set.created() ? 201 : 200, set.member());
+    }
+
+    private void addMemberByUsername(Request request, Response response) throws Exception {
+        user(request);
+        JsonObject body = request.readJson(JsonObject.class);
+        fields(body, ADD_MEMBER_FIELDS);
+        String username = string(body.get("username"), "invalid_username");
+        if (username == null) {
+            throw new HttpError(400, "invalid_username", "A username is required");
+        }
+        Rooms.Role role = Rooms.Role.parse(string(body.get("role"), "invalid_role"));
+        if (role == null) {
+            throw new HttpError(400, "invalid_role", "role must be owner, moderator, member or banned");
+        }
+        String id = roomId(request);
+        String target = rooms.userIdByUsername(username);
+        if (target == null) {
+            // Same answer as PUT by id, after the room check, so a hidden room stays hidden.
+            rooms.access(ActorResolver.actor(request), id);
+            throw new HttpError(404, "user_not_found", "No such user");
+        }
+        setRole(request, response, id, target, role);
+    }
+
+    private void serverSwitches(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        Rooms.Access access = rooms.access(user, request.pathParam("room"));
+        if (access.role() == null || !access.role().moderates()) {
+            throw HttpError.forbidden("Only the owner and moderators manage a room");
+        }
+        RoomGuests.ServerSwitches sw = guests.serverSwitches();
+        Map<String, Object> g = new LinkedHashMap<>();
+        g.put("enabled", sw.guestsEnabled());
+        g.put("canVote", sw.guests().canVote());
+        g.put("canRequestLibrary", sw.guests().canRequestLibrary());
+        g.put("canUpload", sw.guests().canUpload());
+        g.put("canYoutube", sw.guests().canYoutube());
+        Map<String, Object> outputs = new LinkedHashMap<>();
+        outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled()));
+        outputs.put("ts", Map.of("enabled", sw.tsEnabled()));
+        outputs.put("hls", Map.of("enabled", sw.hlsEnabled()));
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("guests", g);
+        body.put("overlay", Map.of("enabled", sw.overlayEnabled()));
+        body.put("outputs", outputs);
+        response.header("Cache-Control", "no-store");
+        response.json(body);
     }
 
     private void removeMember(Request request, Response response) throws Exception {

@@ -271,6 +271,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$Capabilities", "booleans; turned into a RoomActor and"
                     + " the WebSocket state's you object"),
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$BanSet", "ban's result; the API sends its ban"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomGuests$ServerSwitches", "booleans; RoomsApi copies them"
+                    + " into the server-switches answer (swept)"),
             Map.entry("io.siggi.togethertunes.rooms.RequestSearch$Libraries", "user ids of the libraries in a room's"
                     + " request scope; builds the query"),
             Map.entry("io.siggi.togethertunes.rooms.RoomQueue$Scope", "request scope and owner id, read on the"
@@ -758,10 +760,11 @@ class DtoIpLeakTest {
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
-                "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
+                "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
-                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/requests");
+                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/requests",
+                "/api/rooms/" + f.roomSlug + "/server-switches");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -965,6 +968,9 @@ class DtoIpLeakTest {
         expect(200, alice, "PATCH", "/api/rooms/" + roomSlug, "{\"name\":\"Alice's Lounge\"}");
         expect(201, alice, "PUT", "/api/rooms/" + roomSlug + "/members/" + helpId, "{\"role\":\"moderator\"}");
         expect(204, alice, "DELETE", "/api/rooms/" + roomSlug + "/members/" + helpId, null);
+        expect(201, alice, "POST", "/api/rooms/" + roomSlug + "/members", "{\"username\":\"help\",\"role\":\"member\"}");
+        expect(204, alice, "DELETE", "/api/rooms/" + roomSlug + "/members/" + helpId, null);
+        expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/server-switches", null);
         expect(201, alice, "PUT", "/api/rooms/" + roomSlug + "/members/" + adminId, "{\"role\":\"member\"}");
         expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/members", null);
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);

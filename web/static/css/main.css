@@ -588,3 +588,36 @@ button.voted {
   border-radius: 999px;
   cursor: pointer;
 }
+
+/* ------------------------------------------------------------------ room management view */
+
+.room-settings fieldset.panel {
+  margin-bottom: 1rem;
+}
+
+.room-settings .setting {
+  flex-wrap: wrap;
+}
+
+/* A room setting the server has turned off: shown, but greyed out ("disabled by the server admin"). */
+.setting.server-disabled > label,
+.setting.server-disabled input,
+.setting.server-disabled select {
+  opacity: 0.5;
+}
+
+.server-disabled-note {
+  font-style: italic;
+}
+
+.setting-help {
+  flex-basis: 100%;
+}
+
+#room-manage-link {
+  margin-left: 0.5rem;
+}
+
+.room-settings .setting > label:first-child {
+  min-width: 16rem;
+}

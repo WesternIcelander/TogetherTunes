@@ -9,7 +9,7 @@
 // same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); in remote mode
 // (remote.ts) it loads no media and shows the timeline delayed by the active output's
 // estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
-// room; `?mode=` wins. The owner's management view comes with a later step of M3.
+// room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { ClockSync } from "./clocksync.js";
@@ -176,6 +176,10 @@ function renderHeader(s: RoomState): void {
   const mode = { owner: "Owner picks", vote: "Vote", open: "Open" }[s.room.controlMode] ?? s.room.controlMode;
   const role = s.room.you.role;
   element("room-meta").textContent = "Control: " + mode + (role !== undefined ? " · You are " + role : "");
+  // The management view (settings, members, guest bans, request history) for the owner and moderators.
+  const manage = element<HTMLAnchorElement>("room-manage-link");
+  manage.hidden = !s.room.you.canModerate;
+  manage.href = "/rooms/" + encodeURIComponent(s.room.slug) + "/manage";
   const p = s.presence;
   const parts = [p.listening + " listening", p.remote + " remote"];
   let text = parts.join(" · ");

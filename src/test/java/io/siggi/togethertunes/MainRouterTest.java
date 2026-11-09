@@ -185,6 +185,16 @@ class MainRouterTest {
     }
 
     @Test
+    void roomManagementPageIsServedAtTheRoomPath() throws Exception {
+        HttpResponse<String> page = get("/rooms/my-room/manage");
+        assertEquals(200, page.statusCode());
+        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
+        assertTrue(page.body().contains("src=\"/js/roommanage.js\""), page.body());
+        assertEquals(200, get("/js/roommanage.js").statusCode());
+        assertEquals(200, get("/js/roomsettings.js").statusCode());
+    }
+
+    @Test
     void plainGetOnTheEchoSocketIs426() throws Exception {
         assertEquals(426, get("/ws/echo").statusCode());
     }

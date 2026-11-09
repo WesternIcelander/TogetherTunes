@@ -125,6 +125,22 @@ public final class RoomGuests implements RoomGuestRules {
     }
 
     /**
+     * The server switches behind the room settings, for the room's management view, which greys
+     * out room settings the server has turned off ({@code docs/rooms.md#guests-in-rooms}).
+     * {@code guests}: the server half of each guest capability ({@link #serverCapabilities()});
+     * {@code guestsEnabled} off turns all of them off.
+     */
+    public record ServerSwitches(boolean guestsEnabled, Capabilities guests, boolean overlayEnabled,
+                                 boolean rtmpEnabled, boolean tsEnabled, boolean hlsEnabled) {
+    }
+
+    /** The server switches ({@link ServerSwitches}). */
+    public ServerSwitches serverSwitches() throws SQLException {
+        return new ServerSwitches(settings.guestsEnabled(), serverCapabilities(), settings.overlayEnabled(),
+                settings.outputsRtmpEnabled(), settings.outputsTsEnabled(), settings.outputsHlsEnabled());
+    }
+
+    /**
      * What a guest (or an anonymous visitor, once it becomes one) may do in a room with these
      * settings. A guest banned server-wide gets {@link Capabilities#NONE}; a room ban is checked
      * when the room is opened ({@link Rooms#access}), not here.

@@ -427,6 +427,9 @@ public final class Main {
     /** The web UI file served for {@code /rooms/{idOrSlug}} (and, by redirect, {@code /r/{slug}}). */
     static final String ROOM_PAGE = "room.html";
 
+    /** The web UI file served for {@code /rooms/{idOrSlug}/manage}: settings, members, guest bans, request history. */
+    static final String ROOM_MANAGE_PAGE = "room-manage.html";
+
     /**
      * The application's routes. Router-wide hooks: actor resolution ({@link ActorResolver#hook()};
      * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check ({@link Csrf}:
@@ -481,6 +484,8 @@ public final class Main {
         router.get("/items/{id}", staticFiles.page(ITEM_PAGE));
         // The room page, and the QR short link /r/{slug} → the room page in remote mode.
         RoomLinks.register(router, staticFiles.page(ROOM_PAGE));
+        // The room's management view (owner and moderators; the page checks through the API).
+        router.get("/rooms/{room}/manage", staticFiles.page(ROOM_MANAGE_PAGE));
         staticFiles.register(router);
         return router;
     }
