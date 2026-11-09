@@ -16,8 +16,8 @@ import java.util.Set;
  * reference to it beyond that; copy what you need (for example the immutable {@link Timeline}).
  *
  * <p>Changes are made through a mutation, which also persists them ({@link RoomTx#persist}); the
- * executor then bumps {@link #version()} and broadcasts. Later M3 steps add history, typed
- * settings and presence here.
+ * executor then bumps {@link #version()} and broadcasts. Later M3 steps add history and presence
+ * here.
  */
 public final class RoomState {
     private final String id;
@@ -26,8 +26,7 @@ public final class RoomState {
     private String ownerId;
     private Rooms.Visibility visibility;
     private Rooms.ControlMode controlMode;
-    private String settingsJson;
-    private ControlSettings controlSettings;
+    private RoomSettings settings;
     private Timeline timeline;
     /** The entry the timeline points at, or {@code null} when idle. */
     private QueueEntry current;
@@ -51,8 +50,7 @@ public final class RoomState {
         this.ownerId = Objects.requireNonNull(ownerId, "ownerId");
         this.visibility = Objects.requireNonNull(visibility, "visibility");
         this.controlMode = Objects.requireNonNull(controlMode, "controlMode");
-        this.settingsJson = Objects.requireNonNull(settingsJson, "settingsJson");
-        this.controlSettings = ControlSettings.parse(settingsJson);
+        this.settings = RoomSettings.parse(Objects.requireNonNull(settingsJson, "settingsJson"));
         this.timeline = Objects.requireNonNull(timeline, "timeline");
         this.version = version;
     }
@@ -99,14 +97,14 @@ public final class RoomState {
         return controlMode;
     }
 
-    /** The raw {@code settings_json} (typed settings come with the room-settings step). */
-    public String settingsJson() {
-        return settingsJson;
+    /** The room's settings ({@code settings_json}). */
+    public RoomSettings settings() {
+        return settings;
     }
 
-    /** The settings the control modes read, parsed from {@link #settingsJson()}. */
+    /** The settings the control modes read ({@link RoomSettings#control()}). */
     public ControlSettings controlSettings() {
-        return controlSettings;
+        return settings.control();
     }
 
     public Timeline timeline() {
@@ -202,9 +200,9 @@ public final class RoomState {
         this.controlMode = Objects.requireNonNull(controlMode, "controlMode");
     }
 
-    public void settingsJson(String settingsJson) {
-        this.settingsJson = Objects.requireNonNull(settingsJson, "settingsJson");
-        this.controlSettings = ControlSettings.parse(settingsJson);
+    /** Takes over the settings after {@link Rooms} changed them. */
+    public void settings(RoomSettings settings) {
+        this.settings = Objects.requireNonNull(settings, "settings");
     }
 
     /**

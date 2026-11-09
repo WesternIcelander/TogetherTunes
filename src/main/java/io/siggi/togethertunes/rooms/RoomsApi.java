@@ -11,6 +11,7 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -29,8 +30,11 @@ import java.util.Set;
  *       {@code 403 forbidden}). Defaults: a slug derived from the name, {@code unlisted},
  *       {@code vote}. {@code 409 slug_taken} / {@code too_many_rooms}.</li>
  *   <li>{@code GET /api/rooms/{room}} → the room (anyone who may see it).</li>
- *   <li>{@code PATCH /api/rooms/{room}} {@code {"name"?, "slug"?, "visibility"?, "controlMode"?}}
- *       → the room; the owner only. {@code 409 slug_taken}.</li>
+ *   <li>{@code PATCH /api/rooms/{room}} {@code {"name"?, "slug"?, "visibility"?, "controlMode"?,
+ *       "settings"?}} → the room; the owner only. {@code settings} is a merge patch of the room
+ *       settings ({@link RoomSettings}: nested objects change only what they name, {@code null}
+ *       resets to the default); {@code 400 invalid_settings} (not an object), {@code
+ *       unknown_setting}, {@code invalid_setting}. {@code 409 slug_taken}.</li>
  *   <li>{@code DELETE /api/rooms/{room}} → {@code 204}; the owner, or {@code rooms.moderateAny}.</li>
  *   <li>{@code GET /api/rooms/{room}/members?cursor=&limit=} → {@code {"items": [member],
  *       "nextCursor"?}}; owner and moderators.</li>
@@ -41,7 +45,7 @@ import java.util.Set;
  *   <li>{@code DELETE /api/rooms/{room}/members/{userId}} → {@code 204}; also lifts a ban, and is
  *       how a user leaves a room. {@code 404 member_not_found}, {@code 409 owner_cannot_leave}.</li>
  * </ul>
- * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode",
+ * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
  * {@code {"user": actor, "role", "joinedAt"}}. A room the caller can't see is {@code 404
  * room_not_found}; a banned user gets {@code 403 banned_from_room}. Body errors: {@code 400
@@ -52,6 +56,7 @@ import java.util.Set;
  */
 public final class RoomsApi {
     private static final Set<String> ROOM_FIELDS = Set.of("name", "slug", "visibility", "controlMode");
+    private static final Set<String> UPDATE_FIELDS = Set.of("name", "slug", "visibility", "controlMode", "settings");
     private static final Set<String> ROLE_FIELDS = Set.of("role");
 
     private final Rooms rooms;
@@ -83,13 +88,19 @@ public final class RoomsApi {
             return;
         }
         RoomState s = tx.state();
-        if (r.slug().equals(s.slug()) && r.name().equals(s.name()) && r.ownerId().equals(s.ownerId())
-                && r.visibility() == s.visibility() && r.controlMode() == s.controlMode()) {
-            return;
+        if (!r.slug().equals(s.slug()) || !r.name().equals(s.name()) || !r.ownerId().equals(s.ownerId())
+                || r.visibility() != s.visibility() || r.controlMode() != s.controlMode()) {
+            QueueControl.controlModeChanging(tx, r.controlMode());
+            s.record(r.slug(), r.name(), r.ownerId(), r.visibility(), r.controlMode());
+            tx.event(new RoomEvent.RoomUpdated());
         }
-        QueueControl.controlModeChanging(tx, r.controlMode());
-        s.record(r.slug(), r.name(), r.ownerId(), r.visibility(), r.controlMode());
-        tx.event(new RoomEvent.RoomUpdated());
+        if (!r.settings().equals(s.settings())) {
+            List<String> changed = r.settings().changedFrom(s.settings());
+            s.settings(r.settings());
+            tx.event(new RoomEvent.SettingsChanged(changed));
+            // A lower threshold (or vote-skip turned back on) may already be reached.
+            QueueControl.checkVoteSkip(tx);
+        }
     }
 
     public void register(Router router) {
@@ -163,7 +174,7 @@ public final class RoomsApi {
     private void update(Request request, Response response) throws Exception {
         Actor.User user = user(request);
         JsonObject body = request.readJson(JsonObject.class);
-        fields(body, ROOM_FIELDS);
+        fields(body, UPDATE_FIELDS);
         String name = null;
         if (body.has("name")) {
             name = string(body.get("name"), "invalid_name");
@@ -178,8 +189,16 @@ public final class RoomsApi {
                 throw new HttpError(400, "invalid_slug", "The slug can't be empty");
             }
         }
+        JsonObject settings = null;
+        JsonElement settingsField = body.get("settings");
+        if (settingsField != null && !settingsField.isJsonNull()) {
+            if (!settingsField.isJsonObject()) {
+                throw new HttpError(400, "invalid_settings", "settings must be an object");
+            }
+            settings = settingsField.getAsJsonObject();
+        }
         Rooms.Edit edit = new Rooms.Edit(name, slug, visibility(body.get("visibility")),
-                controlMode(body.get("controlMode")));
+                controlMode(body.get("controlMode")), settings);
         String id = roomId(request);
         // Through the room's executor, so the live state changes in step with the row.
         Rooms.RoomView room = registry.call(id, tx -> {

@@ -238,6 +238,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomActor", "who acts on a room queue (ids and rights), built per"
                     + " action, never sent"),
             Map.entry("io.siggi.togethertunes.rooms.ControlSettings", "parsed from settings_json, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomSettings$Def", "a room setting's definition, constant"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$SettingsChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.ControlPolicy$Capabilities", "booleans and a role; the WebSocket"
                     + " state's you object is built from it (no ids)"),
             Map.entry("io.siggi.togethertunes.rooms.QueueControl$VoteSkip", "counts only; the WebSocket layer acks"

@@ -126,7 +126,8 @@ class RoomsApiTest {
                 + "\",\"name\":\"Alice\",\"isGuest\":false}"), room.get("owner"));
         assertEquals(JsonParser.parseString("{\"role\":\"owner\",\"canEdit\":true,\"canDelete\":true,"
                 + "\"canModerate\":true}"), room.get("you"));
-        assertEquals(8, room.size(), room.toString());
+        assertEquals(RoomSettings.DEFAULTS.toJson(), room.get("settings"));
+        assertEquals(9, room.size(), room.toString());
 
         // read by slug, anonymously: no role (left out)
         JsonObject anon = json(call(null, "GET", "/api/rooms/movie-night", null));
@@ -192,7 +193,11 @@ class RoomsApiTest {
 
         expectError(400, "invalid_name", call(alice, "PATCH", "/api/rooms/room-a", "{\"name\":\" \"}"));
         expectError(400, "invalid_slug", call(alice, "PATCH", "/api/rooms/room-a", "{\"slug\":null}"));
-        expectError(400, "unknown_field", call(alice, "PATCH", "/api/rooms/room-a", "{\"settings\":{}}"));
+        expectError(400, "unknown_field", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"settings\":{}}"));
+        expectError(400, "invalid_settings", call(alice, "PATCH", "/api/rooms/room-a", "{\"settings\":[]}"));
+        expectError(400, "unknown_setting", call(alice, "PATCH", "/api/rooms/room-a", "{\"settings\":{\"x\":1}}"));
+        expectError(400, "invalid_setting", call(alice, "PATCH", "/api/rooms/room-a",
+                "{\"settings\":{\"guests\":{\"canVote\":1}}}"));
         expectError(400, "invalid_role", call(alice, "PUT", "/api/rooms/room-a/members/" + bobId, "{\"role\":\"admin\"}"));
         expectError(400, "invalid_role", call(alice, "PUT", "/api/rooms/room-a/members/" + bobId, "{}"));
         expectError(400, "unknown_field", call(alice, "PUT", "/api/rooms/room-a/members/" + bobId,
@@ -205,6 +210,75 @@ class RoomsApiTest {
         expectError(400, "invalid_cursor", call(alice, "GET", "/api/rooms?cursor=zzz", null));
         expectError(400, "invalid_cursor", call(alice, "GET", "/api/rooms/room-a/members?cursor=zzz", null));
         expectError(404, "room_not_found", call(alice, "PATCH", "/api/rooms/nope", "{\"name\":\"x\"}"));
+    }
+
+    @Test
+    void settings() throws Exception {
+        String id = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Set\",\"visibility\":\"public\"}"))
+                .get("id").getAsString();
+        List<RoomChange> changes = Collections.synchronizedList(new ArrayList<>());
+        registry.executor(id).addListener((state, change) -> changes.add(change));
+
+        HttpResponse<String> r = call(alice, "PATCH", "/api/rooms/set", "{\"settings\":{\"requestsPerActor\":5,"
+                + "\"voteSkipThreshold\":\"off\",\"guests\":{\"canUpload\":true},\"overlay\":{\"enabled\":true,"
+                + "\"corner\":\"tl\"},\"outputs\":{\"rtmp\":{\"playbackUrl\":\"rtspt://stream.example/live/x\"}}}}");
+        assertEquals(200, r.statusCode(), r.body());
+        JsonObject settings = json(r).getAsJsonObject("settings");
+        assertEquals(5, settings.get("requestsPerActor").getAsInt());
+        assertEquals("off", settings.get("voteSkipThreshold").getAsString());
+        assertEquals("owner", settings.get("requestScope").getAsString(), "defaults filled in");
+        assertTrue(settings.getAsJsonObject("guests").get("canUpload").getAsBoolean());
+        assertTrue(settings.getAsJsonObject("guests").get("canVote").getAsBoolean());
+        assertEquals("tl", settings.getAsJsonObject("overlay").get("corner").getAsString());
+        assertEquals(22, settings.getAsJsonObject("overlay").get("heightPct").getAsInt());
+        assertEquals(2000, settings.getAsJsonObject("estimatedDelayMs").get("ts").getAsInt());
+        // Anyone who sees the room sees its settings.
+        assertEquals(settings, json(call(null, "GET", "/api/rooms/set", null)).getAsJsonObject("settings"));
+        assertEquals(settings, json(call(bob, "GET", "/api/rooms", null)).getAsJsonArray("items").get(0)
+                .getAsJsonObject().getAsJsonObject("settings"));
+
+        // The live state and the stored row (only what differs from the defaults).
+        assertEquals(List.of(5, 1L), registry.call(id, tx -> List.of(
+                tx.state().controlSettings().requestsPerActor(), tx.state().version())));
+        assertEquals(1, changes.size());
+        assertEquals(List.of(new RoomEvent.SettingsChanged(List.of("requestsPerActor", "voteSkipThreshold",
+                "guests.canUpload", "overlay.enabled", "overlay.corner", "outputs.rtmp.playbackUrl"))),
+                changes.get(0).events());
+        String stored = db.read(c -> {
+            try (var ps = c.prepareStatement("SELECT settings_json FROM rooms WHERE id = ?")) {
+                ps.setString(1, id);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+        assertEquals(JsonParser.parseString("{\"requestsPerActor\":5,\"voteSkipThreshold\":\"off\","
+                + "\"guests\":{\"canUpload\":true},\"overlay\":{\"enabled\":true,\"corner\":\"tl\"},"
+                + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"rtspt://stream.example/live/x\"}}}"),
+                JsonParser.parseString(stored));
+
+        // The same values again: nothing changes, no version bump.
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/set", "{\"settings\":{\"requestsPerActor\":5}}").statusCode());
+        assertEquals(1L, (long) registry.call(id, tx -> tx.state().version()));
+        // null resets a setting, or a whole group.
+        settings = json(call(alice, "PATCH", "/api/rooms/set", "{\"settings\":{\"requestsPerActor\":null,"
+                + "\"overlay\":null}}")).getAsJsonObject("settings");
+        assertEquals(3, settings.get("requestsPerActor").getAsInt());
+        assertFalse(settings.getAsJsonObject("overlay").get("enabled").getAsBoolean());
+        assertEquals("br", settings.getAsJsonObject("overlay").get("corner").getAsString());
+        assertTrue(settings.getAsJsonObject("guests").get("canUpload").getAsBoolean(), "untouched");
+        assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
+
+        // All or nothing; the owner only.
+        expectError(400, "invalid_setting", call(alice, "PATCH", "/api/rooms/set",
+                "{\"name\":\"Other\",\"settings\":{\"gapMs\":5,\"noRepeatWindow\":-1}}"));
+        assertEquals("Set", json(call(alice, "GET", "/api/rooms/set", null)).get("name").getAsString());
+        assertEquals(0, json(call(alice, "GET", "/api/rooms/set", null)).getAsJsonObject("settings").get("gapMs")
+                .getAsInt());
+        assertEquals(201, call(alice, "PUT", "/api/rooms/set/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
+        expectError(403, "forbidden", call(bob, "PATCH", "/api/rooms/set", "{\"settings\":{\"gapMs\":5}}"));
+        assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));
     }
 
     @Test

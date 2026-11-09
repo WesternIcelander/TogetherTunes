@@ -1,17 +1,11 @@
 package io.siggi.togethertunes.rooms;
 
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
-import com.google.gson.JsonPrimitive;
-
 /**
  * The room settings the control modes and queue operations read
  * ({@code docs/rooms.md#room-settings-settings_json}): {@code allowDownvotes} (default
  * {@code false}), {@code voteSkipThreshold} (default {@code 0.5}, or {@code "off"}),
- * {@code requestsPerActor} (default 3) and {@code noRepeatWindow} (default 10). Read leniently
- * from {@code settings_json}: a missing or invalid value falls back to the default (the
- * room-settings step validates what is written).
+ * {@code requestsPerActor} (default 3) and {@code noRepeatWindow} (default 10). Part of
+ * {@link RoomSettings}, which reads and validates them.
  *
  * @param voteSkipThreshold the fraction of present identified members whose skip votes skip the
  *                          current entry, in {@code (0, 1]}, or {@code null} when vote-skip is off
@@ -35,46 +29,9 @@ public record ControlSettings(boolean allowDownvotes, Double voteSkipThreshold, 
         this(allowDownvotes, voteSkipThreshold, DEFAULT_REQUESTS_PER_ACTOR, DEFAULT_NO_REPEAT_WINDOW);
     }
 
+    /** The control settings of stored {@code settings_json}; see {@link RoomSettings#parse}. */
     public static ControlSettings parse(String settingsJson) {
-        JsonObject o;
-        try {
-            JsonElement e = settingsJson == null ? null : JsonParser.parseString(settingsJson);
-            if (e == null || !e.isJsonObject()) {
-                return DEFAULTS;
-            }
-            o = e.getAsJsonObject();
-        } catch (RuntimeException e) {
-            return DEFAULTS;
-        }
-        boolean downvotes = DEFAULTS.allowDownvotes();
-        if (o.get("allowDownvotes") instanceof JsonPrimitive p && p.isBoolean()) {
-            downvotes = p.getAsBoolean();
-        }
-        Double threshold = DEFAULTS.voteSkipThreshold();
-        if (o.get("voteSkipThreshold") instanceof JsonPrimitive p) {
-            if (p.isString() && "off".equals(p.getAsString())) {
-                threshold = null;
-            } else if (p.isNumber()) {
-                double d = p.getAsDouble();
-                if (d > 0 && d <= 1) {
-                    threshold = d;
-                }
-            }
-        }
-        int requests = intSetting(o, "requestsPerActor", 1, MAX_REQUESTS_PER_ACTOR, DEFAULT_REQUESTS_PER_ACTOR);
-        int noRepeat = intSetting(o, "noRepeatWindow", 0, MAX_NO_REPEAT_WINDOW, DEFAULT_NO_REPEAT_WINDOW);
-        return new ControlSettings(downvotes, threshold, requests, noRepeat);
-    }
-
-    /** A whole number in {@code [min, max]}, else {@code fallback}. */
-    private static int intSetting(JsonObject o, String key, int min, int max, int fallback) {
-        if (o.get(key) instanceof JsonPrimitive p && p.isNumber()) {
-            double d = p.getAsDouble();
-            if (d == Math.rint(d) && d >= min && d <= max) {
-                return (int) d;
-            }
-        }
-        return fallback;
+        return RoomSettings.parse(settingsJson).control();
     }
 
     /**

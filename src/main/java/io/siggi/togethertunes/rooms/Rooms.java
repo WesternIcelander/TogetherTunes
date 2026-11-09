@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.rooms;
 
+import com.google.gson.JsonObject;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.auth.AuditLog;
@@ -162,11 +163,12 @@ public final class Rooms {
     }
 
     /**
-     * A room as clients see it. {@code you}: the caller's effective role ({@code null} for none)
+     * A room as clients see it. {@code settings}: every room setting with its value
+     * ({@link RoomSettings#toJson()}). {@code you}: the caller's effective role ({@code null} for none)
      * and what they may do with the room itself.
      */
     public record RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
-                           long createdAt, You you) {
+                           JsonObject settings, long createdAt, You you) {
     }
 
     /**
@@ -189,8 +191,14 @@ public final class Rooms {
     public record MemberPage(List<Member> items, String nextCursor) {
     }
 
-    /** A change to a room. {@code null} fields stay as they are. */
-    public record Edit(String name, String slug, Visibility visibility, ControlMode controlMode) {
+    /**
+     * A change to a room. {@code null} fields stay as they are; {@code settings} is a merge patch
+     * ({@link RoomSettings#patch}).
+     */
+    public record Edit(String name, String slug, Visibility visibility, ControlMode controlMode, JsonObject settings) {
+        public Edit(String name, String slug, Visibility visibility, ControlMode controlMode) {
+            this(name, slug, visibility, controlMode, null);
+        }
     }
 
     /** {@link #setRole}'s result: the member row, and whether it was created. */
@@ -199,7 +207,7 @@ public final class Rooms {
 
     /** A {@code rooms} row with the owner's display name. */
     public record Room(String id, String slug, String name, String ownerId, String ownerName, Visibility visibility,
-                       ControlMode controlMode, long createdAt) {
+                       ControlMode controlMode, RoomSettings settings, long createdAt) {
     }
 
     /** A room and the caller's effective role in it ({@code null}: none). */
@@ -285,12 +293,13 @@ public final class Rooms {
     // ------------------------------------------------------------------ reading
 
     private static final String ROOM = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility,"
-            + " r.control_mode, r.created_at FROM rooms r JOIN users u ON u.id = r.owner_id";
+            + " r.control_mode, r.created_at, r.settings_json FROM rooms r JOIN users u ON u.id = r.owner_id";
 
     private static Room room(ResultSet rs) throws SQLException {
         return new Room(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
                 Objects.requireNonNull(Visibility.parse(rs.getString(6)), "visibility"),
-                Objects.requireNonNull(ControlMode.parse(rs.getString(7)), "control_mode"), rs.getLong(8));
+                Objects.requireNonNull(ControlMode.parse(rs.getString(7)), "control_mode"),
+                RoomSettings.parse(rs.getString(9)), rs.getLong(8));
     }
 
     /** The room with this id or slug, or {@code null}. Locks the row on PostgreSQL if {@code lock}. */
@@ -406,7 +415,8 @@ public final class Rooms {
 
     private static RoomView view(Room room, Role role, boolean moderateAny) {
         return new RoomView(room.id(), room.slug(), room.name(), ActorRef.user(room.ownerId(), room.ownerName()),
-                room.visibility().wire(), room.controlMode().wire(), room.createdAt(), you(room, role, moderateAny));
+                room.visibility().wire(), room.controlMode().wire(), room.settings().toJson(), room.createdAt(),
+                you(room, role, moderateAny));
     }
 
     /** The room as the caller sees it. @throws HttpError as {@link #access(Actor, String)} */
@@ -446,7 +456,7 @@ public final class Rooms {
         boolean moderateAny = moderatesAny(actor);
         String uid = userId(actor);
         String sql = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility, r.control_mode,"
-                + " r.created_at, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
+                + " r.created_at, r.settings_json, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
                 + " LEFT JOIN room_members m ON m.room_id = r.id AND m.user_id = ?"
                 + " WHERE (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
                 + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')))"
@@ -467,7 +477,7 @@ public final class Rooms {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Room room = room(rs);
-                        Role role = effective(room, uid, Role.parse(rs.getString(9)), moderateAny);
+                        Role role = effective(room, uid, Role.parse(rs.getString(10)), moderateAny);
                         items.add(view(room, role, moderateAny));
                     }
                 }
@@ -618,7 +628,7 @@ public final class Rooms {
                     details.put("visibility", v.wire());
                     details.put("controlMode", m.wire());
                     AuditLog.write(c, now, owner.userId(), null, ip, AUDIT_CREATED, id, details);
-                    Room room = new Room(id, s, cleanName, owner.userId(), ownerName, v, m, now);
+                    Room room = new Room(id, s, cleanName, owner.userId(), ownerName, v, m, RoomSettings.DEFAULTS, now);
                     return view(room, Role.OWNER, moderateAny);
                 });
             } catch (SQLException e) {
@@ -640,7 +650,8 @@ public final class Rooms {
     }
 
     /**
-     * Changes a room's name, slug, visibility or control mode. The owner only.
+     * Changes a room's name, slug, visibility, control mode or settings. The owner only. The
+     * audit entry names the settings that changed, never their values.
      *
      * @throws HttpError {@code 404 room_not_found} / {@code 403 banned_from_room} (can't see it),
      *                   {@code 403 forbidden} (not the owner), {@code 409 slug_taken}, and the
@@ -684,15 +695,26 @@ public final class Rooms {
                     mode = edit.controlMode();
                     details.put("controlMode", mode.wire());
                 }
-                Room updated = new Room(r.id(), slug, name, r.ownerId(), r.ownerName(), visibility, mode, r.createdAt());
+                RoomSettings settings = r.settings();
+                if (edit.settings() != null) {
+                    RoomSettings patched = settings.patch(edit.settings());
+                    List<String> changed = patched.changedFrom(settings);
+                    if (!changed.isEmpty()) {
+                        settings = patched;
+                        details.put("settings", changed);
+                    }
+                }
+                Room updated = new Room(r.id(), slug, name, r.ownerId(), r.ownerName(), visibility, mode, settings,
+                        r.createdAt());
                 if (!details.isEmpty()) {
                     try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET name = ?, slug = ?, visibility = ?,"
-                            + " control_mode = ? WHERE id = ?")) {
+                            + " control_mode = ?, settings_json = ? WHERE id = ?")) {
                         ps.setString(1, name);
                         ps.setString(2, slug);
                         ps.setString(3, visibility.wire());
                         ps.setString(4, mode.wire());
-                        ps.setString(5, r.id());
+                        ps.setString(5, settings.toStoredJson());
+                        ps.setString(6, r.id());
                         ps.executeUpdate();
                     }
                     AuditLog.write(c, EpochMs.now(clock), userId(actor), null, ip, AUDIT_UPDATED, r.id(), details);

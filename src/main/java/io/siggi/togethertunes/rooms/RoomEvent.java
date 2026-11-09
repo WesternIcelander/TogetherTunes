@@ -14,6 +14,16 @@ public interface RoomEvent {
     record RoomUpdated() implements RoomEvent {
     }
 
+    /**
+     * The room's settings changed; the new ones are {@link RoomState#settings()}, {@code changed}
+     * names the settings that changed (dotted, e.g. {@code guests.canVote}).
+     */
+    record SettingsChanged(java.util.List<String> changed) implements RoomEvent {
+        public SettingsChanged {
+            changed = java.util.List.copyOf(changed);
+        }
+    }
+
     /** The timeline was re-anchored; the new anchor is {@link RoomChange#timeline()}. */
     record TimelineChanged() implements RoomEvent {
     }
