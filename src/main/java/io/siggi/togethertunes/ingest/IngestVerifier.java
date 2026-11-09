@@ -13,7 +13,10 @@ import java.util.Locale;
  * <ul>
  *   <li>the audio ({@code audio.m4a}) ends where the source's audio ends, within
  *       {@link #MAX_AUDIO_DRIFT_US} (the encode starts at 0 like the source, with a late audio
- *       start padded with silence);</li>
+ *       start padded with silence). Where the source's audio ends is what its container says
+ *       ({@link MediaProbe#audioEndUs()}); if the encode doesn't match that but does match the
+ *       length the loudness pass actually decoded, it is accepted too: some decoders (WMA) output
+ *       more than the container declares, and the encode then rightly has that length;</li>
  *   <li>the video track's avcC (the mezzanine's, or the card's for an audio item) is
  *       byte-identical to the reference card's (invariant 1);</li>
  *   <li>the video track starts at 0 and has an IDR exactly every 2 s and nowhere else, every 60th
@@ -30,17 +33,22 @@ public final class IngestVerifier {
     /**
      * Runs all checks.
      *
-     * @param sourceAudioUs where the source's audio ends, in microseconds ({@link MediaProbe#audioEndUs()},
-     *                      or the length decoded by the loudness pass)
+     * @param sourceAudioUs  where the source's audio ends according to its container, in microseconds
+     *                       ({@link MediaProbe#audioEndUs()} or {@link MediaProbe#readAudioEndUs}), -1 if unknown
+     * @param decodedAudioUs where the audio decoded by the loudness pass ended (its last
+     *                       {@code out_time}), in microseconds, -1 if unknown
      * @param videoFile     the file the video track came from, for messages ({@code mezz.mp4}/{@code card.mp4})
+     * @return where the source's audio ends, as the encode matched it ({@code sourceAudioUs}, or
+     *         {@code decodedAudioUs} if it only matched that)
      * @throws IngestFailure                       if the duration or the GOP structure is wrong
      * @throws ReferenceCard.AvcCMismatchException if the avcC differs from the reference
      */
-    public static void verify(SampleIndex index, ReferenceCard reference, long sourceAudioUs, String videoFile)
-            throws IngestFailure, ReferenceCard.AvcCMismatchException {
-        checkAudioDuration(index, sourceAudioUs);
+    public static long verify(SampleIndex index, ReferenceCard reference, long sourceAudioUs, long decodedAudioUs,
+                              String videoFile) throws IngestFailure, ReferenceCard.AvcCMismatchException {
+        long matched = checkAudioDuration(index, sourceAudioUs, decodedAudioUs);
         reference.verify(index.avcC(), videoFile);
         checkKeyframes(index, videoFile);
+        return matched;
     }
 
     /** Where the audio track ends, in microseconds (its first sample is at 0). */
@@ -52,16 +60,29 @@ public final class IngestVerifier {
         return Math.round(audio.endPts() * 1_000_000.0 / audio.timescale());
     }
 
-    static void checkAudioDuration(SampleIndex index, long sourceAudioUs) throws IngestFailure {
-        if (sourceAudioUs <= 0) {
+    /**
+     * Checks the audio length; see the class comment.
+     *
+     * @return the reference the encode matched: {@code sourceAudioUs}, or {@code decodedAudioUs}
+     *         if it only matched that
+     */
+    static long checkAudioDuration(SampleIndex index, long sourceAudioUs, long decodedAudioUs) throws IngestFailure {
+        if (sourceAudioUs <= 0 && decodedAudioUs <= 0) {
             throw new IngestFailure("Verify: the length of the source's audio is unknown");
         }
         long encoded = audioDurationUs(index);
-        if (Math.abs(encoded - sourceAudioUs) > MAX_AUDIO_DRIFT_US) {
-            throw new IngestFailure(String.format(Locale.ROOT,
-                    "Verify: the encoded audio ends at %.3f s, but the source's ends at %.3f s (more than %d ms apart)",
-                    encoded / 1e6, sourceAudioUs / 1e6, MAX_AUDIO_DRIFT_US / 1000));
+        if (sourceAudioUs > 0 && Math.abs(encoded - sourceAudioUs) <= MAX_AUDIO_DRIFT_US) {
+            return sourceAudioUs;
         }
+        if (decodedAudioUs > 0 && Math.abs(encoded - decodedAudioUs) <= MAX_AUDIO_DRIFT_US) {
+            return decodedAudioUs;
+        }
+        String source = sourceAudioUs > 0 ? String.format(Locale.ROOT, "%.3f s", sourceAudioUs / 1e6) : "an unknown time";
+        String decoded = decodedAudioUs > 0
+                ? String.format(Locale.ROOT, " (decoded: %.3f s)", decodedAudioUs / 1e6) : "";
+        throw new IngestFailure(String.format(Locale.ROOT,
+                "Verify: the encoded audio ends at %.3f s, but the source's ends at %s%s (more than %d ms apart)",
+                encoded / 1e6, source, decoded, MAX_AUDIO_DRIFT_US / 1000));
     }
 
     static void checkKeyframes(SampleIndex index, String videoFile) throws IngestFailure {

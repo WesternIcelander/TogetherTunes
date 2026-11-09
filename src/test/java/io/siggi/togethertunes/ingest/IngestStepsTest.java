@@ -206,9 +206,11 @@ class IngestStepsTest {
     @Test
     void verifyAcceptsAGoodIndex() throws Exception {
         SampleIndex good = index(150, 60, 5_000_000, 0);
-        IngestVerifier.checkAudioDuration(good, 5_000_000);
-        IngestVerifier.checkAudioDuration(good, 5_049_000);
-        IngestVerifier.checkAudioDuration(good, 4_951_000);
+        assertEquals(5_000_000, IngestVerifier.checkAudioDuration(good, 5_000_000, -1));
+        assertEquals(5_049_000, IngestVerifier.checkAudioDuration(good, 5_049_000, -1));
+        assertEquals(4_951_000, IngestVerifier.checkAudioDuration(good, 4_951_000, 4_000_000));
+        // the container's length wins when both match
+        assertEquals(5_010_000, IngestVerifier.checkAudioDuration(good, 5_010_000, 4_990_000));
         IngestVerifier.checkKeyframes(good, "mezz.mp4");
         assertEquals(5_000_000, IngestVerifier.audioDurationUs(good));
     }
@@ -216,10 +218,25 @@ class IngestStepsTest {
     @Test
     void verifyRejectsAudioDrift() {
         SampleIndex idx = index(150, 60, 5_000_000, 0);
-        IngestFailure e = assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, 5_051_000));
+        IngestFailure e = assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, 5_051_000, -1));
         assertTrue(e.getMessage().contains("5.000 s") && e.getMessage().contains("5.051 s"), e.getMessage());
-        assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, 4_940_000));
-        assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, -1));
+        assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, 4_940_000, -1));
+        assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(idx, -1, -1));
+        IngestFailure both = assertThrows(IngestFailure.class,
+                () -> IngestVerifier.checkAudioDuration(idx, 6_000_000, 4_900_000));
+        assertTrue(both.getMessage().contains("6.000 s (decoded: 4.900 s)"), both.getMessage());
+    }
+
+    /** A decoder that outputs more than the container declares (WMA's padded last block): the decoded length counts. */
+    @Test
+    void verifyAcceptsTheDecodedLength() throws Exception {
+        SampleIndex wma = index(150, 60, 3_072_000, 0);
+        assertEquals(3_064_000, IngestVerifier.checkAudioDuration(wma, 3_000_000, 3_064_000));
+        // an unknown container length (no stream duration, no packets) falls back to the decoded one
+        assertEquals(3_064_000, IngestVerifier.checkAudioDuration(wma, -1, 3_064_000));
+        // a truncated encode matches neither
+        SampleIndex cut = index(150, 60, 2_000_000, 0);
+        assertThrows(IngestFailure.class, () -> IngestVerifier.checkAudioDuration(cut, 3_000_000, 3_064_000));
     }
 
     @Test

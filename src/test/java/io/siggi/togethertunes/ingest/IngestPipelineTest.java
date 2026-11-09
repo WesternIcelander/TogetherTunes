@@ -264,6 +264,56 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
+    /**
+     * The verify step's three properties, checked on the published files with ffprobe rather than
+     * through {@code index.bin}: for a 60 fps portrait video and a 29.97 fps video, the audio ends
+     * within 50 ms of the source's, the mezzanine's avcC is the reference's, and its keyframes are
+     * exactly the frames at 0, 2, 4, … s.
+     */
+    @Test
+    void publishedFilesHoldTheVerifiedProperties() throws Exception {
+        IngestQueue q = queue(tools, reference, 1800);
+        record Case(String size, String rate, double seconds) {
+        }
+        for (Case c : List.of(new Case("360x640", "60", 7.0), new Case("640x360", "30000/1001", 6.5))) {
+            String item = fixtures.item("pending");
+            ffmpeg("-f", "lavfi", "-i", "testsrc2=s=" + c.size() + ":r=" + c.rate(), "-f", "lavfi",
+                    "-i", "sine=f=220:r=44100", "-t", Double.toString(c.seconds()), "-c:v", "libx264",
+                    "-preset", "ultrafast", "-c:a", "aac", stage(item, "source.mp4").toString());
+            IngestJob job = run(q, Kind.UPLOAD, item);
+            assertEquals(State.DONE, job.state(), c + "\n" + job.log());
+            assertTrue(job.log().contains("[ingest] verified: audio"), job.log());
+            Path itemDir = IngestPipeline.itemDir(data, item);
+            Path mezz = itemDir.resolve("mezz.mp4");
+
+            assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(mezz), c.toString());
+
+            String audioEnd = tools.ffprobe("-v", "error", "-select_streams", "a:0", "-show_entries",
+                    "stream=duration", "-of", "csv=p=0", itemDir.resolve("audio.m4a").toString())
+                    .stdoutToString(4096).run().stdoutString().strip();
+            assertTrue(Math.abs(Double.parseDouble(audioEnd) - c.seconds()) <= 0.05, c + " audio " + audioEnd);
+
+            String frames = tools.ffprobe("-v", "error", "-select_streams", "v:0", "-show_entries",
+                    "packet=pts_time,flags", "-of", "csv=p=0", mezz.toString())
+                    .stdoutToString(1 << 20).run().stdoutString();
+            List<Double> keyframes = new ArrayList<>();
+            int count = 0;
+            for (String line : frames.strip().split("\n")) {
+                String[] f = line.split(",");
+                count++;
+                if (f[1].contains("K")) {
+                    keyframes.add(Double.parseDouble(f[0]));
+                }
+            }
+            int gops = (count + 59) / 60;
+            assertEquals(gops, keyframes.size(), c + " keyframes " + keyframes);
+            for (int k = 0; k < gops; k++) {
+                assertEquals(2.0 * k, keyframes.get(k), 1e-6, c + " keyframes " + keyframes);
+            }
+        }
+        assertNoLeftovers();
+    }
+
     /** A YouTube job downloads from the canonical URL (fake yt-dlp) and ingests the result. */
     @Test
     void youtubeJobDownloadsThenIngests() throws Exception {
@@ -341,7 +391,9 @@ class IngestPipelineTest {
                 new Case("source.aac", new String[] {"-c:a", "aac", "-f", "adts"}, "original.aac", "aac/aac", 1),
                 new Case("source.ogg", new String[] {"-c:a", "libvorbis"}, "original.ogg", "vorbis/ogg", 0),
                 new Case("source.aiff", new String[] {"-c:a", "pcm_s16be"}, "original.aiff", "pcm_s16be/aiff", 0),
-                new Case("source.M4A", new String[] {"-c:a", "alac"}, "original.m4a", "alac/mov,mp4,m4a,3gp,3g2,mj2", 0));
+                new Case("source.M4A", new String[] {"-c:a", "alac"}, "original.m4a", "alac/mov,mp4,m4a,3gp,3g2,mj2", 0),
+                // WMA decodes 72 ms longer than its container says; verify accepts the decoded length
+                new Case("source.wma", new String[] {"-ar", "44100", "-c:a", "wmav2"}, "original.wma", "wmav2/asf", 0));
         IngestQueue q = queue(tools, reference, 1800);
         for (Case c : cases) {
             String item = fixtures.item("pending");

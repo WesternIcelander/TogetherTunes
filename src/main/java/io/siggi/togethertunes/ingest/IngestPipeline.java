@@ -193,8 +193,13 @@ public final class IngestPipeline implements IngestQueue.Handler {
         double measureFrom = base;
         double measureTo = base + rest * MEASURE_SHARE;
         DoubleConsumer measureProgress = range(ctx, measureFrom, measureTo);
-        Loudness.Measurement loudness = Loudness.measure(tools, source.toString(), probe.audio().map(), log,
-                p -> measureProgress.accept(p.fraction(expectedUs)));
+        long[] decodedUs = {-1};
+        Loudness.Measurement loudness = Loudness.measure(tools, source.toString(), probe.audio().map(), log, p -> {
+            if (p.outTimeUs() > decodedUs[0]) {
+                decodedUs[0] = p.outTimeUs();
+            }
+            measureProgress.accept(p.fraction(expectedUs));
+        });
         if (loudness.usable()) {
             log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
                     loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
@@ -241,9 +246,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // verify
         step(log, "verify");
-        IngestVerifier.verify(index, reference, sourceAudioEndUs, videoFile.getFileName().toString());
+        long matchedUs = IngestVerifier.verify(index, reference, sourceAudioEndUs, decodedUs[0],
+                videoFile.getFileName().toString());
         long durationUs = IngestVerifier.audioDurationUs(index);
         log.append("[ingest] verified: audio " + seconds(durationUs) + " (source " + seconds(sourceAudioEndUs)
+                + (matchedUs != sourceAudioEndUs ? ", decoded " + seconds(matchedUs) : "")
                 + "), avcC matches the " + profile.id() + " reference, " + index.track(SampleIndex.Kind.VIDEO).sampleCount()
                 + " frames with an IDR every 2 s");
         ctx.progress(after += stepShare);
