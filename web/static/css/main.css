@@ -528,6 +528,14 @@ button.voted {
 }
 
 /* Listen mode: the playing video (audio plays without a visible element) and the autoplay overlay. */
+.room-listen-controls {
+  margin: 0.5rem 0 0;
+}
+
+.room-listen-controls[hidden] {
+  display: none;
+}
+
 .room-player {
   margin: 0.5rem 0 1rem;
 }
@@ -538,6 +546,11 @@ button.voted {
   max-height: 70vh;
   background: #000;
   border-radius: 0.5rem;
+}
+
+/* The pool's other video (preloaded, or the one a switch is fading out) stays out of view. */
+.room-player video[hidden] {
+  display: none;
 }
 
 .listen-overlay {

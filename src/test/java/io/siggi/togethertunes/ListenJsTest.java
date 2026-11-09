@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
  * Listen mode (docs/rooms.md#listen-mode): runs the unit tests of the sync decisions
  * ({@code src/test/resources/web-tests/listensync.test.mjs}) against the compiled
  * {@code web/js/listensync.js}, and checks that the player and the room page use what the design asks
- * for (the element's GainNode, pitch kept, the autoplay overlay).
+ * for (the element's GainNode, pitch kept, the autoplay overlay, the video / audio-only crossfade).
  */
 class ListenJsTest {
     private static String read(String path) throws Exception {
@@ -28,15 +28,18 @@ class ListenJsTest {
     void playerUsesGainNodesKeepsPitchAndChecksCanPlayType() throws Exception {
         String player = read("web/js/listen.js");
         for (String s : List.of("from \"./listensync.js\"", "createMediaElementSource(", "createGain(",
-                "preservesPitch", "canPlayType(", "NotAllowedError", "playsinline", ".resume()")) {
+                "preservesPitch", "canPlayType(", "NotAllowedError", "playsinline", ".resume()",
+                "linearRampToValueAtTime(", "SwitchGate(", "CROSSFADE_MS", "removeAttribute(\"src\")")) {
             assertTrue(player.contains(s), s);
         }
         String room = read("web/js/room.js");
         assertTrue(room.contains("from \"./listen.js\""), room);
         assertTrue(room.contains("new ListenPlayer("), room);
+        assertTrue(room.contains("setAudioOnly("), room);
         String html = read("web/room.html");
         assertTrue(html.contains("id=\"room-listen-overlay\""), html);
         assertTrue(html.contains("Click to listen"), html);
         assertTrue(html.contains("id=\"room-player\""), html);
+        assertTrue(html.contains("id=\"room-audio-only\""), html);
     }
 }

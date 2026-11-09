@@ -45,6 +45,26 @@ function roomFromLocation(): string {
   return new URLSearchParams(location.search).get("room") ?? "";
 }
 
+/** Where the video / audio-only choice is remembered (this browser only, all rooms). */
+const AUDIO_ONLY_KEY = "togethertunes.audioOnly";
+
+/** The remembered video / audio-only choice (video if nothing is stored or storage is blocked). */
+export function loadAudioOnly(): boolean {
+  try {
+    return localStorage.getItem(AUDIO_ONLY_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function saveAudioOnly(on: boolean): void {
+  try {
+    localStorage.setItem(AUDIO_ONLY_KEY, on ? "1" : "0");
+  } catch {
+    // Private mode or blocked storage: the choice lasts for this page only.
+  }
+}
+
 /** The mode requested by the URL (`?mode=remote` from the short link), if any. */
 export function modeFromLocation(): RoomMode | null {
   const mode = new URLSearchParams(location.search).get("mode");
@@ -734,8 +754,15 @@ async function start(): Promise<void> {
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;
   if (mode === "listen") {
-    const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow);
+    const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly());
     player = p;
+    const toggle = element("room-audio-only") as HTMLInputElement;
+    toggle.checked = p.audioOnly;
+    toggle.addEventListener("change", () => {
+      p.setAudioOnly(toggle.checked);
+      saveAudioOnly(toggle.checked);
+    });
+    element("room-listen-controls").hidden = false;
     // A better clock estimate moves the target: correct at once instead of at the next tick.
     c.onUpdate = () => p.tick();
     window.setInterval(() => p.tick(), 250);

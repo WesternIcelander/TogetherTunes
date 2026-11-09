@@ -1,7 +1,7 @@
 // Listen-mode decisions (docs/rooms.md#listen-mode), kept apart from the player (listen.ts) so
 // they can be tested outside a browser: which file to play for an item, what the sync loop does
-// about a given drift, when to preload the next entry, and when an original that keeps needing
-// hard seeks is given up for `audio.m4a`.
+// about a given drift, when to preload the next entry, when an original that keeps needing hard
+// seeks is given up for `audio.m4a`, and when a video ↔ audio-only switch may crossfade.
 //
 // This module touches no DOM and imports only types.
 import type { RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
@@ -19,6 +19,14 @@ export const PRELOAD_BEFORE_END_MS = 10_000;
 /** An original that needs a third hard seek within FALLBACK_WINDOW_MS of two others is given up. */
 export const FALLBACK_SEEKS = 2;
 export const FALLBACK_WINDOW_MS = 10_000;
+/** Video ↔ audio-only switch: the incoming element must be steady (drift ≤ STEADY_MS) for this many ticks… */
+export const SWITCH_STEADY_TICKS = 3;
+/** …at least this far apart (ms; the loop also ticks on state and load events, which come in bursts)… */
+export const SWITCH_TICK_SPACING_MS = 200;
+/** …or have been playing when this much time (ms) has passed since the switch began. */
+export const SWITCH_TIMEOUT_MS = 3000;
+/** The crossfade between the two elements (ms). */
+export const CROSSFADE_MS = 150;
 
 export type SyncAction = { kind: "seek" } | { kind: "rate"; rate: number };
 
@@ -60,10 +68,12 @@ export type SourceItem = Pick<RoomItem, "kind" | "presentAsAudio" | "audioUrl" |
  * - Audio items: the original when the server offers one (web-playable upload), `canPlay` agrees
  *   with its type and it wasn't given up this session (`avoidOriginal`); else `audio.m4a`.
  * - Video items shown as audio (`presentAsAudio`): `audio.m4a`.
- * - Other video items: `mezz.mp4` (the video / audio-only switch comes with its own step).
+ * - Other video items: `mezz.mp4`, or `audio.m4a` in audio-only mode (then the video is never
+ *   requested).
  */
-export function chooseSource(item: SourceItem, canPlay: (type: string) => boolean, avoidOriginal: boolean): Source | undefined {
-  if (item.kind === "video" && item.presentAsAudio !== true && item.videoUrl !== undefined) {
+export function chooseSource(item: SourceItem, canPlay: (type: string) => boolean, avoidOriginal: boolean,
+    audioOnly = false): Source | undefined {
+  if (item.kind === "video" && item.presentAsAudio !== true && item.videoUrl !== undefined && !audioOnly) {
     return { url: item.videoUrl, gainDb: 0, video: true, original: false };
   }
   if (item.kind === "audio" && !avoidOriginal && item.originalUrl !== undefined
@@ -112,5 +122,43 @@ export class SeekGuard {
     if (this.#seeks.length >= this.#max) return false;
     this.#seeks.push(now);
     return true;
+  }
+}
+
+/**
+ * Decides when a video ↔ audio-only switch crossfades (docs/rooms.md#audio-only-switching): once the
+ * incoming element's drift has stayed within 40 ms for 3 consecutive ticks (counted at most every
+ * 200 ms), or, if it is playing at all, 3 s after the switch began. Until then the outgoing element
+ * stays audible, so a slow or failing load never leaves a gap.
+ */
+export class SwitchGate {
+  readonly #since: number;
+  #steady = 0;
+  #lastSteady = Number.NEGATIVE_INFINITY;
+
+  constructor(now: number) {
+    this.#since = now;
+  }
+
+  /**
+   * One tick. `driftMs` is the incoming element's drift, or undefined while it isn't playing with
+   * data (loading, seeking, buffering, paused). True: crossfade now.
+   */
+  sample(now: number, driftMs: number | undefined): boolean {
+    if (driftMs === undefined) {
+      this.#steady = 0;
+      this.#lastSteady = Number.NEGATIVE_INFINITY;
+      return false;
+    }
+    if (Math.abs(driftMs) <= STEADY_MS) {
+      if (now - this.#lastSteady >= SWITCH_TICK_SPACING_MS) {
+        this.#steady++;
+        this.#lastSteady = now;
+      }
+    } else {
+      this.#steady = 0;
+      this.#lastSteady = Number.NEGATIVE_INFINITY;
+    }
+    return this.#steady >= SWITCH_STEADY_TICKS || now - this.#since >= SWITCH_TIMEOUT_MS;
   }
 }

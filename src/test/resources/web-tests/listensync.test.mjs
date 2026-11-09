@@ -105,3 +105,40 @@ test("re-anchoring resets the count (a timeline seek isn't the file's fault)", (
   g.reset();
   assert.equal(g.hardSeek(3000), true);
 });
+
+test("audio-only mode: video items play audio.m4a, never mezz.mp4; audio items unchanged", () => {
+  const video = { kind: "video", presentAsAudio: false, audioUrl: "/media/v/audio.m4a", videoUrl: "/media/v/mezz.mp4" };
+  assert.deepEqual(L.chooseSource(video, yes, false, true), { url: "/media/v/audio.m4a", gainDb: 0, video: false, original: false });
+  assert.equal(L.chooseSource(video, yes, false, false).url, "/media/v/mezz.mp4");
+  assert.deepEqual(L.chooseSource(audioItem, yes, false, true),
+    { url: "/media/a/original", gainDb: -3.2, video: false, original: true });
+});
+
+test("switch gate: crossfade after 3 steady ticks at least 200 ms apart", () => {
+  const g = new L.SwitchGate(0);
+  assert.equal(g.sample(100, undefined), false); // loading
+  assert.equal(g.sample(250, 10), false);
+  assert.equal(g.sample(300, 5), false); // too soon after the last: not counted
+  assert.equal(g.sample(500, -20), false);
+  assert.equal(g.sample(750, 40), true);
+});
+
+test("switch gate: drift above 40 ms or not playing restarts the count", () => {
+  const g = new L.SwitchGate(0);
+  g.sample(250, 10);
+  g.sample(500, 10);
+  assert.equal(g.sample(750, 41), false);
+  assert.equal(g.sample(1000, 10), false);
+  assert.equal(g.sample(1250, undefined), false);
+  assert.equal(g.sample(1500, 10), false);
+  assert.equal(g.sample(1750, 10), false);
+  assert.equal(g.sample(2000, 10), true);
+});
+
+test("switch gate: after 3 s it crossfades if the element plays, never while it doesn't", () => {
+  const g = new L.SwitchGate(1000);
+  assert.equal(g.sample(3999, 300), false);
+  assert.equal(g.sample(4000, undefined), false);
+  assert.equal(g.sample(4250, 300), true);
+  assert.equal(L.CROSSFADE_MS, 150);
+});
