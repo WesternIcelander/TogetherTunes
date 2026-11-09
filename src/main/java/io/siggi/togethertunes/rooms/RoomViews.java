@@ -161,7 +161,8 @@ final class RoomViews {
      * An item: {@code id, kind, presentAsAudio, title, artist?, durationMs?, status}, and once it
      * is {@code ready} its media URLs: {@code coverUrl}, {@code audioUrl}, {@code videoUrl} (video
      * items), and for an audio upload whose original browsers can play, {@code originalUrl} with
-     * {@code originalGainDb} (the gain that brings it to the loudness of {@code audio.m4a}).
+     * {@code originalGainDb} (the gain that brings it to the loudness of {@code audio.m4a}) and
+     * {@code originalType} (for {@code canPlayType}).
      */
     static JsonObject item(Lookup l, String itemId) {
         JsonObject o = new JsonObject();
@@ -191,9 +192,37 @@ final class RoomViews {
                     && r.originalFile() != null) {
                 o.addProperty("originalUrl", base + "original");
                 o.addProperty("originalGainDb", r.originalGainDb() == null ? 0.0 : r.originalGainDb());
+                String type = originalType(r.originalFile());
+                if (type != null) {
+                    o.addProperty("originalType", type);
+                }
             }
         }
         return o;
+    }
+
+    /**
+     * The MIME type (with {@code codecs} where browsers need it to answer) the web client passes
+     * to {@code canPlayType} before it plays an original, by the kept file's extension
+     * ({@code ingest.Originals#extension}; only the web-playable ones are listed). Null for any
+     * other extension: the client then trusts {@code original_web}.
+     */
+    static String originalType(String originalFile) {
+        if (originalFile == null) {
+            return null;
+        }
+        int dot = originalFile.lastIndexOf('.');
+        String ext = dot < 0 ? "" : originalFile.substring(dot + 1);
+        return switch (ext) {
+            case "mp3" -> "audio/mpeg";
+            case "flac" -> "audio/flac";
+            case "wav" -> "audio/wav";
+            case "aac" -> "audio/aac";
+            case "m4a" -> "audio/mp4; codecs=\"mp4a.40.2\"";
+            case "opus", "ogg" -> "audio/ogg; codecs=\"opus\"";
+            case "webm" -> "audio/webm; codecs=\"opus\"";
+            default -> null;
+        };
     }
 
     /** {@code ready} (playable), {@code failed} / {@code purged} (never will be) or {@code processing}. */

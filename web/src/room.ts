@@ -6,11 +6,12 @@
 // suggestions (accept/reject for the owner and moderators), the request panel (search within the
 // room's request scope, upload, YouTube link, and a playlist for the owner and moderators), the
 // history and who is here. The server's clock is estimated with ClockSync (clocksync.ts) on the
-// same socket. Playback itself (listen mode) and the owner's management view come with the later
-// steps of M3.
+// same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); the owner's
+// management view comes with a later step of M3.
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { ClockSync } from "./clocksync.js";
+import { ListenPlayer } from "./listen.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
 import {
@@ -59,6 +60,8 @@ function serverNow(): number {
 
 let me: Me;
 let conn: RoomConnection;
+/** Plays the room in listen mode; undefined in remote mode. */
+let player: ListenPlayer | undefined;
 let roomId = "";
 /** The last state shown, for the progress timer. */
 let shown: RoomState | undefined;
@@ -646,6 +649,7 @@ function render(s: RoomState): void {
   renderRequests(s);
   renderHistory(s);
   element("room-main").hidden = false;
+  player?.update(s);
 }
 
 function onRequest(r: NewRequest): void {
@@ -716,6 +720,7 @@ async function start(): Promise<void> {
       }
     },
     kicked: (reason) => {
+      player?.stop();
       element("room-main").hidden = true;
       const status = element("room-status");
       status.hidden = false;
@@ -728,6 +733,15 @@ async function start(): Promise<void> {
   });
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;
+  if (mode === "listen") {
+    const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow);
+    player = p;
+    // A better clock estimate moves the target: correct at once instead of at the next tick.
+    c.onUpdate = () => p.tick();
+    window.setInterval(() => p.tick(), 250);
+    // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
+    (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
+  }
   // The client's clock may have stepped while the device slept: measure again at once.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") c.syncNow();

@@ -21,6 +21,8 @@
     <p id="room-status" role="status">Loading...</p>
     <p id="room-error" class="error" role="alert"></p>
     <ul id="room-notices" class="notices" aria-live="polite"></ul>
+    <!-- Listen mode: the video plays here; audio needs no visible element. -->
+    <div id="room-player" class="room-player" hidden></div>
     <div id="room-main" class="room-main" hidden>
       <section id="room-now" class="panel room-now"></section>
       <section id="room-queue" class="room-queue"></section>
@@ -28,6 +30,10 @@
       <section id="room-request" class="panel room-request"></section>
       <section id="room-history" class="room-history"></section>
     </div>
+  </div>
+  <!-- Shown in listen mode while the browser doesn't let the page play sound without a click. -->
+  <div id="room-listen-overlay" class="listen-overlay" hidden>
+    <button type="button">Click to listen</button>
   </div>
 </body>
 </html>

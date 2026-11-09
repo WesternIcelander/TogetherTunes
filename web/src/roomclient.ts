@@ -39,6 +39,8 @@ export interface RoomItem {
   videoUrl?: string;
   originalUrl?: string;
   originalGainDb?: number;
+  /** The original's MIME type, for `canPlayType`. */
+  originalType?: string;
 }
 
 export type EntryStatus = "ready" | "processing" | "failed" | "purged" | string;

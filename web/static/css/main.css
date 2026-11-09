@@ -526,3 +526,42 @@ button.voted {
     flex-wrap: wrap;
   }
 }
+
+/* Listen mode: the playing video (audio plays without a visible element) and the autoplay overlay. */
+.room-player {
+  margin: 0.5rem 0 1rem;
+}
+
+.room-player video {
+  display: block;
+  width: 100%;
+  max-height: 70vh;
+  background: #000;
+  border-radius: 0.5rem;
+}
+
+.listen-overlay {
+  position: fixed;
+  inset: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  cursor: pointer;
+}
+
+.listen-overlay[hidden] {
+  display: none;
+}
+
+.listen-overlay button {
+  font-size: 1.25rem;
+  padding: 0.75rem 1.5rem;
+  border-radius: 999px;
+  cursor: pointer;
+}
