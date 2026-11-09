@@ -10,7 +10,8 @@ An **item** is a media object stored once on the server: its files, metadata and
   - uploads match on the SHA-256 of the uploaded file.
   A match only adds a library entry or queue entry. No download, no transcode.
 - **Removing** an item from your library only deletes your entry. The item itself is deleted by retention, or by someone with `library.purge`.
-- **Metadata** (title, artist, album, cover) belongs to the item and is therefore shared. It can be edited by the user who added the item, while it is in their library, and by anyone with `library.editAny`. Per-user metadata overrides are out of scope for v1.
+- **Metadata** (title, artist, album, cover) belongs to the item and is therefore shared. It can be edited by the user who added the item (`items.added_by_user_id`), while it is in their library, and by anyone with `library.editAny`. A guest who added an item can't edit it (guests have no library). Per-user metadata overrides are out of scope for v1. The API edits title, artist, album and `presentAsAudio`; replacing the cover isn't implemented yet. **Open (M4):** an edit doesn't re-render the item's `card.mp4` yet, so the card keeps the old text until the item is re-encoded; the card (and, for audio items, `index.bin`, which indexes the card as the video track) must be rebuilt before the packager shows cards.
+- **Purging** (`library.purge`, or the retention sweeper) keeps the row and its metadata and sets `status='purged'`. Queued ingest jobs of the item are cancelled (`failed`); while a job is running the purge is refused (`409 item_busy`). Inside the purge transaction `media/<itemId>/` and the item's upload staging directory are renamed aside (`.purge-<name>-<uuid>`), then deleted after the commit; leftovers of a crash are deleted at the next start. Library and playlist entries stay (the item shows as "media expired").
 
 ## Playlists
 
