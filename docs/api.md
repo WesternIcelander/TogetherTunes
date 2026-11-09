@@ -47,7 +47,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/api/uploads` | `{filename, size, roomId?}` → `201 {uploadId, chunkSize, size}`. With `roomId`, the upload is a request in that room and the room's guest rules apply. `413` over `ingest.maxUploadBytes` |
+| POST | `/api/uploads` | `{filename, size, roomId?}` → `201 {uploadId, chunkSize, size}`. With `roomId`, the upload is a request in that room and the room's guest rules apply; guests need a `roomId` (else `401`). `413` over `ingest.maxUploadBytes` (guests: or the quota's item size), `429 upload_quota_exceeded` with `Retry-After` for guests over `guests.uploadQuota`; guest refusals per [library-and-ingest.md](library-and-ingest.md#who-can-add-media) |
 | PUT | `/api/uploads/{id}` | Chunk with `Content-Range: bytes start-end/size` → `{receivedBytes, size}`; idempotent (bytes already received are skipped); a chunk must start at or before `receivedBytes` (else `409 upload_offset_mismatch`) |
 | GET | `/api/uploads/{id}` | `{receivedBytes, size, itemId?}` (`itemId` once completed) |
 | POST | `/api/uploads/{id}/complete` | `{title?, artist?, addToLibrary?}` → `{itemId, deduplicated}`; repeatable. `422 unreadable_media` / `no_audio` / `too_long` (the upload is deleted) |

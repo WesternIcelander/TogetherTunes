@@ -73,6 +73,10 @@ uploads(id PK, user_id NULL, guest_id NULL,  -- exactly one owner
       item_id NULL,                         -- set by `complete`; the bytes are then gone
       deduplicated INTEGER)                 -- 1 if `complete` reused an existing item
 
+guest_upload_starts(id PK, guest_id FK,     -- one row per upload a guest started (guests.uploadQuota)
+      ip_key_hash NULL,                     -- SHA-256 of the IP key (IPv4 address / IPv6 /64), like guests.key_hash; no IP stored
+      created_at)                           -- counted over the last hour; older rows swept with the uploads
+
 library_entries(user_id FK, item_id FK, added_at,
       via TEXT,                             -- 'upload'|'youtube'|'request'|'share'|'manual'
       shared_by_user_id NULL,
