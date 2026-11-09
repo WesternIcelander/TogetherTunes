@@ -46,6 +46,7 @@ import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.Library;
+import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.lang.reflect.RecordComponent;
@@ -128,6 +129,10 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Library$Entry",
             "io.siggi.togethertunes.library.Library$ItemView",
             "io.siggi.togethertunes.library.Library$Page",
+            "io.siggi.togethertunes.library.Playlists$Entry",
+            "io.siggi.togethertunes.library.Playlists$Page",
+            "io.siggi.togethertunes.library.Playlists$Playlist",
+            "io.siggi.togethertunes.library.Playlists$PlaylistPage",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -191,6 +196,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Items$Purged", "purge result; the API answers 204"),
             Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
+            Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
+            Map.entry("io.siggi.togethertunes.library.Playlists$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
@@ -229,6 +236,7 @@ class DtoIpLeakTest {
     private Permissions permissions;
     private Library library;
     private Items items;
+    private Playlists playlists;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -268,6 +276,7 @@ class DtoIpLeakTest {
         guests = new Guests(database, settings, config.secureCookies());
         library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
+        playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
         router = Main.router(config, staticFiles, actors,
@@ -280,7 +289,8 @@ class DtoIpLeakTest {
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
-                TestUploads.itemsApi(database, dir, permissions, clock));
+                TestUploads.itemsApi(database, dir, permissions, clock),
+                TestUploads.playlistsApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -457,6 +467,11 @@ class DtoIpLeakTest {
                 assertEquals("job_not_found", noJob.code());
             }
         }
+        Playlists.Page playlistPage = playlists.list(aliceId, null, Playlists.LIST_MAX);
+        produced.add(playlistPage);
+        for (Playlists.Playlist p : playlistPage.items()) {
+            produced.add(playlists.get(aliceId, p.id()));
+        }
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -587,7 +602,8 @@ class DtoIpLeakTest {
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
-                "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job");
+                "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
+                "/api/playlists", "/api/playlists/" + f.playlistId);
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -599,7 +615,7 @@ class DtoIpLeakTest {
     }
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
-                           String aliceId, String roleId, String uploadId, String itemId) {
+                           String aliceId, String roleId, String uploadId, String itemId, String playlistId) {
     }
 
     /**
@@ -758,7 +774,26 @@ class DtoIpLeakTest {
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
 
-        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId);
+        // alice's playlists: one created, renamed, filled (the same item twice), an entry moved and
+        // one removed; another created and deleted
+        String playlistId = json(expect(201, alice, "POST", "/api/playlists",
+                "{\"name\":\"Mix\",\"description\":\"Songs\"}")).get("id").getAsString();
+        expect(200, alice, "PATCH", "/api/playlists/" + playlistId, "{\"name\":\"Road trip\"}");
+        String first = json(expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries",
+                "{\"itemId\":\"" + itemId + "\"}")).get("id").getAsString();
+        String second = json(expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries",
+                "{\"itemId\":\"" + itemId + "\",\"beforeEntryId\":\"" + first + "\"}")).get("id").getAsString();
+        expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries", "{\"itemId\":\"" + shared + "\"}");
+        expect(200, alice, "PATCH", "/api/playlists/" + playlistId + "/entries/" + second, "{\"beforeEntryId\":null}");
+        expect(204, alice, "DELETE", "/api/playlists/" + playlistId + "/entries/" + first, null);
+        String doomed = json(expect(201, alice, "POST", "/api/playlists", "{\"name\":\"Doomed\"}"))
+                .get("id").getAsString();
+        expect(204, alice, "DELETE", "/api/playlists/" + doomed, null);
+        expect(200, alice, "GET", "/api/playlists", null);
+        expect(200, alice, "GET", "/api/playlists/" + playlistId, null);
+
+        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
+                playlistId);
     }
 
     /** A ready video item added by {@code userId}, in nobody's library. */

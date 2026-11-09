@@ -95,7 +95,8 @@ class MainRouterTest {
                 TestUploads.api(database, dir, config, new Permissions(database, settings), clock),
                 TestUploads.youtubeApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.libraryApi(database, config, new Permissions(database, settings), clock),
-                TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock)),
+                TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock),
+                TestUploads.playlistsApi(database, config, new Permissions(database, settings), clock)),
                 dir.toFile());
     }
 

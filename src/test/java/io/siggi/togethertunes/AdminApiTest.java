@@ -93,7 +93,8 @@ class AdminApiTest {
                         TestUploads.api(database, dir, config, new Permissions(database, settings), clock),
                 TestUploads.youtubeApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.libraryApi(database, config, new Permissions(database, settings), clock),
-                TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock)), dir.toFile());
+                TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock),
+                TestUploads.playlistsApi(database, config, new Permissions(database, settings), clock)), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);
         assertEquals(201, created.statusCode(), created.body());

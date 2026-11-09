@@ -190,6 +190,28 @@ public final class YoutubeImports {
         }
     }
 
+    /**
+     * Like {@link #addExisting}, but without a library entry: makes sure the item that holds
+     * {@code videoId} is ready or on its way (a purged one gets a {@code refetch} job, a failed one
+     * a new {@code youtube} job, subject to {@link #RETRY_FAILED_AFTER}) and counts it as
+     * referenced now. Used when a playlist gets the item ({@link Playlists}).
+     *
+     * @throws HttpError {@code 404 item_not_found}, {@code 422 youtube_failed}
+     */
+    public Imported useExisting(String videoId) throws SQLException, InterruptedException {
+        ReentrantLock lock = locks[Math.floorMod(videoId.hashCode(), locks.length)];
+        lock.lockInterruptibly();
+        try {
+            Existing existing = db.read(c -> find(c, videoId));
+            if (existing == null) {
+                throw new HttpError(404, "item_not_found", "No such item");
+            }
+            return existing(existing, null, null, false, null);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private Imported existing(Existing existing, String userId, Boolean presentAsAudio, boolean library,
                               String via) throws SQLException {
         String itemId = existing.id();

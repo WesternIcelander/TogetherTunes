@@ -239,6 +239,21 @@ class PermissionMatrixTest {
             row("DELETE /api/items/{id}", c -> Call.delete("/api/items/" + c.itemId()), 401, 401, 403, 204),
             row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
 
+            // The caller's own playlists: users only (guests have none); someone else's playlist is
+            // 404 (PlaylistsContract covers that). Adding the matrix item needs no permission.
+            row("GET /api/playlists", c -> Call.get("/api/playlists?limit=10"), 401, 401, 200, 200),
+            row("POST /api/playlists", c -> Call.post("/api/playlists", "{\"name\":\"Mix\"}"), 401, 401, 201, 201),
+            row("GET /api/playlists/{id}", c -> Call.get("/api/playlists/" + c.playlistId()), 401, 401, 200, 200),
+            row("PATCH /api/playlists/{id}", c -> Call.patch("/api/playlists/" + c.playlistId(),
+                    "{\"name\":\"Renamed\"}"), 401, 401, 200, 200),
+            row("DELETE /api/playlists/{id}", c -> Call.delete("/api/playlists/" + c.playlistId()), 401, 401, 204, 204),
+            row("POST /api/playlists/{id}/entries", c -> Call.post("/api/playlists/" + c.playlistId() + "/entries",
+                    "{\"itemId\":\"" + c.itemId() + "\"}"), 401, 401, 201, 201),
+            row("PATCH /api/playlists/{id}/entries/{entryId}", c -> Call.patch(c.playlistEntryPath(),
+                    "{\"beforeEntryId\":null}"), 401, 401, 200, 200),
+            row("DELETE /api/playlists/{id}/entries/{entryId}", c -> Call.delete(c.playlistEntryPath()),
+                    401, 401, 204, 204),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -290,7 +305,8 @@ class PermissionMatrixTest {
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
-                TestUploads.itemsApi(database, dir, permissions, clock));
+                TestUploads.itemsApi(database, dir, permissions, clock),
+                TestUploads.playlistsApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -518,6 +534,36 @@ class PermissionMatrixTest {
                 throw new RuntimeException(e);
             }
             return id;
+        }
+
+        /** A new playlist of this caller (a user or admin), or a made-up id for other callers. */
+        String playlistId() {
+            try {
+                if (cookie == null || !cookie.startsWith("sid=")) {
+                    return "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c";
+                }
+                HttpResponse<String> r = send(cookie, ip, Call.post("/api/playlists", "{\"name\":\"List " + n + "\"}"));
+                assertEquals(201, r.statusCode(), r.body());
+                return json(r.body()).get("id").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** The path of an entry in a new playlist of this caller (made-up ids for other callers). */
+        String playlistEntryPath() {
+            String playlistId = playlistId();
+            try {
+                if (cookie == null || !cookie.startsWith("sid=")) {
+                    return "/api/playlists/" + playlistId + "/entries/0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d";
+                }
+                HttpResponse<String> r = send(cookie, ip, Call.post("/api/playlists/" + playlistId + "/entries",
+                        "{\"itemId\":\"" + itemId() + "\"}"));
+                assertEquals(201, r.statusCode(), r.body());
+                return "/api/playlists/" + playlistId + "/entries/" + json(r.body()).get("id").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
 
         /** A custom role nobody else touches. */
