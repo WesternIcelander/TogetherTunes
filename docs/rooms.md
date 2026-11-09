@@ -57,6 +57,29 @@ Details (as implemented):
 | `overlay.*` | off | See [overlay.md](overlay.md) |
 | `estimatedDelayMs` | per output | Used by remote mode; the owner can override it |
 
+As implemented (`RoomSettings`): on the wire and in storage, dotted names are nested objects (`{"guests": {"canVote": true}}`). The room object (`GET /api/rooms…`) carries every setting with its value; `settings_json` stores only the values that differ from the defaults, so a changed default reaches rooms that never set it. Stored JSON is read leniently (unknown or invalid values fall back to the default). Only the owner changes settings, with `PATCH /api/rooms/{id} {"settings": {…}}`, a merge patch: nested objects change only what they name, `null` resets a setting or a whole group; strict (`400 unknown_setting` / `invalid_setting` / `invalid_settings`), all or nothing; the audit entry names the changed settings, not their values. The complete list:
+
+| Setting | Default | Values |
+|---|---|---|
+| `requestScope` | `owner` | `owner` \| `owner+self` \| `none` |
+| `requestsPerActor` | 3 | 1–1000 |
+| `allowDownvotes` | false | |
+| `voteSkipThreshold` | 0.5 | (0, 1], or `"off"` |
+| `noRepeatWindow` | 10 | 0 (off)–1000 |
+| `transitionCard` | false | |
+| `gapMs` | 0 | 0–10000 |
+| `guests.canVote`, `guests.canRequestLibrary` | true | |
+| `guests.canUpload`, `guests.canYoutube` | false | |
+| `overlay.enabled` | false | |
+| `overlay.corner` | `br` | `br` \| `bl` \| `tr` \| `tl` |
+| `overlay.heightPct` | 22 | 5–50 (% of the frame height) |
+| `overlay.margin` | 3 | 0–20 (% of the frame height) |
+| `outputs.rtmp.playbackUrl` | `""` (none) | http(s), rtmp(s) or rtsp(t) URL with a host, at most 2048 characters |
+| `outputs.ts.join` | `next` | `next` \| `latest` |
+| `estimatedDelayMs.rtmp` / `.ts` / `.hls` | 5000 / 2000 / 8000 | 0–120000 |
+
+Whether an output is on is **not** in `settings_json`: it is the `stream_outputs` row and its `enabled` flag (`/api/rooms/{id}/outputs`), so there is one source of truth. Server switches (`guests.*`, `overlay.enabled`, `outputs.*.enabled`) are not checked when a room setting is saved; the effective value is server AND room, computed where it is used.
+
 Roles in a room: `owner` (exactly one; transferable), `moderator`, `member`, `banned`. Users with `rooms.moderateAny` act as moderators everywhere (even in a room that banned them). Visibility: `public` (listed), `unlisted` (anyone with the link), `private` (invited users only; **no guests**). New rooms default to `unlisted` and `vote`.
 
 Who does what with the room itself (see [api.md](api.md#rooms) for the details): only the **owner** changes its name, slug, visibility and control mode, and hands it over (`PUT …/members/{userId}` with role `owner`; the old owner becomes a moderator). The owner or `rooms.moderateAny` deletes it. Owner and moderators see the member list; the owner gives any role, moderators only make users members or ban them (never touching the owner or other moderators). Nobody changes their own role, but anyone except the owner and banned users can leave. `rooms.owner_id` is the owner; `room_members` mirrors it with an `owner` row.
