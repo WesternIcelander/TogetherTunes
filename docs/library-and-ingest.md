@@ -155,6 +155,13 @@ Get avcC with a small MP4 box walker (`moov/trak/mdia/minf/stbl/stsd/avc1/avcC`)
 
 Steps: `probe → (download) → loudness pass 1 → encode → extract audio.m4a → card render+encode → index → verify → publish`.
 
-**Verify:** the audio duration is within 50 ms of the source, the avcC invariant holds, and keyframes fall exactly every 2 s.
+- **Source:** an upload job reads `<data>/tmp/ingest/<itemId>/source[.<ext>]`, where the upload code puts the file; an optional `cover.<ext>` next to it (e.g. a YouTube thumbnail) is used as artwork instead of the embedded picture. A `youtube`/`refetch` job downloads the canonical URL into its scratch directory `<data>/tmp/jobs/<jobId>/` first. The staging directory is deleted after a successful publish and kept when the job fails, so it can be retried.
+- **Probe:** a real video stream makes a video item; attached pictures and still-image codecs are cover art. No audio, or longer than `ingest.maxDurationSeconds`, fails the job.
+- **Loudness pass 1:** `loudnorm=I=-14:TP=-1:LRA=11:print_format=json,aresample=48000` (the resampler only fixes ffmpeg's progress `out_time`). Silence measures `-inf`; it is encoded without normalisation and `loudness_lufs` stays null.
+- **Encode:** the pass-2 filter ends with `aresample=48000:first_pts=0`, so audio that starts after the file start is padded with silence and every `audio.m4a` starts at 0 like the video (ffmpeg's `fps` filter already fills video from 0). Metadata and chapters are dropped.
+- **Cover:** the staged cover, else the embedded picture, is converted to `cover.jpg` (at most 1200 px per side) and drawn on the card; without one the card gets the placeholder. A broken cover never fails the job.
+- **Publish:** everything is built in `<data>/media/.ingest-<jobId>/` and swapped in with two renames (old `media/<itemId>` → `media/.old-<itemId>-<jobId>`, new → `media/<itemId>`, then the old one is deleted). At startup, before the queue starts, `.ingest-*` and `tmp/jobs/*` are deleted and a `.old-*` directory whose item directory is missing (crash between the renames) is put back. Then `items.kind`, `duration_ms` (of `audio.m4a`), `output_profile`, `loudness_lufs` (measured *I*) are written and `purged_at` cleared; the queue sets `ready`.
+
+**Verify:** the audio ends within 50 ms of where the source's audio ends (its offset from the file start plus its duration; for Matroska/WebM, which has no stream duration, ffprobe reads the audio packets of the last 30 s), the avcC invariant holds, and keyframes fall exactly every 2 s (sample *i* is an IDR iff *i* mod 60 = 0, at PTS exactly *k*·2 s from 0).
 
 If the output profile changes, every item that isn't purged gets a `reencode` job. Audio uploads re-encode from their original; YouTube items are fetched again; video uploads re-encode from their old mezzanine (one extra generation of loss, since their originals weren't kept).
