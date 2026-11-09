@@ -275,6 +275,13 @@ abstract class YoutubeImportsContract {
         YoutubeImports.Imported ready = imports.importUrl(bob, "https://music.youtube.com/watch?v=" + ID + "&si=x",
                 Boolean.TRUE, null);
         assertEquals(new YoutubeImports.Imported(itemId, true, "ready"), ready);
+        // ready: the forms the milestone names, each with a timestamp too
+        for (String link : List.of("https://youtu.be/" + ID, "https://youtu.be/" + ID + "?t=42",
+                "https://www.youtube.com/shorts/" + ID, "https://youtube.com/shorts/" + ID + "?feature=share",
+                "https://www.youtube.com/watch?v=" + ID + "&t=90s", "https://www.youtube.com/watch?t=5&v=" + ID)) {
+            assertEquals(new YoutubeImports.Imported(itemId, true, "ready"),
+                    imports.importUrl(alice, link, null, null), link);
+        }
         assertEquals(1, calls().size(), "yt-dlp ran only for the first import");
         assertEquals(1, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
         assertEquals(1, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
