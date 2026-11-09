@@ -383,12 +383,20 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Originals.Original original = null;
         if ((job.kind() == Kind.UPLOAD || sourceKind == SourceKind.ORIGINAL) && !video) {
             long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
-            original = Originals.describe(probe, source.getFileName().toString(), loudness, originalUs, durationUs);
+            // the original is played at the loudness audio.m4a actually has (loudnorm may have compressed it)
+            Loudness.Measurement output = null;
+            if (loudness.usable()) {
+                output = Loudness.measure(tools, audio.toString(), "0:a:0", null, null);
+                log.append(String.format(Locale.ROOT, "[ingest] audio.m4a measures %.2f LUFS, %.2f dBTP",
+                        output.inputI(), output.inputTp()));
+            }
+            original = Originals.describe(probe, source.getFileName().toString(), loudness, output, originalUs, durationUs);
             linkOrCopy(source, work.resolve(original.file()));
+            String mismatch = Originals.loudnessMismatch(loudness, output);
             log.append("[ingest] kept the original as " + original.file() + " (" + original.codec() + ", "
                     + (original.web() ? "web-playable" : "not web-playable") + ", duration " + seconds(originalUs)
                     + (original.gainDb() == null ? "" : String.format(Locale.ROOT, ", gain %.2f dB", original.gainDb()))
-                    + ")");
+                    + ")" + (mismatch == null ? "" : "; not played in browsers: " + mismatch));
         }
 
         // publish

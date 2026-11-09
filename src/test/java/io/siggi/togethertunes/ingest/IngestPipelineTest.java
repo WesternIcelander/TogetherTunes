@@ -33,6 +33,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
@@ -215,7 +216,8 @@ class IngestPipelineTest {
         assertNotNull(CardRenderer.readImage(itemDir.resolve("cover.jpg")));
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)), "staging dir is deleted after publish");
         assertArrayEquals(uploaded, Files.readAllBytes(itemDir.resolve("original.flac")), "the original is kept as uploaded");
-        double expectedGain = Math.min(-14 - in.inputI(), -1 - in.inputTp());
+        Loudness.Measurement out = Loudness.measure(tools, itemDir.resolve("audio.m4a").toString(), "0:a:0", null, null);
+        double expectedGain = Math.min(out.inputI() - in.inputI(), -in.inputTp());
         assertEquals(expectedGain, (Double) original[3], 0.011);
         assertTrue(job.log().contains("kept the original as original.flac (flac/flac, web-playable"), job.log());
         assertNoLeftovers();
@@ -228,7 +230,6 @@ class IngestPipelineTest {
         assertEquals(1.0, job.progress());
 
         // The normalised audio is at about -14 LUFS.
-        Loudness.Measurement out = Loudness.measure(tools, itemDir.resolve("audio.m4a").toString(), "0:a:0", null, null);
         assertTrue(Math.abs(out.inputI() + 14) < 1, "output loudness " + out.inputI());
     }
 
@@ -410,6 +411,59 @@ class IngestPipelineTest {
         assertFalse(Files.exists(IngestPipeline.itemDir(data, item).resolve("cover.jpg")));
         // the original is kept, but without a gain (nothing to measure)
         assertArrayEquals(new Object[] {"original.wav", "pcm_s16le/wav", 1, null}, originalRow(item));
+    }
+
+    /**
+     * An audio upload's original, played with its {@code original_gain_db}, is as loud as
+     * {@code audio.m4a} (within 1 dB): a quiet source (linear loudnorm), a loud master (gain below
+     * 0), a source with a loudness range above 11 LU (loudnorm compresses it, the gain follows the
+     * result). A quiet source with high peaks, which loudnorm can only bring to −14 LUFS by
+     * compressing it, can't be matched without clipping: its original is kept but not played.
+     */
+    @Test
+    void originalPlaysAsLoudAsAudioM4a() throws Exception {
+        record Case(String name, String[] generate, int web) {
+        }
+        List<Case> cases = List.of(
+                new Case("quiet", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.05:r=44100:d=12",
+                        "-ac", "2"}, 1),
+                new Case("loud", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.9:r=44100:d=12",
+                        "-af", "alimiter=limit=0.95:level=false", "-ac", "2"}, 1),
+                new Case("wide range", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.4:r=44100:d=12",
+                        "-af", "volume='if(lt(mod(t,4),2),1,0.03)':eval=frame", "-ac", "2"}, 1),
+                new Case("quiet with peaks", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.1:r=44100:d=12",
+                        "-f", "lavfi", "-i", "aevalsrc='if(lt(mod(t,3),0.005),0.95*sin(2*PI*1000*t),0)':s=44100:d=12",
+                        "-filter_complex", "[0][1]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo"}, 0));
+        IngestQueue q = queue(tools, reference, 1800);
+        for (Case c : cases) {
+            String item = fixtures.item("pending");
+            Path source = stage(item, "source.flac");
+            List<String> args = new ArrayList<>(List.of(c.generate()));
+            args.addAll(List.of("-c:a", "flac", source.toString()));
+            ffmpeg(args.toArray(String[]::new));
+            IngestJob job = run(q, Kind.UPLOAD, item);
+            assertEquals(State.DONE, job.state(), c.name() + "\n" + job.log());
+            Object[] original = originalRow(item);
+            assertEquals(c.web(), original[2], c.name() + "\n" + job.log());
+            double gain = (Double) original[3];
+            Path itemDir = IngestPipeline.itemDir(data, item);
+            Loudness.Measurement m4a = Loudness.measure(tools, itemDir.resolve("audio.m4a").toString(), "0:a:0", null, null);
+            // the original as the browser plays it: the gain applied in float, nothing clipped
+            Path played = dir.resolve("played-" + item + ".wav");
+            ffmpeg("-i", itemDir.resolve("original.flac").toString(), "-af", String.format(Locale.ROOT, "volume=%.2fdB", gain),
+                    "-c:a", "pcm_f32le", played.toString());
+            Loudness.Measurement heard = Loudness.measure(tools, played.toString(), "0:a:0", null, null);
+            if (c.web() == 1) {
+                assertEquals(m4a.inputI(), heard.inputI(), 1.0, c.name() + ": audio.m4a " + m4a.inputI()
+                        + " LUFS, original with " + gain + " dB " + heard.inputI() + " LUFS");
+                assertTrue(heard.inputTp() <= 0.05, c.name() + ": peak " + heard.inputTp());
+                assertFalse(job.log().contains("not played in browsers"), job.log());
+            } else {
+                assertTrue(m4a.inputI() - heard.inputI() > 1, c.name() + ": expected a mismatch, " + m4a.inputI()
+                        + " vs " + heard.inputI());
+                assertTrue(job.log().contains("not played in browsers: matching audio.m4a needs"), job.log());
+            }
+        }
     }
 
     /**
@@ -893,7 +947,9 @@ class IngestPipelineTest {
                 assertEquals(c.codec(), original[1], c.name());
                 assertEquals(1, original[2], c.name() + " web-playable");
                 assertNotNull(original[3], c.name() + " gain");
-                assertEquals(Math.min(-14 - in.inputI(), -1 - in.inputTp()), (Double) original[3], 0.011,
+                Loudness.Measurement out = Loudness.measure(tools,
+                        IngestPipeline.itemDir(data, item).resolve("audio.m4a").toString(), "0:a:0", null, null);
+                assertEquals(Math.min(out.inputI() - in.inputI(), -in.inputTp()), (Double) original[3], 0.011,
                         c.name() + " gain");
                 assertArrayEquals(uploaded, Files.readAllBytes(IngestPipeline.itemDir(data, item).resolve(c.original())),
                         c.name() + " kept unchanged");

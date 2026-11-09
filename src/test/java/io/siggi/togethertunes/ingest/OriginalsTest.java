@@ -2,6 +2,7 @@ package io.siggi.togethertunes.ingest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -87,27 +88,50 @@ class OriginalsTest {
     }
 
     @Test
-    void gainIsTheSmallerOfLoudnessAndPeakHeadroom() {
-        // loudness-limited: -20 LUFS, -10 dBTP → +6 dB (peak would allow +9)
-        assertEquals(6.0, Originals.gainDb(loudness(-20, -10)));
-        // peak-limited: -20 LUFS, -3 dBTP → +2 dB (loudness would want +6)
-        assertEquals(2.0, Originals.gainDb(loudness(-20, -3)));
-        // loud master: -8.4 LUFS, +0.6 dBTP → -5.6 dB vs -1.6 dB → -5.6
-        assertEquals(-5.6, Originals.gainDb(loudness(-8.4, 0.6)));
-        assertEquals(-1.23, Originals.gainDb(loudness(-12.77, -0.1)));
-        assertNull(Originals.gainDb(loudness(Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY)));
+    void gainMatchesAudioM4aCappedAtZeroDbtp() {
+        // linear loudnorm: -20 LUFS, -10 dBTP → audio.m4a at -14.05 → +5.95 dB (peaks would allow +10)
+        assertEquals(5.95, Originals.gainDb(loudness(-20, -10), loudness(-14.05, -4.1)));
+        assertNull(Originals.loudnessMismatch(loudness(-20, -10), loudness(-14.05, -4.1)));
+        // loud master: -8.4 LUFS, +0.6 dBTP → -5.6 dB
+        assertEquals(-5.6, Originals.gainDb(loudness(-8.4, 0.6), loudness(-14, -5)));
+        assertNull(Originals.loudnessMismatch(loudness(-8.4, 0.6), loudness(-14, -5)));
+        // dynamic loudnorm on a high loudness range: whatever audio.m4a ended up at is matched
+        assertEquals(10.9, Originals.gainDb(loudness(-25, -12), loudness(-14.1, -1)));
+        assertNull(Originals.loudnessMismatch(loudness(-25, -12), loudness(-14.1, -1)));
+        // peak-limited by up to 0.5 dB: capped, still matched closely enough
+        assertEquals(3.0, Originals.gainDb(loudness(-17.5, -3), loudness(-14, -1)));
+        assertNull(Originals.loudnessMismatch(loudness(-17.5, -3), loudness(-14, -1)));
+        // quiet with high peaks: loudnorm compressed it; the original would need +16.3 dB but may get +3.2
+        assertEquals(3.23, Originals.gainDb(loudness(-31.43, -3.23), loudness(-15.1, -1)));
+        assertNotNull(Originals.loudnessMismatch(loudness(-31.43, -3.23), loudness(-15.1, -1)));
+        // silence: no gain, nothing to match
+        Loudness.Measurement silence = loudness(Double.NEGATIVE_INFINITY, Double.NEGATIVE_INFINITY);
+        assertNull(Originals.gainDb(silence, null));
+        assertNull(Originals.loudnessMismatch(silence, null));
+        // audio.m4a not measurable (shouldn't happen): not matched
+        assertNull(Originals.gainDb(loudness(-20, -10), silence));
+        assertNotNull(Originals.loudnessMismatch(loudness(-20, -10), silence));
     }
 
     @Test
     void describe() {
         Originals.Original o = Originals.describe(probe("flac", "flac"), "source.flac", loudness(-20, -10),
-                3_010_000, 3_000_000);
+                loudness(-14, -4), 3_010_000, 3_000_000);
         assertEquals(new Originals.Original("original.flac", "flac/flac", true, 6.0), o);
         // out of the 50 ms window: kept, not web-playable
-        o = Originals.describe(probe("mp3", "mp3"), "source.mp3", loudness(-20, -10), 3_100_000, 3_000_000);
+        o = Originals.describe(probe("mp3", "mp3"), "source.mp3", loudness(-20, -10), loudness(-14, -4),
+                3_100_000, 3_000_000);
         assertEquals(new Originals.Original("original.mp3", "mp3/mp3", false, 6.0), o);
-        o = Originals.describe(probe("asf", "wmav2"), "source.wma", loudness(Double.NEGATIVE_INFINITY, 0), 3_000_000,
-                3_000_000);
+        // loudness can't be matched without clipping: kept, not web-playable
+        o = Originals.describe(probe("flac", "flac"), "source.flac", loudness(-30, -3), loudness(-15, -1),
+                3_000_000, 3_000_000);
+        assertEquals(new Originals.Original("original.flac", "flac/flac", false, 3.0), o);
+        // silence: web-playable without a gain
+        o = Originals.describe(probe("flac", "flac"), "source.flac", loudness(Double.NEGATIVE_INFINITY, 0), null,
+                3_000_000, 3_000_000);
+        assertEquals(new Originals.Original("original.flac", "flac/flac", true, null), o);
+        o = Originals.describe(probe("asf", "wmav2"), "source.wma", loudness(Double.NEGATIVE_INFINITY, 0), null,
+                3_000_000, 3_000_000);
         assertEquals(new Originals.Original("original.wma", "wmav2/asf", false, null), o);
     }
 }
