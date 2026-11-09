@@ -36,7 +36,7 @@ An **item** is a media object stored once on the server: its files, metadata and
 | Who | Can see |
 |---|---|
 | Any user | Their own library and playlists; items shared with them |
-| `library.viewAll` | Every user's library and playlists (read-only), searchable by user |
+| `library.viewAll` | Every user's library and playlists (read-only), searchable by user (`/api/users?q=` finds users by username or display name; their library can be searched like your own) |
 | Room members (users and guests) | Inside a room, the **request search scope** chosen by the room owner (below) |
 | Anyone | Any item's page, **by direct link** (`/items/{id}`), whether or not it's in their library |
 
