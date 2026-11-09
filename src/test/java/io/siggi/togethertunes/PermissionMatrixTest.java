@@ -254,6 +254,13 @@ class PermissionMatrixTest {
             row("DELETE /api/playlists/{id}/entries/{entryId}", c -> Call.delete(c.playlistEntryPath()),
                     401, 401, 204, 204),
 
+            // Sharing: users only (users can't share with guests, and guests have no library to
+            // receive into). Any user may share any item. SharesContract covers the rules.
+            row("GET /api/shares", c -> Call.get("/api/shares?direction=in&limit=10"), 401, 401, 200, 200),
+            row("POST /api/shares", c -> Call.post("/api/shares", "{\"itemId\":\"" + c.itemId()
+                    + "\",\"toUsername\":\"" + c.targetUsername() + "\"}"), 401, 401, 201, 201),
+            row("POST /api/shares/seen", c -> Call.post("/api/shares/seen", "{\"all\":true}"), 401, 401, 200, 200),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -306,7 +313,8 @@ class PermissionMatrixTest {
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
-                TestUploads.playlistsApi(database, config, permissions, clock));
+                TestUploads.playlistsApi(database, config, permissions, clock),
+                TestUploads.sharesApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -462,6 +470,12 @@ class PermissionMatrixTest {
                 }
             }
             return targetUserId;
+        }
+
+        /** The username of this cell's target user. */
+        String targetUsername() {
+            targetUserId();
+            return targetUsername;
         }
 
         /**

@@ -101,6 +101,59 @@ public record UploadMetadata(String title, String artist, String album) {
         return s.isEmpty() ? null : s;
     }
 
+    /**
+     * Cleans multi-line text (a playlist description, a share message): line breaks are kept
+     * (normalised to {@code \n}, at most two in a row), tabs and other spaces become a space,
+     * other control and format characters (except ZWJ) are removed, each line is trimmed at its
+     * end and the whole is trimmed.
+     *
+     * @param maxCodePoints the longest accepted result, in code points
+     * @param tooLongCode   the {@code 400} error code for a longer text
+     * @return {@code null} when nothing is left
+     * @throws io.siggi.togethertunes.http.HttpError {@code 400 tooLongCode}
+     */
+    static String cleanMultiline(String raw, int maxCodePoints, String tooLongCode) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw.length() > maxCodePoints * 4) {
+            throw tooLong(maxCodePoints, tooLongCode);
+        }
+        String text = raw.replace("\r\n", "\n").replace('\r', '\n');
+        StringBuilder out = new StringBuilder(text.length());
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp == '\n' || cp == 0x2028 || cp == 0x2029) {
+                while (out.length() > 0 && out.charAt(out.length() - 1) == ' ') {
+                    out.setLength(out.length() - 1);
+                }
+                int len = out.length();
+                if (!(len >= 2 && out.charAt(len - 1) == '\n' && out.charAt(len - 2) == '\n')) {
+                    out.append('\n');
+                }
+            } else if (cp == '\t' || Character.isSpaceChar(cp)) {
+                out.append(' ');
+            } else if (Character.isISOControl(cp) || (Character.getType(cp) == Character.FORMAT && cp != 0x200D)) {
+                // dropped
+            } else {
+                out.appendCodePoint(cp);
+            }
+        }
+        String s = out.toString().strip();
+        if (s.isEmpty()) {
+            return null;
+        }
+        if (s.codePointCount(0, s.length()) > maxCodePoints) {
+            throw tooLong(maxCodePoints, tooLongCode);
+        }
+        return s;
+    }
+
+    private static io.siggi.togethertunes.http.HttpError tooLong(int max, String code) {
+        return new io.siggi.togethertunes.http.HttpError(400, code, "At most " + max + " characters");
+    }
+
     /** The lower-case extension of an upload's name if it is a plain one ({@code [a-z0-9]{1,10}}), else null. */
     static String extension(String filename) {
         if (filename == null) {

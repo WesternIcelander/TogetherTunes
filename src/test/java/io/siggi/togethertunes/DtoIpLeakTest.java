@@ -47,6 +47,7 @@ import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.Playlists;
+import io.siggi.togethertunes.library.Shares;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
 import java.lang.reflect.RecordComponent;
@@ -133,6 +134,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Playlists$Page",
             "io.siggi.togethertunes.library.Playlists$Playlist",
             "io.siggi.togethertunes.library.Playlists$PlaylistPage",
+            "io.siggi.togethertunes.library.Shares$Page",
+            "io.siggi.togethertunes.library.Shares$Share",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -198,6 +201,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
             Map.entry("io.siggi.togethertunes.library.Playlists$ItemRow", "item lookup"),
+            Map.entry("io.siggi.togethertunes.library.Shares$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
@@ -237,6 +241,7 @@ class DtoIpLeakTest {
     private Library library;
     private Items items;
     private Playlists playlists;
+    private Shares shares;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
 
@@ -277,6 +282,7 @@ class DtoIpLeakTest {
         library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
         playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
+        shares = new Shares(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
         router = Main.router(config, staticFiles, actors,
@@ -290,7 +296,8 @@ class DtoIpLeakTest {
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
-                TestUploads.playlistsApi(database, config, permissions, clock));
+                TestUploads.playlistsApi(database, config, permissions, clock),
+                TestUploads.sharesApi(database, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -472,6 +479,9 @@ class DtoIpLeakTest {
         for (Playlists.Playlist p : playlistPage.items()) {
             produced.add(playlists.get(aliceId, p.id()));
         }
+        produced.add(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX));
+        produced.add(shares.list(adminId, Shares.Direction.OUT, null, Shares.LIST_MAX));
+        assertFalse(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX).items().isEmpty());
         produced.add(roles.list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
@@ -603,7 +613,7 @@ class DtoIpLeakTest {
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
-                "/api/playlists", "/api/playlists/" + f.playlistId);
+                "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -743,17 +753,14 @@ class DtoIpLeakTest {
         String extra = insertItem(adminId);
         expect(201, alice, "PUT", "/api/library/" + extra, null);
         expectOk(alice, "DELETE", "/api/library/" + extra, null);
+        // the admin shares an item with alice (with a message, the username in another case); alice
+        // lists her shares and marks them seen, the admin lists his outgoing ones
         String shared = insertItem(adminId);
-        database.write(c -> {
-            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id,"
-                    + " added_at, via, shared_by_user_id) VALUES (?, ?, 5, 'share', ?)")) {
-                ps.setString(1, aliceId);
-                ps.setString(2, shared);
-                ps.setString(3, adminId);
-                ps.executeUpdate();
-            }
-            return null;
-        });
+        expect(201, admin, "POST", "/api/shares", "{\"itemId\":\"" + shared
+                + "\",\"toUsername\":\"ALICE\",\"message\":\"Listen to this\"}");
+        expect(200, alice, "GET", "/api/shares", null);
+        expect(200, alice, "POST", "/api/shares/seen", "{\"all\":true}");
+        expect(200, admin, "GET", "/api/shares?direction=out", null);
         assertTrue(json(expect(200, alice, "GET", "/api/library", null)).getAsJsonArray("items").size() >= 3);
 
         // items by id: alice's upload (deduplicated onto the admin's item, so it has no job of its

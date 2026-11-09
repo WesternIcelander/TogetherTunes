@@ -106,49 +106,14 @@ public final class Playlists {
     }
 
     /**
-     * A cleaned description: line breaks are kept (normalised to {@code \n}, at most two in a
-     * row), tabs become spaces, other control and format characters (except ZWJ) are removed,
-     * each line is trimmed at its end, the whole is trimmed.
+     * A cleaned description ({@link UploadMetadata#cleanMultiline}: line breaks kept, at most two
+     * in a row).
      *
      * @return {@code null} when nothing is left
      * @throws HttpError {@code 400 description_too_long}
      */
     public static String description(String raw) {
-        if (raw == null) {
-            return null;
-        }
-        if (raw.length() > DESCRIPTION_MAX * 4) {
-            throw new HttpError(400, "description_too_long", "At most " + DESCRIPTION_MAX + " characters");
-        }
-        String text = raw.replace("\r\n", "\n").replace('\r', '\n');
-        StringBuilder out = new StringBuilder(text.length());
-        for (int i = 0; i < text.length(); ) {
-            int cp = text.codePointAt(i);
-            i += Character.charCount(cp);
-            if (cp == '\n' || cp == 0x2028 || cp == 0x2029) {
-                while (out.length() > 0 && out.charAt(out.length() - 1) == ' ') {
-                    out.setLength(out.length() - 1);
-                }
-                int len = out.length();
-                if (!(len >= 2 && out.charAt(len - 1) == '\n' && out.charAt(len - 2) == '\n')) {
-                    out.append('\n');
-                }
-            } else if (cp == '\t' || Character.isSpaceChar(cp)) {
-                out.append(' ');
-            } else if (Character.isISOControl(cp) || (Character.getType(cp) == Character.FORMAT && cp != 0x200D)) {
-                // dropped
-            } else {
-                out.appendCodePoint(cp);
-            }
-        }
-        String s = out.toString().strip();
-        if (s.isEmpty()) {
-            return null;
-        }
-        if (s.codePointCount(0, s.length()) > DESCRIPTION_MAX) {
-            throw new HttpError(400, "description_too_long", "At most " + DESCRIPTION_MAX + " characters");
-        }
-        return s;
+        return UploadMetadata.cleanMultiline(raw, DESCRIPTION_MAX, "description_too_long");
     }
 
     private static HttpError playlistNotFound() {

@@ -15,6 +15,8 @@ import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.PlaylistsApi;
+import io.siggi.togethertunes.library.Shares;
+import io.siggi.togethertunes.library.SharesApi;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
@@ -70,6 +72,12 @@ public final class TestUploads {
     /** The playlists API over YouTube imports with the configured tools. */
     public static PlaylistsApi playlistsApi(Database db, Config config, Permissions permissions, Clock clock) {
         return new PlaylistsApi(new Playlists(db, youtube(db, config, Tools.from(config), clock), clock),
+                policy(permissions, new Settings(db, config)));
+    }
+
+    /** The shares API over YouTube imports with the configured tools. */
+    public static SharesApi sharesApi(Database db, Config config, Permissions permissions, Clock clock) {
+        return new SharesApi(new Shares(db, youtube(db, config, Tools.from(config), clock), clock),
                 policy(permissions, new Settings(db, config)));
     }
 
