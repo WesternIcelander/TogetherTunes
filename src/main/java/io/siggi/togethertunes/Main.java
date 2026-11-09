@@ -37,6 +37,8 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.library.Uploads;
+import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
@@ -155,9 +157,20 @@ public final class Main {
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
+        Uploads uploads = uploads(config, dataDir, database, ingest);
+        try {
+            int swept = uploads.sweep();
+            if (swept > 0) {
+                System.out.println("Deleted " + swept + " abandoned uploads");
+            }
+        } catch (SQLException | IOException e) {
+            System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
+        }
+        UploadsApi uploadsApi = new UploadsApi(uploads, permissions);
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity),
+            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
+                            sessionsApi, me, admin, activity, uploadsApi),
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
@@ -216,6 +229,15 @@ public final class Main {
             err.println("WARNING: could not start the ingest queue: " + e.getMessage());
         }
         return queue;
+    }
+
+    /**
+     * The upload service ({@link Uploads}): limits from the config, new items recorded for the
+     * configured output profile, and each queued job wakes the ingest workers.
+     */
+    static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest) {
+        return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
+                config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(), Clock.systemUTC());
     }
 
     /**
@@ -311,10 +333,12 @@ public final class Main {
      * ({@code /api/me/sessions}), {@link MeApi} who-am-I and the guest identity ({@code /api/me},
      * {@code /api/me/guest}), {@link AdminApi} the admin API for users, roles and settings
      * ({@code /api/admin/...}), {@link AdminActivityApi} the admin guest list, audit log and session
-     * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}).
+     * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}),
+     * {@link UploadsApi} chunked uploads ({@code /api/uploads...}).
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
-                         SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity) {
+                         SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
+                         UploadsApi uploads) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
         Router router = new Router(actors.hook(), csrf.hook());
@@ -324,6 +348,7 @@ public final class Main {
         me.register(router);
         admin.register(router);
         activity.register(router);
+        uploads.register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         staticFiles.register(router);

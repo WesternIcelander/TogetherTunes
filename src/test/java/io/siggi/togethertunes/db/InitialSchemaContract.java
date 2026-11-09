@@ -68,6 +68,8 @@ abstract class InitialSchemaContract {
                 "entry_id", "added_to_owner_library");
         t("stream_outputs", "id", "room_id", "kind", "token", "rtmp_url", "rtmp_key_enc", "enabled",
                 "created_at");
+        t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
+                "item_id", "deduplicated");
     }
 
     private static void t(String table, String... columns) {

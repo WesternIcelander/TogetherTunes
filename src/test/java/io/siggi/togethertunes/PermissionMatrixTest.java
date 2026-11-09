@@ -86,8 +86,15 @@ class PermissionMatrixTest {
     /** The kinds of caller, in table column order. */
     enum Who { ANONYMOUS, GUEST, USER, ADMIN }
 
-    /** What a cell sends. {@code body} may be null. {@code websocket}: open a socket instead. */
-    record Call(String method, String path, String body, boolean websocket) {
+    /**
+     * What a cell sends. {@code body} may be null. {@code websocket}: open a socket instead.
+     * {@code headers}: extra request headers.
+     */
+    record Call(String method, String path, String body, boolean websocket, Map<String, String> headers) {
+        Call(String method, String path, String body, boolean websocket) {
+            this(method, path, body, websocket, Map.of());
+        }
+
         static Call get(String path) {
             return new Call("GET", path, null, false);
         }
@@ -110,6 +117,12 @@ class PermissionMatrixTest {
 
         static Call socket(String path) {
             return new Call("GET", path, null, true);
+        }
+
+        Call withHeader(String name, String value) {
+            Map<String, String> h = new LinkedHashMap<>(headers);
+            h.put(name, value);
+            return new Call(method, path, body, websocket, Map.copyOf(h));
         }
     }
 
@@ -190,6 +203,17 @@ class PermissionMatrixTest {
             admin("GET /api/admin/audit", c -> Call.get("/api/admin/audit"), 200),
             admin("GET /api/admin/ip/sessions/{userId}", c -> Call.get("/api/admin/ip/sessions/" + c.targetUserId()), 200),
 
+            // Uploads: library.upload (the default user role has it). Guest uploads are room
+            // requests (M3). complete is sent before any chunk, so an allowed caller gets
+            // 409 upload_incomplete (a full complete needs ffprobe; UploadsApiTest covers it).
+            row("POST /api/uploads", c -> Call.post("/api/uploads", "{\"filename\":\"song.mp3\",\"size\":10}"),
+                    401, 401, 201, 201),
+            row("PUT /api/uploads/{id}", c -> Call.put("/api/uploads/" + c.uploadId(), "hello")
+                    .withHeader("Content-Range", "bytes 0-4/10"), 401, 401, 200, 200),
+            row("GET /api/uploads/{id}", c -> Call.get("/api/uploads/" + c.uploadId()), 401, 401, 200, 200),
+            row("POST /api/uploads/{id}/complete", c -> Call.post("/api/uploads/" + c.uploadId() + "/complete", null),
+                    401, 401, 409, 409),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /test/ws-echo/closes", c -> Call.get("/test/ws-echo/closes?tag=matrix"), 200, 200, 200, 200),
@@ -237,7 +261,8 @@ class PermissionMatrixTest {
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
-                AdminActivityApi.create(database, guests, permissions, clock));
+                AdminActivityApi.create(database, guests, permissions, clock),
+                TestUploads.api(database, dir, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 
         HttpResponse<String> setup = send(null, null, Call.post("/api/setup",
@@ -395,6 +420,24 @@ class PermissionMatrixTest {
             return targetUserId;
         }
 
+        /**
+         * An upload of 10 bytes started by this caller (a user or admin), or a made-up id for
+         * callers who can't start one.
+         */
+        String uploadId() {
+            try {
+                if (cookie == null || !cookie.startsWith("sid=")) {
+                    return "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+                }
+                HttpResponse<String> r = send(cookie, ip, Call.post("/api/uploads",
+                        "{\"filename\":\"song.mp3\",\"size\":10}"));
+                assertEquals(201, r.statusCode(), r.body());
+                return json(r.body()).get("uploadId").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
         /** A custom role nobody else touches. */
         String targetRoleId() {
             if (targetRoleId == null) {
@@ -504,6 +547,7 @@ class PermissionMatrixTest {
         if (forwardedFor != null) {
             b.header("X-Forwarded-For", forwardedFor); // the loopback peer is a trusted proxy
         }
+        call.headers().forEach(b::header);
         return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
 

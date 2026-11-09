@@ -174,7 +174,14 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.Originals$Original", "what ingest records about a kept original, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.Loudness$Measurement", "loudnorm pass-1 result, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe", "ffprobe result of a source file, server-side only"),
-            Map.entry("io.siggi.togethertunes.ingest.MediaProbe$Stream", "ffprobe stream of a source file, server-side only"));
+            Map.entry("io.siggi.togethertunes.ingest.MediaProbe$Stream", "ffprobe stream of a source file, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.UploadMetadata", "title/artist/album derived at upload, written to the item row"),
+            Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
+            Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
+            Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
+            Map.entry("io.siggi.togethertunes.library.Uploads$Existing", "content-hash lookup"),
+            Map.entry("io.siggi.togethertunes.library.UploadsApi$CreateRequest", "request body (inbound)"),
+            Map.entry("io.siggi.togethertunes.library.UploadsApi$CompleteRequest", "request body (inbound)"));
 
     /** Component names that suggest an IP address. */
     private static final Pattern IP_NAME =
@@ -246,7 +253,8 @@ class DtoIpLeakTest {
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, roles, permissions, settings),
-                AdminActivityApi.create(database, guests, permissions, clock));
+                AdminActivityApi.create(database, guests, permissions, clock),
+                TestUploads.api(database, dir, config, permissions, clock));
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -542,7 +550,7 @@ class DtoIpLeakTest {
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
-                "/api/admin/ip/sessions/" + f.adminId);
+                "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId);
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -554,7 +562,7 @@ class DtoIpLeakTest {
     }
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
-                           String aliceId, String roleId) {
+                           String aliceId, String roleId, String uploadId) {
     }
 
     /**
@@ -663,7 +671,34 @@ class DtoIpLeakTest {
         expectOk(anon, "POST", "/test/ws-echo/report", "{\"ok\":true,\"from\":\"dto test\"}");
         expect(200, anon, "GET", "/test/ws-echo.html", null);
 
-        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId);
+        // an upload by alice: started, one chunk, its status, completed as a duplicate of an
+        // existing item (so no ffprobe is needed)
+        insertUploadItem(adminId, "hello");
+        String uploadId = json(expect(201, alice, "POST", "/api/uploads", "{\"filename\":\"hello.mp3\",\"size\":5}"))
+                .get("uploadId").getAsString();
+        expect(200, alice, "PUT", "/api/uploads/" + uploadId, "hello", Map.of("Content-Range", "bytes 0-4/5"));
+        expect(200, alice, "GET", "/api/uploads/" + uploadId, null);
+        assertTrue(json(expect(200, alice, "POST", "/api/uploads/" + uploadId + "/complete", null))
+                .get("deduplicated").getAsBoolean());
+
+        return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId);
+    }
+
+    /** A ready upload item whose content hash is that of {@code content}. */
+    private void insertUploadItem(String userId, String content) throws Exception {
+        String sha = io.siggi.togethertunes.library.Uploads.sha256Hex(
+                new java.io.ByteArrayInputStream(content.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source,"
+                    + " content_sha256, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                    + " VALUES (?, 'audio', 'Hello', 'upload', ?, ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
+                ps.setString(2, sha);
+                ps.setString(3, userId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
     }
 
     // ------------------------------------------------------------------ helpers
@@ -682,7 +717,12 @@ class DtoIpLeakTest {
     }
 
     private HttpResponse<String> expect(int status, Who who, String method, String path, String body) throws Exception {
-        HttpResponse<String> r = send(who, method, path, body);
+        return expect(status, who, method, path, body, Map.of());
+    }
+
+    private HttpResponse<String> expect(int status, Who who, String method, String path, String body,
+                                        Map<String, String> headers) throws Exception {
+        HttpResponse<String> r = send(who, method, path, body, headers);
         assertEquals(status, r.statusCode(), who.label() + " " + method + " " + path + ": " + r.body());
         return r;
     }
@@ -695,6 +735,11 @@ class DtoIpLeakTest {
 
     /** Sends one request, notes its route if it succeeded, and scans the answer. */
     private HttpResponse<String> send(Who who, String method, String path, String body) throws Exception {
+        return send(who, method, path, body, Map.of());
+    }
+
+    private HttpResponse<String> send(Who who, String method, String path, String body, Map<String, String> headers)
+            throws Exception {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
                 .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body))
                 .header("Origin", PUBLIC_BASE_URL);
@@ -710,6 +755,7 @@ class DtoIpLeakTest {
         if (who.forwardedFor() != null) {
             b.header("X-Forwarded-For", who.forwardedFor()); // the loopback peer is a trusted proxy
         }
+        headers.forEach(b::header);
         HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
         if (r.statusCode() / 100 == 2) {
             succeeded.add(routeOf(method, path));

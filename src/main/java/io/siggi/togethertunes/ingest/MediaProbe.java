@@ -9,8 +9,11 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -30,8 +33,27 @@ import java.util.Set;
  * @param audio       the first audio stream, or null if there is none
  * @param video       the first real video stream, or null (audio item)
  * @param cover       the first cover-art stream, or null
+ * @param tags        metadata tags with lower-case keys: the container's ({@code format.tags}),
+ *                    then those of the first audio stream for keys the container lacks (Ogg/Opus
+ *                    keep their Vorbis comments there); empty if none
  */
-public record MediaProbe(String formatName, long startUs, long durationUs, Stream audio, Stream video, Stream cover) {
+public record MediaProbe(String formatName, long startUs, long durationUs, Stream audio, Stream video, Stream cover,
+                         Map<String, String> tags) {
+    public MediaProbe {
+        tags = tags == null ? Map.of() : Collections.unmodifiableMap(new LinkedHashMap<>(tags));
+    }
+
+    /** A probe without tags. */
+    public MediaProbe(String formatName, long startUs, long durationUs, Stream audio, Stream video, Stream cover) {
+        this(formatName, startUs, durationUs, audio, video, cover, Map.of());
+    }
+
+    /** The tag {@code key} (lower case), stripped, or null if missing or blank. */
+    public String tag(String key) {
+        String v = tags.get(key);
+        return v == null || v.isBlank() ? null : v.strip();
+    }
+
     /** Size limit of ffprobe's JSON (a file with thousands of streams or huge tags is rejected). */
     static final int MAX_JSON_BYTES = 8 * 1024 * 1024;
 
@@ -170,6 +192,7 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
         long start = Math.max(0, micros(string(format, "start_time")));
 
         Stream audio = null;
+        JsonObject audioJson = null;
         Stream video = null;
         Stream cover = null;
         List<JsonObject> streams = new ArrayList<>();
@@ -197,6 +220,7 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
             if ("audio".equals(type)) {
                 if (audio == null) {
                     audio = stream;
+                    audioJson = s;
                 }
             } else if ("video".equals(type)) {
                 if (attachedPic(s) || isStillImage(s, codec)) {
@@ -208,7 +232,37 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
                 }
             }
         }
-        return new MediaProbe(formatName == null ? "" : formatName, start, duration, audio, video, cover);
+        Map<String, String> tags = new LinkedHashMap<>();
+        addTags(tags, format);
+        if (audioJson != null) {
+            addTags(tags, audioJson);
+        }
+        return new MediaProbe(formatName == null ? "" : formatName, start, duration, audio, video, cover, tags);
+    }
+
+    /** Most tags kept; longer values are cut (the item columns take a few hundred characters). */
+    static final int MAX_TAGS = 200;
+    static final int MAX_TAG_CHARS = 4096;
+
+    /** Adds {@code o.tags} (string values) with lower-case keys, keeping keys already present. */
+    private static void addTags(Map<String, String> into, JsonObject o) {
+        if (!o.has("tags") || !o.get("tags").isJsonObject()) {
+            return;
+        }
+        for (var e : o.getAsJsonObject("tags").entrySet()) {
+            if (into.size() >= MAX_TAGS) {
+                return;
+            }
+            JsonElement v = e.getValue();
+            if (v == null || !v.isJsonPrimitive()) {
+                continue;
+            }
+            String value = v.getAsString();
+            if (value.length() > MAX_TAG_CHARS) {
+                value = value.substring(0, MAX_TAG_CHARS);
+            }
+            into.putIfAbsent(e.getKey().toLowerCase(Locale.ROOT), value);
+        }
     }
 
     /** Above this length an image-codec stream of unknown frame count is taken as moving pictures. */

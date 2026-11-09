@@ -410,10 +410,19 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     /** @param limitDuration whether {@code ingest.maxDurationSeconds} applies (not for re-encodes) */
     void checkProbe(MediaProbe probe, boolean limitDuration) throws IngestFailure {
+        checkSource(probe, limitDuration ? maxDurationUs : -1);
+    }
+
+    /**
+     * Rejects a source that can't become an item: no audio stream, or (when
+     * {@code maxDurationUs >= 0}) longer than that. Shared with the upload's {@code complete},
+     * which rejects such files before creating an item.
+     */
+    public static void checkSource(MediaProbe probe, long maxDurationUs) throws IngestFailure {
         if (probe.audio() == null) {
             throw new IngestFailure("The file has no audio");
         }
-        if (!limitDuration) {
+        if (maxDurationUs < 0) {
             return;
         }
         long duration = Math.max(probe.durationUs(), probe.audioEndUs());
