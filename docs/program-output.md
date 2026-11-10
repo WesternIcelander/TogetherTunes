@@ -26,7 +26,7 @@ Units are built by **sources**:
 | `AudioItemSource(item, startMs)` | The item's card GOP, repeated. Uses the room's overlay card when the overlay is on. Also used for video items with `presentAsAudio` | The item's audio from the AAC frame at `startMs` |
 | `FillerSource(card)` | The card GOP, repeated (the room's overlay version when the overlay is on) | The silence frame, repeated |
 
-Fillers: **Paused** (timeline paused), **Idle** (room idle card; queue empty), **Loading** (next item's index not loaded yet; this should be rare, because the next item is preloaded during the current one).
+Fillers: **Paused** (timeline paused), **Idle** (room idle card; queue empty), **Loading** (next item's index not loaded yet; this should be rare, because the next item is preloaded during the current one). An item whose files the packager can't use (an older encoding, an unreadable `index.bin`) is never chosen by the room in the first place: rooms and packager share one notion of playable ([rooms.md](rooms.md#room-state), `ingest.PlayableFiles`), so the room skips it like an item still processing instead of the output showing Loading for its whole length. Loading for a whole item now only happens when the current entry's files become unusable mid-play (an encoding switch) or the files break after the room checked them.
 
 ## Timestamp rules
 
