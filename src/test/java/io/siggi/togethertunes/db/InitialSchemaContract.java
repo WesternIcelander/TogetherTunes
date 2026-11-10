@@ -63,7 +63,7 @@ abstract class InitialSchemaContract {
         t("room_members", "room_id", "user_id", "role", "joined_at");
         t("room_guest_bans", "room_id", "guest_id", "created_at");
         t("queue_entries", "id", "room_id", "item_id", "added_by_user_id", "added_by_guest_id", "added_at",
-                "state", "position", "pinned", "played_at", "via", "added_by_name");
+                "state", "position", "pinned", "played_at", "via", "added_by_name", "overlay");
         t("votes", "entry_id", "voter_user_id", "voter_guest_id", "value", "at");
         t("skip_votes", "entry_id", "voter_user_id", "voter_guest_id", "at");
         t("stream_outputs", "id", "room_id", "kind", "token", "rtmp_url", "rtmp_key_enc", "enabled",
