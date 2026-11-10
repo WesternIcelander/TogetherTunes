@@ -34,12 +34,16 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 /**
  * {@link RtmpPusher}: supervised ffmpeg with backoff 1/2/5/10/30 s, status with the last stderr line
  * (key masked), stdin fed with the units, slow/stalled ffmpeg ended, stop. Most cases run a small
  * shell script in place of ffmpeg; one pushes real units with real ffmpeg to an ffmpeg RTMP listener.
  */
+// The class runs on its own (like every other class); its test methods run side by side.
+@Execution(ExecutionMode.SAME_THREAD)
 class RtmpPusherTest {
     static final String KEY = "sk_live_abcdefgh1234WXYZ";
 
@@ -152,6 +156,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void targetAndCommand() {
         assertEquals("rtmp://h/live/k", RtmpPusher.target("rtmp://h/live", "k"));
         assertEquals("rtmp://h/live/k", RtmpPusher.target("rtmp://h/live//", "k"));
@@ -166,6 +171,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void keyIsMasked() {
         assertEquals("…WXYZ", RtmpPusher.maskKey(KEY));
         assertEquals("…", RtmpPusher.maskKey("short"));
@@ -178,6 +184,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void urlCredentialsAreMaskedInLogsAndDetail() {
         assertEquals("Cannot open rtmp://***@ingest.example:1935/live?…: refused",
                 RtmpPusher.maskUrlCredentials("Cannot open rtmp://user:pa55@ingest.example:1935/live?token=s3cret: refused"));
@@ -194,6 +201,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void failingFfmpegIsRetriedWithBackoffAndTheLastStderrLine() throws Exception {
         captureLogs();
@@ -229,6 +237,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void unitsAreWrittenToStdinAndProgressMeansConnected() throws Exception {
         Path out = dir.resolve("out.bin");
@@ -263,6 +272,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void aConnectionStableForAMinuteResetsTheBackoff() throws Exception {
         // Attempts 1 and 2 fail at once; 3 connects, stays a minute (fake clock), then drops;
@@ -288,6 +298,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void aShortConnectionDoesNotResetTheBackoff() throws Exception {
         RtmpPusher p = pusher(feed(4), scripts(n -> n == 2 ? "echo progress=continue; sleep 0.1; exit 1"
@@ -302,6 +313,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void ffmpegThatStopsReadingIsKilledWhenTheQueueOverflows() throws Exception {
         // Never reads stdin: the writer blocks once the pipe is full; the 2-unit queue overflows.
@@ -328,6 +340,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void closeStopsFfmpegAndTheSupervisor() throws Exception {
         Path pidFile = dir.resolve("pid");
@@ -350,6 +363,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void closeDuringTheBackoffWait() throws Exception {
         RtmpPusher p = pusher(feed(4), scripts(n -> "exit 1"), ms -> {
@@ -364,6 +378,7 @@ class RtmpPusherTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(60)
     void ffmpegMissingOrOutputFailingIsAnError() throws Exception {
         RtmpPusher p = pusher(feed(4), command -> {
@@ -395,6 +410,7 @@ class RtmpPusherTest {
     // ------------------------------------------------------------------ real ffmpeg
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(120)
     void pushesToARealRtmpServer() throws Exception {
         Tools tools = RealSourcesTest.tools();

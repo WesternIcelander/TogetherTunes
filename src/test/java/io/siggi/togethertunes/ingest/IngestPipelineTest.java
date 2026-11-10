@@ -6,17 +6,12 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
-import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.config.X264Preset;
-import io.siggi.togethertunes.db.Database;
-import io.siggi.togethertunes.db.MigrationRunner;
-import io.siggi.togethertunes.db.SqliteDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
@@ -32,238 +27,30 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.time.Clock;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.Locale;
-import java.util.Properties;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Stream;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
-import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 /**
  * The ingest job steps end to end with real ffmpeg/ffprobe (skipped without them), on a SQLite
  * database and a real {@link IngestQueue}: audio and video uploads, a YouTube job with a fake
  * yt-dlp, re-ingest into an existing directory, and the failures that must leave nothing behind.
+ * The inherently slow cases (1080p re-encodes, the quality-preset swap, loudness matching of
+ * originals, the milestone source set) are in {@link IngestPipelineSlowTest}. Test methods run
+ * concurrently (each has its own data directory and database).
  */
 @Timeout(180)
-class IngestPipelineTest {
-    @TempDir
-    Path dir;
-
-    private Tools tools;
-    private DataDir data;
-    private Database db;
-    private IngestJobs jobs;
-    private IngestFixtures fixtures;
-    private ReferenceCard reference;
-    private final List<IngestQueue> queues = new ArrayList<>();
-
-    @BeforeEach
-    void setUp() throws Exception {
-        tools = CardEncoderTest.tools();
-        data = DataDir.create(dir.resolve("data"));
-        db = Database.open("jdbc:sqlite:" + data.db().resolve("test.db"), new Properties(),
-                Database.PoolSettings.defaults(SqliteDialect.INSTANCE));
-        MigrationRunner.migrate(db);
-        jobs = new IngestJobs(db);
-        fixtures = new IngestFixtures(db);
-        reference = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
-    }
-
-    @AfterEach
-    void tearDown() {
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        db.close();
-    }
-
-    private IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds) throws Exception {
-        return queue(tools, reference, maxSeconds, () -> null);
-    }
-
-    private IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds,
-                              java.util.function.Supplier<String> cookies) throws Exception {
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, maxSeconds, cookies);
-        IngestQueue q = new IngestQueue(jobs, 1, pipeline, Clock.systemUTC(), Duration.ofHours(1), Duration.ZERO);
-        queues.add(q);
-        q.start();
-        return q;
-    }
-
-    /** A queue whose pipeline uses {@code presets}; the jobs table queues quality jobs with them. */
-    private IngestPipeline presetQueue(EncodePresets presets) throws Exception {
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800, () -> null,
-                presets);
-        jobs.qualityPreset(presets::quality);
-        IngestQueue q = new IngestQueue(jobs, 1, pipeline, Clock.systemUTC(), Duration.ofMillis(200), Duration.ZERO);
-        queues.add(q);
-        q.start();
-        return pipeline;
-    }
-
-    /** Waits until the item's latest job has finished, and returns it. */
-    private IngestJob awaitLatest(String itemId) throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(150);
-        while (System.nanoTime() < deadline) {
-            IngestJob j = jobs.latestForItem(itemId).orElseThrow();
-            if (j.state().finished()) {
-                return j;
-            }
-            Thread.sleep(50);
-        }
-        fail("job did not finish: " + jobs.latestForItem(itemId).orElseThrow());
-        return null;
-    }
-
-    private IngestJob awaitJob(String jobId) throws Exception {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(150);
-        while (System.nanoTime() < deadline) {
-            IngestJob j = jobs.get(jobId).orElseThrow();
-            if (j.state().finished()) {
-                return j;
-            }
-            Thread.sleep(50);
-        }
-        fail("job did not finish: " + jobs.get(jobId).orElseThrow());
-        return null;
-    }
-
-    /** Stages a short video upload for {@code item}. */
-    private void stageVideo(String item) throws Exception {
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "3",
-                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(item, "source.mp4").toString());
-    }
-
-    private IngestJob run(Kind kind, String itemId) throws Exception {
-        return run(queue(tools, reference, 1800), kind, itemId);
-    }
-
-    private IngestJob run(IngestQueue q, Kind kind, String itemId) throws Exception {
-        IngestJob job = q.enqueue(itemId, kind);
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(150);
-        while (System.nanoTime() < deadline) {
-            IngestJob j = jobs.get(job.id()).orElseThrow();
-            if (j.state().finished()) {
-                return j;
-            }
-            Thread.sleep(50);
-        }
-        fail("job did not finish: " + jobs.get(job.id()).orElseThrow());
-        return null;
-    }
-
-    private void ffmpeg(String... args) throws Exception {
-        List<String> all = new ArrayList<>(List.of("-v", "error", "-y"));
-        all.addAll(List.of(args));
-        tools.ffmpeg(all).run();
-    }
-
-    private Path stage(String itemId, String name) throws Exception {
-        Path staging = IngestPipeline.stagingDir(data, itemId);
-        Files.createDirectories(staging);
-        return staging.resolve(name);
-    }
-
-    private Object[] itemRow(String id) throws Exception {
-        return db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT status, kind, duration_ms, output_profile,"
-                    + " loudness_lufs, error FROM items WHERE id = ?")) {
-                ps.setString(1, id);
-                try (ResultSet rs = ps.executeQuery()) {
-                    rs.next();
-                    Object lufs = rs.getObject(5);
-                    return new Object[] {rs.getString(1), rs.getString(2), rs.getLong(3), rs.getString(4),
-                            lufs == null ? null : rs.getDouble(5), rs.getString(6)};
-                }
-            }
-        });
-    }
-
-    /** {original_file, original_codec, original_web, original_gain_db} of an item. */
-    private Object[] originalRow(String id) throws Exception {
-        return db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT original_file, original_codec, original_web,"
-                    + " original_gain_db FROM items WHERE id = ?")) {
-                ps.setString(1, id);
-                try (ResultSet rs = ps.executeQuery()) {
-                    rs.next();
-                    Object gain = rs.getObject(4);
-                    return new Object[] {rs.getString(1), rs.getString(2), rs.getInt(3),
-                            gain == null ? null : rs.getDouble(4)};
-                }
-            }
-        });
-    }
-
-    /** Asserts that an item kept no original. */
-    private void assertNoOriginal(String id) throws Exception {
-        assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(id));
-        for (String n : layout(id)) {
-            assertFalse(n.startsWith("original"), "unexpected " + n);
-        }
-    }
-
-    /**
-     * Asserts that an item kept {@code file} only for re-encodes (a video item's or a YouTube
-     * download's original: not web-playable, no gain), byte for byte {@code content} if given.
-     */
-    private void assertKeptOnly(String id, String file, String codec, byte[] content) throws Exception {
-        assertArrayEquals(new Object[] {file, codec, 0, null}, originalRow(id));
-        Path kept = IngestPipeline.itemDir(data, id).resolve(file);
-        assertTrue(Files.isRegularFile(kept), file + " missing");
-        if (content != null) {
-            assertArrayEquals(content, Files.readAllBytes(kept), file + " is the source, unchanged");
-        }
-    }
-
-    /** The directory of the item's current media version. */
-    private Path cur(String item) throws Exception {
-        return MediaVersions.currentDir(db, data, item);
-    }
-
-    /** The item's current files as one list: its current version's files and its kept original. */
-    private List<String> layout(String item) throws Exception {
-        Path itemDir = IngestPipeline.itemDir(data, item);
-        List<String> out = new ArrayList<>(files(cur(item)));
-        for (String n : files(itemDir)) {
-            if (n.startsWith("original") && !out.contains(n)) {
-                out.add(n);
-            }
-        }
-        out.removeIf(n -> MediaVersions.parseVersionName(n).isPresent());
-        java.util.Collections.sort(out);
-        return out;
-    }
-
-    private List<String> files(Path d) throws Exception {
-        try (Stream<Path> s = Files.list(d)) {
-            return s.map(p -> p.getFileName().toString()).sorted().toList();
-        }
-    }
-
-    private void assertNoLeftovers() throws Exception {
-        for (String n : files(data.media())) {
-            assertFalse(n.startsWith("."), "left in media/: " + n);
-        }
-        Path jobsDir = data.tmp().resolve("jobs");
-        if (Files.exists(jobsDir)) {
-            assertEquals(List.of(), files(jobsDir));
-        }
-    }
-
+// The class runs on its own (like every other class); its test methods run side by side.
+@Execution(ExecutionMode.SAME_THREAD)
+class IngestPipelineTest extends IngestPipelineTestBase {
     /** A FLAC upload with an embedded cover: an audio item with audio.m4a, card.mp4, cover.jpg and index.bin. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void audioUploadWithEmbeddedCover() throws Exception {
         String item = fixtures.item("pending");
         Path png = dir.resolve("art.png");
@@ -323,6 +110,7 @@ class IngestPipelineTest {
      * at 0. The flat files stay until the old version's clean-up.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void videoUploadReplacesTheOldDirectory() throws Exception {
         String item = fixtures.item("ready");
         Path old = IngestPipeline.itemDir(data, item);
@@ -371,6 +159,7 @@ class IngestPipelineTest {
      * exactly the frames at 0, 2, 4, … s.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void publishedFilesHoldTheVerifiedProperties() throws Exception {
         IngestQueue q = queue(tools, reference, 1800);
         record Case(String size, String rate, double seconds) {
@@ -419,6 +208,7 @@ class IngestPipelineTest {
      * ingests the result; the downloaded thumbnail (WebP) becomes {@code cover.jpg}.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void youtubeJobDownloadsThenIngests() throws Exception {
         String item = fixtures.item("pending");
         db.write(c -> {
@@ -490,6 +280,7 @@ class IngestPipelineTest {
 
     /** Digital silence can't be measured; it is encoded without normalisation and no loudness is stored. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void silenceIsEncodedWithoutLoudness() throws Exception {
         String item = fixtures.item("pending");
         ffmpeg("-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", "3", stage(item, "source.wav").toString());
@@ -505,64 +296,12 @@ class IngestPipelineTest {
     }
 
     /**
-     * An audio upload's original, played with its {@code original_gain_db}, is as loud as
-     * {@code audio.m4a} (within 1 dB): a quiet source (linear loudnorm), a loud master (gain below
-     * 0), a source with a loudness range above 11 LU (loudnorm compresses it, the gain follows the
-     * result). A quiet source with high peaks, which loudnorm can only bring to −14 LUFS by
-     * compressing it, can't be matched without clipping: its original is kept but not played.
-     */
-    @Test
-    void originalPlaysAsLoudAsAudioM4a() throws Exception {
-        record Case(String name, String[] generate, int web) {
-        }
-        List<Case> cases = List.of(
-                new Case("quiet", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.05:r=44100:d=12",
-                        "-ac", "2"}, 1),
-                new Case("loud", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.9:r=44100:d=12",
-                        "-af", "alimiter=limit=0.95:level=false", "-ac", "2"}, 1),
-                new Case("wide range", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.4:r=44100:d=12",
-                        "-af", "volume='if(lt(mod(t,4),2),1,0.03)':eval=frame", "-ac", "2"}, 1),
-                new Case("quiet with peaks", new String[] {"-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.1:r=44100:d=12",
-                        "-f", "lavfi", "-i", "aevalsrc='if(lt(mod(t,3),0.005),0.95*sin(2*PI*1000*t),0)':s=44100:d=12",
-                        "-filter_complex", "[0][1]amix=inputs=2:normalize=0,aformat=channel_layouts=stereo"}, 0));
-        IngestQueue q = queue(tools, reference, 1800);
-        for (Case c : cases) {
-            String item = fixtures.item("pending");
-            Path source = stage(item, "source.flac");
-            List<String> args = new ArrayList<>(List.of(c.generate()));
-            args.addAll(List.of("-c:a", "flac", source.toString()));
-            ffmpeg(args.toArray(String[]::new));
-            IngestJob job = run(q, Kind.UPLOAD, item);
-            assertEquals(State.DONE, job.state(), c.name() + "\n" + job.log());
-            Object[] original = originalRow(item);
-            assertEquals(c.web(), original[2], c.name() + "\n" + job.log());
-            double gain = (Double) original[3];
-            Path itemDir = IngestPipeline.itemDir(data, item);
-            Loudness.Measurement m4a = Loudness.measure(tools, cur(item).resolve("audio.m4a").toString(), "0:a:0", null, null);
-            // the original as the browser plays it: the gain applied in float, nothing clipped
-            Path played = dir.resolve("played-" + item + ".wav");
-            ffmpeg("-i", itemDir.resolve("original.flac").toString(), "-af", String.format(Locale.ROOT, "volume=%.2fdB", gain),
-                    "-c:a", "pcm_f32le", played.toString());
-            Loudness.Measurement heard = Loudness.measure(tools, played.toString(), "0:a:0", null, null);
-            if (c.web() == 1) {
-                assertEquals(m4a.inputI(), heard.inputI(), 1.0, c.name() + ": audio.m4a " + m4a.inputI()
-                        + " LUFS, original with " + gain + " dB " + heard.inputI() + " LUFS");
-                assertTrue(heard.inputTp() <= 0.05, c.name() + ": peak " + heard.inputTp());
-                assertFalse(job.log().contains("not played in browsers"), job.log());
-            } else {
-                assertTrue(m4a.inputI() - heard.inputI() > 1, c.name() + ": expected a mismatch, " + m4a.inputI()
-                        + " vs " + heard.inputI());
-                assertTrue(job.log().contains("not played in browsers: matching audio.m4a needs"), job.log());
-            }
-        }
-    }
-
-    /**
      * Originals of other audio formats: MP3 (also with no extension on the upload), Opus in Ogg
      * and in WebM, AAC in M4A and ADTS are web-playable; Vorbis, AIFF, ALAC and Opus in a .mkv are
      * kept but not web-playable.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void originalsOfAudioFormats() throws Exception {
         record Case(String staged, String[] encode, String file, String codec, int web) {
         }
@@ -579,7 +318,11 @@ class IngestPipelineTest {
                 new Case("source.M4A", new String[] {"-c:a", "alac"}, "original.m4a", "alac/mov,mp4,m4a,3gp,3g2,mj2", 0),
                 // WMA decodes 72 ms longer than its container says; verify accepts the decoded length
                 new Case("source.wma", new String[] {"-ar", "44100", "-c:a", "wmav2"}, "original.wma", "wmav2/asf", 0));
-        IngestQueue q = queue(tools, reference, 1800);
+        // the cases are independent: stage and enqueue them all, then check each (several workers)
+        IngestQueue q = queue(tools, reference, 1800, () -> null, 4);
+        List<String> items = new ArrayList<>();
+        List<String> jobIds = new ArrayList<>();
+        List<byte[]> uploads = new ArrayList<>();
         for (Case c : cases) {
             String item = fixtures.item("pending");
             Path source = stage(item, c.staged());
@@ -587,8 +330,15 @@ class IngestPipelineTest {
             args.addAll(List.of(c.encode()));
             args.add(source.toString());
             ffmpeg(args.toArray(String[]::new));
-            byte[] uploaded = Files.readAllBytes(source);
-            IngestJob job = run(q, Kind.UPLOAD, item);
+            uploads.add(Files.readAllBytes(source));
+            items.add(item);
+            jobIds.add(q.enqueue(item, Kind.UPLOAD).id());
+        }
+        for (int i = 0; i < cases.size(); i++) {
+            Case c = cases.get(i);
+            String item = items.get(i);
+            byte[] uploaded = uploads.get(i);
+            IngestJob job = awaitJob(jobIds.get(i));
             assertEquals(State.DONE, job.state(), c + "\n" + job.log());
             Object[] original = originalRow(item);
             assertEquals(c.file(), original[0], c.staged());
@@ -609,6 +359,7 @@ class IngestPipelineTest {
      * with the video's, which isn't web-playable.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void videoReingestReplacesTheOriginal() throws Exception {
         IngestQueue q = queue(tools, reference, 1800);
         String item = fixtures.item("pending");
@@ -626,20 +377,6 @@ class IngestPipelineTest {
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)));
     }
 
-    /** {@code codec_type} of every stream in a file, in order. */
-    private List<String> streamTypes(Path file) throws Exception {
-        ToolResult r = tools.ffprobe("-v", "error", "-show_entries", "stream=codec_type", "-of", "csv=p=0",
-                file.toString()).stdoutToString(4096).run();
-        return r.stdoutString().lines().map(String::strip).filter(l -> !l.isEmpty()).toList();
-    }
-
-    /** Number of frames of a file's first video stream (decoded). */
-    private int videoFrames(Path file) throws Exception {
-        ToolResult r = tools.ffprobe("-v", "error", "-select_streams", "v:0", "-count_frames", "-show_entries",
-                "stream=nb_read_frames", "-of", "csv=p=0", file.toString()).stdoutToString(4096).run();
-        return Integer.parseInt(r.stdoutString().strip());
-    }
-
     /**
      * The item directory follows the kind, also when one item is re-ingested as the other kind:
      * an audio item is {@code audio.m4a} + {@code card.mp4} (+ index, cover, original) and never a
@@ -648,6 +385,7 @@ class IngestPipelineTest {
      * (a camera AVI) does.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void itemLayoutFollowsTheKind() throws Exception {
         IngestQueue q = queue(tools, reference, 1800);
         String item = fixtures.item("pending");
@@ -694,18 +432,8 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
-    private void assertAudioLayout(Path itemDir) throws Exception {
-        SampleIndex index = SampleIndex.read(itemDir.resolve("index.bin"));
-        assertEquals(List.of("card.mp4", "audio.m4a"), index.files());
-        assertEquals(List.of("audio"), streamTypes(itemDir.resolve("audio.m4a")));
-        assertEquals(List.of("video"), streamTypes(itemDir.resolve("card.mp4")));
-        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("card.mp4")));
-        assertEquals(60, videoFrames(itemDir.resolve("card.mp4")));
-        assertEquals(60, index.track(SampleIndex.Kind.VIDEO).sampleCount());
-        assertFalse(Files.exists(itemDir.resolve("mezz.mp4")));
-    }
-
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void fileWithoutAudioFailsAndKeepsTheUpload() throws Exception {
         String item = fixtures.item("pending");
         Path source = stage(item, "source.mp4");
@@ -720,6 +448,7 @@ class IngestPipelineTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void tooLongAndUnreadableAndMissingFilesFail() throws Exception {
         IngestQueue q = queue(tools, reference, 2);
         String longItem = fixtures.item("pending");
@@ -742,6 +471,7 @@ class IngestPipelineTest {
 
     /** An encode whose avcC differs from the stored reference is never published. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void avcCMismatchPublishesNothing() throws Exception {
         Path otherCards = dir.resolve("other-cards");
         Path profileDir = ReferenceCard.encodingDir(otherCards, OutputEncoding.defaultFor(OutputProfile.P720_30));
@@ -766,6 +496,7 @@ class IngestPipelineTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void withoutAReferenceCardJobsFail() throws Exception {
         String item = fixtures.item("pending");
         ffmpeg("-f", "lavfi", "-i", "sine=r=48000", "-t", "1", stage(item, "source.wav").toString());
@@ -774,242 +505,12 @@ class IngestPipelineTest {
         assertTrue(fixtures.itemStatus(item)[1].startsWith("Ingest is unavailable"));
     }
 
-    // ------------------------------------------------------------------ re-encodes
-
-    private String[] videoSize(Path file) throws Exception {
-        return tools.ffprobe("-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                "-of", "csv=p=0", file.toString()).stdoutToString(4096).run().stdoutString().strip().split(",");
-    }
-
-    private void makeYoutube(String item) throws Exception {
-        db.write(c -> {
-            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET source = 'youtube', youtube_id = ?"
-                    + " WHERE id = ?")) {
-                ps.setString(1, "dQw4w9WgXcQ");
-                ps.setString(2, item);
-                ps.executeUpdate();
-            }
-            return null;
-        });
-    }
-
-    /** A fake yt-dlp that copies {@code fixture} to the requested output, or fails if it is null. */
-    private Tools fakeYtdlp(Path fixture, String name) throws Exception {
-        Path script = dir.resolve(name);
-        String body = fixture == null
-                ? "echo 'ERROR: [youtube] dQw4w9WgXcQ: Video unavailable' >&2\nexit 1\n"
-                : "out=''\n"
-                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi; shift; done\n"
-                + "cp '" + fixture + "' \"$(echo \"$out\" | sed 's/%(ext)s/mkv/')\"\n";
-        Files.writeString(script, "#!/bin/sh\n" + body, StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
-        return new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
-    }
-
-    /**
-     * After a change from 720p30 to 1080p30: an audio upload and a video upload re-encode from
-     * their kept originals (loudness measured again, originals kept as they are); a video upload
-     * without its original (made before originals were kept for every item) from its old mezzanine
-     * (without loudnorm, keeping the stored loudness); each with the new profile's avcC and size;
-     * the items stay ready throughout.
-     */
-    @Test
-    void reencodeUploadsForANewProfile() throws Exception {
-        String audioItem = fixtures.item("pending");
-        Path png = dir.resolve("art.png");
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=300x300", "-frames:v", "1", png.toString());
-        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-i", png.toString(), "-t", "3", "-map", "0:a", "-map", "1:v",
-                "-c:a", "flac", "-c:v", "png", "-disposition:v", "attached_pic", stage(audioItem, "source.flac").toString());
-        assertEquals(State.DONE, run(Kind.UPLOAD, audioItem).state());
-        String videoItem = fixtures.item("pending");
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "4",
-                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(videoItem, "source.mp4").toString());
-        assertEquals(State.DONE, run(Kind.UPLOAD, videoItem).state());
-        String keptVideo = fixtures.item("pending");
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=480x360:r=25", "-f", "lavfi", "-i", "sine=f=260:r=44100", "-t", "4",
-                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(keptVideo, "source.mov").toString());
-        assertEquals(State.DONE, run(Kind.UPLOAD, keptVideo).state());
-        Path audioDir = IngestPipeline.itemDir(data, audioItem);
-        Path videoDir = IngestPipeline.itemDir(data, videoItem);
-        Path keptDir = IngestPipeline.itemDir(data, keptVideo);
-        byte[] original = Files.readAllBytes(audioDir.resolve("original.flac"));
-        byte[] keptOriginal = Files.readAllBytes(keptDir.resolve("original.mov"));
-        Object[] audioBefore = originalRow(audioItem);
-        // as if videoItem was ingested before originals were kept for video uploads
-        Files.delete(videoDir.resolve("original.mp4"));
-        Object[] videoBefore = itemRow(videoItem);
-        assertEquals(List.of("1280", "720"), List.of(videoSize(cur(videoItem).resolve("mezz.mp4"))));
-
-        for (IngestQueue q : queues) {
-            q.close(); // the 720p30 server stops
-        }
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
-        assertEquals(3, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
-        IngestQueue q = queue(tools, hd, 1800);
-        for (IngestJob j : jobs.list(State.QUEUED, 10)) {
-            assertEquals(Kind.REENCODE, j.kind());
-        }
-        q.wake();
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(150);
-        while (!jobs.list(State.QUEUED, 10).isEmpty() || !jobs.list(State.RUNNING, 10).isEmpty()) {
-            assertTrue(System.nanoTime() < deadline, "re-encodes did not finish");
-            assertEquals("ready", fixtures.itemStatus(audioItem)[0]);
-            assertEquals("ready", fixtures.itemStatus(videoItem)[0]);
-            assertEquals("ready", fixtures.itemStatus(keptVideo)[0]);
-            Thread.sleep(50);
-        }
-        IngestJob audioJob = jobs.latestForItem(audioItem).orElseThrow();
-        IngestJob videoJob = jobs.latestForItem(videoItem).orElseThrow();
-        IngestJob keptJob = jobs.latestForItem(keptVideo).orElseThrow();
-        assertEquals(State.DONE, audioJob.state(), audioJob.log());
-        assertEquals(State.DONE, videoJob.state(), videoJob.log());
-        assertEquals(State.DONE, keptJob.state(), keptJob.log());
-
-        // video upload with its original: from it, loudness measured again, original kept
-        assertTrue(keptJob.log().contains("re-encoding for 1080p30-6000k-v2 (was 720p30-3000k-v2, preset veryfast) from the original original.mov"),
-                keptJob.log());
-        assertTrue(keptJob.log().contains("step: loudnorm pass 1"), keptJob.log());
-        assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4", "original.mov"), layout(keptVideo));
-        assertKeptOnly(keptVideo, "original.mov", "aac/mov,mp4,m4a,3gp,3g2,mj2", keptOriginal);
-        assertEquals("1080p30-6000k-v2", itemRow(keptVideo)[3]);
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(keptVideo).resolve("mezz.mp4")));
-        assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(keptVideo).resolve("mezz.mp4"))));
-        IngestVerifier.checkKeyframes(SampleIndex.read(cur(keptVideo).resolve("index.bin")), "mezz.mp4");
-
-        // audio upload: from its original
-        assertTrue(audioJob.log().contains("re-encoding for 1080p30-6000k-v2 (was 720p30-3000k-v2, preset veryfast) from the original original.flac"),
-                audioJob.log());
-        assertTrue(audioJob.log().contains("step: loudnorm pass 1"), audioJob.log());
-        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.flac"), layout(audioItem));
-        assertArrayEquals(original, Files.readAllBytes(audioDir.resolve("original.flac")));
-        assertArrayEquals(audioBefore, originalRow(audioItem), "same codec, web flag and gain");
-        assertEquals("1080p30-6000k-v2", itemRow(audioItem)[3]);
-        assertEquals("ready", itemRow(audioItem)[0]);
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(audioItem).resolve("card.mp4")));
-        assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(audioItem).resolve("card.mp4"))));
-        SampleIndex audioIndex = SampleIndex.read(cur(audioItem).resolve("index.bin"));
-        assertEquals(OutputEncoding.defaultFor(OutputProfile.P1080_30), audioIndex.encoding());
-        assertArrayEquals(hd.avcC(), audioIndex.avcC());
-
-        // video upload without its original: from its old mezzanine, without loudnorm, loudness kept
-        assertTrue(videoJob.log().contains("from the previous encode"), videoJob.log());
-        assertFalse(videoJob.log().contains("step: loudnorm pass 1"), videoJob.log());
-        assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4"), layout(videoItem));
-        Object[] videoAfter = itemRow(videoItem);
-        assertEquals("ready", videoAfter[0]);
-        assertEquals("video", videoAfter[1]);
-        assertEquals("1080p30-6000k-v2", videoAfter[3]);
-        assertEquals(videoBefore[4], videoAfter[4], "the loudness measured at the first ingest is kept");
-        assertTrue(Math.abs((Long) videoAfter[2] - (Long) videoBefore[2]) <= 50, "duration " + videoAfter[2]);
-        assertNoOriginal(videoItem);
-        Path mezz = cur(videoItem).resolve("mezz.mp4");
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(mezz));
-        assertEquals(List.of("1920", "1080"), List.of(videoSize(mezz)));
-        SampleIndex videoIndex = SampleIndex.read(cur(videoItem).resolve("index.bin"));
-        assertEquals(OutputEncoding.defaultFor(OutputProfile.P1080_30), videoIndex.encoding());
-        IngestVerifier.checkKeyframes(videoIndex, "mezz.mp4");
-        // already normalised: the level stays at about -14 LUFS
-        Loudness.Measurement out = Loudness.measure(tools, cur(videoItem).resolve("audio.m4a").toString(), "0:a:0", null, null);
-        assertTrue(Math.abs(out.inputI() + 14) < 1, "output loudness " + out.inputI());
-        assertNoLeftovers();
-
-        // nothing left to do for this profile; a stale job for the current profile is a no-op
-        assertEquals(0, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
-        IngestJob noop = run(q, Kind.REENCODE, videoItem);
-        assertEquals(State.DONE, noop.state());
-        assertTrue(noop.log().contains("already encoded for 1080p30-6000k-v2"), noop.log());
-        assertTrue(Files.exists(mezz));
-    }
-
-    /**
-     * A YouTube item re-encodes from its kept original, without YouTube (the fake yt-dlp fails).
-     * One without its original (made before downloads were kept) downloads it again and keeps the
-     * new download; if that download fails, it falls back to its old mezzanine. An item that is
-     * no longer ready isn't touched.
-     */
-    @Test
-    void reencodeYoutubeItemsFromTheOriginal() throws Exception {
-        String item = fixtures.item("pending");
-        makeYoutube(item);
-        Path fixture = dir.resolve("yt.mkv");
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=426x240:r=30", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
-                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "libopus", fixture.toString());
-        byte[] downloaded = Files.readAllBytes(fixture);
-        Tools ok = fakeYtdlp(fixture, "yt-ok");
-        Tools broken = fakeYtdlp(null, "yt-broken");
-        assertEquals(State.DONE, run(queue(ok, reference, 1800), Kind.YOUTUBE, item).state());
-        Path itemDir = IngestPipeline.itemDir(data, item);
-        assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
-
-        // to 1080p30 with the video gone from YouTube: from the original, no download
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        IngestJob job = run(queue(broken, hd, 1800), Kind.REENCODE, item);
-        assertEquals(State.DONE, job.state(), job.log());
-        assertTrue(job.log().contains("from the original original.mkv"), job.log());
-        assertFalse(job.log().contains("step: download"), job.log());
-        assertTrue(job.log().contains("step: loudnorm pass 1"), job.log());
-        assertEquals("1080p30-6000k-v2", itemRow(item)[3]);
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("mezz.mp4")));
-        assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(item).resolve("mezz.mp4"))));
-        assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
-        assertNoLeftovers();
-
-        // back to 720p30 without the original (an item made before this): downloaded again, and kept
-        Files.delete(itemDir.resolve("original.mkv"));
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        IngestJob refetched = run(queue(ok, reference, 1800), Kind.REENCODE, item);
-        assertEquals(State.DONE, refetched.state(), refetched.log());
-        assertTrue(refetched.log().contains("from a new download"), refetched.log());
-        assertTrue(refetched.log().contains("step: download"), refetched.log());
-        assertEquals("720p30-3000k-v2", itemRow(item)[3]);
-        assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
-        assertNoLeftovers();
-
-        // to 1080p30 again, without the original and with the video gone: from the old mezzanine
-        Files.delete(itemDir.resolve("original.mkv"));
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        Double lufs = (Double) itemRow(item)[4];
-        IngestJob fallback = run(queue(broken, hd, 1800), Kind.REENCODE, item);
-        assertEquals(State.DONE, fallback.state(), fallback.log());
-        assertTrue(fallback.log().contains("the download failed"), fallback.log());
-        assertTrue(fallback.log().contains("re-encoding from the previous mezz.mp4 instead"), fallback.log());
-        assertFalse(fallback.log().contains("step: loudnorm pass 1"), fallback.log());
-        Object[] row = itemRow(item);
-        assertEquals("ready", row[0]);
-        assertEquals("1080p30-6000k-v2", row[3]);
-        assertEquals(lufs, row[4]);
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("mezz.mp4")));
-        assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(item).resolve("mezz.mp4"))));
-        assertNoOriginal(item);
-        assertNoLeftovers();
-
-        // a purged item is left alone
-        db.write(c -> {
-            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'purged', output_profile = '720p30'"
-                    + " WHERE id = ?")) {
-                ps.setString(1, item);
-                ps.executeUpdate();
-            }
-            return null;
-        });
-        IngestJob skipped = run(queues.get(queues.size() - 1), Kind.REENCODE, item);
-        assertEquals(State.DONE, skipped.state());
-        assertTrue(skipped.log().contains("the item is purged; nothing to re-encode"), skipped.log());
-        assertEquals("purged", fixtures.itemStatus(item)[0]);
-    }
-
     /**
      * A bitrate change alone (same profile) re-encodes ready items: the new mezzanine and card are
      * CBR at the new rate, with the new reference's avcC, and the index records the new encoding.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void reencodeForANewBitrate() throws Exception {
         String item = fixtures.item("pending");
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "4",
@@ -1051,66 +552,9 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
-    /**
-     * The preset tiers (docs/library-and-ingest.md#presets): a request in a room is encoded with
-     * the quick preset even when its job asked for quality, and gets its quality re-encode (from
-     * the original) once it is in a library; an item added straight to a library is encoded with
-     * the quality preset at once and gets no second job. Both encodes have the reference avcC.
-     */
-    @Test
-    void quickForRoomsThenQualityForLibraries() throws Exception {
-        presetQueue(EncodePresets.fixed(X264Preset.VERYFAST, X264Preset.SLOW));
-
-        // requested in a room (queued there by the time the job starts)
-        String requested = fixtures.item("pending");
-        stageVideo(requested);
-        fixtures.queue(requested, "queued");
-        IngestJob quick = jobs.enqueue(requested, Kind.UPLOAD, IngestJob.Tier.QUALITY);
-        assertEquals(State.DONE, awaitJob(quick.id()).state());
-        IngestJob quickDone = jobs.get(quick.id()).orElseThrow();
-        assertTrue(quickDone.log().contains("x264 preset veryfast (quick)"), quickDone.log());
-        assertArrayEquals(new Object[] {"veryfast", false}, fixtures.encode(requested));
-        Path dir1 = IngestPipeline.itemDir(data, requested);
-        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(cur(requested).resolve("mezz.mp4")));
-        byte[] quickMezz = Files.readAllBytes(cur(requested).resolve("mezz.mp4"));
-        assertEquals(quick.id(), jobs.latestForItem(requested).orElseThrow().id(), "not in a library: no quality job");
-
-        // the room owner adds it to their library (what the library's listener does)
-        fixtures.addToLibrary(requested);
-        assertTrue(jobs.enqueueQualityIfNeeded(requested));
-        IngestJob quality = awaitLatest(requested);
-        assertEquals(Kind.QUALITY, quality.kind());
-        assertEquals(State.DONE, quality.state(), quality.log());
-        assertTrue(quality.log().contains("x264 preset slow (quality)"), quality.log());
-        assertTrue(quality.log().contains("quality re-encode for 720p30-3000k-v2 (was 720p30-3000k-v2, preset veryfast)"
-                + " from the original original.mp4"), quality.log());
-        assertArrayEquals(new Object[] {"slow", true}, fixtures.encode(requested));
-        assertEquals("ready", itemRow(requested)[0]);
-        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(cur(requested).resolve("mezz.mp4")), "same avcC as the quick encode");
-        assertArrayEquals(reference.avcC(), SampleIndex.read(cur(requested).resolve("index.bin")).avcC());
-        assertFalse(Arrays.equals(quickMezz, Files.readAllBytes(cur(requested).resolve("mezz.mp4"))), "a new encode");
-        assertTrue(Files.exists(dir1.resolve("original.mp4")), "the original stays");
-        assertFalse(jobs.enqueueQualityIfNeeded(requested), "never twice");
-
-        // added straight to a library: the quality preset at once, no second job
-        String libraryOnly = fixtures.item("pending");
-        stageVideo(libraryOnly);
-        fixtures.addToLibrary(libraryOnly);
-        IngestJob direct = jobs.enqueue(libraryOnly, Kind.UPLOAD, IngestJob.Tier.QUALITY);
-        assertEquals(State.DONE, awaitJob(direct.id()).state());
-        assertTrue(jobs.get(direct.id()).orElseThrow().log().contains("x264 preset slow (quality)"));
-        assertArrayEquals(new Object[] {"slow", true}, fixtures.encode(libraryOnly));
-        assertEquals(direct.id(), jobs.latestForItem(libraryOnly).orElseThrow().id());
-        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(cur(libraryOnly).resolve("mezz.mp4")));
-
-        // a profile re-encode of a library item uses the quality preset; of a room-only item, quick
-        assertEquals(IngestJob.Tier.QUALITY, new IngestPipeline(tools, data, new IngestItems(db), reference, 1800)
-                .tier(jobs.enqueue(libraryOnly, Kind.REENCODE), new IngestItems(db).get(libraryOnly).orElseThrow()));
-        assertNoLeftovers();
-    }
-
     /** With equal quick and quality presets, a quick encode is the quality encode: no second job. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void equalPresetsNeedNoQualityJob() throws Exception {
         presetQueue(EncodePresets.fixed(X264Preset.FASTER, X264Preset.FASTER));
         String item = fixtures.item("pending");
@@ -1142,76 +586,12 @@ class IngestPipelineTest {
     }
 
     /**
-     * Swap while playing: a quality re-encode of an item that is current or next in a room
-     * publishes at once, as a new version; the old version's files stay as they were (a web player
-     * that started on them finishes on them, and the program output holding them open keeps
-     * reading the old bytes) until the item stops playing and its duration plus the grace period
-     * have passed.
-     */
-    @Test
-    void aQualitySwapPublishesAtOnceWhileTheItemIsPlaying() throws Exception {
-        IngestPipeline pipeline = presetQueue(EncodePresets.fixed(X264Preset.VERYFAST, X264Preset.MEDIUM));
-        java.util.concurrent.atomic.AtomicBoolean playing = new java.util.concurrent.atomic.AtomicBoolean(true);
-        java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1_000_000);
-        MediaVersions versions = new MediaVersions(data, now::get, Duration.ofMinutes(5));
-        versions.inUse(id -> playing.get());
-        pipeline.mediaVersions(versions);
-        String item = fixtures.item("pending");
-        stageVideo(item);
-        IngestJob quick = jobs.enqueue(item, Kind.UPLOAD, IngestJob.Tier.QUICK);
-        assertEquals(State.DONE, awaitJob(quick.id()).state());
-        Path v1 = cur(item);
-        assertEquals(IngestPipeline.itemDir(data, item).resolve("v1"), v1);
-        Path mezzPath = v1.resolve("mezz.mp4");
-        byte[] before = Files.readAllBytes(mezzPath);
-        assertEquals(List.of(), versions.pending(), "a new item replaced nothing");
-
-        try (java.nio.channels.FileChannel open = java.nio.channels.FileChannel.open(mezzPath)) {
-            // the packager has the item open; someone adds it to a library
-            fixtures.addToLibrary(item);
-            assertTrue(jobs.enqueueQualityIfNeeded(item));
-            IngestJob quality = jobs.latestForItem(item).orElseThrow();
-            IngestJob done = awaitJob(quality.id());
-            assertEquals(State.DONE, done.state(), done.log());
-            assertFalse(done.log().contains("publishing once it has finished"), done.log());
-            assertTrue(done.log().contains("published as version 2; version 1 is kept"), done.log());
-            assertArrayEquals(new Object[] {"medium", true}, fixtures.encode(item));
-            assertEquals(IngestPipeline.itemDir(data, item).resolve("v2"), cur(item), "switched while playing");
-            assertFalse(Arrays.equals(before, Files.readAllBytes(cur(item).resolve("mezz.mp4"))), "a new encode");
-            assertArrayEquals(before, Files.readAllBytes(mezzPath), "version 1 is untouched");
-
-            // the old version is kept while the item plays, and for its duration + grace after the switch
-            long keepMs = (Long) itemRow(item)[2] + Duration.ofMinutes(5).toMillis();
-            assertEquals(0, versions.sweep());
-            now.addAndGet(keepMs);
-            assertEquals(0, versions.sweep(), "still current or next in a room");
-            playing.set(false);
-            now.addAndGet(-1);
-            assertEquals(0, versions.sweep(), "the grace period hasn't passed");
-            now.addAndGet(1);
-            assertEquals(1, versions.sweep());
-            assertFalse(Files.exists(v1));
-            assertTrue(Files.isRegularFile(cur(item).resolve("mezz.mp4")));
-            assertTrue(Files.isRegularFile(IngestPipeline.itemDir(data, item).resolve("original.mp4")),
-                    "the original isn't part of a version");
-            assertEquals(List.of(), versions.pending());
-
-            // the open file still reads the old bytes from start to end
-            java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(before.length);
-            while (buf.hasRemaining() && open.read(buf, buf.position()) > 0) {
-                // read on
-            }
-            assertArrayEquals(before, buf.array(), "the old file stays readable through its open handle");
-        }
-        assertNoLeftovers();
-    }
-
-    /**
      * A re-encode for a new encoding publishes at once even while its item is playing: the program
      * output can't splice the old encoding's files (it shows "Loading…" for them), so waiting for
      * the play to end would deadlock a room that has the item current or next.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void aReencodeOfAnOldEncodingDoesNotWaitForThePlay() throws Exception {
         IngestPipeline pipeline = presetQueue(EncodePresets.fixed(X264Preset.VERYFAST, X264Preset.VERYFAST));
         String item = fixtures.item("pending");
@@ -1236,19 +616,9 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
-    private String itemProfile(String item) throws Exception {
-        return db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT output_profile FROM items WHERE id = ?")) {
-                ps.setString(1, item);
-                try (var rs = ps.executeQuery()) {
-                    return rs.next() ? rs.getString(1) : null;
-                }
-            }
-        });
-    }
-
     /** A quality job for an item without an original (and not from YouTube) leaves it as it is. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void qualityWithoutAnOriginalKeepsTheQuickEncode() throws Exception {
         presetQueue(EncodePresets.fixed(X264Preset.VERYFAST, X264Preset.SLOW));
         String item = fixtures.item("pending");
@@ -1268,105 +638,6 @@ class IngestPipelineTest {
         assertFalse(jobs.enqueueQualityIfNeeded(item));
     }
 
-    /** An audio item without its original (e.g. ingested before originals were kept) re-encodes from audio.m4a. */
-    @Test
-    void reencodeAudioWithoutOriginalFromAudioM4a() throws Exception {
-        String item = fixtures.item("pending");
-        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", "3", stage(item, "source.wav").toString());
-        assertEquals(State.DONE, run(Kind.UPLOAD, item).state());
-        Path itemDir = IngestPipeline.itemDir(data, item);
-        Files.delete(itemDir.resolve("original.wav"));
-        Object lufs = itemRow(item)[4];
-        for (IngestQueue q : queues) {
-            q.close();
-        }
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
-        IngestJob job = run(queue(tools, hd, 1), Kind.REENCODE, item);
-        assertEquals(State.DONE, job.state(), "the duration limit doesn't apply to re-encodes\n" + job.log());
-        assertTrue(job.log().contains("from the previous encode"), job.log());
-        assertEquals(List.of("audio.m4a", "card.mp4", "index.bin"), layout(item));
-        Object[] row = itemRow(item);
-        assertEquals("audio", row[1]);
-        assertEquals("1080p30-6000k-v2", row[3]);
-        assertEquals(lufs, row[4]);
-        assertTrue(Math.abs((Long) row[2] - 3000) <= 50, "duration " + row[2]);
-        assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(item));
-        assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("card.mp4")));
-    }
-
-    /**
-     * The M2 "done when" set on one queue: an MP3, a FLAC with cover art, 24 fps and 60 fps
-     * videos, a portrait video and a YouTube download (fake yt-dlp) all become ready, and every
-     * card, mezzanine and index carries the reference card's avcC byte for byte.
-     */
-    @Test
-    void milestoneSetIngestsWithOneAvcC() throws Exception {
-        Path png = dir.resolve("cover.png");
-        ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=400x400", "-frames:v", "1", png.toString());
-        Path ytSource = dir.resolve("yt.webm");
-        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
-                "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", ytSource.toString());
-        IngestQueue uploads = queue(tools, reference, 1800);
-        IngestQueue youtube = queue(fakeYtdlp(ytSource, "fake-yt-dlp-set"), reference, 1800);
-
-        // original: the kept file and its codec (web-playable for audio uploads, kept only for videos)
-        record Case(String name, String staged, String original, String codec, List<String> encode) {
-            boolean video() {
-                return original.endsWith(".mp4");
-            }
-        }
-        List<Case> cases = List.of(
-                new Case("mp3", "source.mp3", "original.mp3", "mp3/mp3", List.of("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3",
-                        "-c:a", "libmp3lame", "-b:a", "192k")),
-                new Case("flac+cover", "source.flac", "original.flac", "flac/flac", List.of("-f", "lavfi", "-i", "sine=f=330:r=48000",
-                        "-i", png.toString(), "-t", "3", "-map", "0:a", "-map", "1:v", "-c:a", "flac", "-c:v", "png",
-                        "-disposition:v", "attached_pic")),
-                new Case("24fps", "source.mp4", "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", List.of("-f", "lavfi", "-i", "testsrc2=s=1920x1080:r=24",
-                        "-f", "lavfi", "-i", "sine=f=220:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
-                        "ultrafast", "-c:a", "aac")),
-                new Case("60fps", "source.mp4", "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", List.of("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=60",
-                        "-f", "lavfi", "-i", "sine=f=250:r=44100", "-t", "3", "-c:v", "libx264", "-preset",
-                        "ultrafast", "-c:a", "aac")),
-                new Case("portrait", "source.mp4", "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", List.of("-f", "lavfi", "-i", "testsrc2=s=720x1280:r=30",
-                        "-f", "lavfi", "-i", "sine=f=280:r=48000", "-t", "3", "-c:v", "libx264", "-preset",
-                        "ultrafast", "-c:a", "aac")));
-        for (Case c : cases) {
-            String item = fixtures.item("pending");
-            Path source = stage(item, c.staged());
-            List<String> args = new ArrayList<>(c.encode());
-            args.add(source.toString());
-            ffmpeg(args.toArray(String[]::new));
-            byte[] uploaded = Files.readAllBytes(source);
-            Loudness.Measurement in = c.video() ? null : Loudness.measure(tools, source.toString(), "0:a:0", null, null);
-            IngestJob job = run(uploads, Kind.UPLOAD, item);
-            assertEquals(State.DONE, job.state(), c.name() + "\n" + job.log());
-            assertSameAvcC(c.name(), item, c.video());
-            if (c.video()) {
-                assertKeptOnly(item, c.original(), c.codec(), uploaded);
-            } else {
-                // kept as uploaded, web-playable, with the gain that plays it like audio.m4a
-                Object[] original = originalRow(item);
-                assertEquals(c.original(), original[0], c.name());
-                assertEquals(c.codec(), original[1], c.name());
-                assertEquals(1, original[2], c.name() + " web-playable");
-                assertNotNull(original[3], c.name() + " gain");
-                Loudness.Measurement out = Loudness.measure(tools,
-                        cur(item).resolve("audio.m4a").toString(), "0:a:0", null, null);
-                assertEquals(Math.min(out.inputI() - in.inputI(), -in.inputTp()), (Double) original[3], 0.011,
-                        c.name() + " gain");
-                assertArrayEquals(uploaded, Files.readAllBytes(IngestPipeline.itemDir(data, item).resolve(c.original())),
-                        c.name() + " kept unchanged");
-            }
-        }
-        String yt = fixtures.item("pending");
-        makeYoutube(yt);
-        IngestJob job = run(youtube, Kind.YOUTUBE, yt);
-        assertEquals(State.DONE, job.state(), job.log());
-        assertSameAvcC("youtube", yt, true);
-        assertKeptOnly(yt, "original.mkv", "opus/matroska,webm", Files.readAllBytes(ytSource));
-        assertNoLeftovers();
-    }
-
     /**
      * The M2 "done when" retention check, end to end: with {@code retention.unreferencedDays}
      * shortened to 1, a ready upload and a ready YouTube item that nothing references are kept
@@ -1376,6 +647,7 @@ class IngestPipelineTest {
      * and ingests it back to ready with the reference avcC.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void unreferencedItemsArePurgedAndYoutubeRefetchesIntoTheSameRow() throws Exception {
         Path ytSource = dir.resolve("yt-retention.webm");
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
@@ -1495,17 +767,5 @@ class IngestPipelineTest {
         // the purged upload has nothing to refetch from; it stays purged
         assertEquals("purged", itemRow(upload)[0]);
         assertTrue(fixtures.lastReferencedAt(yt) >= clock.millis(), "the import counts as a reference");
-    }
-
-    private void assertSameAvcC(String name, String item, boolean video) throws Exception {
-        assertEquals("ready", itemRow(item)[0], name);
-        assertEquals(video ? "video" : "audio", itemRow(item)[1], name);
-        Path itemDir = IngestPipeline.itemDir(data, item);
-        assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("card.mp4")), name + " card");
-        assertArrayEquals(reference.avcC(), SampleIndex.read(cur(item).resolve("index.bin")).avcC(), name + " index");
-        assertEquals(video, Files.exists(cur(item).resolve("mezz.mp4")), name);
-        if (video) {
-            assertArrayEquals(reference.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("mezz.mp4")), name + " mezz");
-        }
     }
 }

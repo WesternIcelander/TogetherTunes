@@ -21,9 +21,13 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+// The class runs on its own (like every other class); its test methods run side by side.
+@Execution(ExecutionMode.SAME_THREAD)
 class EncodeProfileTest {
     @TempDir
     Path dir;
@@ -37,6 +41,7 @@ class EncodeProfileTest {
     }
 
     @ParameterizedTest
+    @Execution(ExecutionMode.CONCURRENT)
     @EnumSource(OutputProfile.class)
     void argumentsFixTheEncoder(OutputProfile p) {
         OutputEncoding profile = OutputEncoding.defaultFor(p);
@@ -69,6 +74,7 @@ class EncodeProfileTest {
 
     /** Each preset: its name and chroma offset; nothing else differs from the reference preset's list. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void presetsChangeOnlyThePresetAndTheChromaOffset() {
         OutputEncoding encoding = OutputEncoding.DEFAULT;
         List<String> reference = EncodeProfile.videoArgs(encoding);
@@ -89,6 +95,7 @@ class EncodeProfileTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void levelAndConstantRatePerEncoding() {
         List<String> p720 = EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P720_30));
         assertEquals("4.0", option(p720, "-level:v"));
@@ -111,6 +118,7 @@ class EncodeProfileTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     void scaleFilter() {
         assertEquals("scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2"
                         + ":out_color_matrix=bt709:out_range=tv,"
@@ -249,6 +257,7 @@ class EncodeProfileTest {
     }
 
     @ParameterizedTest
+    @Execution(ExecutionMode.CONCURRENT)
     @EnumSource(OutputProfile.class)
     @Timeout(180)
     void everyEncodeSharesTheExtradata(OutputProfile p) throws Exception {
@@ -275,6 +284,7 @@ class EncodeProfileTest {
      * docs/library-and-ingest.md#presets), and keeps the GOP structure.
      */
     @ParameterizedTest
+    @Execution(ExecutionMode.CONCURRENT)
     @EnumSource(OutputProfile.class)
     @Timeout(300)
     void everyPresetSharesTheExtradata(OutputProfile p) throws Exception {
@@ -297,6 +307,7 @@ class EncodeProfileTest {
      * (centre-sited chroma) and 10-bit HDR all get the card's extradata and BT.709 tags.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(180)
     void colourTagsOfTheSourceDontChangeTheExtradata() throws Exception {
         Tools tools = tools();
@@ -335,6 +346,7 @@ class EncodeProfileTest {
     }
 
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(120)
     void profilesHaveDifferentExtradata() throws Exception {
         Tools tools = tools();
@@ -344,6 +356,7 @@ class EncodeProfileTest {
 
     /** The bitrate is in the SPS (CBR HRD parameters), so another bitrate is another avcC. */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(120)
     void bitratesHaveDifferentExtradata() throws Exception {
         Tools tools = tools();
@@ -381,6 +394,7 @@ class EncodeProfileTest {
      * {@code R × 2 s / 8} bytes within a few percent, the still card padded with filler NALs.
      */
     @Test
+    @Execution(ExecutionMode.CONCURRENT)
     @Timeout(180)
     void encodesAreConstantBitrate() throws Exception {
         Tools tools = tools();
