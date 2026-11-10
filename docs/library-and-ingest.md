@@ -29,13 +29,31 @@ Adding media pauses while the data volume runs low (Siggi, 2026-11-10: "we shoul
 
 ## Upload
 
-1. `POST /api/uploads` returns an upload id (an `uploads` row). The client then sends the file in chunks with `PUT /api/uploads/{id}` and `Content-Range`, which makes uploads resumable. Chunks are appended in order to `tmp/uploads/<id>.part`; a chunk may repeat or overlap bytes already received (they are skipped). The SHA-256 is computed as they arrive (after a restart, once more from the part file). Uploads untouched for 24 h are deleted.
+1. `POST /api/uploads` returns an upload id (an `uploads` row), or, on an https server, finishes at once when the file's content ID is already known ([Pre-check](#pre-check)). The client then sends the file in chunks with `PUT /api/uploads/{id}` and `Content-Range`, which makes uploads resumable. Chunks are appended in order to `tmp/uploads/<id>.part`; a chunk may repeat or overlap bytes already received (they are skipped). The SHA-256 is computed as they arrive (after a restart, once more from the part file). Uploads untouched for 24 h are deleted.
 2. On `complete`:
-   - If `content_sha256` matches an existing upload item that is ready, pending or processing, reuse that item and discard the upload. If the existing item is `purged` (or `failed`), re-ingest into it (same row and metadata; the response says `deduplicated: true`, since no new item is made).
+   - If `content_sha256` (or the [content ID](#content-id)) matches an existing upload item that is ready, pending or processing, reuse that item and discard the upload. If the existing item is `purged` (or `failed`), re-ingest into it (same row and metadata; the response says `deduplicated: true`, since no new item is made).
    - Otherwise run ffprobe, and reject the file if it has no audio, can't be parsed, or is too long (the upload is deleted). Create the item (`pending`) and an ingest job; the file moves to the item's staging directory as `source.<ext>`.
    - Completes are serialised around the hash lookup, so two uploads of the same file make one item. The item, its job, the uploader's library entry and the upload's result are written in one transaction, and `last_referenced_at` becomes now.
 3. Metadata comes from what the uploader typed in `complete`, then container tags (`title`, `artist` or `album_artist`, `album`; the first audio stream's tags count too, e.g. Ogg/Opus), falling back to the file name without its extension for the title. Cover art comes from the embedded picture.
 4. The upload is kept as the item's original ([below](#originals)), for audio and video files alike. Only an audio upload's original is ever played (by the web client); a video upload's only feeds re-encodes.
+
+### Content ID
+
+(Siggi, 2026-11-10: "Let's add the hash checking … No hand-written SHA-256.") Besides `content_sha256`, every upload item records a **content ID** (`items.content_id`, migration 0012) that a browser can compute with `crypto.subtle.digest` alone. `crypto.subtle` hashes only a whole buffer, which doesn't work for multi-GB files, so the content ID is a **chunked SHA-256**:
+
+- cut the file into consecutive **8 MiB pieces** (8 388 608 bytes; the last one shorter, never empty);
+- SHA-256 each piece; SHA-256 the concatenation of those 32-byte digests;
+- write it with the file size as **`sha256c8m:<size>:<hex>`** (decimal size, lower-case hex), e.g. `sha256c8m:3:4f8b42c2…` for the bytes `abc`.
+
+The browser reads the `File` piece by piece with `slice()` (`web/src/contentid.ts`; bounded memory, "Checking the file… 40 %"); the server computes the same ID (`library/ContentId`, Java `MessageDigest`, no extra dependency) while the chunks arrive, next to the plain SHA-256, and stores both when an upload completes (a re-ingest into a purged/failed row, or a dedupe onto an item without one, fills it in). Dedupe on completion matches either. **Backfill:** at startup a low-priority background thread (`ContentIdBackfill`) records the ID of every upload item that lacks one and still has its kept original (`media/<itemId>/original.<ext>`, the uploaded bytes), if the file's SHA-256 matches `content_sha256`; purged items have no file and keep only `content_sha256`. YouTube items have no content ID.
+
+### Pre-check
+
+`POST /api/uploads` takes an optional **`contentId`** (and `addToLibrary`, as `complete` does). If it names an **upload item that is ready, pending or processing** (and the size in the ID is the declared `size`), the server answers **`200 {uploadId, chunkSize, size, deduplicated: true, itemId, status}`** without any bytes, and does exactly what completing that upload would have done: the uploader's library entry (`via='upload'`, unless `addToLibrary` is false; users only), `last_referenced_at` = now, and the upload row is recorded as completed with that item, so `queue.add {uploadId}` in a room adds it with the same request rules (queue entry or suggestion) as any upload. It goes through the same permission, size, free-space and quota checks as a real upload start: **a guest's pre-check counts as an upload start** against `guests.uploadQuota`. A purged or failed match, no match, a malformed ID or a wrong size → a normal upload (`201`); the server hashes the bytes on completion as always, so a wrong claimed ID only means no shortcut. The reply never says whose libraries hold the item.
+
+Why uploads are coupled to library requests: with a pre-check, anyone may *claim* to hold a file by sending its content ID and get the existing item without uploading it, which would get around `libraryRequests` off. So uploads are only allowed where library requests are: `uploadRequests` on needs `libraryRequests` on in a room, and `guests.canUpload` on needs `guests.canRequestLibrary` on, in the room and on the server ([rooms.md](rooms.md#uploads-need-library-requests), [auth.md](auth.md#guest-policy-server-settings)).
+
+**HTTPS only** (Siggi: "The server is set up with HTTPS or the feature is disabled. If someone asks me for help with this on their instance, I'll just tell them HTTP non-TLS is not a supported use case."): the server honours `contentId` only when `http.publicBaseUrl` is `https://` (`Main.uploadPrecheck`); otherwise it ignores it and every upload is a normal one. The client sends one only from an `https:` page in a secure context with `crypto.subtle` (`precheckAvailable()`; pages are served from the base URL's origin, which the CSRF check requires anyway, so an https page means an https base URL). There is **no fallback hasher**: over plain HTTP (even `http://localhost`, which browsers count as a secure context) uploads simply send all bytes. Deployment notes must say so.
 
 ## Originals
 

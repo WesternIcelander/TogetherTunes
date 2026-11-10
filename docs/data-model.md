@@ -53,6 +53,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       source TEXT,                          -- 'upload' | 'youtube'
       youtube_id TEXT NULL UNIQUE,          -- set for youtube; the cache key
       content_sha256 TEXT NULL,             -- of the original upload; dedupe
+      content_id TEXT NULL,                 -- 'sha256c8m:<size>:<hex>', chunked SHA-256 of the upload; the pre-check (0012)
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
       error NULL, loudness_lufs NULL, metadata_json,

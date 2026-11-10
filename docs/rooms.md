@@ -52,7 +52,8 @@ Details (as implemented):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `libraryRequests` | true | Off: only the owner and moderators can search libraries and request items by id; YouTube links and uploads still work (see [libraries.md](libraries.md#visibility)) |
+| `libraryRequests` | true | Off: only the owner and moderators can search libraries and request items by id; YouTube links still work; uploads need it, so `uploadRequests` turns off too (see [libraries.md](libraries.md#visibility)) |
+| `uploadRequests` | true | Off: only the owner and moderators can request by upload. Only on while `libraryRequests` is ([below](#uploads-need-library-requests)) |
 | `requestsPerActor` | 3 | Max queued entries per user or guest at a time; owner and moderators exempt |
 | `allowDownvotes` | false | Vote mode only |
 | `voteSkipThreshold` | 0.5 | Fraction of present identified members (listen + remote), or `off` |
@@ -68,6 +69,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | Setting | Default | Values |
 |---|---|---|
 | `libraryRequests` | true | |
+| `uploadRequests` | true | only on while `libraryRequests` is |
 | `requestsPerActor` | 3 | 1–1000 |
 | `allowDownvotes` | false | |
 | `voteSkipThreshold` | 0.5 | (0, 1], or `"off"` |
@@ -121,7 +123,17 @@ As implemented (`RoomGuests`, `RoomPresence`, `PresenceOps`):
 
 A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from four sources:
 
-- **Library:** search the room owner's library and playlists and the requester's own library, or with "Search the whole server" every item on the server ([libraries.md](libraries.md#visibility)); any item on the server may be requested by id. Room setting **`libraryRequests`** (default on; Siggi, 2026-11-10: "We should allow disabling library requests, in which case you cannot add anything from any library, unless it's a YouTube item you already know the link for which you paste in the YouTube link section.") off: for everyone but the owner and moderators the room page hides the search and the history's Add to Queue, and the server refuses the search, `queue.add` by item id and by history entry (`403 library_requests_off`). Pasting a YouTube link still works even when the video is already on the server, and uploads are unaffected (an upload that dedupes to an existing item is fine). `room.you.canRequestLibrary` tells the client (false while off, except for the owner and moderators).
+- **Library:** search the room owner's library and playlists and the requester's own library, or with "Search the whole server" every item on the server ([libraries.md](libraries.md#visibility)); any item on the server may be requested by id. Room setting **`libraryRequests`** (default on; Siggi, 2026-11-10: "We should allow disabling library requests, in which case you cannot add anything from any library, unless it's a YouTube item you already know the link for which you paste in the YouTube link section.") off: for everyone but the owner and moderators the room page hides the search and the history's Add to Queue, and the server refuses the search, `queue.add` by item id and by history entry (`403 library_requests_off`). Pasting a YouTube link still works even when the video is already on the server. Uploads are **not** unaffected any more (2026-11-10): they need library requests ([below](#uploads-need-library-requests)). `room.you.canRequestLibrary` tells the client (false while off, except for the owner and moderators).
+
+### Uploads need library requests
+
+(Siggi, 2026-11-10: "prevent a state where upload is on but library searching is off. If the user attempts to turn upload on while library searching is off, turn library searching on as well and inform the user. Same with turning library searching off while upload is on, turn upload off as well and inform the user.") The [upload pre-check](library-and-ingest.md#pre-check) gives anyone who knows a file's content ID the existing item without uploading it, so an upload could stand in for a library request. Hence:
+
+- Room setting **`uploadRequests`** (default on): whether people other than the owner and moderators may request by upload in this room (users still need `library.upload`, guests the effective `guests.canUpload`). Off → `403 upload_requests_off` on `queue.add {uploadId}` and, for guests, already on `POST /api/uploads {roomId}`; `you.canUpload` is false then (owner and moderators excepted).
+- **Invariant:** `uploadRequests` on ⇒ `libraryRequests` on, and `guests.canUpload` on ⇒ `guests.canRequestLibrary` on (the same holds for the server's guest settings, [auth.md](auth.md#guest-policy-server-settings)).
+- **Manage room:** turning an upload switch on while its library switch is off turns that on too; turning a library switch off while its upload switch is on turns that off too; either way a notice says what else changed ("Uploads need library requests: turned "Allow library requests" on too.").
+- **Server:** `PATCH /api/rooms/{id} {settings}` applies the same companion change and lists it in the response (`"adjusted": ["libraryRequests"]`); a patch turning an upload switch on and its library switch off at once is `400 invalid_setting`. Stored settings that break the rule (older rows) read as upload off.
+- **At request time** the effective checks enforce it too: guest upload capability = server AND room, each already coupled, so no combination of server and room switches lets someone upload where library requests are off.
 - **Upload:** the file is ingested into a new item (or deduplicated). The queue entry is "processing" until the item is ready.
 - **YouTube:** the link is normalised to a video ID and served from the cache when possible ([library-and-ingest.md](library-and-ingest.md#youtube-caching)). See [Adding a YouTube link](#adding-a-youtube-link) for the feedback while a new one is looked up.
 - **History:** "Add to Queue" on a row of the room's [history](#history).
