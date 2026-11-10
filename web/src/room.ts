@@ -11,9 +11,11 @@
 // estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
 // room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
 // In listen mode, "Send diagnostics" posts what the player did (diagnostics.ts) to the server log,
-// for devices without a console; `?sync=rate|seek` overrides the sync mode for testing.
+// for devices without a console; `?sync=rate|seek` overrides the sync mode for testing, and
+// `?webaudio=0` plays straight from the media elements instead of through Web Audio (A/B test).
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
+import { webAudioWanted } from "./audiohealth.js";
 import { ClockSync } from "./clocksync.js";
 import { captureErrors, recordEvent, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
 import { ListenPlayer } from "./listen.js";
@@ -814,7 +816,7 @@ function switchMode(m: RoomMode): void {
 function createPlayer(): ListenPlayer {
   const syncMode = syncModeFor(engineHints(), new URLSearchParams(location.search).get("sync"));
   const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly(),
-    syncMode);
+    syncMode, webAudioWanted(new URLSearchParams(location.search).get("webaudio")));
   player = p;
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
@@ -854,6 +856,7 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
         : "webkitAudioContext" in window ? "webkitAudioContext" : "none" },
     page: stripQuery(location.pathname),
     syncOverride: new URLSearchParams(location.search).get("sync"),
+    webAudioOverride: new URLSearchParams(location.search).get("webaudio"),
     roomId,
     mode,
     visibility: document.visibilityState,
@@ -867,7 +870,7 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
     ...snapshot(),
   };
   // Keep it under the server's limit: drop the oldest decisions and events first.
-  for (const key of ["decisions", "events"]) {
+  for (const key of ["decisions", "health", "events"]) {
     while (JSON.stringify(report).length > MAX_REPORT_CHARS) {
       const list = report[key] as unknown[];
       if (list.length === 0) break;

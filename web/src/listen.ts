@@ -33,7 +33,25 @@
 //
 // An original that keeps needing hard seeks, that fails to load, or whose type `canPlayType`
 // rejects, is played from `audio.m4a` instead for the rest of the session.
-import { recordDecision, recordError, recordEvent } from "./diagnostics.js";
+//
+// Audio health (audiohealth.ts): each element's GainNode feeds an AnalyserNode, read every 40 ms
+// while it plays; once a second the output level (peak, RMS, dropouts), the AudioContext's clock
+// against the wall clock and the elements' decoder counters go into the diagnostics ring. WebKit's
+// Web Audio path for media elements can stutter and then go silent on older devices
+// (bugs.webkit.org 221334; seen on the iPod touch 7, report dfh3l7): when an element that should
+// be heard has produced only exact zeros for 10 s after having been heard, the player offers "Tap
+// to restore sound", and that tap rebuilds the pool without Web Audio (fresh elements, touched in
+// the gesture), playing straight from the elements for the rest of the page's life. `?webaudio=0`
+// on the room URL starts that way (the A/B switch). Without Web Audio there is no gain: originals
+// play without `originalGainDb`, and on iOS (read-only `volume`) the audio-only switch can't
+// crossfade. A seek stuck for 5 s on an element routed through Web Audio hands the entry to the
+// other element of its kind instead of reloading the stuck one (WebKit's provider for a routed
+// element is suspected to break when its pipeline is restarted). The context is resumed when
+// WebKit reports it `interrupted`/`suspended` and when the page becomes visible again.
+import {
+  ClockWatch, delta, LevelMeter, METER_FFT_SIZE, METER_INTERVAL_MS, MuteDetector, toDb, windowStats, type Level,
+} from "./audiohealth.js";
+import { describeError, recordDecision, recordError, recordEvent, recordHealth } from "./diagnostics.js";
 import {
   chooseSource, CROSSFADE_MS, dbToGain, DriftController, HARD_SEEK_MS, inEndGuard, nextToPreload, SEEK_MODE_MS, SeekGuard,
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
@@ -54,6 +72,46 @@ const PAUSED_SEEK_MS = 100;
 const SEEK_STUCK_MS = 5000;
 /** While autoplay is blocked, a paused element is moved and `play()` retried at most this often (ms). */
 const BLOCKED_RETRY_MS = 2000;
+/** How often (ms) a health sample is recorded. */
+const HEALTH_INTERVAL_MS = 1000;
+/** A context that stopped running is asked to resume at most this often (ms). */
+const RESUME_RETRY_MS = 5000;
+
+/** Decoder counters an element may have (WebKit's prefixed ones, the standard playback quality). */
+interface Counters {
+  audioBytes?: number;
+  videoBytes?: number;
+  frames?: number;
+  droppedFrames?: number;
+  vqTotal?: number;
+  vqDropped?: number;
+  vqCorrupted?: number;
+}
+
+function num(x: unknown): number | undefined {
+  return typeof x === "number" && Number.isFinite(x) ? x : undefined;
+}
+
+function counters(el: HTMLMediaElement): Counters {
+  const w = el as HTMLMediaElement & Record<string, unknown>;
+  const c: Counters = {
+    audioBytes: num(w["webkitAudioDecodedByteCount"]),
+    videoBytes: num(w["webkitVideoDecodedByteCount"]),
+    frames: num(w["webkitDecodedFrameCount"]),
+    droppedFrames: num(w["webkitDroppedFrameCount"]),
+  };
+  if (el instanceof HTMLVideoElement && typeof el.getVideoPlaybackQuality === "function") {
+    try {
+      const q = el.getVideoPlaybackQuality();
+      c.vqTotal = num(q.totalVideoFrames);
+      c.vqDropped = num(q.droppedVideoFrames);
+      c.vqCorrupted = num((q as unknown as Record<string, unknown>)["corruptedVideoFrames"]);
+    } catch {
+      // not available
+    }
+  }
+  return c;
+}
 
 interface Deck {
   readonly el: HTMLMediaElement;
@@ -77,6 +135,17 @@ interface Deck {
   /** When `play()` was last tried while autoplay was blocked. */
   lastBlockedTry: number;
   gain: GainNode | undefined;
+  /** After the gain, for the output level (Web Audio only). */
+  analyser: AnalyserNode | undefined;
+  /** The analyser's window, reused. */
+  samples: Float32Array<ArrayBuffer> | undefined;
+  readonly meter: LevelMeter;
+  /** Whether this element's Web Audio path has gone silent. */
+  readonly mute: MuteDetector;
+  /** Decoder counters at the last health sample. */
+  counters: Counters;
+  /** Position (ms) at the last health sample. */
+  healthPosMs: number;
   entryId: string | undefined;
   itemId: string | undefined;
   src: Source | undefined;
@@ -148,7 +217,18 @@ export class ListenPlayer {
   readonly #overlay: HTMLElement;
   readonly #serverNow: () => number;
   readonly #decks: Deck[] = [];
-  readonly #ctx: AudioContext | undefined;
+  /** Undefined without Web Audio (`?webaudio=0`, no AudioContext, or after "Tap to restore sound"). */
+  #ctx: AudioContext | undefined;
+  /** Web Audio was asked for but turned off: "url" (`?webaudio=0`) or "mute" (it went silent). */
+  #webAudioOff: "url" | "mute" | undefined;
+  /** The Web Audio path went silent; the overlay asks for a tap to rebuild without it. */
+  #needsRestore = false;
+  /** A deck whose seek is stuck, handed to the other element after this tick. */
+  #handOffPending: Deck | undefined;
+  readonly #clockWatch = new ClockWatch();
+  /** The context has been running (so a later suspension is an interruption, not autoplay policy). */
+  #wasRunning = false;
+  #lastResumeTry = Number.NEGATIVE_INFINITY;
   /** Items whose original was given up this session (they play `audio.m4a`). */
   readonly #fallback = new Set<string>();
   #state: RoomState | undefined;
@@ -166,32 +246,83 @@ export class ListenPlayer {
    * @param serverNow the server's clock (ClockSync)
    * @param audioOnly start in audio-only mode (video items play `audio.m4a`)
    * @param mode how small drift is corrected (`syncModeFor`: "seek" in WebKit, else "rate")
+   * @param webAudio route the elements through Web Audio (false: `?webaudio=0`, play straight from
+   *     the elements, no gain)
    */
   constructor(container: HTMLElement, overlay: HTMLElement, serverNow: () => number, audioOnly = false,
-      mode: SyncMode = "rate") {
+      mode: SyncMode = "rate", webAudio = true) {
     this.#audioOnly = audioOnly;
     this.#mode = mode;
     this.#container = container;
     this.#overlay = overlay;
     this.#serverNow = serverNow;
-    const Ctor = audioContextCtor();
+    const Ctor = webAudio ? audioContextCtor() : undefined;
     let ctx: AudioContext | undefined;
     try {
       ctx = Ctor !== undefined ? new Ctor() : undefined;
-    } catch {
+    } catch (e) {
+      recordError("AudioContext", e);
       ctx = undefined;
     }
     this.#ctx = ctx;
+    this.#webAudioOff = webAudio ? undefined : "url";
     ctx?.addEventListener("statechange", () => {
-      recordEvent("context", { state: ctx?.state });
+      if (ctx !== this.#ctx) return; // the old context, closed by "Tap to restore sound"
+      const state: string = ctx.state;
+      recordEvent("context", { state, audioMs: Math.round(ctx.currentTime * 1000) });
+      if (state === "running") this.#wasRunning = true;
+      else this.#resumeContext("statechange");
       this.#updateOverlay();
     });
-    let n = 0;
-    for (const video of [false, false, true, true]) this.#decks.push(this.#newDeck(video, (video ? "v" : "a") + (n++ % 2)));
-    overlay.addEventListener("click", () => this.unlock());
+    this.#buildDecks();
+    overlay.addEventListener("click", () => this.#overlayClick());
     // Chrome lets a context start without a gesture when the user has interacted with the site.
     ctx?.resume().catch(() => undefined);
-    recordEvent("player", { mode, context: ctx?.state ?? "none", audioOnly });
+    recordEvent("player", { mode, webAudio: ctx !== undefined, webAudioOff: this.#webAudioOff, audioOnly,
+      ...this.#contextInfo() });
+    window.setInterval(() => this.#readMeters(), METER_INTERVAL_MS);
+    window.setInterval(() => this.#sampleHealth(), HEALTH_INTERVAL_MS);
+    // Interruptions show up here (iOS: a call, Siri, the lock screen); record them, and resume.
+    document.addEventListener("visibilitychange", () => {
+      recordEvent("page", { type: "visibilitychange", visibility: document.visibilityState });
+      if (document.visibilityState === "visible") this.#resumeContext("visible");
+    });
+    for (const type of ["pagehide", "pageshow"]) {
+      window.addEventListener(type, (ev) => {
+        recordEvent("page", { type, persisted: (ev as PageTransitionEvent).persisted });
+      });
+    }
+  }
+
+  /** The audio context's rate and latencies, for the report. */
+  #contextInfo(): Record<string, unknown> {
+    const ctx = this.#ctx;
+    if (ctx === undefined) return { context: "none" };
+    const c = ctx as AudioContext & { outputLatency?: number };
+    return { context: ctx.state, sampleRate: ctx.sampleRate,
+      baseLatencyMs: typeof c.baseLatency === "number" ? Math.round(c.baseLatency * 10000) / 10 : undefined,
+      outputLatencyMs: typeof c.outputLatency === "number" ? Math.round(c.outputLatency * 10000) / 10 : undefined };
+  }
+
+  /** The pool: two `<audio>` and two `<video>` elements (through Web Audio if there is a context). */
+  #buildDecks(): void {
+    let n = 0;
+    for (const video of [false, false, true, true]) this.#decks.push(this.#newDeck(video, (video ? "v" : "a") + (n++ % 2)));
+  }
+
+  /** Asks a context that stopped running (interrupted, suspended) to run again, at most every 5 s. */
+  #resumeContext(why: string): void {
+    const ctx = this.#ctx;
+    if (ctx === undefined) return;
+    const before: string = ctx.state;
+    if (before === "running" || before === "closed" || !this.#wasRunning || this.#blocked) return;
+    const now = performance.now();
+    if (now - this.#lastResumeTry < RESUME_RETRY_MS) return;
+    this.#lastResumeTry = now;
+    ctx.resume().then(() => {
+      recordEvent("resume", { why, before, state: ctx.state });
+      this.#updateOverlay();
+    }, (e: unknown) => recordEvent("resume", { why, before, error: describeError(e) }));
   }
 
   /** How small drift is corrected: "rate" (nudge) or "seek" (WebKit). */
@@ -210,21 +341,35 @@ export class ListenPlayer {
     el.hidden = true;
     keepPitch(el);
     let gain: GainNode | undefined;
+    let analyser: AnalyserNode | undefined;
     if (this.#ctx !== undefined) {
       try {
         const source = this.#ctx.createMediaElementSource(el);
         gain = this.#ctx.createGain();
         gain.gain.value = 0;
         source.connect(gain);
-        gain.connect(this.#ctx.destination);
+        // In the chain (not a side branch), so every engine pulls it.
+        try {
+          analyser = this.#ctx.createAnalyser();
+          analyser.fftSize = METER_FFT_SIZE;
+          gain.connect(analyser);
+          analyser.connect(this.#ctx.destination);
+        } catch (e) {
+          recordError("createAnalyser", e, { el: name });
+          analyser = undefined;
+          gain.connect(this.#ctx.destination);
+        }
       } catch (e) {
         recordError("createMediaElementSource", e, { el: name });
         gain = undefined;
+        analyser = undefined;
       }
     }
     const deck: Deck = { el, video, name, ctl: new DriftController(this.#mode), lead: new SeekLead(), landing: undefined,
       seekAt: 0, seeks: 0, lostSeeks: 0, reloads: 0, lastPosMs: -1, lastBlockedTry: Number.NEGATIVE_INFINITY,
-      gain, entryId: undefined, itemId: undefined, src: undefined, started: false,
+      gain, analyser, samples: analyser !== undefined ? new Float32Array(analyser.fftSize) : undefined,
+      meter: new LevelMeter(), mute: new MuteDetector(), counters: {}, healthPosMs: -1,
+      entryId: undefined, itemId: undefined, src: undefined, started: false,
       playPending: false, guard: new SeekGuard(), anchorKey: "", level: gain !== undefined ? 0 : el.volume,
       volumeTimer: undefined };
     el.addEventListener("error", () => this.#onError(deck));
@@ -267,6 +412,10 @@ export class ListenPlayer {
     return {
       mode: this.#mode,
       context: this.#ctx?.state ?? "none",
+      webAudio: this.#ctx !== undefined,
+      webAudioOff: this.#webAudioOff,
+      needsRestore: this.#needsRestore,
+      audio: this.#contextInfo(),
       blocked: this.#blocked,
       audioOnly: this.#audioOnly,
       switching: sw === undefined ? undefined : {
@@ -373,7 +522,14 @@ export class ListenPlayer {
   tick(): void {
     try {
       this.#tick();
+      const stuck = this.#handOffPending;
+      if (stuck !== undefined) {
+        this.#handOffPending = undefined;
+        if (!this.#handOff(stuck)) this.#reload(stuck);
+        this.#tick();
+      }
     } catch (e) {
+      this.#handOffPending = undefined;
       recordError("tick", e);
     }
   }
@@ -515,9 +671,15 @@ export class ListenPlayer {
   }
 
   #load(deck: Deck, entry: CurrentEntry, src: Source): void {
+    this.#loadInto(deck, entry.entryId, entry.item.id, src);
+  }
+
+  #loadInto(deck: Deck, entryId: string, itemId: string, src: Source): void {
     this.#clear(deck);
-    deck.entryId = entry.entryId;
-    deck.itemId = entry.item.id;
+    deck.entryId = entryId;
+    deck.itemId = itemId;
+    deck.healthPosMs = -1;
+    deck.counters = {};
     deck.src = src;
     deck.started = false;
     deck.guard.reset();
@@ -547,8 +709,31 @@ export class ListenPlayer {
     recordEvent("reload", { el: deck.name, url: deck.src.url });
   }
 
+  /**
+   * A seek never finished on an element routed through Web Audio: the entry moves to the other
+   * element of the same kind (dropping a preload there) and the stuck one is emptied, instead of
+   * restarting the routed element's pipeline. Returns false when it can't (no Web Audio, a switch
+   * in progress, no other element), and the caller reloads instead.
+   */
+  #handOff(deck: Deck): boolean {
+    const src = deck.src;
+    const entryId = deck.entryId;
+    const itemId = deck.itemId;
+    if (deck.gain === undefined || src === undefined || entryId === undefined || itemId === undefined) return false;
+    if (this.#switch !== undefined || deck !== this.#active) return false;
+    const other = this.#decks.find((d) => d !== deck && d.video === deck.video);
+    if (other === undefined) return false;
+    recordEvent("handoff", { from: deck.name, to: other.name, url: src.url, droppedPreload: other.src?.url });
+    deck.reloads++;
+    this.#clear(deck);
+    this.#loadInto(other, entryId, itemId, src);
+    this.#active = other;
+    return true;
+  }
+
   #clear(deck: Deck): void {
     if (deck.src === undefined) return;
+    recordEvent("clear", { el: deck.name, url: deck.src.url });
     this.#setGain(deck, 0);
     deck.el.pause();
     deck.el.removeAttribute("src");
@@ -692,6 +877,10 @@ export class ListenPlayer {
     if (el.seeking) {
       if (now - deck.seekAt > SEEK_STUCK_MS) {
         recordEvent("seek-stuck", { el: deck.name, forMs: round(now - deck.seekAt) });
+        if (deck.gain !== undefined && this.#switch === undefined && deck === this.#active) {
+          this.#handOffPending = deck; // after this tick (tick() hands it over, or reloads)
+          return "handoff";
+        }
         this.#reload(deck);
         return "reload";
       }
@@ -829,6 +1018,147 @@ export class ListenPlayer {
   #updateOverlay(): void {
     const wants = this.#active !== undefined && this.#state?.timeline.state === "playing";
     const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running");
-    this.#overlay.hidden = !(wants && locked);
+    this.#overlay.hidden = !(wants && (locked || this.#needsRestore));
+    const button = this.#overlay.querySelector("button");
+    const text = this.#needsRestore ? "Tap to restore sound" : "Click to listen";
+    if (button !== null && button.textContent !== text) button.textContent = text;
+  }
+
+  /** The overlay's button: "Click to listen", or after a mute "Tap to restore sound". */
+  #overlayClick(): void {
+    if (this.#needsRestore) this.#restoreWithoutWebAudio();
+    else this.unlock();
+  }
+
+  /**
+   * Inside the "Tap to restore sound" gesture: empties and drops the Web Audio elements, closes
+   * the context, builds a fresh pool that plays straight from the elements, loads the current
+   * entry and unlocks every new element (the usual start seek follows once the metadata is there).
+   */
+  #restoreWithoutWebAudio(): void {
+    recordEvent("restore", { from: this.#active?.name, ...this.#contextInfo() });
+    this.#needsRestore = false;
+    this.#webAudioOff = "mute";
+    const old = this.#decks.splice(0);
+    this.#switch = undefined;
+    for (const d of old) {
+      this.#clear(d);
+      try {
+        d.gain?.disconnect();
+        d.analyser?.disconnect();
+      } catch {
+        // already disconnected
+      }
+      d.el.remove();
+    }
+    this.#active = undefined;
+    const ctx = this.#ctx;
+    this.#ctx = undefined;
+    ctx?.close().catch(() => undefined);
+    this.#buildDecks();
+    this.tick(); // loads the current entry into a new element
+    this.unlock(); // play() on it and load() on the others, inside the gesture
+  }
+
+  /** Reads the analyser of every element that plays (every METER_INTERVAL_MS). */
+  #readMeters(): void {
+    try {
+      for (const d of this.#decks) {
+        const a = d.analyser;
+        const buf = d.samples;
+        if (a === undefined || buf === undefined || d.src === undefined || d.el.paused) continue;
+        if (typeof a.getFloatTimeDomainData === "function") {
+          a.getFloatTimeDomainData(buf);
+        } else {
+          const bytes = new Uint8Array(buf.length);
+          a.getByteTimeDomainData(bytes);
+          for (let i = 0; i < bytes.length; i++) buf[i] = ((bytes[i] ?? 128) - 128) / 128;
+        }
+        d.meter.add(windowStats(buf));
+      }
+    } catch (e) {
+      recordError("meter", e);
+    }
+  }
+
+  /** One health sample (every second) into the diagnostics ring, and the mute check. */
+  #sampleHealth(): void {
+    try {
+      this.#health();
+    } catch (e) {
+      recordError("health", e);
+    }
+  }
+
+  #health(): void {
+    const ctx = this.#ctx;
+    const a = this.#active;
+    const levels: Record<string, Level> = {};
+    for (const d of this.#decks) {
+      const l = d.meter.take();
+      if (l.windows > 0) levels[d.name] = l;
+    }
+    if (a === undefined && Object.keys(levels).length === 0) {
+      this.#clockWatch.reset();
+      return;
+    }
+    const sample: Record<string, unknown> = {};
+    const ctxState: string | undefined = ctx?.state;
+    if (ctx !== undefined) {
+      sample["ctx"] = ctxState;
+      sample["ck"] = this.#clockWatch.sample(performance.now(), ctx.currentTime);
+      if (ctxState !== "running") this.#resumeContext("health");
+    }
+    if (document.visibilityState !== "visible") sample["vis"] = document.visibilityState;
+    const out: Record<string, unknown[]> = {};
+    for (const name of Object.keys(levels)) {
+      const l = levels[name] as Level;
+      // [peak dB, RMS dB, windows read, gaps, silent windows]; null dB = exact silence
+      out[name] = [toDb(l.peak), toDb(l.rms), l.windows, l.gaps, l.silent];
+    }
+    if (Object.keys(out).length > 0) sample["out"] = out;
+    if (a !== undefined) {
+      const el = a.el;
+      const t = this.#state?.timeline;
+      const pos = el.currentTime * 1000;
+      sample["el"] = a.name;
+      sample["pos"] = round(pos);
+      if (t !== undefined) sample["dr"] = round(pos - positionAt(t, this.#serverNow()));
+      sample["rs"] = el.readyState;
+      if (el.paused) sample["p"] = 1;
+      if (el.seeking) sample["sk"] = 1;
+      if (el.muted) sample["mu"] = 1;
+      sample["g"] = Math.round(a.level * 1000) / 1000;
+      const c = counters(el);
+      const prev = a.counters;
+      a.counters = c;
+      // [audio bytes, video bytes, frames, dropped frames] decoded in this second (WebKit)
+      if (c.audioBytes !== undefined || c.frames !== undefined) {
+        sample["wk"] = [delta(c.audioBytes, prev.audioBytes), delta(c.videoBytes, prev.videoBytes),
+          delta(c.frames, prev.frames), delta(c.droppedFrames, prev.droppedFrames)];
+      }
+      // getVideoPlaybackQuality totals: [frames, dropped, corrupted]
+      if (c.vqTotal !== undefined) sample["vq"] = [c.vqTotal, c.vqDropped, c.vqCorrupted];
+      const advancing = !el.paused && a.healthPosMs >= 0 && pos !== a.healthPosMs;
+      a.healthPosMs = pos;
+      const level = levels[a.name];
+      if (a.analyser !== undefined && level !== undefined && this.#switch === undefined && !this.#needsRestore) {
+        const shouldSound = advancing && !el.seeking && !el.muted && a.level > 0 && ctxState === "running" && !this.#blocked;
+        // The decoded-bytes counter only counts where the engine fills it (it may stay 0 throughout).
+        const decodedBytes = (c.audioBytes ?? 0) > 0 ? delta(c.audioBytes, prev.audioBytes) : undefined;
+        const muted = a.mute.sample({ shouldSound, level, decodedBytes });
+        if (a.mute.silentSeconds > 0) sample["ms"] = a.mute.silentSeconds;
+        if (muted) this.#webAudioMuted(a);
+      }
+    }
+    recordHealth(sample);
+  }
+
+  /** The Web Audio path of `deck` has gone silent: ask for a tap to play without it. */
+  #webAudioMuted(deck: Deck): void {
+    recordEvent("webaudio-mute", { el: deck.name, url: deck.src?.url, posMs: round(deck.el.currentTime * 1000),
+      silentS: deck.mute.silentSeconds, ...this.#contextInfo() });
+    this.#needsRestore = true;
+    this.#updateOverlay();
   }
 }

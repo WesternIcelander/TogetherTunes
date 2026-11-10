@@ -2,7 +2,8 @@
 //
 // Rings in memory, filled from page load on: the sync loop's decisions (one per tick and element),
 // notable player events (seeks and where they landed, rate changes, play failures, media events)
-// and page errors (window `error` and `unhandledrejection`, plus errors the player caught itself).
+// page errors (window `error` and `unhandledrejection`, plus errors the player caught itself), and
+// once a second the player's health (output level per element, audio clock, decoder counters).
 // The room page's "Send diagnostics" link posts them, with the user agent and the player's and
 // clock's state, to `POST /api/diagnostics`, which logs the report on one line.
 //
@@ -65,12 +66,15 @@ export type Entry = Record<string, unknown> & { t: number; kind: string };
 export const DECISIONS = 200;
 export const EVENTS = 150;
 export const ERRORS = 50;
+/** Health samples kept: one per second, so 5 minutes (a report sent a minute after a mute covers it). */
+export const HEALTH = 300;
 /** Longest error text kept (message + stack). */
 export const MAX_ERROR_TEXT = 2000;
 
 const decisions = new Ring<Decision>(DECISIONS);
 const events = new Ring<Entry>(EVENTS);
 const errors = new Ring<Entry>(ERRORS);
+const health = new Ring<Entry>(HEALTH);
 
 function now(): number {
   return typeof performance !== "undefined" ? Math.round(performance.now()) : Date.now();
@@ -82,6 +86,14 @@ export function recordDecision(d: Omit<Decision, "t">): void {
 
 export function recordEvent(kind: string, detail: Record<string, unknown> = {}): void {
   events.push({ t: now(), kind, ...detail });
+}
+
+/**
+ * One second of the player's health (output level, audio clock, decoder counters; see listen.ts
+ * #sampleHealth). Short keys: 300 of them go into a report.
+ */
+export function recordHealth(sample: Record<string, unknown>): void {
+  health.push({ t: now(), kind: "h", ...sample });
 }
 
 /** An error as text: `Name: message` and the stack, cut to MAX_ERROR_TEXT. */
@@ -151,6 +163,8 @@ export function snapshot(): Record<string, unknown> {
     eventsTotal: events.total,
     errors: errors.toArray(),
     errorsTotal: errors.total,
+    health: health.toArray(),
+    healthTotal: health.total,
   };
 }
 
@@ -159,4 +173,5 @@ export function clearForTests(): void {
   decisions.clear();
   events.clear();
   errors.clear();
+  health.clear();
 }

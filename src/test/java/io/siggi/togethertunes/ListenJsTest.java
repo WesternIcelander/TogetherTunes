@@ -32,6 +32,32 @@ class ListenJsTest {
     }
 
     @Test
+    void audioHealthUnitTestsPass() throws Exception {
+        NodeTests.run("audiohealth.test.mjs", Map.of("AUDIOHEALTH_JS", "web/js/audiohealth.js"));
+    }
+
+    /**
+     * The iOS stutter / mute (report dfh3l7): the output level is measured after each GainNode and
+     * recorded once a second, a silent Web Audio path offers "Tap to restore sound" (rebuild without
+     * Web Audio), {@code ?webaudio=0} starts without it, and a stuck seek on a routed element hands
+     * the entry to the other element instead of reloading it.
+     */
+    @Test
+    void playerMeasuresItsOutputAndCanPlayWithoutWebAudio() throws Exception {
+        String player = read("web/js/listen.js");
+        for (String s : List.of("from \"./audiohealth.js\"", "createAnalyser(", "getFloatTimeDomainData(", "recordHealth(",
+                "new MuteDetector(", "\"webaudio-mute\"", "Tap to restore sound", "\"restore\"", "\"handoff\"",
+                "getVideoPlaybackQuality", "webkitAudioDecodedByteCount", "visibilitychange", "pagehide", "\"resume\"",
+                "sampleRate")) {
+            assertTrue(player.contains(s), s);
+        }
+        String room = read("web/js/room.js");
+        for (String s : List.of("webAudioWanted(", "get(\"webaudio\")", "webAudioOverride", "\"health\"")) {
+            assertTrue(room.contains(s), s);
+        }
+    }
+
+    @Test
     void syncLoopRecordsDiagnosticsAndTheRoomPageSendsThem() throws Exception {
         String player = read("web/js/listen.js");
         for (String s : List.of("from \"./diagnostics.js\"", "recordDecision(", "recordError(\"tick\"",

@@ -77,3 +77,22 @@ test("events ring and stripQuery", () => {
   assert.equal(D.stripQuery("/rooms/x#f"), "/rooms/x");
   assert.equal(D.stripQuery("/rooms/x"), "/rooms/x");
 });
+
+test("health: one sample per second, the last 300 (5 minutes) kept", () => {
+  D.clearForTests();
+  for (let i = 0; i < 320; i++) D.recordHealth({ pos: i, out: { v0: [-12.5, -20, 25, 0, 0] } });
+  const s = D.snapshot();
+  assert.equal(D.HEALTH, 300);
+  assert.equal(s.health.length, 300);
+  assert.equal(s.healthTotal, 320);
+  assert.equal(s.health[0].pos, 20);
+  assert.deepEqual(s.health[299].out, { v0: [-12.5, -20, 25, 0, 0] });
+  assert.equal(typeof s.health[0].t, "number");
+  // Compact: a full ring of typical samples stays far below the report limit (240 000 chars).
+  D.clearForTests();
+  for (let i = 0; i < 300; i++) {
+    D.recordHealth({ ctx: "running", ck: 1000, out: { v0: [-3.2, -14.1, 25, 0, 0] }, el: "v0", pos: 168261 + i * 1000,
+      dr: -1, rs: 4, g: 1, wk: [12000, 400000, 30, 0], vq: [5000 + i * 30, 12, 0], ms: 3 });
+  }
+  assert.ok(JSON.stringify(D.snapshot().health).length < 60000);
+});
