@@ -50,7 +50,7 @@ The packager subscribes to the room's timeline. Changes are **applied at the nex
 - When building each unit, the packager checks: "Is the source I'm playing still what the timeline says should be playing at this point?" If not, it switches source:
   - new entry, or seek → `VideoItemSource` / `AudioItemSource` at the timeline's current position;
   - `PAUSED` → `FillerSource(Paused)`; `IDLE` → `FillerSource(Idle)`. A state the packager doesn't recognise is treated as `PAUSED`.
-- When an item ends naturally, `E_n` usually falls mid-unit. The packager ends the unit there and starts the next unit (the next item, or a filler) at `E_n`. Units can therefore be shorter than 2 s, but never longer.
+- When an item ends naturally, `E_n` usually falls mid-unit. The packager ends the unit there and starts the next unit (the next item, or a filler) at `E_n`. Units can therefore be shorter than 2 s, but never longer, apart from one detail: 2 s is 93.75 audio frames, so a unit's last audio frame usually straddles its 2 s mark. When the next unit comes from a new source, that source starts where the emitted audio ends (`S_{n+1} = E_n`), so the unit lasts up to 1919 ticks (21.3 ms) more than 2 s.
 - **Natural drift:** the program output's position can drift slightly from the timeline (from GOP-aligned seeks and pacing jitter). The packager does not try to correct this mid-item. The next item starts when the previous item's audio actually ends in the output. If the output is more than 3 s behind or ahead of the timeline at an item boundary, the packager re-syncs by starting the next item at the timeline's current position for it.
 
 ## Pacing
