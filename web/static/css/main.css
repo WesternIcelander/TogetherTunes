@@ -621,3 +621,28 @@ button.voted {
 .room-settings .setting > label:first-child {
   min-width: 16rem;
 }
+
+/* Rooms page (web/src/rooms.ts). */
+table.rooms tbody tr {
+  cursor: default;
+}
+
+table.rooms td {
+  vertical-align: top;
+}
+
+.room-name {
+  /* overflow-wrap: anywhere needs Safari 15.4 */
+  word-break: break-word;
+}
+
+#create-room .error:empty {
+  display: none;
+}
+
+@media (max-width: 40rem) {
+  table.rooms th:nth-child(4),
+  table.rooms td:nth-child(4) {
+    display: none;
+  }
+}

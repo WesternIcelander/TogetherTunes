@@ -4,7 +4,7 @@ import { setupNeeded } from "./api.js";
 import { actorLabel } from "./actor.js";
 import {
   ACCOUNT_PAGE, ADMIN_PAGE, checkPasswordChange, isAdmin, LIBRARY_PAGE, loadMe, LOGIN_PAGE, message, onReady,
-  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav,
+  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav, ROOMS_PAGE,
 } from "./session.js";
 import { describeVersion } from "./version.js";
 
@@ -35,7 +35,7 @@ async function start(): Promise<void> {
       }
     }
     if (links !== null) {
-      const items: (Node | string)[] = [];
+      const items: (Node | string)[] = [link(ROOMS_PAGE, "Rooms"), " · "];
       if (me.kind === "user") {
         items.push(link(LIBRARY_PAGE, "Your library"), " · ", link(PLAYLISTS_PAGE, "Playlists"), " · ",
           link(ACCOUNT_PAGE, "Your account"));

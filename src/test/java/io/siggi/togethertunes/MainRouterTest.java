@@ -185,6 +185,27 @@ class MainRouterTest {
     }
 
     @Test
+    void roomsPageIsServedAtTheRoomsDirectory() throws Exception {
+        // /rooms/ is the rooms list, not the room page for an empty room name.
+        HttpResponse<String> page = get("/rooms/");
+        assertEquals(200, page.statusCode());
+        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
+        assertTrue(page.body().contains("src=\"/js/rooms.js\""), page.body());
+        assertFalse(page.body().contains("src=\"/js/room.js\""), page.body());
+        assertEquals(200, get("/js/rooms.js").statusCode());
+        assertEquals(200, get("/js/roomlist.js").statusCode());
+        // Without the slash it redirects to the directory, like /library.
+        HttpResponse<String> redirect = get("/rooms");
+        assertEquals(308, redirect.statusCode());
+        assertEquals("/rooms/", redirect.headers().firstValue("Location").orElse(""));
+        // A room path is still the room page; the list API is open to anonymous callers.
+        assertTrue(get("/rooms/lounge").body().contains("src=\"/js/room.js\""));
+        HttpResponse<String> list = get("/api/rooms");
+        assertEquals(200, list.statusCode());
+        assertEquals("{\"items\":[]}", list.body());
+    }
+
+    @Test
     void roomManagementPageIsServedAtTheRoomPath() throws Exception {
         HttpResponse<String> page = get("/rooms/my-room/manage");
         assertEquals(200, page.statusCode());

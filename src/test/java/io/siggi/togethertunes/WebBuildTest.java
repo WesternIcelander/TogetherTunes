@@ -114,7 +114,8 @@ class WebBuildTest {
                 "web/library/index.html", "library",
                 "web/playlists/index.html", "playlists",
                 "web/item.html", "item",
-                "web/room.html", "room");
+                "web/room.html", "room",
+                "web/rooms/index.html", "rooms");
         for (Map.Entry<String, String> e : pages.entrySet()) {
             String html = read(e.getKey());
             assertTrue(html.contains("src=\"/js/" + e.getValue() + ".js\""), html);
