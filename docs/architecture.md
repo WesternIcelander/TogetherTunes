@@ -45,12 +45,13 @@
 <data>/
   db/                     sqlite file (when using SQLite)
   media/<itemId>/
-    mezz.mp4              video+audio (music video) — faststart, playable in browsers
-    audio.m4a             audio only (every item) — packager audio; web audio-only mode for video items
-    card.mp4              2 s still-card GOP (audio-only items; also used as transition card)
-    index.bin             packager sample index (see library-and-ingest.md)
-    cover.jpg             artwork (embedded, from YouTube thumbnail, or generated)
     original.<ext>        the item's source (upload or YouTube download) — feeds re-encodes; played by the web client for audio uploads only
+    v<N>/                 one encode of the item (media version N; items.media_version names the current one)
+      mezz.mp4            video+audio (music video) — faststart, playable in browsers
+      audio.m4a           audio only (every item) — packager audio; web audio-only mode for video items
+      card.mp4            2 s still-card GOP (audio-only items; also used as transition card)
+      index.bin           packager sample index (see library-and-ingest.md)
+      cover.jpg           artwork (embedded, from YouTube thumbnail, or generated)
   cards/<encoding>/       (e.g. cards/720p30-3000k-v2/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
@@ -59,7 +60,7 @@
   tmp/                    in-progress uploads and ingest scratch
 ```
 
-Everything under `media/<itemId>/` is immutable once the item is `ready`. A re-ingest writes a new directory and swaps it in atomically.
+A version directory is immutable once published. A re-encode or re-ingest publishes a new `v<N+1>/` and then switches `items.media_version` to it, without waiting for plays to end; the old version is deleted once nobody can still be playing it ([library-and-ingest.md](library-and-ingest.md#storage-layout-and-media-versions)). Items published before versions existed keep their files directly in `media/<itemId>/`: that flat layout is **version 0**, replaced by `v1/` at their next encode.
 
 ## Configuration
 

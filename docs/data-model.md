@@ -64,6 +64,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
+      media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows, kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
 
