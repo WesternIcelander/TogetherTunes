@@ -26,6 +26,16 @@
     <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
     <div id="room-listen-controls" class="row room-listen-controls" hidden>
       <label><input type="checkbox" id="room-audio-only"> Audio only</label>
+      <label class="small" title="How this browser plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by itself if Web Audio stutters here. On: always Web Audio. Off: straight from the media element, which costs the crossfade on the audio-only switch and the loudness adjustment for originals where the browser can't set the volume (iOS).">Web Audio
+        <select id="room-webaudio">
+          <option value="auto">Auto</option>
+          <option value="on">On</option>
+          <option value="off">Off</option>
+        </select></label>
+      <span id="room-webaudio-note" class="muted small" role="status"></span>
+      <span id="room-webaudio-hint" class="muted small" hidden>Off plays straight from the media element: no
+        crossfade when switching audio only, and originals play without their loudness adjustment where the
+        browser can't set the volume (iOS).</span>
       <button type="button" id="room-diagnostics" class="link small"
               title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
       <span id="room-diagnostics-status" class="muted small" role="status"></span>

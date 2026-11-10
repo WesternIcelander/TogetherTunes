@@ -52,8 +52,33 @@ class ListenJsTest {
             assertTrue(player.contains(s), s);
         }
         String room = read("web/js/room.js");
-        for (String s : List.of("webAudioWanted(", "get(\"webaudio\")", "webAudioOverride", "\"health\"")) {
+        for (String s : List.of("webAudioOverride(", "get(\"webaudio\")", "webAudioOverride", "\"health\"")) {
             assertTrue(room.contains(s), s);
+        }
+    }
+
+    /**
+     * The iOS sample-rate mismatch (report uhmxlu): the player checks the Web Audio path
+     * (WebAudioCheck), rebuilds the context at the implied rate on fresh elements, falls back to the
+     * direct path in Auto, and the room page has the per-device "Web Audio" setting (Auto / On / Off)
+     * with Auto's memory in localStorage and the note when the sound plays direct.
+     */
+    @Test
+    void playerChecksTheWebAudioPathAndTheRoomHasTheSetting() throws Exception {
+        String player = read("web/js/listen.js");
+        for (String s : List.of("new WebAudioCheck(", "\"webaudio-check\"", "\"rebuild\"", "sampleRate }", "impliedRate",
+                "\"rate-fix-start\"", "setWebAudioPlan(", "#fillReserve(", "remember")) {
+            assertTrue(player.contains(s), s);
+        }
+        String room = read("web/js/room.js");
+        for (String s : List.of("webAudioPlan(", "parseWebAudioMemory(", "\"togethertunes.webAudio\"",
+                "\"togethertunes.webAudioAuto\"", "Sound: direct (no volume control)", "setWebAudioPlan(")) {
+            assertTrue(room.contains(s), s);
+        }
+        String html = read("web/room.html");
+        for (String s : List.of("id=\"room-webaudio\"", "value=\"auto\"", "value=\"on\"", "value=\"off\"",
+                "id=\"room-webaudio-note\"", "no\n        crossfade")) {
+            assertTrue(html.contains(s), s);
         }
     }
 

@@ -110,3 +110,149 @@ test("delta: counter changes, nothing when missing or reset", () => {
   assert.equal(A.delta(undefined, 100), undefined);
   assert.equal(A.delta(100, undefined), undefined);
 });
+
+// --- WebAudioCheck: the iOS sample-rate mismatch (report uhmxlu) and steady dropouts ---
+
+const music = (gaps = 0, silent = 0) => ({ windows: 25, peak: 0.5, rms: 0.1, gaps, silent });
+const sec = (ck, extra = {}) => ({ ck, running: true, shouldSound: true, level: music(), ...extra });
+
+test("snapRate: the implied rate snaps to a standard one", () => {
+  assert.equal(A.snapRate(44100 * 1.088), 48000); // uhmxlu: 47981
+  assert.equal(A.snapRate(44100 * 1.086), 48000);
+  assert.equal(A.snapRate(48000 * 0.919), 44100);
+  assert.equal(A.snapRate(48000 * 2), 96000);
+  assert.equal(A.snapRate(45203), 45203); // nothing within 1.5 %: as measured
+});
+
+test("WebAudioCheck: the uhmxlu clock (1086–1091 ms per s) trips after 3 samples, implying 48 kHz", () => {
+  const c = new A.WebAudioCheck(44100);
+  assert.equal(c.sample(sec(undefined)).kind, "pending"); // ClockWatch's first sample
+  assert.equal(c.sample(sec(1088, { level: music(8) })).kind, "pending");
+  assert.equal(c.sample(sec(1091, { level: music(11) })).kind, "pending");
+  const v = c.sample(sec(1086, { level: music(5) }));
+  assert.equal(v.kind, "clock"); // the clock wins over the gaps it causes
+  assert.equal(v.impliedRate, 48000);
+  assert.equal(v.sampleRate, 44100);
+  assert.equal(v.ratio, 1.088); // the median
+  assert.equal(c.failed, true);
+  assert.equal(c.sample(sec(1000)).kind, "clock"); // sticks
+  c.reset();
+  assert.equal(c.verdict.kind, "pending");
+});
+
+test("WebAudioCheck: the clock threshold is 2 % for 3 samples in a row", () => {
+  const c = new A.WebAudioCheck(48000);
+  for (const ck of [1000 + A.CLOCK_TOLERANCE, 1000 - A.CLOCK_TOLERANCE, 1015, 985]) assert.equal(c.sample(sec(ck)).kind, "pending");
+  assert.equal(c.sample(sec(1000)).kind, "ok"); // 5 clean samples
+  // Two off, one clean (starts over), then three off.
+  assert.equal(c.sample(sec(1030)).kind, "ok");
+  assert.equal(c.sample(sec(1030)).kind, "ok");
+  assert.equal(c.sample(sec(1001)).kind, "ok");
+  assert.equal(c.sample(sec(1030)).kind, "ok");
+  assert.equal(c.sample(sec(1030)).kind, "ok");
+  // Not running, no sample, or a stall / catch-up neither count nor reset.
+  assert.equal(c.sample(sec(1030, { running: false })).kind, "ok");
+  assert.equal(c.sample(sec(undefined)).kind, "ok");
+  assert.equal(c.sample(sec(0)).kind, "ok");
+  assert.equal(c.sample(sec(A.CLOCK_MAX + 1)).kind, "ok");
+  const v = c.sample(sec(1030));
+  assert.equal(v.kind, "clock");
+  assert.equal(v.impliedRate, 49440); // 3 % off 48 kHz isn't a standard rate
+});
+
+test("WebAudioCheck: 3+ gaps a second for 3 s with the clock fine", () => {
+  const c = new A.WebAudioCheck(48000);
+  // Not before a clock sample said the clock is fine.
+  assert.equal(c.sample(sec(undefined, { level: music(6) })).kind, "pending");
+  assert.equal(c.sample(sec(undefined, { level: music(6) })).kind, "pending");
+  assert.equal(c.sample(sec(undefined, { level: music(6) })).kind, "pending");
+  const v = c.sample(sec(1000, { level: music(9) }));
+  assert.equal(v.kind, "gaps");
+  assert.equal(v.gapsPerSecond, 7); // the last 3 seconds: 6, 6, 9
+});
+
+test("WebAudioCheck: gaps below the rate, while it shouldn't sound, or in sparse material don't trip", () => {
+  const c = new A.WebAudioCheck(48000);
+  c.sample(sec(1000));
+  // Two seconds with gaps, then one clean second starts over.
+  c.sample(sec(1000, { level: music(A.GAP_RATE) }));
+  c.sample(sec(1000, { level: music(A.GAP_RATE) }));
+  assert.equal(c.sample(sec(1000, { level: music(A.GAP_RATE - 1) })).kind, "pending");
+  assert.equal(c.sample(sec(1000)).kind, "ok"); // 5 clean clock samples, no run of gaps going on
+  // Two seconds with gaps again: still "ok" (not 3 in a row), a third one trips.
+  assert.equal(c.sample(sec(1000, { level: music(4) })).kind, "ok");
+  assert.equal(c.sample(sec(1000, { level: music(4) })).kind, "ok");
+  // Paused / seeking / not running, or too few windows: neither count nor reset.
+  assert.equal(c.sample(sec(1000, { shouldSound: false, level: music(9) })).kind, "ok");
+  assert.equal(c.sample(sec(1000, { level: { ...music(9), windows: A.MIN_WINDOWS_PER_SECOND - 1 } })).kind, "ok");
+  assert.equal(c.sample(sec(1000, { running: false, level: music(9) })).kind, "ok");
+  assert.equal(c.sample(sec(1000, { level: music(4) })).kind, "gaps");
+  // A click track: "gaps" next to every click, but nearly every window is silent.
+  const d = new A.WebAudioCheck(48000);
+  for (let i = 0; i < 10; i++) assert.notEqual(d.sample(sec(1000, { level: music(4, 21) })).kind, "gaps");
+  // At the silent-share limit it still counts.
+  const e = new A.WebAudioCheck(48000);
+  e.sample(sec(1000, { level: music(4, 5) }));
+  e.sample(sec(1000, { level: music(4, 5) }));
+  assert.equal(e.sample(sec(1000, { level: music(4, 5) })).kind, "gaps");
+});
+
+// --- The "Web Audio" setting ---
+
+test("parseWebAudioSetting and webAudioOverride", () => {
+  assert.equal(A.parseWebAudioSetting(null), "auto");
+  assert.equal(A.parseWebAudioSetting("on"), "on");
+  assert.equal(A.parseWebAudioSetting("off"), "off");
+  assert.equal(A.parseWebAudioSetting("bogus"), "auto");
+  assert.equal(A.webAudioOverride(null), undefined);
+  assert.equal(A.webAudioOverride(""), undefined);
+  assert.equal(A.webAudioOverride("maybe"), undefined);
+  for (const v of ["0", "off", "false", "no", " OFF "]) assert.equal(A.webAudioOverride(v), false, v);
+  for (const v of ["1", "on", "true", "yes"]) assert.equal(A.webAudioOverride(v), true, v);
+});
+
+test("parseWebAudioMemory: valid, expired, malformed", () => {
+  const now = 1_800_000_000_000;
+  assert.deepEqual(A.parseWebAudioMemory(JSON.stringify({ rate: 48000, reason: "clock", at: now - 1000 }), now),
+    { rate: 48000, reason: "clock", at: now - 1000 });
+  assert.deepEqual(A.parseWebAudioMemory(JSON.stringify({ direct: true, at: now }), now), { direct: true, at: now });
+  assert.equal(A.parseWebAudioMemory(JSON.stringify({ direct: true, at: now - A.MEMORY_MAX_AGE_MS - 1 }), now), undefined);
+  assert.equal(A.parseWebAudioMemory(JSON.stringify({ at: now }), now), undefined); // nothing learnt
+  assert.equal(A.parseWebAudioMemory(JSON.stringify({ rate: 5, at: now }), now), undefined);
+  assert.equal(A.parseWebAudioMemory("{", now), undefined);
+  assert.equal(A.parseWebAudioMemory("null", now), undefined);
+  assert.equal(A.parseWebAudioMemory(null, now), undefined);
+});
+
+test("webAudioPlan: URL over setting over Auto's memory", () => {
+  const direct = { direct: true, rate: 48000, at: 1 };
+  const rate = { rate: 48000, at: 1 };
+  // Default: Auto, Web Audio, may fall back.
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", undefined), { webAudio: true, autoFallback: true, why: "default" });
+  // Auto with memory.
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", direct), { webAudio: false, autoFallback: false, why: "remembered" });
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", rate),
+    { webAudio: true, sampleRate: 48000, autoFallback: true, why: "remembered" });
+  // On: Web Audio even if Auto learnt "direct" (the rate it learnt is used), never falls back.
+  assert.deepEqual(A.webAudioPlan(undefined, "on", direct), { webAudio: true, sampleRate: 48000, autoFallback: false, why: "setting" });
+  assert.deepEqual(A.webAudioPlan(undefined, "on", undefined), { webAudio: true, autoFallback: false, why: "setting" });
+  // Off.
+  assert.deepEqual(A.webAudioPlan(undefined, "off", rate), { webAudio: false, autoFallback: false, why: "setting" });
+  // ?webaudio=0/1 overrides everything.
+  for (const setting of ["auto", "on", "off"]) {
+    assert.deepEqual(A.webAudioPlan(false, setting, rate), { webAudio: false, autoFallback: false, why: "url" });
+    assert.equal(A.webAudioPlan(true, setting, direct).webAudio, true);
+    assert.equal(A.webAudioPlan(true, setting, direct).autoFallback, false);
+  }
+});
+
+test("WebAudioCheck on the first health samples of report uhmxlu (iPod touch 7) trips within 3 s of running", () => {
+  // [ck, ctx running, out of the playing element: windows, gaps, silent]
+  const h = [[undefined, false], [0, false], [0, false], [96, true, [3, 0, 3]], [1090, true, [24, 0, 24]],
+    [1087, true, [13, 7, 0]], [1090, true, [24, 0, 24]], [1088, true, [24, 8, 4]], [1084, true, [25, 10, 2]]];
+  const c = new A.WebAudioCheck(44100);
+  const kinds = h.map(([ck, running, o]) => c.sample({ ck, running, shouldSound: running,
+    level: o === undefined ? undefined : { windows: o[0], peak: 0.2, rms: 0.03, gaps: o[1], silent: o[2] } }).kind);
+  assert.deepEqual(kinds, ["pending", "pending", "pending", "pending", "pending", "pending", "clock", "clock", "clock"]);
+  assert.equal(c.verdict.impliedRate, 48000);
+});

@@ -48,8 +48,21 @@
 // other element of its kind instead of reloading the stuck one (WebKit's provider for a routed
 // element is suspected to break when its pipeline is restarted). The context is resumed when
 // WebKit reports it `interrupted`/`suspended` and when the page becomes visible again.
+//
+// Sample-rate mismatch (report uhmxlu, iPod touch 7): the context reported 44.1 kHz while its clock
+// ran 1.088 × real time (the hardware pulled 48 kHz), and the output had 5–11 dropouts a second.
+// WebAudioCheck (audiohealth.ts) watches the audio clock and the dropouts once a second. When the
+// clock is off, the player (a) builds a new context at the rate the clock implies
+// (`new AudioContext({ sampleRate })`) with a fresh pool routed through it (an element can only ever
+// have one MediaElementAudioSourceNode) and checks again; if that fails too, or the output has
+// steady dropouts with the clock fine, (b) it plays straight from fresh elements (Auto only; On
+// keeps Web Audio) and the room page remembers that for this browser. Either way the current entry
+// starts on the new element at the timeline's position, like the stuck-seek handoff. Spare elements
+// are touched in every "Click to listen" gesture, so iOS lets the new pool play without a tap. What
+// the player starts with comes from the "Web Audio" setting (webAudioPlan).
 import {
-  ClockWatch, delta, LevelMeter, METER_FFT_SIZE, METER_INTERVAL_MS, MuteDetector, toDb, windowStats, type Level,
+  ClockWatch, delta, LevelMeter, METER_FFT_SIZE, METER_INTERVAL_MS, MuteDetector, toDb, WebAudioCheck, windowStats,
+  type Level, type PathVerdict, type WebAudioMemory, type WebAudioPlan,
 } from "./audiohealth.js";
 import { describeError, recordDecision, recordError, recordEvent, recordHealth } from "./diagnostics.js";
 import {
@@ -76,6 +89,35 @@ const BLOCKED_RETRY_MS = 2000;
 const HEALTH_INTERVAL_MS = 1000;
 /** A context that stopped running is asked to resume at most this often (ms). */
 const RESUME_RETRY_MS = 5000;
+/**
+ * A context made for the rate fix that isn't running this long (ms) after it was made (WebKit may
+ * want a gesture for a new context) counts as a failed fix: Auto falls back to the direct path.
+ */
+const RATE_FIX_START_MS = 4000;
+/** Spare elements kept per kind, touched in every "Click to listen" gesture (two rebuilds' worth). */
+const RESERVE_PER_KIND = 4;
+
+/** What the room page learns from the player. */
+export interface ListenHooks {
+  /** Auto learnt something about this browser (undefined: forget it). */
+  remember?: (m: WebAudioMemory) => void;
+  /** The sound path changed (Web Audio ↔ direct, or a new rate): update the note. */
+  onSound?: () => void;
+}
+
+/** The sound path, for the note next to the setting. */
+export interface SoundInfo {
+  /** Through Web Audio, or straight from the elements. */
+  webAudio: boolean;
+  /** The context's rate (Web Audio only). */
+  sampleRate?: number;
+  /** The context was rebuilt at this rate by the rate fix. */
+  fixedRate?: number;
+  /** Why it plays direct: "url", "setting", "remembered", "mute", "clock", "gaps", "rate-fix-start". */
+  off?: string;
+  /** The last WebAudioCheck verdict. */
+  verdict?: string;
+}
 
 /** Decoder counters an element may have (WebKit's prefixed ones, the standard playback quality). */
 interface Counters {
@@ -193,7 +235,7 @@ interface Switch {
   fadeEndsAt: number | undefined;
 }
 
-type AudioContextCtor = new () => AudioContext;
+type AudioContextCtor = new (options?: AudioContextOptions) => AudioContext;
 
 function audioContextCtor(): AudioContextCtor | undefined {
   const w = window as unknown as { AudioContext?: AudioContextCtor; webkitAudioContext?: AudioContextCtor };
@@ -219,8 +261,20 @@ export class ListenPlayer {
   readonly #decks: Deck[] = [];
   /** Undefined without Web Audio (`?webaudio=0`, no AudioContext, or after "Tap to restore sound"). */
   #ctx: AudioContext | undefined;
-  /** Web Audio was asked for but turned off: "url" (`?webaudio=0`) or "mute" (it went silent). */
-  #webAudioOff: "url" | "mute" | undefined;
+  /**
+   * Why there is no Web Audio: "url" (`?webaudio=0`), "setting" (Off), "remembered" (Auto learnt
+   * it), "mute" (it went silent), "clock"/"gaps"/"rate-fix-start" (WebAudioCheck, Auto).
+   */
+  #webAudioOff: string | undefined;
+  #plan: WebAudioPlan;
+  readonly #hooks: ListenHooks;
+  /** Checks the current context (undefined without one). */
+  #check: WebAudioCheck | undefined;
+  /** The rate fix: tried once per page; `started` once its context runs, `confirmed` once checked ok. */
+  #rateFixTried = false;
+  #rateFix: { rate: number; at: number; started: boolean; confirmed: boolean } | undefined;
+  /** Spare elements, touched in the "Click to listen" gesture, for the next rebuild. */
+  readonly #reserve: HTMLMediaElement[] = [];
   /** The Web Audio path went silent; the overlay asks for a tap to rebuild without it. */
   #needsRestore = false;
   /** A deck whose seek is stuck, handed to the other element after this tick. */
@@ -246,40 +300,30 @@ export class ListenPlayer {
    * @param serverNow the server's clock (ClockSync)
    * @param audioOnly start in audio-only mode (video items play `audio.m4a`)
    * @param mode how small drift is corrected (`syncModeFor`: "seek" in WebKit, else "rate")
-   * @param webAudio route the elements through Web Audio (false: `?webaudio=0`, play straight from
-   *     the elements, no gain)
+   * @param webAudio whether and how to route the elements through Web Audio (`webAudioPlan`; a
+   *     boolean is `?webaudio=` alone: false plays straight from the elements, no gain)
+   * @param hooks what the room page wants to hear about (Auto's memory, the sound note)
    */
   constructor(container: HTMLElement, overlay: HTMLElement, serverNow: () => number, audioOnly = false,
-      mode: SyncMode = "rate", webAudio = true) {
+      mode: SyncMode = "rate", webAudio: WebAudioPlan | boolean = true, hooks: ListenHooks = {}) {
     this.#audioOnly = audioOnly;
     this.#mode = mode;
     this.#container = container;
     this.#overlay = overlay;
     this.#serverNow = serverNow;
-    const Ctor = webAudio ? audioContextCtor() : undefined;
-    let ctx: AudioContext | undefined;
-    try {
-      ctx = Ctor !== undefined ? new Ctor() : undefined;
-    } catch (e) {
-      recordError("AudioContext", e);
-      ctx = undefined;
-    }
-    this.#ctx = ctx;
-    this.#webAudioOff = webAudio ? undefined : "url";
-    ctx?.addEventListener("statechange", () => {
-      if (ctx !== this.#ctx) return; // the old context, closed by "Tap to restore sound"
-      const state: string = ctx.state;
-      recordEvent("context", { state, audioMs: Math.round(ctx.currentTime * 1000) });
-      if (state === "running") this.#wasRunning = true;
-      else this.#resumeContext("statechange");
-      this.#updateOverlay();
-    });
+    this.#hooks = hooks;
+    const plan: WebAudioPlan = typeof webAudio === "boolean"
+      ? { webAudio, autoFallback: false, why: webAudio ? "default" : "url" } : webAudio;
+    this.#plan = plan;
+    this.#ctx = plan.webAudio ? this.#createContext(plan.sampleRate) : undefined;
+    this.#webAudioOff = plan.webAudio ? undefined : plan.why;
+    this.#check = this.#ctx !== undefined ? new WebAudioCheck(this.#ctx.sampleRate) : undefined;
     this.#buildDecks();
     overlay.addEventListener("click", () => this.#overlayClick());
     // Chrome lets a context start without a gesture when the user has interacted with the site.
-    ctx?.resume().catch(() => undefined);
-    recordEvent("player", { mode, webAudio: ctx !== undefined, webAudioOff: this.#webAudioOff, audioOnly,
-      ...this.#contextInfo() });
+    this.#ctx?.resume().catch(() => undefined);
+    recordEvent("player", { mode, webAudio: this.#ctx !== undefined, webAudioOff: this.#webAudioOff, audioOnly,
+      plan, ...this.#contextInfo() });
     window.setInterval(() => this.#readMeters(), METER_INTERVAL_MS);
     window.setInterval(() => this.#sampleHealth(), HEALTH_INTERVAL_MS);
     // Interruptions show up here (iOS: a call, Siri, the lock screen); record them, and resume.
@@ -292,6 +336,42 @@ export class ListenPlayer {
         recordEvent("page", { type, persisted: (ev as PageTransitionEvent).persisted });
       });
     }
+  }
+
+  /**
+   * A new AudioContext (at `sampleRate` if given; if the browser refuses the option, at its own
+   * rate), or undefined without Web Audio. Its state changes are recorded while it is the current one.
+   */
+  #createContext(sampleRate: number | undefined): AudioContext | undefined {
+    const Ctor = audioContextCtor();
+    if (Ctor === undefined) return undefined;
+    let ctx: AudioContext | undefined;
+    try {
+      ctx = sampleRate !== undefined ? new Ctor({ sampleRate }) : new Ctor();
+    } catch (e) {
+      recordError("AudioContext", e, { sampleRate });
+      if (sampleRate === undefined) return undefined;
+      try {
+        ctx = new Ctor();
+      } catch (e2) {
+        recordError("AudioContext", e2);
+        return undefined;
+      }
+    }
+    const c = ctx;
+    c.addEventListener("statechange", () => {
+      if (c !== this.#ctx) return; // an old context, closed by a rebuild
+      const state: string = c.state;
+      recordEvent("context", { state, audioMs: Math.round(c.currentTime * 1000), sampleRate: c.sampleRate });
+      if (state === "running") {
+        this.#wasRunning = true;
+        if (this.#rateFix !== undefined) this.#rateFix.started = true;
+      } else {
+        this.#resumeContext("statechange");
+      }
+      this.#updateOverlay();
+    });
+    return c;
   }
 
   /** The audio context's rate and latencies, for the report. */
@@ -330,8 +410,39 @@ export class ListenPlayer {
     return this.#mode;
   }
 
+  /** A spare element of that kind (touched in the last gesture), if there is one. */
+  #takeReserve(video: boolean): HTMLMediaElement | undefined {
+    const i = this.#reserve.findIndex((e) => (e instanceof HTMLVideoElement) === video);
+    if (i < 0) return undefined;
+    return this.#reserve.splice(i, 1)[0];
+  }
+
+  /**
+   * Inside a gesture: keeps RESERVE_PER_KIND spare elements of each kind and touches them, so a
+   * pool rebuilt later without a gesture (the rate fix, the fallback) may still play on iOS.
+   */
+  #fillReserve(): void {
+    if (this.#ctx === undefined) return; // no Web Audio: nothing will be rebuilt by itself
+    for (const video of [false, true]) {
+      let have = this.#reserve.filter((e) => (e instanceof HTMLVideoElement) === video).length;
+      while (have++ < RESERVE_PER_KIND) {
+        const el = document.createElement(video ? "video" : "audio");
+        el.hidden = true;
+        this.#container.append(el);
+        this.#reserve.push(el);
+      }
+    }
+    for (const el of this.#reserve) {
+      try {
+        el.load();
+      } catch {
+        // nothing to load
+      }
+    }
+  }
+
   #newDeck(video: boolean, name: string): Deck {
-    const el = document.createElement(video ? "video" : "audio");
+    const el = this.#takeReserve(video) ?? document.createElement(video ? "video" : "audio");
     el.preload = "auto";
     if (el instanceof HTMLVideoElement) {
       el.playsInline = true;
@@ -414,6 +525,10 @@ export class ListenPlayer {
       context: this.#ctx?.state ?? "none",
       webAudio: this.#ctx !== undefined,
       webAudioOff: this.#webAudioOff,
+      webAudioPlan: this.#plan,
+      webAudioCheck: this.#check?.verdict,
+      rateFix: this.#rateFix,
+      reserve: this.#reserve.length,
       needsRestore: this.#needsRestore,
       audio: this.#contextInfo(),
       blocked: this.#blocked,
@@ -480,6 +595,7 @@ export class ListenPlayer {
   unlock(): void {
     this.#blocked = false;
     this.#ctx?.resume().then(() => this.#updateOverlay(), () => undefined);
+    this.#fillReserve();
     const sw = this.#switch;
     for (const d of this.#decks) {
       if (d === this.#active || d === sw?.from) continue;
@@ -1017,7 +1133,11 @@ export class ListenPlayer {
 
   #updateOverlay(): void {
     const wants = this.#active !== undefined && this.#state?.timeline.state === "playing";
-    const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running");
+    // A context just made for the rate fix may take a moment to run (Auto falls back if it doesn't).
+    const fix = this.#rateFix;
+    const fixStarting = fix !== undefined && !fix.started
+      && (this.#plan.autoFallback || performance.now() - fix.at < RATE_FIX_START_MS);
+    const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running" && !fixStarting);
     this.#overlay.hidden = !(wants && (locked || this.#needsRestore));
     const button = this.#overlay.querySelector("button");
     const text = this.#needsRestore ? "Tap to restore sound" : "Click to listen";
@@ -1037,8 +1157,22 @@ export class ListenPlayer {
    */
   #restoreWithoutWebAudio(): void {
     recordEvent("restore", { from: this.#active?.name, ...this.#contextInfo() });
+    if (this.#plan.autoFallback) this.#remember({ direct: true, reason: "mute" });
+    this.#rebuild(false, undefined, "mute", true);
+  }
+
+  /**
+   * Empties and drops every element and the context, then builds a fresh pool: through a new
+   * context (at `sampleRate` if given) or straight from the elements. The current entry is loaded
+   * into a new element and started at the timeline's position by the loop (as after a stuck-seek
+   * handoff). `gesture`: called inside a user gesture, so the new elements are unlocked at once;
+   * otherwise they are spares touched in an earlier gesture, or the overlay asks for a tap.
+   */
+  #rebuild(webAudio: boolean, sampleRate: number | undefined, why: string, gesture: boolean): void {
+    recordEvent("rebuild", { why, webAudio, sampleRate, from: this.#active?.name, gesture,
+      reserve: this.#reserve.length, ...this.#contextInfo() });
     this.#needsRestore = false;
-    this.#webAudioOff = "mute";
+    this.#handOffPending = undefined;
     const old = this.#decks.splice(0);
     this.#switch = undefined;
     for (const d of old) {
@@ -1055,9 +1189,86 @@ export class ListenPlayer {
     const ctx = this.#ctx;
     this.#ctx = undefined;
     ctx?.close().catch(() => undefined);
+    this.#wasRunning = false;
+    this.#clockWatch.reset();
+    this.#ctx = webAudio ? this.#createContext(sampleRate) : undefined;
+    this.#webAudioOff = this.#ctx !== undefined ? undefined : webAudio ? "no-context" : why;
+    this.#check = this.#ctx !== undefined ? new WebAudioCheck(this.#ctx.sampleRate) : undefined;
     this.#buildDecks();
+    if (!gesture) this.#ctx?.resume().catch(() => undefined);
+    recordEvent("rebuilt", { why, ...this.#contextInfo() });
     this.tick(); // loads the current entry into a new element
-    this.unlock(); // play() on it and load() on the others, inside the gesture
+    if (gesture) this.unlock(); // play() on it and load() on the others, inside the gesture
+    this.#hooks.onSound?.();
+  }
+
+  #remember(m: Omit<WebAudioMemory, "at">): void {
+    try {
+      this.#hooks.remember?.({ ...m, at: Date.now() });
+    } catch (e) {
+      recordError("remember", e);
+    }
+  }
+
+  /**
+   * A new "Web Audio" setting (or URL override), chosen in a gesture: rebuilds the pool if the
+   * path changes; a Web Audio path that already failed its check is acted on now if the new plan
+   * allows a fallback.
+   */
+  setWebAudioPlan(plan: WebAudioPlan, gesture = true): void {
+    this.#plan = plan;
+    const ctx = this.#ctx;
+    recordEvent("webaudio-plan", { plan, current: ctx !== undefined ? ctx.sampleRate : "direct" });
+    const rateDiffers = plan.webAudio && plan.sampleRate !== undefined && ctx !== undefined && ctx.sampleRate !== plan.sampleRate;
+    if (plan.webAudio !== (ctx !== undefined) || rateDiffers) {
+      this.#rateFixTried = false;
+      this.#rateFix = undefined;
+      this.#rebuild(plan.webAudio, plan.sampleRate, plan.webAudio ? "setting-on" : plan.why, gesture);
+      return;
+    }
+    const check = this.#check;
+    if (check !== undefined && check.failed) this.#onVerdict(check.verdict);
+    this.#hooks.onSound?.();
+  }
+
+  /** The sound path, for the note next to the setting. */
+  get sound(): SoundInfo {
+    const ctx = this.#ctx;
+    if (ctx === undefined) return { webAudio: false, off: this.#webAudioOff };
+    return { webAudio: true, sampleRate: ctx.sampleRate, fixedRate: this.#rateFix?.rate, verdict: this.#check?.verdict.kind };
+  }
+
+  /** What WebAudioCheck decided, and what to do about it. */
+  #onVerdict(v: PathVerdict): void {
+    const { kind: verdict, ...detail } = v;
+    recordEvent("webaudio-check", { verdict, ...detail, plan: this.#plan.why, autoFallback: this.#plan.autoFallback,
+      rateFix: this.#rateFix?.rate, ...this.#contextInfo() });
+    if (v.kind === "pending") return;
+    if (v.kind === "ok") {
+      const fix = this.#rateFix;
+      if (fix !== undefined && !fix.confirmed) {
+        fix.confirmed = true;
+        this.#remember({ rate: fix.rate, reason: "clock" });
+      }
+      this.#hooks.onSound?.();
+      return;
+    }
+    if (v.kind === "clock" && !this.#rateFixTried) {
+      // (a) A context at the rate the hardware really runs at, with a fresh pool routed through it.
+      this.#rateFixTried = true;
+      this.#rateFix = { rate: v.impliedRate, at: performance.now(), started: false, confirmed: false };
+      this.#rebuild(true, v.impliedRate, "clock", false);
+      return;
+    }
+    // (b) The rate fix didn't help (or the output drops out with the clock fine): Auto plays direct.
+    if (this.#plan.autoFallback) {
+      const reason = this.#rateFix !== undefined ? "rate-fix" : v.kind;
+      this.#remember({ direct: true, rate: this.#rateFix?.rate, reason });
+      this.#rebuild(false, undefined, reason, false);
+    } else {
+      recordEvent("webaudio-kept", { why: this.#plan.why, verdict: v.kind });
+      this.#hooks.onSound?.();
+    }
   }
 
   /** Reads the analyser of every element that plays (every METER_INTERVAL_MS). */
@@ -1098,17 +1309,35 @@ export class ListenPlayer {
       const l = d.meter.take();
       if (l.windows > 0) levels[d.name] = l;
     }
+    const fix = this.#rateFix;
+    if (fix !== undefined && !fix.started && ctx !== undefined && ctx.state !== "running"
+        && performance.now() - fix.at >= RATE_FIX_START_MS) {
+      // The new context didn't start (WebKit may want a gesture for it): Auto plays direct; On
+      // leaves it to the "Click to listen" overlay, whose tap resumes it.
+      fix.started = true;
+      recordEvent("rate-fix-start", { state: ctx.state, autoFallback: this.#plan.autoFallback });
+      if (this.#plan.autoFallback) {
+        this.#remember({ direct: true, rate: fix.rate, reason: "rate-fix-start" });
+        this.#rebuild(false, undefined, "rate-fix-start", false);
+        return;
+      }
+      this.#updateOverlay();
+    }
     if (a === undefined && Object.keys(levels).length === 0) {
       this.#clockWatch.reset();
       return;
     }
     const sample: Record<string, unknown> = {};
     const ctxState: string | undefined = ctx?.state;
+    let ck: number | undefined;
     if (ctx !== undefined) {
       sample["ctx"] = ctxState;
-      sample["ck"] = this.#clockWatch.sample(performance.now(), ctx.currentTime);
+      ck = this.#clockWatch.sample(performance.now(), ctx.currentTime);
+      sample["ck"] = ck;
       if (ctxState !== "running") this.#resumeContext("health");
     }
+    let shouldSound = false;
+    let level: Level | undefined;
     if (document.visibilityState !== "visible") sample["vis"] = document.visibilityState;
     const out: Record<string, unknown[]> = {};
     for (const name of Object.keys(levels)) {
@@ -1141,15 +1370,24 @@ export class ListenPlayer {
       if (c.vqTotal !== undefined) sample["vq"] = [c.vqTotal, c.vqDropped, c.vqCorrupted];
       const advancing = !el.paused && a.healthPosMs >= 0 && pos !== a.healthPosMs;
       a.healthPosMs = pos;
-      const level = levels[a.name];
-      if (a.analyser !== undefined && level !== undefined && this.#switch === undefined && !this.#needsRestore) {
-        const shouldSound = advancing && !el.seeking && !el.muted && a.level > 0 && ctxState === "running" && !this.#blocked;
+      level = this.#switch === undefined ? levels[a.name] : undefined;
+      shouldSound = advancing && !el.seeking && !el.muted && a.level > 0 && ctxState === "running" && !this.#blocked;
+      if (a.analyser !== undefined && level !== undefined && !this.#needsRestore) {
         // The decoded-bytes counter only counts where the engine fills it (it may stay 0 throughout).
         const decodedBytes = (c.audioBytes ?? 0) > 0 ? delta(c.audioBytes, prev.audioBytes) : undefined;
         const muted = a.mute.sample({ shouldSound, level, decodedBytes });
         if (a.mute.silentSeconds > 0) sample["ms"] = a.mute.silentSeconds;
         if (muted) this.#webAudioMuted(a);
       }
+    }
+    const check = this.#check;
+    if (check !== undefined && ctx !== undefined && !this.#needsRestore) {
+      const before = check.verdict.kind;
+      const v = check.sample({ ck, running: ctxState === "running", shouldSound, level });
+      if (v.kind !== "pending") sample["wa"] = v.kind;
+      recordHealth(sample);
+      if (v.kind !== before) this.#onVerdict(v);
+      return;
     }
     recordHealth(sample);
   }

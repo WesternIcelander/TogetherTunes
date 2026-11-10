@@ -18,6 +18,12 @@
 //   row, after the path had been heard. The player then offers to switch to playing straight from
 //   the elements (that needs a tap on iOS).
 // - `webAudioWanted`: the `?webaudio=0` A/B switch on the room URL.
+// - `WebAudioCheck`: whether the Web Audio path works at all: the audio clock runs at the rate the
+//   context reports (iOS can render at 44.1 kHz while the hardware pulls 48 kHz, report uhmxlu), and
+//   the output has no steady dropouts. The player recreates the context at the implied rate, or
+//   falls back to the direct path (Auto).
+// - `webAudioPlan`: the per-device "Web Audio" setting (Auto / On / Off), `?webaudio=0/1` and
+//   what Auto learnt on this browser, in that order of precedence.
 //
 // No DOM access and no imports, so it can be tested outside a browser.
 
@@ -224,4 +230,237 @@ export function webAudioWanted(param: string | null | undefined): boolean {
 export function delta(now: number | undefined, before: number | undefined): number | undefined {
   if (now === undefined || before === undefined || !Number.isFinite(now) || !Number.isFinite(before)) return undefined;
   return now >= before ? now - before : undefined;
+}
+
+// --- Is the Web Audio path healthy? (iOS sample-rate mismatch, report uhmxlu) ---
+//
+// On the iPod touch 7 (iOS 15.1) the AudioContext reported 44100 Hz while its clock ran 1086–1091
+// ms per wall second (= 48000 / 44100): the hardware pulled 48 kHz from a graph rendering 44.1 kHz,
+// and the output had 5–11 dropouts per second. `WebAudioCheck` sees this from the health samples
+// (no UA sniffing); the player then recreates the context at the rate the clock implies, and if
+// that doesn't help, plays straight from the elements.
+
+/** The audio clock counts as off when it runs more than this many ms per 1000 ms fast or slow (2 %). */
+export const CLOCK_TOLERANCE = 20;
+/** ...in this many health samples in a row (one a second). */
+export const CLOCK_SAMPLES = 3;
+/**
+ * A clock sample outside [CLOCK_MIN, CLOCK_MAX] isn't a rate: the context stalled (interrupted,
+ * throttled) or caught up; it neither counts nor resets.
+ */
+export const CLOCK_MIN = 500;
+export const CLOCK_MAX = 2000;
+/** A second with at least this many gaps (dropouts) counts toward a failing path... */
+export const GAP_RATE = 3;
+/** ...for this many seconds in a row. */
+export const GAP_SECONDS = 3;
+/**
+ * ...but only when at most this share of its windows were exact silence throughout: sparse
+ * material (a click track: a 20 ms click a second, exact zeros between) has "gaps" next to every
+ * click but is mostly silent windows, while dropouts in music leave next to no silent window.
+ */
+export const GAP_MAX_SILENT_SHARE = 0.2;
+/** Clean clock samples in a row after which the path counts as fine (until something trips). */
+export const OK_SAMPLES = 5;
+
+/** The sample rates an audio device runs at; an implied rate snaps to the nearest one. */
+export const STANDARD_RATES = [8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 88200, 96000];
+
+/** `hz` snapped to the nearest standard rate within 1.5 %, else rounded. */
+export function snapRate(hz: number): number {
+  let best = Math.round(hz);
+  let bestErr = Infinity;
+  for (const r of STANDARD_RATES) {
+    const err = Math.abs(hz - r) / r;
+    if (err < bestErr) {
+      bestErr = err;
+      if (err <= 0.015) best = r;
+    }
+  }
+  return best;
+}
+
+/** One second of the Web Audio path, as WebAudioCheck sees it. */
+export interface PathSample {
+  /** `ClockWatch.sample` (audio-clock ms per 1000 ms of wall clock), undefined if none. */
+  ck: number | undefined;
+  /** The context ran during that second. */
+  running: boolean;
+  /** The element should be heard (see MuteSample); gaps only count then. */
+  shouldSound: boolean;
+  /** The playing element's meter over that second (undefined: not read). */
+  level?: Level;
+}
+
+export type PathVerdict =
+  | { kind: "pending" }
+  | { kind: "ok" }
+  /** The audio clock runs at `ratio` × real time; the hardware runs at about `impliedRate`. */
+  | { kind: "clock"; ratio: number; sampleRate: number; impliedRate: number }
+  /** Steady dropouts with the clock fine. */
+  | { kind: "gaps"; gapsPerSecond: number };
+
+/**
+ * Decides whether the Web Audio path works: "clock" when the audio clock stays more than
+ * CLOCK_TOLERANCE off for CLOCK_SAMPLES samples in a row while the context runs, "gaps" when the
+ * playing element has GAP_RATE+ dropouts a second for GAP_SECONDS seconds in a row while it should
+ * sound (and isn't sparse material), "ok" after OK_SAMPLES clean clock samples. A failing verdict
+ * sticks until `reset()`; "ok" can still turn into a failing one later.
+ */
+export class WebAudioCheck {
+  readonly #sampleRate: number;
+  #clockRun: number[] = [];
+  #okRun = 0;
+  #gapRun: number[] = [];
+  #verdict: PathVerdict = { kind: "pending" };
+
+  /** @param sampleRate what the context reports (`AudioContext.sampleRate`) */
+  constructor(sampleRate: number) {
+    this.#sampleRate = sampleRate;
+  }
+
+  get verdict(): PathVerdict {
+    return this.#verdict;
+  }
+
+  /** Whether the verdict is a failing one (clock or gaps). */
+  get failed(): boolean {
+    return this.#verdict.kind === "clock" || this.#verdict.kind === "gaps";
+  }
+
+  sample(s: PathSample): PathVerdict {
+    if (this.failed) return this.#verdict;
+    const ck = s.ck;
+    if (s.running && ck !== undefined && ck >= CLOCK_MIN && ck <= CLOCK_MAX) {
+      if (Math.abs(ck - 1000) > CLOCK_TOLERANCE) {
+        this.#okRun = 0;
+        this.#clockRun.push(ck);
+        if (this.#clockRun.length >= CLOCK_SAMPLES) {
+          const sorted = this.#clockRun.slice().sort((a, b) => a - b);
+          const ratio = (sorted[Math.floor(sorted.length / 2)] ?? 1000) / 1000;
+          this.#verdict = { kind: "clock", ratio, sampleRate: this.#sampleRate,
+            impliedRate: snapRate(this.#sampleRate * ratio) };
+          return this.#verdict;
+        }
+      } else {
+        this.#clockRun = [];
+        this.#okRun++;
+      }
+    }
+    const l = s.level;
+    if (s.running && s.shouldSound && l !== undefined && l.windows >= MIN_WINDOWS_PER_SECOND) {
+      if (l.gaps >= GAP_RATE && l.silent <= l.windows * GAP_MAX_SILENT_SHARE) {
+        this.#gapRun.push(l.gaps);
+        if (this.#gapRun.length > GAP_SECONDS) this.#gapRun.shift();
+        // Only "gaps with the clock fine": while the clock is off (or not yet measured), its own
+        // verdict (and fix) comes first.
+        if (this.#gapRun.length >= GAP_SECONDS && this.#clockRun.length === 0 && this.#okRun > 0) {
+          const sum = this.#gapRun.reduce((a, b) => a + b, 0);
+          this.#verdict = { kind: "gaps", gapsPerSecond: Math.round(sum / this.#gapRun.length * 10) / 10 };
+          return this.#verdict;
+        }
+      } else {
+        this.#gapRun = [];
+      }
+    }
+    if (this.#verdict.kind === "pending" && this.#okRun >= OK_SAMPLES && this.#gapRun.length === 0) {
+      this.#verdict = { kind: "ok" };
+    }
+    return this.#verdict;
+  }
+
+  reset(): void {
+    this.#clockRun = [];
+    this.#okRun = 0;
+    this.#gapRun = [];
+    this.#verdict = { kind: "pending" };
+  }
+}
+
+// --- The per-device "Web Audio" setting ---
+
+/** The listen-mode setting, per browser: auto (default), on, off. */
+export type WebAudioSetting = "auto" | "on" | "off";
+
+/** A stored setting, "auto" for anything else (nothing stored, blocked storage). */
+export function parseWebAudioSetting(s: string | null | undefined): WebAudioSetting {
+  return s === "on" || s === "off" ? s : "auto";
+}
+
+/**
+ * The `?webaudio=` URL override: false for 0/off/false/no, true for 1/on/true/yes, undefined when
+ * absent or anything else (the setting decides).
+ */
+export function webAudioOverride(param: string | null | undefined): boolean | undefined {
+  if (param === null || param === undefined) return undefined;
+  const v = param.trim().toLowerCase();
+  if (["0", "off", "false", "no"].includes(v)) return false;
+  if (["1", "on", "true", "yes"].includes(v)) return true;
+  return undefined;
+}
+
+/** What Auto learnt on this browser: the rate that fixed the clock, or that only the direct path works. */
+export interface WebAudioMemory {
+  /** The sample rate to create the context at. */
+  rate?: number;
+  /** Web Audio failed here even after the rate fix: start on the direct path. */
+  direct?: boolean;
+  /** Why (for diagnostics): "clock", "gaps", "mute", "rate-fix". */
+  reason?: string;
+  /** When it was learnt (epoch ms). */
+  at: number;
+}
+
+/** Auto forgets what it learnt after this long (an OS update may have fixed it). */
+export const MEMORY_MAX_AGE_MS = 30 * 24 * 3600 * 1000;
+
+/** The stored memory, or undefined when absent, malformed or older than MEMORY_MAX_AGE_MS. */
+export function parseWebAudioMemory(json: string | null | undefined, nowMs: number): WebAudioMemory | undefined {
+  if (json === null || json === undefined || json === "") return undefined;
+  let v: unknown;
+  try {
+    v = JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+  if (typeof v !== "object" || v === null) return undefined;
+  const o = v as Record<string, unknown>;
+  const at = o["at"];
+  if (typeof at !== "number" || !Number.isFinite(at) || nowMs - at > MEMORY_MAX_AGE_MS || at > nowMs + 60_000) return undefined;
+  const m: WebAudioMemory = { at };
+  const rate = o["rate"];
+  if (typeof rate === "number" && Number.isFinite(rate) && rate >= 8000 && rate <= 192000) m.rate = Math.round(rate);
+  if (o["direct"] === true) m.direct = true;
+  if (typeof o["reason"] === "string") m.reason = o["reason"];
+  if (m.rate === undefined && m.direct !== true) return undefined;
+  return m;
+}
+
+/** How the player starts and what it may do on its own. */
+export interface WebAudioPlan {
+  /** Route the elements through Web Audio. */
+  webAudio: boolean;
+  /** Create the context at this rate (from the memory), else the browser's default. */
+  sampleRate?: number;
+  /** May switch to the direct path by itself when the check fails (Auto only). */
+  autoFallback: boolean;
+  /** What decided: the URL override, the setting, Auto's memory, or the default. */
+  why: "url" | "setting" | "remembered" | "default";
+}
+
+/**
+ * Precedence: `?webaudio=0/1` (testing) over the setting over Auto's memory. On and `?webaudio=1`
+ * use Web Audio (with the rate fix) but never fall back by themselves; Off and `?webaudio=0` play
+ * straight from the elements; Auto uses Web Audio unless it learnt that only the direct path works
+ * here, and falls back by itself.
+ */
+export function webAudioPlan(override: boolean | undefined, setting: WebAudioSetting,
+    memory: WebAudioMemory | undefined): WebAudioPlan {
+  const rate = memory?.rate !== undefined ? { sampleRate: memory.rate } : {};
+  if (override === false) return { webAudio: false, autoFallback: false, why: "url" };
+  if (override === true) return { webAudio: true, ...rate, autoFallback: false, why: "url" };
+  if (setting === "off") return { webAudio: false, autoFallback: false, why: "setting" };
+  if (setting === "on") return { webAudio: true, ...rate, autoFallback: false, why: "setting" };
+  if (memory?.direct === true) return { webAudio: false, autoFallback: false, why: "remembered" };
+  return { webAudio: true, ...rate, autoFallback: true, why: memory?.rate !== undefined ? "remembered" : "default" };
 }

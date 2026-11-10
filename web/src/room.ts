@@ -12,13 +12,16 @@
 // room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
 // In listen mode, "Send diagnostics" posts what the player did (diagnostics.ts) to the server log,
 // for devices without a console; `?sync=rate|seek` overrides the sync mode for testing, and
-// `?webaudio=0` plays straight from the media elements instead of through Web Audio (A/B test).
+// The "Web Audio" setting (Auto / On / Off, per browser) decides whether the media elements play
+// through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`).
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
-import { webAudioWanted } from "./audiohealth.js";
+import {
+  parseWebAudioMemory, parseWebAudioSetting, webAudioOverride, webAudioPlan, type WebAudioMemory, type WebAudioSetting,
+} from "./audiohealth.js";
 import { ClockSync } from "./clocksync.js";
 import { captureErrors, recordEvent, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
-import { ListenPlayer } from "./listen.js";
+import { ListenPlayer, type SoundInfo } from "./listen.js";
 import { syncModeFor, type EngineHints } from "./listensync.js";
 import {
   chooseMode, DelayedTimeline, effectiveDelay, formatSeconds, modeKey, nudgeKey, outputDelay, parseNudge, stepNudge,
@@ -67,6 +70,31 @@ export function loadAudioOnly(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Where the "Web Audio" setting (auto / on / off) is remembered (this browser only, all rooms). */
+const WEB_AUDIO_KEY = "togethertunes.webAudio";
+/** What Auto learnt on this browser (WebAudioMemory as JSON: the rate that works, or direct only). */
+const WEB_AUDIO_MEMORY_KEY = "togethertunes.webAudioAuto";
+
+function loadWebAudioSetting(): WebAudioSetting {
+  return parseWebAudioSetting(storageGet(WEB_AUDIO_KEY));
+}
+
+function loadWebAudioMemory(): WebAudioMemory | undefined {
+  return parseWebAudioMemory(storageGet(WEB_AUDIO_MEMORY_KEY), Date.now());
+}
+
+/** The `?webaudio=0/1` override (testing), undefined without one. */
+function urlWebAudio(): boolean | undefined {
+  return webAudioOverride(new URLSearchParams(location.search).get("webaudio"));
+}
+
+/** The note next to the setting: how the sound plays now. */
+export function soundNote(sound: SoundInfo): string {
+  if (!sound.webAudio) return "Sound: direct (no volume control)";
+  if (sound.fixedRate !== undefined) return "Sound: Web Audio at " + Math.round(sound.fixedRate / 100) / 10 + " kHz";
+  return "";
 }
 
 function saveAudioOnly(on: boolean): void {
@@ -815,9 +843,37 @@ function switchMode(m: RoomMode): void {
 
 function createPlayer(): ListenPlayer {
   const syncMode = syncModeFor(engineHints(), new URLSearchParams(location.search).get("sync"));
+  const select = element("room-webaudio") as HTMLSelectElement;
+  const note = element("room-webaudio-note");
+  const showSound = (): void => {
+    const sound = player?.sound;
+    note.textContent = sound !== undefined ? soundNote(sound) : "";
+    const override = urlWebAudio();
+    note.title = sound !== undefined && !sound.webAudio
+      ? "Played straight from the media element: no crossfade when switching to or from audio only, and"
+        + " originals play without their loudness adjustment where the browser can't set the volume (iOS)."
+        + (sound.off !== undefined ? " (" + sound.off + ")" : "") : "";
+    if (override !== undefined) note.textContent += " (?webaudio=" + (override ? "1" : "0") + " in the URL)";
+  };
   const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly(),
-    syncMode, webAudioWanted(new URLSearchParams(location.search).get("webaudio")));
+    syncMode, webAudioPlan(urlWebAudio(), loadWebAudioSetting(), loadWebAudioMemory()), {
+      remember: (m) => storageSet(WEB_AUDIO_MEMORY_KEY, JSON.stringify(m)),
+      onSound: showSound,
+    });
   player = p;
+  const hint = element("room-webaudio-hint");
+  select.value = loadWebAudioSetting();
+  hint.hidden = select.value !== "off";
+  select.addEventListener("change", () => {
+    const setting = parseWebAudioSetting(select.value);
+    hint.hidden = setting !== "off";
+    storageSet(WEB_AUDIO_KEY, setting === "auto" ? null : setting);
+    // A deliberate choice starts over: Auto checks this browser again.
+    storageSet(WEB_AUDIO_MEMORY_KEY, null);
+    // The change event is a user gesture: the rebuilt elements are unlocked in it.
+    p.setWebAudioPlan(webAudioPlan(urlWebAudio(), setting, undefined));
+  });
+  showSound();
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
   toggle.addEventListener("change", () => {
@@ -857,6 +913,8 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
     page: stripQuery(location.pathname),
     syncOverride: new URLSearchParams(location.search).get("sync"),
     webAudioOverride: new URLSearchParams(location.search).get("webaudio"),
+    webAudioSetting: storageGet(WEB_AUDIO_KEY),
+    webAudioMemory: storageGet(WEB_AUDIO_MEMORY_KEY),
     roomId,
     mode,
     visibility: document.visibilityState,
