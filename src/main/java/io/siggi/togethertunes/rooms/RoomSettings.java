@@ -41,6 +41,7 @@ import java.util.function.Function;
  *   <tr><td>{@code overlay.heightPct}</td><td>22</td><td>{@value #MIN_OVERLAY_HEIGHT_PCT}..{@value #MAX_OVERLAY_HEIGHT_PCT}, % of the frame height</td></tr>
  *   <tr><td>{@code overlay.margin}</td><td>3</td><td>0..{@value #MAX_OVERLAY_MARGIN}, % of the frame height</td></tr>
  *   <tr><td>{@code outputs.rtmp.playbackUrl}</td><td>{@code ""} (none)</td><td>the viewer URL the RTMP service gives out; http(s), rtmp(s), rtsp(t), at most {@value #MAX_URL_LENGTH} characters</td></tr>
+ *   <tr><td>{@code outputs.rtmp.idleStopMinutes}</td><td>10</td><td>1..{@value #MAX_IDLE_STOP_MINUTES}; the RTMP push is turned off after the room was idle this long, at most the server's {@code outputs.rtmp.maxIdleStopMinutes} (higher values act as that)</td></tr>
  *   <tr><td>{@code outputs.ts.join}</td><td>{@code "next"}</td><td>{@code next} | {@code latest} (join point of {@code .ts} viewers)</td></tr>
  *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls}</td><td>5000 / 2000 / 8000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
  * </table>
@@ -58,6 +59,8 @@ public final class RoomSettings {
     public static final int MAX_OVERLAY_MARGIN = 20;
     public static final int MAX_DELAY_MS = 120_000;
     public static final int MAX_URL_LENGTH = 2048;
+    public static final int DEFAULT_IDLE_STOP_MINUTES = 10;
+    public static final int MAX_IDLE_STOP_MINUTES = 1440;
 
     /** {@code requestScope}: whose library a room request may come from ({@code docs/libraries.md#visibility}). */
     public enum RequestScope {
@@ -111,6 +114,7 @@ public final class RoomSettings {
         def("overlay.heightPct", 22, whole(MIN_OVERLAY_HEIGHT_PCT, MAX_OVERLAY_HEIGHT_PCT));
         def("overlay.margin", 3, whole(0, MAX_OVERLAY_MARGIN));
         def("outputs.rtmp.playbackUrl", "", RoomSettings::playbackUrl);
+        def("outputs.rtmp.idleStopMinutes", DEFAULT_IDLE_STOP_MINUTES, whole(1, MAX_IDLE_STOP_MINUTES));
         def("outputs.ts.join", "next", choice("next", "latest"));
         def("estimatedDelayMs.rtmp", 5000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.ts", 2000, whole(0, MAX_DELAY_MS));
@@ -410,6 +414,14 @@ public final class RoomSettings {
     public String rtmpPlaybackUrl() {
         String url = (String) values.get("outputs.rtmp.playbackUrl");
         return url.isEmpty() ? null : url;
+    }
+
+    /**
+     * Minutes of idleness after which the RTMP push is turned off (the room's half; the effective
+     * limit is at most the server's {@code outputs.rtmp.maxIdleStopMinutes}).
+     */
+    public int rtmpIdleStopMinutes() {
+        return (Integer) values.get("outputs.rtmp.idleStopMinutes");
     }
 
     /** Whether {@code .ts} viewers get the most recent unit at once ({@code join=latest}) instead of waiting for the next. */

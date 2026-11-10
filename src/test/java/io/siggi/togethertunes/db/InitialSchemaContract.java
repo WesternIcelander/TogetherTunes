@@ -68,7 +68,7 @@ abstract class InitialSchemaContract {
         t("room_requests", "id", "room_id", "item_id", "by_user_id", "by_guest_id", "by_name", "via", "at",
                 "entry_id", "added_to_owner_library");
         t("stream_outputs", "id", "room_id", "kind", "token", "rtmp_url", "rtmp_key_enc", "enabled",
-                "created_at", "rtmp_key");
+                "created_at", "rtmp_key", "stopped_reason", "stopped_at", "stopped_idle_minutes");
         t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
                 "item_id", "deduplicated");
         t("guest_upload_starts", "id", "guest_id", "ip_key_hash", "created_at");

@@ -226,14 +226,17 @@ class RoomsApiTest {
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
         assertEquals(JsonParser.parseString("{\"guests\":{\"enabled\":true,\"canVote\":true,\"canRequestLibrary\":true,"
                 + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{\"rtmp\":"
-                + "{\"enabled\":true},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true}}}"), JsonParser.parseString(r.body()));
+                + "{\"enabled\":true,\"maxIdleStopMinutes\":60},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true}}}"),
+                JsonParser.parseString(r.body()));
         settings.set(Settings.GUESTS_ENABLED, false);
         settings.set(Settings.GUESTS_CAN_UPLOAD, true);
         settings.set(Settings.GUESTS_CAN_YOUTUBE, true);
         settings.set(Settings.YTDLP_ENABLED, false); // canYoutube needs yt-dlp too
         settings.set(Settings.OVERLAY_ENABLED, true);
         settings.set(Settings.OUTPUTS_TS_ENABLED, false);
+        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 15);
         JsonObject sw = json(call(alice, "GET", path, null));
+        assertEquals(15, sw.getAsJsonObject("outputs").getAsJsonObject("rtmp").get("maxIdleStopMinutes").getAsInt());
         assertFalse(sw.getAsJsonObject("guests").get("enabled").getAsBoolean());
         assertTrue(sw.getAsJsonObject("guests").get("canUpload").getAsBoolean());
         assertFalse(sw.getAsJsonObject("guests").get("canYoutube").getAsBoolean());

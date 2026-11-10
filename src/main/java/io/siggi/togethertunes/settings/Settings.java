@@ -90,6 +90,12 @@ public final class Settings {
     public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
     public static final SettingKey<Boolean> OUTPUTS_TS_ENABLED = SettingKey.bool("outputs.ts.enabled", true);
     public static final SettingKey<Boolean> OUTPUTS_HLS_ENABLED = SettingKey.bool("outputs.hls.enabled", true);
+    /**
+     * The longest a room's RTMP push keeps running while the room is idle, in minutes: the room's
+     * {@code outputs.rtmp.idleStopMinutes} applies up to this ({@code docs/program-output.md#idle-stop}).
+     */
+    public static final SettingKey<Integer> OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES = SettingKey.integer(
+            "outputs.rtmp.maxIdleStopMinutes", 60, 1, 1440);
 
     // Overlay
     public static final SettingKey<Boolean> OVERLAY_ENABLED = SettingKey.bool("overlay.enabled", false);
@@ -106,7 +112,7 @@ public final class Settings {
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
                 ROOMS_REQUEST_HISTORY_DAYS,
-                OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
+                OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OVERLAY_ENABLED)) {
             if (keys.put(k.name(), k) != null) {
                 throw new ExceptionInInitializerError("duplicate setting " + k.name());
@@ -350,6 +356,10 @@ public final class Settings {
 
     public boolean outputsRtmpEnabled() throws SQLException {
         return get(OUTPUTS_RTMP_ENABLED);
+    }
+
+    public int outputsRtmpMaxIdleStopMinutes() throws SQLException {
+        return get(OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES);
     }
 
     public boolean outputsTsEnabled() throws SQLException {

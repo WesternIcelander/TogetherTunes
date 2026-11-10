@@ -48,6 +48,7 @@ import io.siggi.togethertunes.output.LegacyRtmpKeys;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
+import io.siggi.togethertunes.output.RtmpIdleStop;
 import io.siggi.togethertunes.output.RtmpPushers;
 import io.siggi.togethertunes.output.StreamOutputControl;
 import io.siggi.togethertunes.output.StreamOutputs;
@@ -80,6 +81,7 @@ import io.siggi.togethertunes.rooms.RoomGuests;
 import io.siggi.togethertunes.rooms.RoomQueue;
 import io.siggi.togethertunes.rooms.RoomRegistry;
 import io.siggi.togethertunes.rooms.RoomLinks;
+import io.siggi.togethertunes.rooms.RoomSettings;
 import io.siggi.togethertunes.rooms.RoomSocket;
 import io.siggi.togethertunes.rooms.Rooms;
 import io.siggi.togethertunes.rooms.RoomsApi;
@@ -304,6 +306,14 @@ public final class Main {
         StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
         StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
                 liveTs);
+        // RTMP pushes are turned off after the room was idle for its limit (docs/program-output.md#idle-stop).
+        RtmpIdleStop rtmpIdleStop = new RtmpIdleStop(streamOutputs, roomId -> {
+            Rooms.Room room = rooms.record(roomId);
+            int roomMinutes = room == null ? RoomSettings.DEFAULT_IDLE_STOP_MINUTES : room.settings().rtmpIdleStopMinutes();
+            return RtmpIdleStop.effectiveMinutes(roomMinutes, settings.outputsRtmpMaxIdleStopMinutes());
+        }, System::currentTimeMillis);
+        programOutputs.idleListener(rtmpIdleStop::idle);
+        outputControl.idleStop(rtmpIdleStop);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
         admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.

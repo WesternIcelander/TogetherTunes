@@ -46,7 +46,8 @@ import java.util.Set;
  * "playbackUrl"?} (the room
  * setting {@code outputs.rtmp.playbackUrl}), {@code "rtmpAvailable"} (false if the server has no
  * ffmpeg) and {@code "status"?: {"state": "connecting"|"connected"|"retrying"|"error", "detail"?,
- * "failures", "since", "retryAt"?}} while a push runs (moderators get the detail without URLs or
+ * "failures", "since", "retryAt"?}} while a push runs, to the owner only {@code "stopped"?: {"reason":
+ * "idle", "at", "idleMinutes"}} while the server's idle stop keeps it off ({@link RtmpIdleStop}) (moderators get the detail without URLs or
  * key hints, {@link RoomOutputs#moderatorDetail}). {@code active} = enabled AND the server
  * switch. Errors: {@code 401 not_authenticated} (not a user), {@code 403 forbidden}, {@code 404
  * room_not_found} / {@code output_not_found}, {@code 400 invalid_kind} / {@code invalid_enabled} /
@@ -254,6 +255,14 @@ public final class StreamOutputsApi {
                 m.put("playbackUrl", playback);
             }
             m.put("rtmpAvailable", control.rtmpAvailable());
+            StreamOutputs.Stopped stopped = o.stopped();
+            if (owner && !o.enabled() && stopped != null) {
+                Map<String, Object> st = new LinkedHashMap<>();
+                st.put("reason", stopped.reason());
+                st.put("at", stopped.at());
+                st.put("idleMinutes", stopped.idleMinutes());
+                m.put("stopped", st);
+            }
             RtmpPusher.Status s = control.rtmpStatus(a.room().id());
             if (s != null && s.state() != RtmpPusher.State.STOPPED) {
                 Map<String, Object> st = new LinkedHashMap<>();

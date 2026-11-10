@@ -131,13 +131,15 @@ public final class RoomGuests implements RoomGuestRules {
      * {@code guestsEnabled} off turns all of them off.
      */
     public record ServerSwitches(boolean guestsEnabled, Capabilities guests, boolean overlayEnabled,
-                                 boolean rtmpEnabled, boolean tsEnabled, boolean hlsEnabled) {
+                                 boolean rtmpEnabled, boolean tsEnabled, boolean hlsEnabled,
+                                 int rtmpMaxIdleStopMinutes) {
     }
 
     /** The server switches ({@link ServerSwitches}). */
     public ServerSwitches serverSwitches() throws SQLException {
         return new ServerSwitches(settings.guestsEnabled(), serverCapabilities(), settings.overlayEnabled(),
-                settings.outputsRtmpEnabled(), settings.outputsTsEnabled(), settings.outputsHlsEnabled());
+                settings.outputsRtmpEnabled(), settings.outputsTsEnabled(), settings.outputsHlsEnabled(),
+                settings.outputsRtmpMaxIdleStopMinutes());
     }
 
     /**

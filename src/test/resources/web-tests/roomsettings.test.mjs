@@ -21,7 +21,7 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   assert.equal(new Set(keys).size, keys.length);
   assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
-    "guests.canYoutube", "noRepeatWindow", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
+    "guests.canYoutube", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
     "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestScope", "requestsPerActor", "transitionCard",
     "voteSkipThreshold"]);
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
@@ -59,6 +59,24 @@ test("server switches grey out exactly what they turn off", () => {
   noRtmp.outputs.rtmp.enabled = false;
   assert.match(S.serverDisabledReason("outputs.rtmp.playbackUrl", noRtmp), /RTMP/);
   assert.match(S.serverDisabledReason("estimatedDelayMs.rtmp", noRtmp), /RTMP/);
+});
+
+test("the RTMP idle stop: the server's maximum is shown, and a higher value acts as it (clamped)", () => {
+  const def = S.SETTINGS.find((d) => d.key === "outputs.rtmp.idleStopMinutes");
+  assert.equal(def.default, 10);
+  assert.equal(def.min, 1);
+  assert.throws(() => S.parseInput(def, "0"), /1 to 1440/);
+  assert.equal(S.parseInput(def, "15"), 15);
+  const sw = clone(ALL_ON);
+  sw.outputs.rtmp.maxIdleStopMinutes = 60;
+  assert.equal(S.serverCapNote(def.key, 10, sw), "This server stops idle pushes after at most 60 minutes.");
+  assert.equal(S.serverCapNote(def.key, 90, sw), "This server stops idle pushes after at most 60 minutes, so 60 applies.");
+  assert.equal(S.serverCapNote(def.key, 90, ALL_ON), null);
+  assert.equal(S.serverCapNote(def.key, 90, undefined), null);
+  assert.equal(S.serverCapNote("gapMs", 90, sw), null);
+  const noRtmp = clone(sw);
+  noRtmp.outputs.rtmp.enabled = false;
+  assert.match(S.serverDisabledReason(def.key, noRtmp), /RTMP/);
 });
 
 test("dotted names read and write nested objects", () => {

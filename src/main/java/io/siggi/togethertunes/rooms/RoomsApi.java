@@ -78,8 +78,9 @@ import java.util.Set;
  *       {@code invalid_limit}.</li>
  *   <li>{@code GET /api/rooms/{room}/server-switches} → {@code {"guests": {"enabled", "canVote",
  *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled"}, "outputs": {"rtmp":
- *       {"enabled"}, "ts": {"enabled"}, "hls": {"enabled"}}}}: the server switches behind the room
- *       settings, so the management view can grey out what the server turned off (the guest
+ *       {"enabled", "maxIdleStopMinutes"}, "ts": {"enabled"}, "hls": {"enabled"}}}}: the server
+ *       switches behind the room settings, so the management view can grey out what the server
+ *       turned off and show the server's cap on {@code outputs.rtmp.idleStopMinutes} (the guest
  *       capabilities are each the server's setting alone; {@code guests.enabled} off turns them
  *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}). Owner and moderators.</li>
  *   <li>{@code POST /api/rooms/{room}/requests/add-to-library} {@code {"requestIds": [id, …]}} (1..
@@ -414,7 +415,7 @@ public final class RoomsApi {
         g.put("canUpload", sw.guests().canUpload());
         g.put("canYoutube", sw.guests().canYoutube());
         Map<String, Object> outputs = new LinkedHashMap<>();
-        outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled()));
+        outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled(), "maxIdleStopMinutes", sw.rtmpMaxIdleStopMinutes()));
         outputs.put("ts", Map.of("enabled", sw.tsEnabled()));
         outputs.put("hls", Map.of("enabled", sw.hlsEnabled()));
         Map<String, Object> body = new LinkedHashMap<>();

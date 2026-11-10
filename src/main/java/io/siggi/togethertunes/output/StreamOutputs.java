@@ -81,11 +81,16 @@ public final class StreamOutputs {
 
     /** A {@code stream_outputs} row. Internal: holds the token and the stream key. */
     public record Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
-                         boolean enabled, long createdAt) {
+                         boolean enabled, long createdAt, Stopped stopped) {
         public Output {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(roomId, "roomId");
             Objects.requireNonNull(kind, "kind");
+        }
+
+        public Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
+                      boolean enabled, long createdAt) {
+            this(id, roomId, kind, token, rtmpUrl, rtmpKey, enabled, createdAt, null);
         }
 
         public boolean hasRtmpKey() {
@@ -98,6 +103,20 @@ public final class StreamOutputs {
             return "Output[id=" + id + ", roomId=" + roomId + ", kind=" + kind.wire() + ", enabled=" + enabled + "]";
         }
     }
+
+    /**
+     * Why the server turned an output off ({@link #stopIdle}), kept until {@code enabled} changes
+     * again.
+     *
+     * @param reason       {@value #STOPPED_IDLE}
+     * @param at           when, epoch ms
+     * @param idleMinutes  the idle limit that applied
+     */
+    public record Stopped(String reason, long at, int idleMinutes) {
+    }
+
+    /** {@link Stopped#reason()} of an RTMP output turned off after the room was idle too long. */
+    public static final String STOPPED_IDLE = "idle";
 
     /**
      * A change: {@code null} fields stay as they are. {@code rtmpKey} is only applied when
@@ -319,8 +338,10 @@ public final class StreamOutputs {
             if (changed.isEmpty()) {
                 return o;
             }
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE stream_outputs SET enabled = ?, rtmp_url = ?, rtmp_key = ? WHERE id = ?")) {
+            boolean keepStopped = !changed.contains("enabled");
+            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET enabled = ?, rtmp_url = ?,"
+                    + " rtmp_key = ?" + (keepStopped ? "" : ", stopped_reason = NULL, stopped_at = NULL,"
+                    + " stopped_idle_minutes = NULL") + " WHERE id = ?")) {
                 ps.setInt(1, enabled ? 1 : 0);
                 ps.setString(2, url);
                 ps.setString(3, key);
@@ -333,7 +354,52 @@ public final class StreamOutputs {
                 details.put("enabled", enabled);
             }
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_UPDATED, roomId, details);
-            return new Output(o.id(), roomId, o.kind(), o.token(), url, key, enabled, o.createdAt());
+            return new Output(o.id(), roomId, o.kind(), o.token(), url, key, enabled, o.createdAt(),
+                    keepStopped ? o.stopped() : null);
+        });
+    }
+
+    /**
+     * The server turns the room's RTMP output off because the room was idle for
+     * {@code idleMinutes} ({@code docs/program-output.md#idle-stop}): {@code enabled = false} as if
+     * the owner had turned it off (URL and key stay), with the reason recorded and an audit entry
+     * by the system (no actor).
+     *
+     * @return the output after the change, or null if the room has no RTMP output that is on
+     */
+    public Output stopIdle(String roomId, int idleMinutes) throws SQLException {
+        return db.write(c -> {
+            Output o = null;
+            try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE room_id = ? AND kind = 'rtmp'")) {
+                ps.setString(1, roomId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        o = row(rs);
+                    }
+                }
+            }
+            if (o == null || !o.enabled()) {
+                return null;
+            }
+            long now = EpochMs.now(clock);
+            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET enabled = 0,"
+                    + " stopped_reason = ?, stopped_at = ?, stopped_idle_minutes = ? WHERE id = ? AND enabled = 1")) {
+                ps.setString(1, STOPPED_IDLE);
+                ps.setLong(2, now);
+                ps.setInt(3, idleMinutes);
+                ps.setString(4, o.id());
+                if (ps.executeUpdate() == 0) {
+                    return null;
+                }
+            }
+            Map<String, Object> details = details(o.id(), o.kind());
+            details.put("changed", List.of("enabled"));
+            details.put("enabled", false);
+            details.put("reason", STOPPED_IDLE);
+            details.put("idleMinutes", idleMinutes);
+            AuditLog.write(c, now, null, null, null, AUDIT_UPDATED, roomId, details);
+            return new Output(o.id(), roomId, o.kind(), o.token(), o.rtmpUrl(), o.rtmpKey(), false, o.createdAt(),
+                    new Stopped(STOPPED_IDLE, now, idleMinutes));
         });
     }
 
@@ -378,12 +444,13 @@ public final class StreamOutputs {
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_ROTATED, roomId,
                     details(o.id(), o.kind()));
             return new Output(o.id(), roomId, o.kind(), token, o.rtmpUrl(), o.rtmpKey(), o.enabled(),
-                    o.createdAt());
+                    o.createdAt(), o.stopped());
         });
     }
 
     private static final String SELECT =
-            "SELECT id, room_id, kind, token, rtmp_url, rtmp_key, enabled, created_at FROM stream_outputs";
+            "SELECT id, room_id, kind, token, rtmp_url, rtmp_key, enabled, created_at, stopped_reason, stopped_at,"
+                    + " stopped_idle_minutes FROM stream_outputs";
 
     private static Output find(Connection c, String roomId, String outputId) throws SQLException {
         if (outputId == null || roomId == null) {
@@ -404,8 +471,10 @@ public final class StreamOutputs {
         if (kind == null) {
             return null;
         }
+        String reason = rs.getString(9);
+        Stopped stopped = reason == null ? null : new Stopped(reason, rs.getLong(10), rs.getInt(11));
         return new Output(rs.getString(1), rs.getString(2), kind, rs.getString(4), rs.getString(5), rs.getString(6),
-                rs.getInt(7) != 0, rs.getLong(8));
+                rs.getInt(7) != 0, rs.getLong(8), stopped);
     }
 
     private static Map<String, Object> details(String outputId, Kind kind) {

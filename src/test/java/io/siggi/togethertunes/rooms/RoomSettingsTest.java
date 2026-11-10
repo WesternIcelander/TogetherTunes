@@ -44,6 +44,7 @@ class RoomSettingsTest {
         assertEquals(3, d.overlayMargin());
         assertNull(d.rtmpPlaybackUrl());
         assertFalse(d.tsJoinLatest());
+        assertEquals(10, d.rtmpIdleStopMinutes());
         assertEquals(5000, d.estimatedDelayMsRtmp());
         assertEquals(2000, d.estimatedDelayMsTs());
         assertEquals(8000, d.estimatedDelayMsHls());
@@ -61,10 +62,24 @@ class RoomSettingsTest {
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
                 + "\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
-                + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"\"},\"ts\":{\"join\":\"next\"}},"
+                + "\"outputs\":{\"rtmp\":{\"idleStopMinutes\":10,\"playbackUrl\":\"\"},\"ts\":{\"join\":\"next\"}},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 20);
+        assertEquals(RoomSettings.keys().size(), 21);
+    }
+
+    @Test
+    void rtmpIdleStopMinutesIsAWholeNumberFrom1To1440() {
+        assertEquals(1, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":1}}}"))
+                .rtmpIdleStopMinutes());
+        assertEquals(1440, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":1440}}}"))
+                .rtmpIdleStopMinutes());
+        for (String bad : List.of("0", "1441", "2.5", "\"10\"", "true")) {
+            HttpError e = assertThrows(HttpError.class, () -> RoomSettings.DEFAULTS.patch(
+                    obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":" + bad + "}}}")), bad);
+            assertEquals("invalid_setting", e.code(), bad);
+        }
+        assertEquals(10, RoomSettings.parse("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":0}}}").rtmpIdleStopMinutes());
     }
 
     @Test

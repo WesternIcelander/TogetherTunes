@@ -72,6 +72,14 @@ test("push line: live status first, failures and next try for retrying/error, of
   assert.equal(O.pushLine(undefined, row({ enabled: false, active: false }), 0), "Off");
   assert.equal(O.pushLine(undefined, row({ serverEnabled: false, active: false }), 0), "Off (disabled by the server admin)");
   assert.match(O.pushLine(undefined, row({ rtmpAvailable: false }), 0), /^Error: .*ffmpeg/);
+  // turned off by the server's idle stop: the owner is told why and what to do
+  const idle = row({ enabled: false, active: false, stopped: { reason: "idle", at: 1, idleMinutes: 10 } });
+  assert.equal(O.pushLine(undefined, idle, 0), "Stopped after 10 minutes with an empty queue. Turn on to start again.");
+  assert.equal(O.idleStopLine(row({ enabled: false, active: false, stopped: { reason: "idle", at: 1, idleMinutes: 1 } })),
+    "Stopped after 1 minute with an empty queue. Turn on to start again.");
+  assert.equal(O.idleStopLine(row({ stopped: { reason: "idle", at: 1, idleMinutes: 10 } })), undefined); // on again
+  assert.equal(O.pushLine(undefined, row({ enabled: false, active: false, serverEnabled: false,
+    stopped: { reason: "idle", at: 1, idleMinutes: 10 } }), 0), "Off (disabled by the server admin)");
   assert.equal(O.pushDetail({ kind: "rtmp", status: "retrying", detail: "live" }, failing), "live");
   assert.equal(O.pushDetail(undefined, failing), "Connection refused");
   assert.equal(O.pushDetail(undefined, row({ active: false, status: failing.status })), undefined);

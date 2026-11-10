@@ -67,6 +67,9 @@ class StreamOutputsApiTest {
     WebServer server;
     StreamOutputs rows;
     StreamOutputControl control;
+    RtmpIdleStop idleStop;
+    Rooms rooms;
+    Actor.User owner;
     final HttpClient http = HttpClient.newHttpClient();
     final TestClock clock = new TestClock(1_800_000_000_000L);
     final List<String> events = Collections.synchronizedList(new ArrayList<>());
@@ -86,7 +89,7 @@ class StreamOutputsApiTest {
         BuiltinRoles.ensure(db);
         settings = new Settings(db, config);
         Permissions permissions = new Permissions(db, settings);
-        Rooms rooms = new Rooms(db, permissions, clock);
+        rooms = new Rooms(db, permissions, clock);
         rows = new StreamOutputs(db, new SecureRandom(), clock);
         control = new StreamOutputControl(rows, new StreamOutputControl.Switches() {
             @Override
@@ -132,6 +135,10 @@ class StreamOutputsApiTest {
                         ? new RtmpPusher.Status(RtmpPusher.State.RETRYING, DETAIL, 2, 5, 9) : null;
             }
         }, revalidations::incrementAndGet);
+        idleStop = new RtmpIdleStop(rows, id -> RtmpIdleStop.effectiveMinutes(
+                rooms.record(id).settings().rtmpIdleStopMinutes(), settings.outputsRtmpMaxIdleStopMinutes()),
+                clock::millis);
+        control.idleStop(idleStop);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         new StreamOutputsApi(rooms, rows, control, config.publicBaseUrl()).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
@@ -144,7 +151,7 @@ class StreamOutputsApiTest {
         alice = sessions.create(aliceId, Actor.Via.BEARER, "test", null).token();
         bob = sessions.create(bobId, Actor.Via.BEARER, "test", null).token();
         carol = sessions.create(carolId, Actor.Via.BEARER, "test", null).token();
-        Actor.User owner = new Actor.User(aliceId, "s", Actor.Via.BEARER);
+        owner = new Actor.User(aliceId, "s", Actor.Via.BEARER);
         roomId = rooms.create(owner, "Club", "club", Rooms.Visibility.PUBLIC, null, "203.0.113.9").id();
         rooms.setRole(owner, roomId, bobId, Rooms.Role.MODERATOR, null);
     }
@@ -403,6 +410,132 @@ class StreamOutputsApiTest {
         });
         control.reconcile();
         assertTrue(pushes.isEmpty());
+    }
+
+    // ------------------------------------------------------------------ idle stop (RtmpIdleStop)
+
+    static final long MINUTE = 60_000;
+
+    JsonObject rtmpOutput(String token) throws Exception {
+        HttpResponse<String> r = call(token, "GET", "/api/rooms/club/outputs", null);
+        assertEquals(200, r.statusCode(), r.body());
+        for (var e : json(r).getAsJsonArray("items")) {
+            if (e.getAsJsonObject().get("kind").getAsString().equals("rtmp")) {
+                return e.getAsJsonObject();
+            }
+        }
+        throw new AssertionError(r.body());
+    }
+
+    @Test
+    void idleForTheLimitTurnsTheRtmpOutputOffUntilTheOwnerTurnsItOn() throws Exception {
+        JsonObject rtmp = create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\",\"rtmpKey\":\""
+                + KEY + "\"}");
+        create("{\"kind\":\"ts\",\"enabled\":false}");
+        assertTrue(pushes.containsKey(roomId));
+        idleStop.idle(roomId, true);
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), control.checkIdle());
+        assertTrue(pushes.containsKey(roomId));
+        events.clear();
+        clock.advance(1);
+        assertEquals(List.of(roomId), control.checkIdle());
+        // off like the owner's Turn off: push stopped, program output stopped (no active output left)
+        assertFalse(pushes.containsKey(roomId));
+        assertTrue(events.contains("unpush"), events.toString());
+        assertTrue(events.contains("stop"), events.toString());
+        JsonObject off = rtmpOutput(alice);
+        assertFalse(off.get("enabled").getAsBoolean());
+        assertEquals("rtmp://ingest.example/live", off.get("rtmpUrl").getAsString()); // still configured
+        assertEquals(KEY, off.get("rtmpKey").getAsString());
+        JsonObject stopped = off.getAsJsonObject("stopped");
+        assertEquals("idle", stopped.get("reason").getAsString());
+        assertEquals(10, stopped.get("idleMinutes").getAsInt());
+        assertEquals(clock.millis(), stopped.get("at").getAsLong());
+        assertFalse(rtmpOutput(bob).has("stopped")); // moderators just see it off
+        // audited like a turn-off, by the system (no actor, no IP), without the URL or key
+        String audit = db.read(c -> {
+            try (var st = c.createStatement(); var rs = st.executeQuery("SELECT actor_user_id, ip, details_json"
+                    + " FROM audit_log WHERE action = 'room.output_updated' ORDER BY at DESC, id DESC")) {
+                assertTrue(rs.next());
+                assertNull(rs.getString(1));
+                assertNull(rs.getString(2));
+                return rs.getString(3);
+            }
+        });
+        assertTrue(audit.contains("\"reason\":\"idle\"") && audit.contains("\"idleMinutes\":10")
+                && audit.contains("\"enabled\":false"), audit);
+        assertFalse(audit.contains(KEY) || audit.contains("ingest.example"), audit);
+
+        // activity (a request, a play) doesn't turn it back on
+        idleStop.idle(roomId, false);
+        control.reconcile();
+        assertEquals(List.of(), control.checkIdle());
+        assertFalse(pushes.containsKey(roomId));
+        idleStop.idle(roomId, true);
+
+        // the owner turns it on: push again, reason gone, a fresh timer although the room is still idle
+        HttpResponse<String> r = call(alice, "PATCH", "/api/rooms/club/outputs/" + rtmp.get("id").getAsString(),
+                "{\"enabled\":true}");
+        assertEquals(200, r.statusCode(), r.body());
+        assertTrue(pushes.containsKey(roomId));
+        assertFalse(rtmpOutput(alice).has("stopped"));
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), control.checkIdle());
+        clock.advance(1);
+        assertEquals(List.of(roomId), control.checkIdle());
+        assertFalse(pushes.containsKey(roomId));
+    }
+
+    @Test
+    void activityResetsTheIdleTimer() throws Exception {
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        idleStop.idle(roomId, true);
+        clock.advance(9 * MINUTE);
+        idleStop.idle(roomId, true); // still idle: the timer goes on
+        clock.advance(30_000);
+        idleStop.idle(roomId, false); // an item queued / playing
+        clock.advance(5 * MINUTE);
+        assertEquals(List.of(), control.checkIdle());
+        idleStop.idle(roomId, true); // the queue ran empty again
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), control.checkIdle());
+        assertTrue(pushes.containsKey(roomId));
+        clock.advance(1);
+        assertEquals(List.of(roomId), control.checkIdle());
+        assertEquals(List.of(), control.checkIdle()); // once
+    }
+
+    @Test
+    void theAdminMaximumCapsTheRoomSetting() throws Exception {
+        JsonObject patch = JsonParser.parseString("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":30}}}")
+                .getAsJsonObject();
+        rooms.update(owner, roomId, new Rooms.Edit(null, null, null, null, patch), null);
+        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 5);
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        idleStop.idle(roomId, true);
+        clock.advance(5 * MINUTE - 1);
+        assertEquals(List.of(), control.checkIdle());
+        clock.advance(1);
+        assertEquals(List.of(roomId), control.checkIdle());
+        assertEquals(5, rtmpOutput(alice).getAsJsonObject("stopped").get("idleMinutes").getAsInt());
+        // below the maximum, the room's setting applies
+        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 60);
+        assertEquals(30, RtmpIdleStop.effectiveMinutes(rooms.record(roomId).settings().rtmpIdleStopMinutes(),
+                settings.outputsRtmpMaxIdleStopMinutes()));
+        assertEquals(1, RtmpIdleStop.effectiveMinutes(1, 60));
+    }
+
+    @Test
+    void idleStopLeavesTsAndHlsAlone() throws Exception {
+        create("{\"kind\":\"ts\"}");
+        create("{\"kind\":\"hls\"}");
+        idleStop.idle(roomId, true);
+        clock.advance(24 * 60 * MINUTE);
+        assertEquals(List.of(), control.checkIdle());
+        for (StreamOutputs.Output o : rows.list(roomId)) {
+            assertTrue(o.enabled(), o.toString());
+        }
     }
 
     @Test

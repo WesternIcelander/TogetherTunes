@@ -83,6 +83,7 @@ abstract class SettingsContract {
         assertEquals(1800, settings.ingestMaxDurationSeconds());
         assertEquals(90, settings.roomsRequestHistoryDays());
         assertTrue(settings.outputsRtmpEnabled());
+        assertEquals(60, settings.outputsRtmpMaxIdleStopMinutes());
         assertTrue(settings.outputsTsEnabled());
         assertTrue(settings.outputsHlsEnabled());
         assertFalse(settings.overlayEnabled());
@@ -92,7 +93,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(22, all.size());
+        assertEquals(23, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -106,6 +107,10 @@ abstract class SettingsContract {
         settings.set(Settings.YTDLP_COOKIES_FILE, "/srv/cookies.txt");
         settings.set(Settings.RETENTION_UNREFERENCED_DAYS, 0);
         settings.set(Settings.OUTPUTS_HLS_ENABLED, false);
+        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 5);
+        assertEquals(5, settings.outputsRtmpMaxIdleStopMinutes());
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 0));
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 1441));
 
         assertEquals(RegistrationMode.INVITE, settings.registrationMode());
         assertEquals(GuestIdentity.IP, settings.guestsIdentifyBy());
@@ -196,7 +201,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(22, settings.all().size());
+        assertEquals(23, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

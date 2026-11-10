@@ -17,6 +17,9 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>RTMP:</b> {@link #reconcile} runs one push per room with an enabled RTMP row (and a
  *       URL) while {@code outputs.rtmp.enabled} is on, restarts it when the URL or key changed, and
  *       stops pushes whose row is gone or off (also after a room was deleted).</li>
+ *   <li><b>Idle stop:</b> with an {@link RtmpIdleStop} ({@link #idleStop}), each timer run first
+ *       turns off the RTMP output of rooms idle for their limit ({@link #checkIdle}), then
+ *       reconciles, which stops those pushes.</li>
  *   <li><b>{@code .ts}:</b> {@link #reconcile} ends {@code .ts} connections whose token no longer
  *       opens the room (rotated, disabled, deleted, server switch off). HLS needs nothing: every
  *       request checks its token.</li>
@@ -72,6 +75,7 @@ public final class StreamOutputControl implements AutoCloseable {
     private final Runnable revalidateTs;
     private final Map<String, Running> running = new HashMap<>();
     private ScheduledExecutorService timer;
+    private volatile RtmpIdleStop idleStop;
     private volatile Runnable reconcileListener = () -> {
     };
 
@@ -108,8 +112,32 @@ public final class StreamOutputControl implements AutoCloseable {
         timer.scheduleWithFixedDelay(this::reconcileQuietly, PERIOD_MS, PERIOD_MS, TimeUnit.MILLISECONDS);
     }
 
+    /** Turns RTMP outputs off after the room was idle too long ({@link RtmpIdleStop}); set before {@link #start}. */
+    public void idleStop(RtmpIdleStop idleStop) {
+        this.idleStop = idleStop;
+    }
+
+    /**
+     * Turns off the RTMP output of every room that was idle for its limit and brings the pushes and
+     * program outputs in line ({@link #roomChanged}). Runs on the timer before each reconcile.
+     *
+     * @return the rooms whose RTMP output was turned off
+     */
+    public List<String> checkIdle() {
+        RtmpIdleStop s = idleStop;
+        if (s == null) {
+            return List.of();
+        }
+        List<String> stopped = s.check();
+        for (String roomId : stopped) {
+            roomChanged(roomId, false);
+        }
+        return stopped;
+    }
+
     private void reconcileQuietly() {
         try {
+            checkIdle();
             reconcile();
         } catch (RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not reconcile the stream outputs", e);
@@ -155,6 +183,10 @@ public final class StreamOutputControl implements AutoCloseable {
             if (!desired.containsKey(roomId)) {
                 running.remove(roomId);
                 pushers.stop(roomId);
+                RtmpIdleStop s = idleStop;
+                if (s != null) {
+                    s.pushStopped(roomId);
+                }
                 LOG.log(System.Logger.Level.INFO, "RTMP push of room " + roomId + " stopped");
             }
         }
@@ -163,7 +195,13 @@ public final class StreamOutputControl implements AutoCloseable {
             if (want.equals(running.get(o.roomId()))) {
                 continue;
             }
-            running.put(o.roomId(), want);
+            boolean fresh = running.put(o.roomId(), want) == null;
+            if (fresh) {
+                RtmpIdleStop s = idleStop;
+                if (s != null) {
+                    s.pushStarted(o.roomId()); // a fresh idle timer (not when only the target changed)
+                }
+            }
             pushers.start(o.roomId(), o.rtmpUrl(), o.rtmpKey());
             LOG.log(System.Logger.Level.INFO, "RTMP push of room " + o.roomId() + " started");
         }

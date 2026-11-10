@@ -226,6 +226,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$ItemKind", "an item's kind for the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$Snapshot", "a room's timeline and entries copied for the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.output.HlsSegmenter$Segment", "an HLS segment in the ring (bytes served as video/mp2t), server-side only"),
+            Map.entry("io.siggi.togethertunes.output.StreamOutputs$Stopped", "why the server turned an output off (reason, time, minutes), part of the internal row; the outputs API copies its fields into a view"),
             Map.entry("io.siggi.togethertunes.output.RtmpPusher$Status", "an RTMP push's supervisor state, server-side until the outputs API turns it into a view"),
             Map.entry("io.siggi.togethertunes.output.LiveTsApi$Target", "what a .ts stream token opens (room id, join point), server-side only"),
             Map.entry("io.siggi.togethertunes.output.LiveTsApi$Connection", "an open .ts connection (token, room, queue) for revocation, server-side only"),

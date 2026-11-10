@@ -91,6 +91,16 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         Snapshot snapshot(String roomId) throws Exception;
     }
 
+    /**
+     * Told whether a room is idle (nothing playing, nothing queued: the program output shows the
+     * Idle card) after each committed change and each snapshot taken through the room's executor.
+     * Called on the room's executor thread: must only record it and return.
+     */
+    @FunctionalInterface
+    public interface IdleListener {
+        void idle(String roomId, boolean idle);
+    }
+
     /** Told when a room's packager (re)started, e.g. to attach the HLS ring or the RTMP pusher. Must not block. */
     @FunctionalInterface
     public interface StartListener {
@@ -174,6 +184,8 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
     private final List<StartListener> startListeners = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService sweeper;
     private volatile RoomSnapshots snapshots;
+    private volatile IdleListener idleListener = (roomId, idle) -> {
+    };
     private volatile boolean closed;
 
     /** Sweeps every {@link #SWEEP_MS} on a virtual thread. */
@@ -212,7 +224,28 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
 
     /** Snapshots taken through {@code registry} (set once the registry, which needs this hook, exists). */
     public void snapshotsFrom(RoomRegistry registry) {
-        this.snapshots = roomId -> registry.call(roomId, tx -> snapshot(tx.state()));
+        this.snapshots = roomId -> registry.call(roomId, tx -> {
+            observeIdle(tx.state());
+            return snapshot(tx.state());
+        });
+    }
+
+    /** Where the rooms' idle state goes ({@link RtmpIdleStop}). */
+    public void idleListener(IdleListener listener) {
+        this.idleListener = Objects.requireNonNull(listener);
+    }
+
+    /** Whether the room is idle: the timeline is idle and nothing is queued (suggestions don't count). */
+    static boolean idle(RoomState state) {
+        return state.timeline().state() == PlaybackState.IDLE && state.queue().isEmpty();
+    }
+
+    private void observeIdle(RoomState state) {
+        try {
+            idleListener.idle(state.id(), idle(state));
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "The idle listener failed", e);
+        }
     }
 
     /** Sets where snapshots come from (tests). */
@@ -234,6 +267,7 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
     @Override
     public void roomChanged(RoomState state, RoomChange change) {
         String roomId = change.roomId();
+        observeIdle(state);
         if (change.timelineChanged()) {
             String played = null;
             for (RoomEvent e : change.events()) {

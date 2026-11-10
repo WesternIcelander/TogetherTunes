@@ -164,6 +164,28 @@ class ProgramOutputsRoomsTest {
         return c;
     }
 
+    /** The idle state the RTMP idle stop sees: idle card only (nothing playing, nothing queued); paused isn't idle. */
+    @Test
+    void tellsWhetherTheRoomIsIdle() throws Exception {
+        java.util.Map<String, Boolean> idle = new java.util.concurrent.ConcurrentHashMap<>();
+        outputs.idleListener(idle::put);
+        entry("audio", false, 20_000, 1);
+        // started without a change seen: the room is read; nothing plays yet, but something is queued
+        ProgramOutputs.Lease lease = outputs.acquire(roomId);
+        assertEquals(PlaybackState.IDLE, initial.state());
+        assertEquals(Boolean.FALSE, idle.get(roomId));
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(Boolean.FALSE, idle.get(roomId));
+        registry.call(roomId, Playback::pause);
+        assertEquals(Boolean.FALSE, idle.get(roomId)); // paused with an item: not idle
+        registry.call(roomId, Playback::play);
+        assertEquals(Boolean.FALSE, idle.get(roomId));
+        // natural end with nothing queued: idle
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.PLAYED));
+        assertEquals(Boolean.TRUE, idle.get(roomId));
+        lease.close();
+    }
+
     @Test
     void followsTheRoom() throws Exception {
         String video = entry("video", false, 60_000, 1);
