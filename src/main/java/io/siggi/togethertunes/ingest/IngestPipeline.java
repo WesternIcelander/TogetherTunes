@@ -45,10 +45,11 @@ import java.util.regex.Pattern;
  *
  * <p><b>Re-encodes.</b> A {@code reencode} job (queued at startup for every ready item encoded for
  * another output profile, {@link IngestJobs#enqueueReencodes}) encodes a ready item again for the
- * current profile: an audio upload from its kept original; a YouTube item by downloading it again
- * (if that fails, from its old files, so the item isn't stuck on the old profile); a video upload
- * (and anything else without a usable source) from its old {@code mezz.mp4}, or {@code audio.m4a}
- * for an audio item. Old files were normalised when first ingested, so they are encoded without
+ * current profile: from its kept original if it has one (every item ingested since originals are
+ * kept for all items); otherwise (items made before that) a YouTube item by downloading it again
+ * (if that fails, from its old files, so the item isn't stuck on the old profile), and anything
+ * else from its old {@code mezz.mp4}, or {@code audio.m4a} for an audio item. Old files were
+ * normalised when first ingested, so they are encoded without
  * loudnorm and the stored {@code loudness_lufs} is kept. The item's {@code cover.jpg} is reused as
  * the staged cover. The item stays {@code ready} with its old files until the publish swaps the new
  * ones in. A job for an item that is no longer ready, or that is already encoded for the current
@@ -71,10 +72,13 @@ import java.util.regex.Pattern;
  * item row gets its kind, duration, profile and loudness; the queue marks it {@code ready}. The
  * staging directory is deleted after a successful publish.
  *
- * <p><b>Originals.</b> An audio upload keeps its source as {@code original.<ext>} in the item
- * directory, with {@code original_codec}, {@code original_web} and {@code original_gain_db}
- * ({@link Originals}). Video uploads and YouTube downloads keep no original (their source is
- * deleted with the staging/scratch directory), and their {@code original_*} columns are cleared.
+ * <p><b>Originals.</b> Every item keeps its source as {@code original.<ext>} in the item directory
+ * ({@link Originals}): the upload (hard-linked from the staging directory), or the merged YouTube
+ * download (moved out of the scratch directory), with {@code original_file} and
+ * {@code original_codec}. Only an audio upload's original gets {@code original_web} and
+ * {@code original_gain_db} (the web client may play it); a video item's or a YouTube item's
+ * original only feeds re-encodes. A re-encode from the original keeps it; one from the previous
+ * encode (no original) clears the {@code original_*} columns.
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -198,27 +202,28 @@ public final class IngestPipeline implements IngestQueue.Handler {
         STAGED,
         /** Downloaded with yt-dlp. */
         DOWNLOAD,
-        /** The kept original of an audio upload (re-encode). */
+        /** The item's kept original (re-encode). */
         ORIGINAL,
         /** The item's previous encode, {@code mezz.mp4} or {@code audio.m4a} (re-encode). */
         PREVIOUS
     }
 
     /**
-     * Where a job takes its source from. For a re-encode: a YouTube item is downloaded again, an
-     * item with its original file present re-encodes from it, anything else from its old files.
+     * Where a job takes its source from. For a re-encode: an item with its original file present
+     * re-encodes from it; without one (made before originals were kept for every item), a YouTube
+     * item is downloaded again, anything else re-encodes from its old files.
      */
     static SourceKind sourceKind(Kind kind, IngestItems.Item item, Path itemDir) {
         return switch (kind) {
             case UPLOAD -> SourceKind.STAGED;
             case YOUTUBE, REFETCH -> SourceKind.DOWNLOAD;
             case REENCODE -> {
-                if (item.fromYoutube() && item.youtubeId() != null) {
-                    yield SourceKind.DOWNLOAD;
-                }
                 String original = item.originalFile();
                 if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))) {
                     yield SourceKind.ORIGINAL;
+                }
+                if (item.fromYoutube() && item.youtubeId() != null) {
+                    yield SourceKind.DOWNLOAD;
                 }
                 yield SourceKind.PREVIOUS;
             }
@@ -379,9 +384,18 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 + " frames with an IDR every 2 s");
         ctx.progress(after += stepShare);
 
-        // original (audio uploads only; the originals of video uploads and downloads are not kept)
+        // original: every source except a previous encode is kept; only an audio upload's may be played
         Originals.Original original = null;
-        if ((job.kind() == Kind.UPLOAD || sourceKind == SourceKind.ORIGINAL) && !video) {
+        if (sourceKind != SourceKind.PREVIOUS && (video || !"upload".equals(item.source()))) {
+            original = Originals.keptOnly(probe, source.getFileName().toString());
+            if (sourceKind == SourceKind.DOWNLOAD) {
+                Files.move(source, work.resolve(original.file())); // the scratch copy isn't needed any more
+            } else {
+                linkOrCopy(source, work.resolve(original.file()));
+            }
+            log.append("[ingest] kept the original as " + original.file() + " (" + original.codec()
+                    + ", " + Files.size(work.resolve(original.file())) + " bytes) for re-encodes");
+        } else if (sourceKind != SourceKind.PREVIOUS) {
             long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
             // the original is played at the loudness audio.m4a actually has (loudnorm may have compressed it)
             Loudness.Measurement output = null;

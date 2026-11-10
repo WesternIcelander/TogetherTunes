@@ -50,6 +50,36 @@ class OriginalsTest {
         assertEquals("bin", Originals.extension(probe("ape", "ape"), "source.toolongextension"));
     }
 
+    private static MediaProbe videoProbe(String format, String audioCodec) {
+        return new MediaProbe(format, 0, 3_000_000, new MediaProbe.Stream(1, audioCodec, 0, 3_000_000),
+                new MediaProbe.Stream(0, "h264", 0, 3_000_000), null);
+    }
+
+    /** A video item's original uses the containers' video names. */
+    @Test
+    void videoExtensionComesFromTheContainer() {
+        assertEquals("mp4", Originals.extension(videoProbe(MP4, "aac"), "source.m4a"));
+        assertEquals("mp4", Originals.extension(videoProbe(MP4, "aac"), "source"));
+        assertEquals("mov", Originals.extension(videoProbe(MP4, "aac"), "source.MOV"));
+        assertEquals("m4v", Originals.extension(videoProbe(MP4, "aac"), "source.m4v"));
+        assertEquals("mkv", Originals.extension(videoProbe(MKV, "opus"), "src.mkv"));
+        assertEquals("mkv", Originals.extension(videoProbe(MKV, "opus"), "source.mka"));
+        assertEquals("mkv", Originals.extension(videoProbe(MKV, "opus"), "source"));
+        assertEquals("webm", Originals.extension(videoProbe(MKV, "opus"), "src.webm"));
+        assertEquals("avi", Originals.extension(videoProbe("avi", "pcm_s16le"), "source.avi"));
+        assertEquals("bin", Originals.extension(videoProbe("avi", "pcm_s16le"), "source"));
+    }
+
+    /** A video's or a YouTube download's original is kept for re-encodes only: never web-playable, no gain. */
+    @Test
+    void keptOnlyIsNeverWebPlayable() {
+        assertEquals(new Originals.Original("original.mkv", "opus/" + MKV, false, null),
+                Originals.keptOnly(videoProbe(MKV, "opus"), "src.mkv"));
+        // a YouTube download that turned out to be audio only: kept, but not played either
+        assertEquals(new Originals.Original("original.m4a", "aac/" + MP4, false, null),
+                Originals.keptOnly(probe(MP4, "aac"), "src.m4a"));
+    }
+
     @Test
     void webCodecWhitelist() {
         assertTrue(Originals.webCodec(probe("mp3", "mp3"), "mp3"));

@@ -27,7 +27,8 @@ import java.util.regex.Pattern;
  * An item's media files ({@code docs/api.md}, {@code docs/libraries.md#media-access-rules}):
  * {@code GET /media/{itemId}/{file}} with {@code file} one of {@code audio.m4a},
  * {@code mezz.mp4}, {@code original} (the kept original of an audio upload,
- * {@code items.original_file}) and {@code cover.jpg}.
+ * {@code items.original_file}; the originals of video and YouTube items only feed re-encodes and
+ * are never served) and {@code cover.jpg}.
  *
  * <ul>
  *   <li><b>Methods:</b> a {@code GET} route ({@code HEAD} runs it too; the router answers
@@ -133,10 +134,12 @@ public final class MediaApi {
     /** The file in the item directory for a served name; {@code 404} if the item doesn't exist. */
     private String fileName(String itemId, String name) throws SQLException {
         String[] row = db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file FROM items WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file, kind, source FROM items"
+                    + " WHERE id = ?")) {
                 ps.setString(1, itemId);
                 try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? new String[] {rs.getString(1), rs.getString(2)} : null;
+                    return rs.next() ? new String[] {rs.getString(1), rs.getString(2), rs.getString(3),
+                            rs.getString(4)} : null;
                 }
             }
         });
@@ -150,6 +153,10 @@ public final class MediaApi {
             return name;
         }
         String original = row[1];
+        // only an audio upload's original is played; a video or YouTube item's is for re-encodes
+        if (!"audio".equals(row[2]) || !"upload".equals(row[3])) {
+            original = null;
+        }
         if (original == null || !ORIGINAL_FILE.matcher(original).matches()) {
             throw new HttpError(404, "file_not_found", "The item has no original file");
         }

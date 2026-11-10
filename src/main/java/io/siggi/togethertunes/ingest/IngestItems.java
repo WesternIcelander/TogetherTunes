@@ -61,8 +61,8 @@ public final class IngestItems {
     /**
      * Records what the publish step produced: the item's kind, the duration of its
      * {@code audio.m4a}, the profile it was encoded for, the source's integrated loudness
-     * (null if it couldn't be measured, e.g. digital silence) and the kept original (null if none:
-     * video uploads and YouTube items; the {@code original_*} columns are then cleared). A purged
+     * (null if it couldn't be measured, e.g. digital silence) and the kept original (null if none,
+     * i.e. re-encoded from the previous encode; the {@code original_*} columns are then cleared). A purged
      * item that was fetched again is no longer purged. The status itself becomes {@code ready}
      * when the queue marks the job done.
      */

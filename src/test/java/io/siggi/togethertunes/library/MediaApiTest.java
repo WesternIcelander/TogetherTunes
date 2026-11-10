@@ -254,6 +254,10 @@ class MediaApiTest {
         assertEquals("file_not_found", code(get("/media/" + pending + "/audio.m4a", alice)));
         assertEquals("file_not_found", code(get("/media/" + purged + "/original", alice)));
         assertEquals("file_not_found", code(get("/media/" + odd + "/original", alice)));
+        // a video item's original is kept for re-encodes only, never served
+        String video = item("video", "ready", "original.mkv");
+        write(video, "original.mkv", 100);
+        assertEquals("file_not_found", code(get("/media/" + video + "/original", alice)));
     }
 
     @Test

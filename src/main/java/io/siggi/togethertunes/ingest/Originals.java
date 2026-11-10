@@ -5,9 +5,12 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 /**
- * The original file of an audio upload ({@code docs/library-and-ingest.md#originals-audio-uploads}):
- * kept as {@code media/<itemId>/original.<ext>} so the web client can play it instead of
- * {@code audio.m4a}. Originals of video uploads and YouTube downloads are not kept.
+ * The original file of an item ({@code docs/library-and-ingest.md#originals}): every item keeps its
+ * source as {@code media/<itemId>/original.<ext>} (the upload, or the merged YouTube download), so
+ * a re-encode starts from it without another generation of loss and without YouTube. Only an
+ * <b>audio upload</b>'s original is ever played: the web client plays it instead of
+ * {@code audio.m4a}, with the rules below. The original of a video item or of a YouTube item only
+ * feeds re-encodes ({@link #keptOnly}: {@code original_web} 0, no gain).
  *
  * <ul>
  *   <li>{@code original_codec} is ffprobe's audio codec and container, {@code <codec_name>/<format_name>},
@@ -69,12 +72,26 @@ public final class Originals {
      * extensions (Matroska/WebM) or ones not listed, the upload's own extension is used if it is
      * plain (lowercase letters and digits), else {@code bin}.
      *
-     * @param uploadedName the staged file name ({@code source} or {@code source.<ext>})
+     * For a video item, the MP4/MOV family becomes {@code mp4} (or {@code mov}/{@code m4v} from
+     * the upload's name) and Matroska {@code mkv} (or {@code webm}).
+     *
+     * @param uploadedName the staged file name ({@code source} or {@code source.<ext>}), or the
+     *                     downloaded {@code src.<ext>}
      */
     static String extension(MediaProbe probe, String uploadedName) {
         String given = extensionOf(uploadedName);
         String format = probe.formatName().toLowerCase(Locale.ROOT);
         String codec = probe.audio().codec().toLowerCase(Locale.ROOT);
+        if (probe.isVideo()) {
+            // the same rules for a video item, with the video names of the containers
+            if (format.contains("mp4") || format.contains("m4a") || format.startsWith("mov,")) {
+                return given != null && (given.equals("mov") || given.equals("m4v")) ? given : "mp4";
+            }
+            if (format.contains("matroska") || format.contains("webm")) {
+                return given != null && given.equals("webm") ? "webm" : "mkv";
+            }
+            return given != null ? given : "bin";
+        }
         switch (format) {
             case "mp3":
                 return "mp3";
@@ -188,5 +205,13 @@ public final class Originals {
         boolean web = webCodec(probe, ext) && durationMatches(originalUs, audioM4aUs)
                 && loudnessMismatch(loudness, output) == null;
         return new Original(BASE_NAME + "." + ext, codec(probe), web, gainDb(loudness, output));
+    }
+
+    /**
+     * An original that is kept only to re-encode from: a video item's, or a YouTube download's.
+     * Never web-playable and without a gain (only audio uploads are played from their original).
+     */
+    static Original keptOnly(MediaProbe probe, String sourceName) {
+        return new Original(BASE_NAME + "." + extension(probe, sourceName), codec(probe), false, null);
     }
 }
