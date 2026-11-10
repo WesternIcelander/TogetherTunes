@@ -54,6 +54,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
 | [api.md](api.md) | REST endpoints and WebSocket messages |
 | [milestones.md](milestones.md) | Build order, with acceptance criteria and testing strategy |
+| [user-guide.md](user-guide.md) | External user documentation: using the stream URLs in VRChat (allowlist, "Allow Untrusted URLs"), an RTMP service like VRCDN, HLS desync. The UI itself names no third-party products |
 | [future-ideas.md](future-ideas.md) | Ideas that are **not** to be implemented yet (e.g. live input from OBS) |
 
 ## Glossary
