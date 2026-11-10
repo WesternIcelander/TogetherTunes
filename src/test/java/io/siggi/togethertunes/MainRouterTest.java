@@ -39,6 +39,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -203,6 +204,42 @@ class MainRouterTest {
         HttpResponse<String> list = get("/api/rooms");
         assertEquals(200, list.statusCode());
         assertEquals("{\"items\":[]}", list.body());
+    }
+
+    /**
+     * The room page's shell (shell.ts) fetches the pages it shows in place and runs their module
+     * again under {@code ?mount=N}: each of those paths must serve HTML with exactly one module
+     * script, and the module must be served with its query.
+     */
+    @Test
+    void pagesTheShellShowsInPlaceServeHtmlWithOneModule() throws Exception {
+        Map<String, String> pages = new LinkedHashMap<>();
+        pages.put("/", "/js/main.js");
+        pages.put("/rooms/", "/js/rooms.js");
+        pages.put("/library/", "/js/library.js");
+        pages.put("/playlists/", "/js/playlists.js");
+        pages.put("/playlists/?id=0190abcd-ef01-7000-8000-000000000001", "/js/playlists.js");
+        pages.put("/account/", "/js/account.js");
+        pages.put("/admin/", "/js/admin.js");
+        pages.put("/items/0190abcd-ef01-7000-8000-000000000001", "/js/item.js");
+        pages.put("/rooms/my-room/manage", "/js/roommanage.js");
+        for (Map.Entry<String, String> e : pages.entrySet()) {
+            HttpResponse<String> page = get(e.getKey());
+            assertEquals(200, page.statusCode(), e.getKey());
+            assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""), e.getKey());
+            String body = page.body();
+            assertEquals(1, body.split("<script type=\"module\"", -1).length - 1, e.getKey());
+            assertTrue(body.contains("<script type=\"module\" src=\"" + e.getValue() + "\"></script>"), e.getKey());
+            assertTrue(body.contains("id=\"site-nav\""), e.getKey());
+            HttpResponse<String> module = get(e.getValue() + "?mount=7");
+            assertEquals(200, module.statusCode(), e.getValue());
+            assertTrue(module.headers().firstValue("Content-Type").orElse("").startsWith("text/javascript"),
+                    module.headers().firstValue("Content-Type").orElse(""));
+        }
+        // The room page holds the view the shell hides and shows again.
+        String room = get("/rooms/my-room").body();
+        assertTrue(room.contains("<div id=\"room-body\">"), room);
+        assertTrue(room.contains("id=\"room-listen-overlay\""), room);
     }
 
     @Test

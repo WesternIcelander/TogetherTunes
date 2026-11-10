@@ -6,6 +6,7 @@ import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
   itemTitleCell, kindLabel, statusBadge, type Page, type Playlist, type PlaylistDetail, type PlaylistEntry,
 } from "./media.js";
+import { navigate } from "./nav.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 
 let cursor: string | undefined;
@@ -27,7 +28,7 @@ function playlistRow(p: Playlist): HTMLTableRowElement {
     h("td", { class: "num", text: String(p.entryCount) }),
     h("td", { class: "small muted", text: formatTime(p.updatedAt) }));
   tr.addEventListener("click", (ev) => {
-    if ((ev.target as HTMLElement).closest("a") === null) location.assign(playlistHref(p.id));
+    if ((ev.target as HTMLElement).closest("a") === null) navigate(playlistHref(p.id));
   });
   return tr;
 }
@@ -56,7 +57,7 @@ function startList(): void {
     const description = String(data.get("description") ?? "").trim();
     if (description !== "") body["description"] = description;
     api<Playlist>("POST", "/api/playlists", body)
-      .then((p) => location.assign(playlistHref(p.id)))
+      .then((p) => navigate(playlistHref(p.id)))
       .catch(showError);
   });
   const more = element<HTMLButtonElement>("playlist-more");
@@ -153,7 +154,7 @@ async function startDetail(id: string): Promise<void> {
   element<HTMLButtonElement>("playlist-delete").addEventListener("click", () => {
     if (!confirm("Delete the playlist \"" + current.name + "\"? The items stay in your library.")) return;
     api("DELETE", "/api/playlists/" + encodeURIComponent(current.id))
-      .then(() => location.assign("/playlists/"))
+      .then(() => navigate("/playlists/"))
       .catch(showError);
   });
 }

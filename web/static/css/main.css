@@ -630,6 +630,45 @@ button.voted {
   cursor: pointer;
 }
 
+/* The mini player (shell.ts): the playing room on the site's other pages, fixed at the bottom. */
+.mini-player {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
+  padding: 0.5rem 1rem;
+  padding-bottom: calc(0.5rem + env(safe-area-inset-bottom, 0px));
+  background: Canvas;
+  color: CanvasText;
+  border-top: 1px solid rgba(128, 128, 128, 0.4);
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.15);
+}
+
+.mini-player[hidden] {
+  display: none;
+}
+
+.mini-player .mini-room {
+  font-weight: bold;
+}
+
+.mini-player .mini-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Room under the fixed mini player for the end of the page. */
+body.has-mini-player {
+  padding-bottom: 5rem;
+}
+
 /* ------------------------------------------------------------------ room management view */
 
 .room-settings fieldset.panel {

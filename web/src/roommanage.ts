@@ -9,6 +9,7 @@
 // library" per row or for a selection, owner only; moderators read it).
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
+import { navigate, pageSignal, reloadPage } from "./nav.js";
 import { button, formatTime, h } from "./dom.js";
 import { itemPath, statusBadge, type ItemSummary, type Page } from "./media.js";
 import {
@@ -260,7 +261,7 @@ function setUpSettings(): void {
     if (!confirm("Delete the room \"" + room.name + "\"? Its queue, members and history are deleted too.")) return;
     const b = element<HTMLButtonElement>("room-delete-button");
     b.disabled = true;
-    api("DELETE", roomPath()).then(() => { location.href = "/"; }).catch((e: unknown) => {
+    api("DELETE", roomPath()).then(() => { navigate("/"); }).catch((e: unknown) => {
       element("room-delete-error").textContent = message(e);
       b.disabled = false;
     });
@@ -324,7 +325,7 @@ function memberRow(m: Member): HTMLTableRowElement {
           return;
         }
         await api("PUT", roomPath() + "/members/" + encodeURIComponent(m.user.id), { role: "owner" });
-        location.reload();
+        reloadPage();
       }, memberError, "small"));
     }
     actions.append(button(m.role === "banned" ? "Lift ban" : "Remove", async () => {
@@ -335,7 +336,7 @@ function memberRow(m: Member): HTMLTableRowElement {
     actions.append(button("Leave", async () => {
       if (!confirm("Leave this room? You lose your role in it.")) return;
       await api("DELETE", roomPath() + "/members/" + encodeURIComponent(m.user.id));
-      location.href = "/rooms/" + encodeURIComponent(room.slug);
+      navigate("/rooms/" + encodeURIComponent(room.slug));
     }, memberError, "small"));
   }
   const row = h("tr", {},
@@ -635,7 +636,7 @@ async function start(): Promise<void> {
   setUpMembers();
   setUpRequests();
   element("ban-more").addEventListener("click", () => void loadBans(false));
-  window.addEventListener("hashchange", () => void showTab());
+  window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
   await showTab();
 }
 

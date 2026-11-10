@@ -2,6 +2,7 @@
 // that needs an account goes through: to the login page when nobody is logged in, and to the
 // change-password page while the password is a temporary one an admin set.
 import { api } from "./api.js";
+import { pageSignal, rememberPlaying, showStoppedNote } from "./nav.js";
 
 /** `GET /api/me` for a logged-in user. */
 export interface MeUser {
@@ -106,6 +107,8 @@ export async function requireUser(): Promise<MeUser | null> {
 /** `POST /api/auth/logout`, then back to the front page. */
 export async function logout(): Promise<void> {
   await api("POST", "/api/auth/logout");
+  // Logging out stops playback (a full page load); no "stopped" note for that.
+  rememberPlaying(null);
   location.assign("/");
 }
 
@@ -148,14 +151,25 @@ export function renderNav(me: Me): void {
     items.push(link(withNext(LOGIN_PAGE, here()), "Log in"), link(REGISTER_PAGE, "Register"));
   }
   nav.replaceChildren(...items);
+  // After a full load that stopped a room's playback: say so (nav.ts).
+  showStoppedNote();
 }
 
-/** Runs `start` once the DOM is ready. */
+/**
+ * Runs `start` once the DOM is ready. A page the room page's shell already took away again while
+ * it was starting (nav.ts `pageSignal()`) fails quietly: its elements are gone.
+ */
 export function onReady(start: () => void | Promise<void>): void {
+  const signal = pageSignal();
+  const run = (): void => {
+    Promise.resolve().then(start).catch((e: unknown) => {
+      if (!signal.aborted) throw e;
+    });
+  };
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => void start());
+    document.addEventListener("DOMContentLoaded", run);
   } else {
-    void start();
+    run();
   }
 }
 

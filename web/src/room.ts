@@ -15,6 +15,8 @@
 // The "Web Audio" setting (Auto / On / Off, per browser) decides whether the media elements play
 // through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`). Auto
 // uses Web Audio only where the page can't set an element's volume (iOS; `volumeSettable`).
+// While the room plays in listen mode, the shell (shell.ts) shows the site's other pages in place,
+// so playback goes on; a mini player there links back to this view.
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import {
@@ -39,9 +41,17 @@ import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
+import { rememberPlaying } from "./nav.js";
+import { Shell } from "./shell.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
+
+/**
+ * The room page's own query (`?mode=`, `?sync=`, `?webaudio=`), kept from the load: while the
+ * shell shows another page, `location` is that page's.
+ */
+const PAGE_SEARCH = location.search;
 
 interface RoomResponse {
   id: string;
@@ -59,7 +69,7 @@ function roomFromLocation(): string {
       return "";
     }
   }
-  return new URLSearchParams(location.search).get("room") ?? "";
+  return new URLSearchParams(PAGE_SEARCH).get("room") ?? "";
 }
 
 /** Where the video / audio-only choice is remembered (this browser only, all rooms). */
@@ -89,7 +99,7 @@ function loadWebAudioMemory(): WebAudioMemory | undefined {
 
 /** The `?webaudio=0/1` override (testing), undefined without one. */
 function urlWebAudio(): boolean | undefined {
-  return webAudioOverride(new URLSearchParams(location.search).get("webaudio"));
+  return webAudioOverride(new URLSearchParams(PAGE_SEARCH).get("webaudio"));
 }
 
 let volumeCheck: boolean | undefined;
@@ -129,7 +139,7 @@ function saveAudioOnly(on: boolean): void {
 
 /** The mode requested by the URL (`?mode=remote` from the short link), if any. */
 export function modeFromLocation(): RoomMode | null {
-  const mode = new URLSearchParams(location.search).get("mode");
+  const mode = new URLSearchParams(PAGE_SEARCH).get("mode");
   return mode === "remote" || mode === "listen" ? mode : null;
 }
 
@@ -170,6 +180,14 @@ let nudge = 0;
 let roomId = "";
 /** The last state shown, for the progress timer. */
 let shown: RoomState | undefined;
+/** The room's slug (for links back to it) and the reference it was opened with. */
+let roomSlug = "";
+let roomRef = "";
+let roomName = "";
+/** Why the room stopped playing here (kicked), shown in the mini player. */
+let kickedText: string | undefined;
+/** Shows the site's other pages in place while the room plays (shell.ts). */
+let shell: Shell | undefined;
 
 // ------------------------------------------------------------------ small helpers
 
@@ -230,7 +248,10 @@ function isMine(entry: CurrentEntry): boolean {
 // ------------------------------------------------------------------ header and presence
 
 function renderHeader(s: RoomState): void {
-  document.title = s.room.name + " · TogetherTunes";
+  roomSlug = s.room.slug;
+  roomName = s.room.name;
+  // While the shell shows another page, the title is that page's.
+  if (shell?.away !== true) document.title = s.room.name + " · TogetherTunes";
   element("room-name").textContent = s.room.name;
   const mode = { owner: "Owner picks", vote: "Vote", open: "Open" }[s.room.controlMode] ?? s.room.controlMode;
   const role = s.room.you.role;
@@ -799,6 +820,7 @@ function render(s: RoomState): void {
   renderRemoteDelay();
   element("room-main").hidden = false;
   if (mode === "listen") player?.update(s);
+  shell?.update();
 }
 
 // ------------------------------------------------------------------ mode and remote delay
@@ -864,7 +886,7 @@ function switchMode(m: RoomMode): void {
 }
 
 function createPlayer(): ListenPlayer {
-  const syncMode = syncModeFor(engineHints(), new URLSearchParams(location.search).get("sync"));
+  const syncMode = syncModeFor(engineHints(), new URLSearchParams(PAGE_SEARCH).get("sync"));
   const select = element("room-webaudio") as HTMLSelectElement;
   const note = element("room-webaudio-note");
   const showSound = (): void => {
@@ -899,14 +921,39 @@ function createPlayer(): ListenPlayer {
   showSound();
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
-  toggle.addEventListener("change", () => {
-    p.setAudioOnly(toggle.checked);
-    saveAudioOnly(toggle.checked);
-  });
+  toggle.addEventListener("change", () => setAudioOnly(toggle.checked));
   window.setInterval(() => { if (mode === "listen") p.tick(); }, 250);
   // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
   (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
   return p;
+}
+
+/** The video / audio-only switch (the checkbox here or the shell's mini player). */
+function setAudioOnly(on: boolean): void {
+  player?.setAudioOnly(on);
+  saveAudioOnly(on);
+  (element("room-audio-only") as HTMLInputElement).checked = on;
+  shell?.update();
+}
+
+/** Whether `ref` (an id or slug from a link) is this room. */
+function isThisRoom(ref: string): boolean {
+  return ref === roomId || ref === roomRef || (roomSlug !== "" && ref.toLowerCase() === roomSlug.toLowerCase());
+}
+
+function createShell(): Shell {
+  return new Shell({
+    active: () => mode === "listen" && player !== undefined && kickedText === undefined,
+    isRoom: isThisRoom,
+    path: () => "/rooms/" + encodeURIComponent(roomSlug !== "" ? roomSlug : roomId),
+    name: () => roomName,
+    title: () => roomName + " · TogetherTunes",
+    nowPlaying: () => ({ title: shown?.current?.item.title ?? "", state: shown?.timeline.state ?? "idle" }),
+    stopped: () => kickedText,
+    audioOnly: () => player?.audioOnly ?? loadAudioOnly(),
+    setAudioOnly,
+    shown: () => renderNav(me),
+  }, element("room-body"));
 }
 
 /** The engine's features that decide the sync mode (the user agent may lie). */
@@ -934,8 +981,8 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
       platform: navigator.platform, audioContext: typeof AudioContext !== "undefined" ? "AudioContext"
         : "webkitAudioContext" in window ? "webkitAudioContext" : "none" },
     page: stripQuery(location.pathname),
-    syncOverride: new URLSearchParams(location.search).get("sync"),
-    webAudioOverride: new URLSearchParams(location.search).get("webaudio"),
+    syncOverride: new URLSearchParams(PAGE_SEARCH).get("sync"),
+    webAudioOverride: new URLSearchParams(PAGE_SEARCH).get("webaudio"),
     webAudioSetting: storageGet(WEB_AUDIO_KEY),
     webAudioMemory: storageGet(WEB_AUDIO_MEMORY_KEY),
     volumeSettable: canSetVolume(),
@@ -995,6 +1042,8 @@ function notFound(): void {
 }
 
 async function start(): Promise<void> {
+  // A room page loaded from scratch: whatever played before has stopped (no "stopped" note here).
+  rememberPlaying(null);
   try {
     me = await loadMe();
   } catch (e) {
@@ -1019,6 +1068,10 @@ async function start(): Promise<void> {
     return;
   }
   roomId = room.id;
+  roomSlug = room.slug;
+  roomRef = ref;
+  roomName = room.name;
+  shell = createShell();
   document.title = room.name + " · TogetherTunes";
   element("room-name").textContent = room.name;
   mode = chooseMode(modeFromLocation(), storageGet(modeKey(room.id)));
@@ -1043,10 +1096,12 @@ async function start(): Promise<void> {
     },
     kicked: (reason) => {
       player?.stop();
+      kickedText = KICK_TEXT[reason] ?? "You were removed from this room (" + reason + ").";
+      shell?.update();
       element("room-main").hidden = true;
       const status = element("room-status");
       status.hidden = false;
-      status.textContent = KICK_TEXT[reason] ?? "You were removed from this room (" + reason + ").";
+      status.textContent = kickedText;
     },
     request: onRequest,
     identity: () => renderIdentity(),
@@ -1072,6 +1127,16 @@ async function start(): Promise<void> {
   conn.actor = me.kind === "anonymous" ? undefined : { kind: me.kind, id: me.id, name: me.name, isGuest: me.isGuest };
   renderIdentity();
   conn.connect();
+  // Leaving the page leaves the room at once, also when the browser keeps the page in its
+  // back/forward cache (Chrome kept the socket open there, so another room's page found this one
+  // still "listening"). Coming back from that cache starts over with a fresh page.
+  window.addEventListener("pagehide", () => {
+    conn.stop();
+    player?.stop();
+  });
+  window.addEventListener("pageshow", (ev) => {
+    if (ev.persisted) location.reload();
+  });
   window.setInterval(tick, 250);
 }
 

@@ -1,7 +1,8 @@
 // The admin pages (/admin/): users, roles and server settings, on top of /api/admin/... (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
 import { api, ApiError } from "./api.js";
-import { isAdmin, renderNav, requireUser } from "./session.js";
+import { pageSignal } from "./nav.js";
+import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
 
 interface RoleRef { id: string; name: string }
 
@@ -528,12 +529,8 @@ async function start(): Promise<void> {
   setUpUsers();
   setUpRoles();
   setUpSettings();
-  window.addEventListener("hashchange", () => void showTab());
+  window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
   void showTab();
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => void start());
-} else {
-  void start();
-}
+onReady(start);
