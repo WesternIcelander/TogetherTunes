@@ -27,13 +27,26 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *       {@code 500}. If the response was already committed, the exception is passed on to
  *       SiggiHTTP, which closes the connection.</li>
  *   <li>A chain that writes nothing (and doesn't {@link Response#detach}) gets a {@code 404}.</li>
+ *   <li>{@link Filter}s ({@link #filter}) run first for every request, before the route lookup's
+ *       result is used, so they also see requests that end in a {@code 404} or {@code 405}
+ *       (e.g. {@link PlainHttpRedirect}).</li>
  * </ul>
  */
 public final class Router implements HTTPResponder {
     private static final System.Logger LOG = System.getLogger(Router.class.getName());
     private static final Set<String> METHODS = Set.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS");
 
+    /**
+     * Runs before routing, for every request (matched or not). Returns true if it answered the
+     * request (routing is skipped), false to continue. May throw {@link HttpError}.
+     */
+    @FunctionalInterface
+    public interface Filter {
+        boolean handled(Request request, Response response) throws Exception;
+    }
+
     private final List<Hook> globalHooks;
+    private final List<Filter> filters = new CopyOnWriteArrayList<>();
     private final List<Route> routes = new CopyOnWriteArrayList<>();
 
     /**
@@ -42,6 +55,12 @@ public final class Router implements HTTPResponder {
      */
     public Router(Hook... globalHooks) {
         this.globalHooks = List.of(globalHooks);
+    }
+
+    /** Adds a {@link Filter}; filters run in the order added. */
+    public Router filter(Filter filter) {
+        filters.add(java.util.Objects.requireNonNull(filter, "filter"));
+        return this;
     }
 
     public Router get(String pattern, Handler handler, Hook... hooks) {
@@ -137,6 +156,11 @@ public final class Router implements HTTPResponder {
         Request request = new Request(raw, best == null ? Map.of() : bestParams);
         Response response = new Response(raw);
         try {
+            for (Filter filter : filters) {
+                if (filter.handled(request, response)) {
+                    return;
+                }
+            }
             if (best == null) {
                 noRoute(method, allowed, response);
                 return;

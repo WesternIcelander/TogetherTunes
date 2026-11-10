@@ -107,7 +107,7 @@ class MainEncodingTest {
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
         Config config = new Config("127.0.0.1", 0, "http://localhost", List.of(), dir.resolve("data"),
                 "jdbc:sqlite:" + dir.resolve("test.db"), ffmpeg, ffprobe, null, OutputProfile.P720_30, 3000, 800, 1,
-                Settings.GIB, 1800, X264Preset.VERYFAST, X264Preset.VERYFAST, 1, Settings.GIB);
+                Settings.GIB, 1800, X264Preset.VERYFAST, X264Preset.VERYFAST, 1, Settings.GIB, null);
         DataDir dataDir = DataDir.create(config.dataDir());
         db = Database.open(config.dbUrl());
         MigrationRunner.migrate(db);

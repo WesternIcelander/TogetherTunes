@@ -692,6 +692,7 @@ class StreamOutputsApiTest {
         assertEquals("https://tunes.example/live/club/index.m3u8", hls.get("url").getAsString());
         assertEquals("https://tunes.example/live/club.mp3", mp3.get("url").getAsString());
         assertEquals("slug", ts.get("urlKind").getAsString());
+        assertFalse(ts.has("insecureUrl"), "no plain-HTTP URL without http.insecureBaseUrl");
         String tsPath = "/api/rooms/club/outputs/" + ts.get("id").getAsString();
         expectError(409, "no_token", call(alice, "POST", tsPath + "/rotate", null));
         expectError(404, "output_not_found", call(alice, "POST", "/api/rooms/club/outputs/nope/rotate", null));
@@ -727,6 +728,54 @@ class StreamOutputsApiTest {
         visibility(Rooms.Visibility.PUBLIC);
         assertNull(tsTargets.lookup(rotated));
         assertEquals(roomId, tsTargets.lookup("club").roomId());
+    }
+
+    /** Serves the outputs API again, with plain-HTTP stream URLs on {@code insecureBase}. */
+    void restartWithInsecureBase(String insecureBase) throws Exception {
+        server.close();
+        Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
+        new StreamOutputsApi(rooms, rows, control, "https://tunes.example", insecureBase).register(router);
+        server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
+    }
+
+    @Test
+    void insecureUrlOnlyForPublicAndUnlistedRoomsWithThePlainHttpAddressSet() throws Exception {
+        restartWithInsecureBase("http://tunes.example/");
+        create("{\"kind\":\"ts\"}");
+        create("{\"kind\":\"hls\"}");
+        create("{\"kind\":\"mp3\"}");
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        for (Rooms.Visibility v : List.of(Rooms.Visibility.PUBLIC, Rooms.Visibility.UNLISTED)) {
+            visibility(v);
+            assertEquals("https://tunes.example/live/club.ts", output(alice, "ts").get("url").getAsString());
+            assertEquals("http://tunes.example/live/club.ts", output(alice, "ts").get("insecureUrl").getAsString());
+            assertEquals("http://tunes.example/live/club/index.m3u8",
+                    output(alice, "hls").get("insecureUrl").getAsString());
+            assertEquals("http://tunes.example/live/club.mp3", output(bob, "mp3").get("insecureUrl").getAsString(),
+                    "moderators see it too");
+            assertFalse(output(alice, "rtmp").has("insecureUrl"), "RTMP is pushed, not pulled");
+        }
+        visibility(Rooms.Visibility.PRIVATE);
+        for (String kind : List.of("ts", "hls", "mp3")) {
+            JsonObject o = output(alice, kind);
+            assertEquals("token", o.get("urlKind").getAsString());
+            assertFalse(o.has("insecureUrl"), "a token never goes over plain HTTP: " + o);
+            assertFalse(o.toString().contains("http://"), o.toString());
+        }
+    }
+
+    @Test
+    void plainHttpStreamsAreTheSlugsOfPublicAndUnlistedRoomsOnly() throws Exception {
+        create("{\"kind\":\"ts\"}");
+        PlainHttpStreams.PublicSlugs slugs = PlainHttpStreams.from(db);
+        assertTrue(slugs.isPublicSlug("club"));
+        assertFalse(slugs.isPublicSlug("nope"));
+        visibility(Rooms.Visibility.UNLISTED);
+        assertTrue(slugs.isPublicSlug("club"));
+        visibility(Rooms.Visibility.PRIVATE);
+        assertFalse(slugs.isPublicSlug("club"));
+        String token = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        assertFalse(slugs.isPublicSlug(token));
     }
 
     @Test

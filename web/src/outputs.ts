@@ -39,6 +39,11 @@ export interface OutputRow {
   url?: string;
   /** `.ts` / HLS / MP3: `slug` (public and unlisted rooms) or `token` (private rooms: the URL can be rotated). */
   urlKind?: "slug" | "token" | string;
+  /**
+   * `.ts` / HLS / MP3 of a public or unlisted room, when the server has a plain-HTTP address:
+   * the same stream as `http://`, for players that can't use HTTPS. Never for private rooms.
+   */
+  insecureUrl?: string;
   /** RTMP, the room's owner only: the ingest URL, whether there is a key, and the key. */
   rtmpUrl?: string;
   hasRtmpKey?: boolean;

@@ -42,7 +42,9 @@ import java.util.Set;
  *
  * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt",
  * "stopped"?}} plus, for ts/HLS/MP3, {@code "url"} (the stream URL: by the room's slug for a public
- * or unlisted room, by token for a private one) and {@code "urlKind": "slug"|"token"}, and for
+ * or unlisted room, by token for a private one) and {@code "urlKind": "slug"|"token"}, plus
+ * {@code "insecureUrl"?} (a public or unlisted room's slug URL on {@code http.insecureBaseUrl}, for
+ * players that can't use HTTPS; only when the server has one, never for a private room), and for
  * RTMP, to the room's owner only, {@code
  * "rtmpUrl"}, {@code "hasRtmpKey"} and {@code "rtmpKey"?} (the full key; moderators get nothing
  * about the key or the ingest URL, which can carry credentials too), then for everyone {@code
@@ -66,13 +68,28 @@ public final class StreamOutputsApi {
     private final StreamOutputs outputs;
     private final StreamOutputControl control;
     private final String publicBaseUrl;
+    /** {@code http.insecureBaseUrl} when plain-HTTP stream URLs are offered, else null. */
+    private final String insecureBaseUrl;
 
     public StreamOutputsApi(Rooms rooms, StreamOutputs outputs, StreamOutputControl control, String publicBaseUrl) {
+        this(rooms, outputs, control, publicBaseUrl, null);
+    }
+
+    /**
+     * @param insecureBaseUrl {@code http.insecureBaseUrl} if public and unlisted rooms' stream URLs
+     *                        are served over plain HTTP ({@code Config.redirectPlainHttp()}), else null
+     */
+    public StreamOutputsApi(Rooms rooms, StreamOutputs outputs, StreamOutputControl control, String publicBaseUrl,
+                            String insecureBaseUrl) {
         this.rooms = Objects.requireNonNull(rooms, "rooms");
         this.outputs = Objects.requireNonNull(outputs, "outputs");
         this.control = Objects.requireNonNull(control, "control");
-        String base = Objects.requireNonNull(publicBaseUrl, "publicBaseUrl");
-        this.publicBaseUrl = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
+        this.publicBaseUrl = trim(Objects.requireNonNull(publicBaseUrl, "publicBaseUrl"));
+        this.insecureBaseUrl = insecureBaseUrl == null ? null : trim(insecureBaseUrl);
+    }
+
+    private static String trim(String base) {
+        return base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
     public void register(Router router) {
@@ -86,10 +103,14 @@ public final class StreamOutputsApi {
 
     /** The stream URL of a ts/HLS/MP3 output whose URL key (slug or token) is {@code token}. */
     public String url(StreamOutputs.Kind kind, String token) {
+        return url(publicBaseUrl, kind, token);
+    }
+
+    private static String url(String base, StreamOutputs.Kind kind, String token) {
         return switch (kind) {
-            case TS -> publicBaseUrl + "/live/" + token + ".ts";
-            case HLS -> publicBaseUrl + "/live/" + token + "/index.m3u8";
-            case MP3 -> publicBaseUrl + "/live/" + token + ".mp3";
+            case TS -> base + "/live/" + token + ".ts";
+            case HLS -> base + "/live/" + token + "/index.m3u8";
+            case MP3 -> base + "/live/" + token + ".mp3";
             case RTMP -> null;
         };
     }
@@ -262,6 +283,10 @@ public final class StreamOutputsApi {
             boolean byToken = a.room().visibility() == Rooms.Visibility.PRIVATE;
             m.put("url", url(o.kind(), byToken ? o.token() : a.room().slug()));
             m.put("urlKind", byToken ? "token" : "slug");
+            // Never a token over plain HTTP (invariant 6): only slug URLs get a plain-HTTP twin.
+            if (!byToken && insecureBaseUrl != null) {
+                m.put("insecureUrl", url(insecureBaseUrl, o.kind(), a.room().slug()));
+            }
         } else {
             // The target and key only for the owner: they open the owner's account at the RTMP service.
             if (owner) {

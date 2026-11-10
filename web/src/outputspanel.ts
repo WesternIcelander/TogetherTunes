@@ -262,6 +262,10 @@ export class OutputsPanel {
     const parts: Node[] = [title, h("p", { class: "small", text: this.#stateLine(row) })];
     if (description !== null) parts.push(description);
     if (row.url !== undefined) parts.push(copyField(row.url, (OUTPUT_LABELS[kind] ?? kind) + " URL"));
+    if (row.insecureUrl !== undefined) {
+      parts.push(h("p", { class: "muted small", text: "For players that can't use HTTPS:" }));
+      parts.push(copyField(row.insecureUrl, (OUTPUT_LABELS[kind] ?? kind) + " URL for players that can't use HTTPS"));
+    }
     const buttons: Node[] = [];
     if (this.#owner && canRotate(row)) {
       buttons.push(button("Rotate URL", async () => {

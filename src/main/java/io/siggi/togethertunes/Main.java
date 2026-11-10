@@ -26,6 +26,7 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.EchoEndpoint;
 import io.siggi.togethertunes.http.Csrf;
+import io.siggi.togethertunes.http.PlainHttpRedirect;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
@@ -62,6 +63,7 @@ import io.siggi.togethertunes.output.RtmpPushers;
 import io.siggi.togethertunes.output.StreamOutputControl;
 import io.siggi.togethertunes.output.StreamOutputs;
 import io.siggi.togethertunes.output.StreamOutputsApi;
+import io.siggi.togethertunes.output.PlainHttpStreams;
 import io.siggi.togethertunes.output.ProgramPipeline;
 import io.siggi.togethertunes.output.TimeSource;
 import io.siggi.togethertunes.library.AddMediaPolicy;
@@ -344,6 +346,12 @@ public final class Main {
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
+        // http.insecureBaseUrl: plain HTTP serves only public and unlisted rooms' stream URLs; the
+        // rest gets a 301 to https (docs/architecture.md#plain-http).
+        if (config.redirectPlainHttp()) {
+            appRouter.filter(new PlainHttpRedirect(config.publicBaseUrl(),
+                    PlainHttpStreams.exemption(PlainHttpStreams.from(database))));
+        }
         // The rooms' outputs (/api/rooms/{room}/outputs...).
         StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
         // Outputs turn off after the queue was empty, or (.ts/HLS/MP3) nobody listened, for the
@@ -391,7 +399,8 @@ public final class Main {
                     && before.visibility() != Rooms.Visibility.PRIVATE;
             outputControl.roomEdited(after.id(), becamePrivate);
         });
-        new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
+        new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl(),
+                config.redirectPlainHttp() ? config.insecureBaseUrl() : null).register(appRouter);
         // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
         jobList.steps(ingest::liveStep);
@@ -1031,7 +1040,9 @@ public final class Main {
         }
         Config config = loaded.config();
         out.println("Config: " + (loaded.configFile() == null ? "(no file, environment and defaults only)" : loaded.configFile()));
-        out.println("Public URL " + config.publicBaseUrl() + ", listening on " + config.httpBind() + ":" + config.httpPort()
+        out.println("Public URL " + config.publicBaseUrl()
+                + (config.insecureBaseUrl() == null ? "" : " (plain-HTTP streams at " + config.insecureBaseUrl() + ")")
+                + ", listening on " + config.httpBind() + ":" + config.httpPort()
                 + ", data in " + config.dataDir() + ", output encoding " + config.outputEncoding());
         return new Startup(0, config);
     }
@@ -1041,7 +1052,12 @@ public final class Main {
                 + "  The config file is JSON. Without --config, " + ConfigLoader.CONFIG_FILE_ENV
                 + " names it, else ./" + ConfigLoader.DEFAULT_CONFIG_FILE + " is used if present.\n"
                 + "  Every key can be overridden by an environment variable, e.g. "
-                + ConfigLoader.envName(ConfigLoader.HTTP_PUBLIC_BASE_URL) + ".";
+                + ConfigLoader.envName(ConfigLoader.HTTP_PUBLIC_BASE_URL) + ".\n"
+                + "  " + ConfigLoader.HTTP_INSECURE_BASE_URL + " (optional, http://): the plain-HTTP address of this server."
+                + " When set, plain-HTTP\n"
+                + "  requests are redirected to " + ConfigLoader.HTTP_PUBLIC_BASE_URL + ", except public and unlisted"
+                + " rooms' stream URLs\n"
+                + "  (for players that can't use HTTPS).";
     }
 
     /**

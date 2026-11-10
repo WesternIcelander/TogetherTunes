@@ -252,7 +252,7 @@ abstract class SettingsContract {
     void configSuppliesTheMaxDurationAndPresetDefaults() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
                 "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.values()[0], 3000, 800, 1,
-                1L << 32, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 34);
+                1L << 32, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 34, null);
         Settings withConfig = new Settings(db, config);
         assertEquals(X264Preset.FASTER, withConfig.ingestQuickPreset());
         assertEquals(X264Preset.SLOWER, withConfig.ingestQualityPreset());
@@ -279,7 +279,7 @@ abstract class SettingsContract {
     void configKeysThatAreSettingsRoundTripAndOverrideTheirConfigDefault() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
                 "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P1080_30, 6000, 1200, 3,
-                2 * Settings.GIB, 600, X264Preset.FASTER, X264Preset.SLOWER, 2, 7 * Settings.GIB);
+                2 * Settings.GIB, 600, X264Preset.FASTER, X264Preset.SLOWER, 2, 7 * Settings.GIB, null);
         Settings s = new Settings(db, config);
         assertEquals(OutputProfile.P1080_30, s.outputProfile());
         assertNull(s.outputVideoBitrateKbps(), "the profile's default bitrate counts as unset");
@@ -326,7 +326,7 @@ abstract class SettingsContract {
         // A configured bitrate other than the profile's default is the setting's default.
         Config custom = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
                 "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P720_30, 4000, 800, 1,
-                1L << 62, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 62);
+                1L << 62, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 62, null);
         Settings c = new Settings(db, custom);
         assertEquals(4000, c.outputVideoBitrateKbps());
         assertEquals(4000, c.defaultValue(Settings.OUTPUT_VIDEO_BITRATE_KBPS));

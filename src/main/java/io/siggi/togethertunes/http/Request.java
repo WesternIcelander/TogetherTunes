@@ -48,6 +48,14 @@ public final class Request {
     }
 
     /**
+     * The request target as sent (not decoded), with the query string, e.g.
+     * {@code /rooms/a%20b?x=1}. May hold capabilities (stream URL tokens): never log it.
+     */
+    public String rawTarget() {
+        return raw.rawPath();
+    }
+
+    /**
      * A parameter of the matched route pattern.
      *
      * @throws IllegalArgumentException if the route has no such parameter (a programming error)

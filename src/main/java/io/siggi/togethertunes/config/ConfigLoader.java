@@ -69,6 +69,7 @@ public final class ConfigLoader {
     public static final String HTTP_PORT = "http.port";
     public static final String HTTP_PUBLIC_BASE_URL = "http.publicBaseUrl";
     public static final String HTTP_TRUSTED_PROXIES = "http.trustedProxies";
+    public static final String HTTP_INSECURE_BASE_URL = "http.insecureBaseUrl";
     public static final String DATA_DIR = "data.dir";
     public static final String DB_URL = "db.url";
     public static final String TOOLS_FFMPEG = "tools.ffmpeg";
@@ -87,7 +88,7 @@ public final class ConfigLoader {
 
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
-            HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, DATA_DIR, DB_URL,
+            HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, HTTP_INSECURE_BASE_URL, DATA_DIR, DB_URL,
             TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             OUTPUT_AUDIO_ONLY_BITRATE_KBPS, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
@@ -263,6 +264,11 @@ public final class ConfigLoader {
                     + envName(HTTP_PUBLIC_BASE_URL) + "), e.g. https://music.example.com");
         }
         List<String> trustedProxies = v.list(HTTP_TRUSTED_PROXIES, ConfigLoader::parseCidr);
+        String insecureBaseUrl = v.check(HTTP_INSECURE_BASE_URL, null, ConfigLoader::parseInsecureBaseUrl);
+        if (insecureBaseUrl != null && publicBaseUrl != null && publicBaseUrl.startsWith("http://")) {
+            warnings.add(HTTP_INSECURE_BASE_URL + " has no effect while " + HTTP_PUBLIC_BASE_URL
+                    + " is http:// (everything is already served over plain HTTP)");
+        }
 
         Path dataDir = v.check(DATA_DIR, workingDir.resolve("data"), s -> {
             if (s.isEmpty()) {
@@ -329,7 +335,7 @@ public final class ConfigLoader {
         }
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
                 ffmpeg, ffprobe, ytdlp, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
-                quickPreset, qualityPreset, overlayWorkers, overlayCache);
+                quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl);
         return new Loaded(config, json == null ? null : file, warnings);
     }
 
@@ -570,6 +576,18 @@ public final class ConfigLoader {
         }
         sb.append(path);
         return sb.toString();
+    }
+
+    /**
+     * Validates {@code http.insecureBaseUrl}: like {@link #parsePublicBaseUrl}, but it must be
+     * {@code http://}.
+     */
+    static String parseInsecureBaseUrl(String s) {
+        String url = parsePublicBaseUrl(s);
+        if (!url.startsWith("http://")) {
+            throw new IllegalArgumentException("must be an http:// URL (the plain-HTTP address of this server)");
+        }
+        return url;
     }
 
     /**

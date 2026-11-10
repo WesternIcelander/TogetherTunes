@@ -61,6 +61,20 @@ class MainTest {
     }
 
     @Test
+    void badInsecureBaseUrlStopsStartup() {
+        assertEquals(Main.EXIT_CONFIG, run(Map.of("PATH", "",
+                "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://music.example.com",
+                "TOGETHERTUNES_HTTP_INSECURE_BASE_URL", "https://music.example.com")));
+        assertTrue(err().contains("TOGETHERTUNES_HTTP_INSECURE_BASE_URL"), err());
+    }
+
+    @Test
+    void helpNamesThePlainHttpAddress() {
+        assertEquals(Main.EXIT_USAGE, run(Map.of(), "--help"));
+        assertTrue(out.toString(StandardCharsets.UTF_8).contains("http.insecureBaseUrl"));
+    }
+
+    @Test
     void badUsage() {
         assertEquals(Main.EXIT_USAGE, run(Map.of(), "--config"));
         assertEquals(Main.EXIT_USAGE, run(Map.of(), "--bogus"));

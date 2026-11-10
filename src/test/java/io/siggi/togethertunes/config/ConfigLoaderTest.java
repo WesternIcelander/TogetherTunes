@@ -218,7 +218,7 @@ class ConfigLoaderTest {
     @Test
     void everyDocumentedKeyIsKnown() {
         // docs/architecture.md#configuration
-        assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "data.dir", "db.url",
+        assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "http.insecureBaseUrl", "data.dir", "db.url",
                 "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps",
                 "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
@@ -242,6 +242,45 @@ class ConfigLoaderTest {
             assertProblem(e, "config key 'http.publicBaseUrl'");
             assertFalse(e.getMessage().contains("is required"), url);
         }
+    }
+
+    @Test
+    void insecureBaseUrl() throws ConfigException {
+        assertNull(load(URL_ONLY).insecureBaseUrl());
+        assertFalse(load(URL_ONLY).redirectPlainHttp());
+        Config c = load("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\","
+                + " \"insecureBaseUrl\": \"http://Music.Example.com/\"}}");
+        assertEquals("http://music.example.com", c.insecureBaseUrl());
+        assertTrue(c.redirectPlainHttp());
+        env.put("TOGETHERTUNES_HTTP_INSECURE_BASE_URL", "http://other.example:8080");
+        assertEquals("http://other.example:8080", load(URL_ONLY).insecureBaseUrl());
+        env.put("TOGETHERTUNES_HTTP_INSECURE_BASE_URL", "");
+        assertNull(load(URL_ONLY).insecureBaseUrl(), "a blank variable counts as unset");
+        env.remove("TOGETHERTUNES_HTTP_INSECURE_BASE_URL");
+        // An http:// public URL (local testing): never redirect.
+        ConfigLoader.Loaded local = loader().loadFromJson(null, "{\"http\": {\"publicBaseUrl\": \"http://localhost:8080\","
+                + " \"insecureBaseUrl\": \"http://localhost:8080\"}}");
+        assertFalse(local.config().redirectPlainHttp());
+        assertTrue(local.warnings().stream().anyMatch(w -> w.contains("http.insecureBaseUrl has no effect")));
+    }
+
+    @Test
+    void theExampleConfigLoadsWithThePlainHttpAddressOff() throws IOException, ConfigException {
+        Config c = load(Files.readString(Path.of("config.example.json")));
+        assertEquals("https://music.example.com", c.publicBaseUrl());
+        assertNull(c.insecureBaseUrl());
+    }
+
+    @Test
+    void badInsecureBaseUrls() {
+        for (String url : List.of("https://music.example.com", "music.example.com", "ftp://music.example.com",
+                "http://", "http://u:p@example.com", "http://example.com/?x=1")) {
+            ConfigException e = fails("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\","
+                    + " \"insecureBaseUrl\": \"" + url + "\"}}");
+            assertProblem(e, "config key 'http.insecureBaseUrl'");
+        }
+        env.put("TOGETHERTUNES_HTTP_INSECURE_BASE_URL", "https://music.example.com");
+        assertProblem(fails(URL_ONLY), "TOGETHERTUNES_HTTP_INSECURE_BASE_URL");
     }
 
     @Test

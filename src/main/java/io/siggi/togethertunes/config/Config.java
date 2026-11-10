@@ -35,6 +35,11 @@ import java.util.List;
  * @param overlayWorkers           concurrent overlay re-encodes ({@code overlay.workers})
  * @param overlayCacheMaxBytes     size limit of the overlay re-encode cache
  *                                 ({@code overlay.cacheMaxBytes})
+ * @param insecureBaseUrl          the server's plain-HTTP origin (plus optional path prefix), without a
+ *                                 trailing slash, or {@code null} ({@code http.insecureBaseUrl}). When
+ *                                 set (and {@link #publicBaseUrl()} is {@code https}), plain-HTTP
+ *                                 requests are redirected to {@link #publicBaseUrl()}, except public
+ *                                 and unlisted rooms' stream URLs ({@code docs/architecture.md#plain-http})
  */
 public record Config(
         String httpBind,
@@ -55,7 +60,8 @@ public record Config(
         X264Preset ingestQuickPreset,
         X264Preset ingestQualityPreset,
         int overlayWorkers,
-        long overlayCacheMaxBytes) {
+        long overlayCacheMaxBytes,
+        String insecureBaseUrl) {
 
     public Config {
         trustedProxies = List.copyOf(trustedProxies);
@@ -78,6 +84,15 @@ public record Config(
      */
     public boolean secureCookies() {
         return "https".equalsIgnoreCase(publicBaseUri().getScheme());
+    }
+
+    /**
+     * Whether plain-HTTP requests are redirected to HTTPS (except public stream URLs): when
+     * {@link #insecureBaseUrl()} is set and {@link #publicBaseUrl()} is {@code https}. With an
+     * {@code http://} public URL (local testing) nothing is ever redirected.
+     */
+    public boolean redirectPlainHttp() {
+        return insecureBaseUrl != null && secureCookies();
     }
 
     /** Whether {@link #dbUrl()} points at PostgreSQL (otherwise SQLite). */
