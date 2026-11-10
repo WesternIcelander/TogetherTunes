@@ -210,6 +210,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.output.Unit$Audio", "an audio frame in a program-output unit, server-side only"),
             Map.entry("io.siggi.togethertunes.output.Unit$Video", "a video frame in a program-output unit, server-side only"),
             Map.entry("io.siggi.togethertunes.output.TsMuxer$Pes", "a PES packet inside the MPEG-TS muxer, private"),
+            Map.entry("io.siggi.togethertunes.output.TsUnit", "a muxed unit handed to the stream consumers, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestItems$Item", "item columns an ingest job reads, server-side only"),

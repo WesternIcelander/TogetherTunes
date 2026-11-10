@@ -33,7 +33,7 @@ import java.io.IOException;
  * <p>Threads: {@link #update} may be called from any thread (the room's executor); everything else
  * runs on the one packager thread.
  */
-public final class TimelineFollower implements AutoCloseable {
+public final class TimelineFollower implements UnitProducer {
     private static final System.Logger LOG = System.getLogger(TimelineFollower.class.getName());
 
     /** Drift between output and timeline at an item boundary beyond which the output re-syncs. */
@@ -125,10 +125,17 @@ public final class TimelineFollower implements AutoCloseable {
         return filler;
     }
 
+    /** Where the next unit starts if nothing changes ({@link UnitBuilder#nextUnitStart()}). */
+    @Override
+    public long nextUnitStart() {
+        return builder.nextUnitStart();
+    }
+
     /**
      * Applies the latest cue at this unit boundary and builds the next unit. Never null: when a
      * source gives nothing, the follower decides again (in the end, a filler always gives a unit).
      */
+    @Override
     public Unit nextUnit() throws IOException {
         for (int attempt = 0; attempt < 4; attempt++) {
             decide(cue);
