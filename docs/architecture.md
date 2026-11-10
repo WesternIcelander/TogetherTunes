@@ -51,7 +51,7 @@
     index.bin             packager sample index (see library-and-ingest.md)
     cover.jpg             artwork (embedded, from YouTube thumbnail, or generated)
     original.<ext>        the item's source (upload or YouTube download) — feeds re-encodes; played by the web client for audio uploads only
-  cards/<encoding>/       (e.g. cards/720p30-3000k/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
+  cards/<encoding>/       (e.g. cards/720p30-3000k-v2/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     cards/<key>.mp4       per-room cards: idle (room name), filler cards and item cards with the overlay
@@ -77,6 +77,8 @@ A single JSON config file, with environment-variable overrides. Keys:
 | `ingest.workers` | cores/2 | |
 | `ingest.maxUploadBytes` | 4 GiB | |
 | `ingest.maxDurationSeconds` | 1800 | Applies to both uploads and yt-dlp |
+| `ingest.quickPreset` | veryfast | x264 preset for items a room wants now; default of the admin setting of the same name ([library-and-ingest.md](library-and-ingest.md#presets)) |
+| `ingest.qualityPreset` | slow | x264 preset for library items (quality re-encodes); default of the admin setting |
 | `overlay.workers` | 1 | Concurrent overlay re-encodes |
 | `overlay.cacheMaxBytes` | 20 GiB | Least-recently-used eviction of `rooms/*/ov/` |
 | `http.trustedProxies` | none | CIDRs whose `X-Forwarded-For` is trusted. Required for correct guest IPs behind a reverse proxy |

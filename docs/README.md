@@ -35,7 +35,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | Database | **SQLite and PostgreSQL** both supported, via plain JDBC; SQLite is the default |
 | Web frontend | **Vanilla TypeScript**, no framework, no bundler. Compiled with `tsc` during the Maven build and served by the backend as static files |
 | Media tools | `ffmpeg` / `ffprobe` / `yt-dlp` as subprocesses: at ingest, for overlay encodes, and for the v1 RTMP pusher |
-| Codec profile | H.264 (x264 preset **veryfast**, no B-frames, closed 2 s GOPs, **constant bitrate** `output.videoBitrateKbps`, cards padded to it) + AAC-LC 48 kHz stereo, **720p30 by default** (1080p30 configurable). Identical for every item, card and overlay encode |
+| Codec profile | H.264 (x264 preset admin-chosen per tier, **veryfast** quick / **slow** quality by default, all with one avcC; no B-frames, closed 2 s GOPs, **constant bitrate** `output.videoBitrateKbps`, cards padded to it) + AAC-LC 48 kHz stereo, **720p30 by default** (1080p30 configurable). Identical for every item, card and overlay encode |
 | VRChat delivery | RTMP push, MPEG-TS and HLS, all built from one shared TS byte stream; each enabled or disabled independently |
 | Web sync | Server clock + timeline anchor; clients play the files locally and correct drift |
 | Web audio-only switch | Two media elements synced to the timeline and swapped with a short crossfade, rather than HLS (reasons in [rooms.md](rooms.md#audio-only-switching)) |

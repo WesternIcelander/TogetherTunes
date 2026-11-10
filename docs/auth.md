@@ -131,7 +131,7 @@ These are all stored in the `settings` table and edited in the admin UI.
 |---|---|
 | Accounts | `registration.mode`, default roles |
 | Guests | see the table above |
-| Library | `ytdlp.enabled`, `ytdlp.cookiesFile`, `retention.unreferencedDays` (default 14; 0 = never delete), `ingest.maxDurationSeconds` |
+| Library | `ytdlp.enabled`, `ytdlp.cookiesFile`, `retention.unreferencedDays` (default 14; 0 = never delete), `ingest.maxDurationSeconds`, `ingest.quickPreset` / `ingest.qualityPreset` (x264 presets, defaults from the config; a preset that doesn't give the reference avcC is refused, [library-and-ingest.md](library-and-ingest.md#presets)) |
 | Rooms | `rooms.requestHistoryDays` (default 90; 0 = never trim): how long rooms keep their request history |
 | Outputs | `outputs.rtmp.enabled`, `outputs.ts.enabled`, `outputs.hls.enabled` (all default true) |
 | Overlay | `overlay.enabled` (default false). Re-encoding music videos also needs the room owner to hold `output.overlayVideo` |

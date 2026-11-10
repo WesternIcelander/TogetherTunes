@@ -56,17 +56,20 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
       error NULL, loudness_lufs NULL, metadata_json,
-      output_profile TEXT,                  -- encoding its files were made for: profile + video bitrate, e.g. '720p30-3000k'
+      output_profile TEXT,                  -- encoding its files were made for: profile + video bitrate, e.g. '720p30-3000k-v2'
       original_file TEXT NULL,              -- e.g. 'original.flac', 'original.mkv'; the kept source (every item since 2026-11-10)
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
       original_web INTEGER,                 -- 1 if browsers can play the original (audio uploads only)
       original_gain_db REAL NULL,           -- gain the web client applies to the original (audio uploads only)
       present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
+      encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
+      encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
 
-ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch'
-      state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL)
+ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch' | 'quality'
+      state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL,
+      tier TEXT NULL)                       -- preset tier asked for when queued: 'quick' | 'quality' (NULL: decided at start)
 
 uploads(id PK, user_id NULL, guest_id NULL,  -- exactly one owner
       room_id NULL,                         -- set when the upload is a room request (M3)

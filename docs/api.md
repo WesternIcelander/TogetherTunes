@@ -80,7 +80,7 @@ Inside a room, requests made by upload or YouTube go through the WebSocket `queu
 
 | Path | Notes |
 |---|---|
-| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)). `GET` lists `{key, group, type, value, default, options?}`; `PATCH {key: value}` is all-or-nothing, `null` resets to the default |
+| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)). `GET` lists `{key, group, type, value, default, options?}`; `PATCH {key: value}` is all-or-nothing, `null` resets to the default. `400 invalid_setting` for a value that fails validation, or that the server can't use: an `ingest.quickPreset`/`ingest.qualityPreset` whose test encode doesn't give the reference avcC ([library-and-ingest.md](library-and-ingest.md#presets)) |
 | `/api/admin/roles[/{id}]`, `/api/admin/roles/{id}/permissions` | `GET` (also with *admin.users*) / `POST`; `GET` / `PATCH {name?, isDefault?}` / `DELETE`; `GET` / `PUT {permissions}` |
 | `/api/admin/users[/{id}]`, `/api/admin/users/{id}/roles`, `/api/admin/users/{id}/password` | `GET ?q=` / `POST {username, password, displayName?, roleIds?}` (temporary password); `GET` / `PATCH {displayName?, disabled?}`; `GET` / `PUT {roleIds}`; `POST {password}` sets a temporary password. No escalation: see [auth.md](auth.md#roles-and-permissions) |
 | `/api/admin/providers` | |
