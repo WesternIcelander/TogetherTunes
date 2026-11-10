@@ -107,7 +107,7 @@ public final class FillerCards {
      * the encoding, the encoder arguments (incl. the bitrate) and filter, the reference avcC, and the
      * rendered pixels.
      */
-    static String fingerprint(BufferedImage image, ReferenceCard reference) {
+    public static String fingerprint(BufferedImage image, ReferenceCard reference) {
         return fingerprint("card v" + CardEncoder.CARD_VERSION, image, reference);
     }
 

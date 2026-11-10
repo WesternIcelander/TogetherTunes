@@ -289,6 +289,43 @@ class SourcesTest {
         assertSame(card, a.card());
     }
 
+    // ---- card override (overlaid cards) ----
+
+    @Test
+    void cardOverrideTakesOverAtGopBoundariesOnly() throws Exception {
+        CardGop plain = CardGop.of(AVCC, cardFrames(0));
+        CardGop overlaid = CardGop.of(AVCC, cardFrames(500));
+        java.util.concurrent.atomic.AtomicReference<CardGop> ov = new java.util.concurrent.atomic.AtomicReference<>();
+        FillerSource f = new FillerSource(FillerSource.Filler.PAUSED, plain, ov::get, new byte[] {1});
+        for (int n = 0; n < 30; n++) {
+            assertEquals(n, frameNumber(f.nextVideo().data()));
+        }
+        ov.set(overlaid); // mid-GOP: the plain GOP finishes first
+        for (int n = 30; n < 60; n++) {
+            assertEquals(n, frameNumber(f.nextVideo().data()));
+        }
+        for (int n = 60; n < 120; n++) {
+            VideoSample v = f.nextVideo();
+            assertEquals(500 + n % 60, frameNumber(v.data()), "frame " + n);
+            assertEquals(n * 3000L, v.pts());
+            assertEquals(n % 60 == 0, v.idr());
+            if (n == 100) {
+                ov.set(null); // gone again: back to the plain card at the next GOP
+            }
+        }
+        assertSame(overlaid, f.showing());
+        VideoSample v120 = f.nextVideo();
+        assertEquals(0, frameNumber(v120.data()));
+        assertTrue(v120.idr());
+        assertSame(plain, f.showing());
+
+        Media m = audioItem();
+        AudioItemSource a = new AudioItemSource("a", m.index(), m.data(), plain, () -> overlaid, 0, false);
+        assertEquals(500, frameNumber(a.nextVideo().data()), "ready at the start: the first GOP is overlaid");
+        assertSame(overlaid, a.showing());
+        assertSame(plain, a.card());
+    }
+
     // ---- FillerSource ----
 
     @Test

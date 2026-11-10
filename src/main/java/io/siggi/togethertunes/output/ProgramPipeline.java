@@ -25,7 +25,8 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
      */
     @FunctionalInterface
     public interface EncodedOpener {
-        Opened open() throws IOException;
+        /** @param roomId the room whose output starts (its overlaid cards are the room's own) */
+        Opened open(String roomId) throws IOException;
     }
 
     /**
@@ -62,7 +63,7 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
     public ProgramPipeline(SourcesOpener sources, byte[] avcC, long streamBitrateBps, TimeSource time) {
         Objects.requireNonNull(sources, "sources");
         byte[] fixed = Objects.requireNonNull(avcC, "avcC").clone();
-        this.opener = () -> new Opened(sources.open(), fixed, streamBitrateBps);
+        this.opener = roomId -> new Opened(sources.open(), fixed, streamBitrateBps);
         this.time = Objects.requireNonNull(time, "time");
     }
 
@@ -74,7 +75,7 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
 
     @Override
     public ProgramOutputs.Output start(String roomId, ProgramCue initial) throws IOException {
-        Opened opened = opener.open();
+        Opened opened = opener.open(roomId);
         TimelineFollower.SourceFactory src = opened.sources();
         byte[] avcC = opened.avcC();
         try {

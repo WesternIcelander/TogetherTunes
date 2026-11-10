@@ -2,6 +2,7 @@ package io.siggi.togethertunes.output;
 
 import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.ingest.SilenceFrame;
+import java.util.function.Supplier;
 
 /**
  * A filler: a card GOP repeated with the silence frame repeated, for as long as the packager wants
@@ -45,12 +46,22 @@ public final class FillerSource implements ProgramSource {
 
     /** @param silence a raw AAC silence frame (copied) */
     public FillerSource(Filler filler, CardGop card, byte[] silence) {
+        this(filler, card, null, silence);
+    }
+
+    /**
+     * @param overlay the room's overlaid version of {@code card} while the room's overlay is on
+     *                (null otherwise), asked at every GOP start ({@link CardGop#repeat(Supplier)});
+     *                null: always {@code card}
+     * @param silence a raw AAC silence frame (copied)
+     */
+    public FillerSource(Filler filler, CardGop card, Supplier<CardGop> overlay, byte[] silence) {
         if (filler == null || card == null || silence == null || silence.length == 0) {
             throw new IllegalArgumentException("filler, card and silence are required");
         }
         this.filler = filler;
         this.card = card;
-        this.video = card.repeat();
+        this.video = overlay == null ? card.repeat() : card.repeat(overlay);
         this.silence = silence.clone();
     }
 
@@ -58,8 +69,14 @@ public final class FillerSource implements ProgramSource {
         return filler;
     }
 
+    /** The card shown while no overlaid card is given. */
     public CardGop card() {
         return card;
+    }
+
+    /** The card the current GOP shows. */
+    public CardGop showing() {
+        return video.showing();
     }
 
     @Override

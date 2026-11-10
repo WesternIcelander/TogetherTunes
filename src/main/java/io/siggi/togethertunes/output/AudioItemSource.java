@@ -4,6 +4,7 @@ import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SampleIndex.Kind;
 import io.siggi.togethertunes.media.SampleIndex.Track;
 import java.io.IOException;
+import java.util.function.Supplier;
 
 /**
  * An item played as audio: the item's card GOP repeated as video (the room's overlaid card when the
@@ -32,6 +33,16 @@ public final class AudioItemSource implements ItemSource {
      */
     public AudioItemSource(String itemId, SampleIndex index, SampleData data, CardGop card, long startMs,
             boolean presentAsAudio) throws IOException {
+        this(itemId, index, data, card, null, startMs, presentAsAudio);
+    }
+
+    /**
+     * @param overlay the room's overlaid card for this entry once it is ready (null until then),
+     *                asked at every GOP start ({@link CardGop#repeat(Supplier)}); null: always
+     *                {@code card}
+     */
+    public AudioItemSource(String itemId, SampleIndex index, SampleData data, CardGop card,
+            Supplier<CardGop> overlay, long startMs, boolean presentAsAudio) throws IOException {
         if (card == null) {
             throw new IllegalArgumentException("card is null");
         }
@@ -44,7 +55,7 @@ public final class AudioItemSource implements ItemSource {
             throw new IOException("item " + itemId + ": index has no audio track");
         }
         this.card = card;
-        this.cardVideo = card.repeat();
+        this.cardVideo = overlay == null ? card.repeat() : card.repeat(overlay);
         long target = MediaTime.msToTicks(Math.max(0, startMs), audio.timescale());
         this.nextAudio = Math.max(0, audio.sampleAtOrBefore(target));
         this.mediaStartMs = nextAudio < audio.sampleCount()
@@ -57,8 +68,14 @@ public final class AudioItemSource implements ItemSource {
         return presentAsAudio;
     }
 
+    /** The item's own card (shown while no overlaid card is given). */
     public CardGop card() {
         return card;
+    }
+
+    /** The card the current GOP shows. */
+    public CardGop showing() {
+        return cardVideo.showing();
     }
 
     @Override

@@ -3,6 +3,7 @@ package io.siggi.togethertunes.output;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SampleIndex.Kind;
 import java.io.IOException;
+import java.util.function.Supplier;
 
 /** Picks the source for an item: {@link VideoItemSource}, or {@link AudioItemSource} for audio. */
 public final class ItemSources {
@@ -28,6 +29,17 @@ public final class ItemSources {
      */
     public static ItemSource forItem(String itemId, boolean videoItem, boolean presentAsAudio,
             SampleIndex index, SampleData data, CardGop card, long startMs) throws IOException {
+        return forItem(itemId, videoItem, presentAsAudio, index, data, card, null, startMs);
+    }
+
+    /**
+     * {@link #forItem(String, boolean, boolean, SampleIndex, SampleData, CardGop, long)} with the
+     * room's overlaid card for an item played as audio, given by {@code overlay} once it is ready
+     * ({@link AudioItemSource}); ignored for a video item played as video.
+     */
+    public static ItemSource forItem(String itemId, boolean videoItem, boolean presentAsAudio,
+            SampleIndex index, SampleData data, CardGop card, Supplier<CardGop> overlay, long startMs)
+            throws IOException {
         if (videoItem && !presentAsAudio) {
             return new VideoItemSource(itemId, index, data, startMs);
         }
@@ -37,6 +49,6 @@ public final class ItemSources {
             }
             card = CardGop.fromTrack(index, index.track(Kind.VIDEO), data);
         }
-        return new AudioItemSource(itemId, index, data, card, startMs, videoItem);
+        return new AudioItemSource(itemId, index, data, card, overlay, startMs, videoItem);
     }
 }

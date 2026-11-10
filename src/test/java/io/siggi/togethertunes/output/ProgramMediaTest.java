@@ -352,4 +352,194 @@ class ProgramMediaTest {
             assertEquals(Set.of("video1", "audio1"), pm.loadedItems());
         }
     }
+
+    // ---- overlay cards (docs/overlay.md#cards-cheap-path) ----
+
+    /** A fake room overlay: card files named {@code ov-<tag>.mp4}, loaded as cards with that tag. */
+    static final class FakeOverlay implements ProgramMedia.OverlayCards {
+        volatile Map<Filler, ProgramMedia.CardFile> fillers;
+        final Map<String, ProgramMedia.CardFile> items = new java.util.concurrent.ConcurrentHashMap<>();
+        final List<String> itemsAsked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final AtomicInteger fillerLooks = new AtomicInteger();
+        volatile IOException failItems;
+
+        @Override
+        public Map<Filler, ProgramMedia.CardFile> fillers() {
+            fillerLooks.incrementAndGet();
+            return fillers;
+        }
+
+        @Override
+        public ProgramMedia.CardFile item(Entry entry) throws IOException {
+            itemsAsked.add(entry.entryId());
+            if (failItems != null) {
+                throw failItems;
+            }
+            return items.get(entry.entryId());
+        }
+
+        static ProgramMedia.CardFile card(int tag) {
+            return new ProgramMedia.CardFile(Path.of("ov-" + tag + ".mp4"), "k" + tag);
+        }
+
+        static Map<Filler, ProgramMedia.CardFile> fillerCards(int base) {
+            Map<Filler, ProgramMedia.CardFile> m = new EnumMap<>(Filler.class);
+            for (Filler f : Filler.values()) {
+                m.put(f, card(base + f.ordinal() * 100));
+            }
+            return m;
+        }
+    }
+
+    final FakeOverlay overlay = new FakeOverlay();
+    final AtomicInteger overlayLoads = new AtomicInteger();
+
+    CardGop loadAnyCard(Path file) throws IOException {
+        String name = file.getFileName().toString();
+        if (name.startsWith("ov-")) {
+            overlayLoads.incrementAndGet();
+            return CardGop.of(SourcesTest.AVCC, SourcesTest.cardFrames(Integer.parseInt(name.substring(3, name.length() - 4))));
+        }
+        return loadCard(file);
+    }
+
+    ProgramMedia overlayMedia() {
+        return new ProgramMedia(flatDir(media), OutputEncoding.defaultFor(OutputProfile.P720_30),
+                SourcesTest.AVCC, this::loadAnyCard, fillers, SourcesTest.audioFrame(9999), queued::add, 0, now::get,
+                overlay);
+    }
+
+    static ProgramMedia.ItemDirs flatDir(Path media) {
+        return id -> media.resolve(id);
+    }
+
+    /** The tags of a source's next {@code n} video frames' GOP starts. */
+    static int nextGopTag(ProgramSource src) throws IOException {
+        int tag = SourcesTest.frameNumber(src.nextVideo().data());
+        for (int i = 1; i < 60; i++) {
+            src.nextVideo();
+        }
+        return tag;
+    }
+
+    @Test
+    void overlaidItemCardTakesOverOnceReady() throws IOException {
+        write("audio1", SourcesTest.audioItem());
+        overlay.items.put(AUDIO.entryId(), FakeOverlay.card(8000));
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(AUDIO, VIDEO));
+            assertEquals(List.of(), overlay.itemsAsked, "nothing asked on the cue's thread");
+            // run only the item's load: the overlaid card isn't made yet
+            queued.remove(0).run();
+            ProgramSource a = pm.item(AUDIO, 0);
+            assertInstanceOf(AudioItemSource.class, a);
+            assertEquals(1000, nextGopTag(a), "plain card while the overlaid one is being made");
+            runLoads();
+            assertEquals(List.of(AUDIO.entryId()), overlay.itemsAsked, "only the entry played as audio");
+            assertEquals(8000, nextGopTag(a), "overlaid card from the next GOP");
+            assertEquals(8000, nextGopTag(a));
+
+            // a second source for the same entry (e.g. after a seek) has it from its first GOP
+            assertEquals(8000, nextGopTag(pm.item(AUDIO, 2000)));
+            assertEquals(1, overlayLoads.get(), "loaded once");
+        }
+    }
+
+    @Test
+    void entryWithoutOverlayKeepsThePlainCard() throws IOException {
+        write("audio1", SourcesTest.audioItem());
+        write("video1", SourcesTest.videoItem());
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(AUDIO, AS_AUDIO));
+            runLoads();
+            assertEquals(Set.of(AUDIO.entryId(), AS_AUDIO.entryId()), Set.copyOf(overlay.itemsAsked));
+            ProgramSource a = pm.item(AUDIO, 0);
+            assertEquals(1000, nextGopTag(a));
+            assertEquals(1000, nextGopTag(a));
+            runLoads();
+            assertEquals(2, overlay.itemsAsked.size(), "a decided entry isn't asked again");
+            ProgramSource v = pm.item(AS_AUDIO, 0);
+            runLoads();
+            assertEquals(7000, nextGopTag(pm.item(AS_AUDIO, 0)), "the video's card.mp4");
+            assertEquals(2, overlay.itemsAsked.size());
+            assertNotNull(v);
+        }
+    }
+
+    @Test
+    void failedOverlayCardPlaysPlainAndIsRetried() throws IOException {
+        write("audio1", SourcesTest.audioItem());
+        overlay.items.put(AUDIO.entryId(), FakeOverlay.card(8000));
+        overlay.failItems = new IOException("encode failed");
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(AUDIO, null));
+            runLoads();
+            ProgramSource a = pm.item(AUDIO, 0);
+            runLoads();
+            assertEquals(1000, nextGopTag(a));
+            assertEquals(1, overlay.itemsAsked.size(), "not retried at once");
+            overlay.failItems = null;
+            now.addAndGet(ProgramMedia.RETRY_MS);
+            pm.prepare(cue(AUDIO, null));
+            runLoads();
+            assertEquals(2, overlay.itemsAsked.size());
+            assertEquals(8000, nextGopTag(a), "the playing source picks it up");
+        }
+    }
+
+    @Test
+    void videoPlayedAsVideoAsksForNoCard() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(VIDEO, null));
+            runLoads();
+            assertInstanceOf(VideoItemSource.class, pm.item(VIDEO, 0));
+            runLoads();
+            assertEquals(List.of(), overlay.itemsAsked);
+        }
+    }
+
+    @Test
+    void roomFillerCardsFollowTheRoomsOverlay() throws IOException {
+        overlay.fillers = FakeOverlay.fillerCards(6000);
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(ProgramCue.IDLE);
+            runLoads();
+            assertEquals(1, overlay.fillerLooks.get());
+            ProgramSource idle = pm.filler(Filler.IDLE);
+            assertEquals(6000 + Filler.IDLE.ordinal() * 100, nextGopTag(idle), "overlaid filler card");
+            assertEquals(6000 + Filler.PAUSED.ordinal() * 100, nextGopTag(pm.filler(Filler.PAUSED)));
+            runLoads();
+            assertEquals(1, overlay.fillerLooks.get(), "not looked up again within the recheck interval");
+
+            // the overlay is turned off while the filler plays: plain from the GOP after the recheck
+            overlay.fillers = null;
+            now.addAndGet(ProgramMedia.FILLER_RECHECK_MS);
+            assertEquals(6000 + Filler.IDLE.ordinal() * 100, nextGopTag(idle), "this GOP asks for the recheck");
+            runLoads();
+            assertEquals(2, overlay.fillerLooks.get());
+            assertEquals(5000 + Filler.IDLE.ordinal() * 100, nextGopTag(idle), "plain server card");
+
+            // and on again (another overlayHash): a cue change looks again
+            overlay.fillers = FakeOverlay.fillerCards(7000);
+            now.addAndGet(ProgramMedia.FILLER_CUE_RECHECK_MS);
+            pm.prepare(ProgramCue.IDLE);
+            runLoads();
+            assertEquals(3, overlay.fillerLooks.get());
+            assertEquals(7000 + Filler.IDLE.ordinal() * 100, nextGopTag(idle));
+        }
+    }
+
+    @Test
+    void withoutOverlayNothingIsAsked() throws IOException {
+        write("audio1", SourcesTest.audioItem());
+        try (ProgramMedia pm = queuedMedia()) {
+            pm.prepare(cue(AUDIO, null));
+            assertEquals(1, queued.size(), "only the item load");
+            runLoads();
+            assertEquals(1000, nextGopTag(pm.item(AUDIO, 0)));
+            assertEquals(5000, nextGopTag(pm.filler(Filler.PAUSED)));
+            assertTrue(queued.isEmpty());
+        }
+    }
 }

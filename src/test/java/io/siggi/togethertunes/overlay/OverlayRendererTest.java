@@ -48,7 +48,7 @@ class OverlayRendererTest {
         return f;
     }
 
-    private static Result decode(BufferedImage image) throws Exception {
+    static Result decode(BufferedImage image) throws Exception {
         int[] px = image.getRGB(0, 0, image.getWidth(), image.getHeight(), null, 0, image.getWidth());
         BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(
                 new RGBLuminanceSource(image.getWidth(), image.getHeight(), px)));

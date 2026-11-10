@@ -33,6 +33,8 @@ import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.EncodePresets;
 import io.siggi.togethertunes.ingest.FillerCards;
+import io.siggi.togethertunes.overlay.OverlayCards;
+import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
@@ -273,7 +275,17 @@ public final class Main {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
         // The rooms' program outputs follow the room timelines (the registry's packager hook).
-        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings);
+        // The rooms' QR overlay images (docs/overlay.md#the-overlay-image): rendered on demand for the
+        // current slug, overlay settings, public URL and profile, and right away when an edit changes them.
+        Overlays overlays = new Overlays(dataDir.rooms(), config.publicBaseUrl(),
+                () -> outputAssets.encoding().profile());
+        // Overlaid filler and item cards for the program outputs (docs/overlay.md#cards-cheap-path),
+        // with the overlay decided once per queue entry (docs/overlay.md#permissions).
+        OverlayCards.Lookups overlayLookups = OverlayCards.lookupsFrom(database, dataDir, settings,
+                new OverlayDecisions(database, settings, permissions));
+        OverlayCards overlayCards = new OverlayCards(dataDir.rooms(), Tools.from(config));
+        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings,
+                (roomId, reference) -> overlayCards.forRoom(roomId, reference, overlays, overlayLookups));
         // A new output encoding: presets are checked against its reference card, every item re-encodes
         // and running program outputs restart on it (docs/library-and-ingest.md#changing-the-encoding-at-runtime).
         outputAssets.addListener(encodingChanged(presets, ingest, programOutputs, System.out, System.err));
@@ -399,10 +411,7 @@ public final class Main {
         outputControl.autoOff(autoOff);
         // A new slug or visibility changes the stream URLs at once (docs/program-output.md#stream-urls):
         // a room that becomes private gets fresh tokens; connections on URLs that stopped working end.
-        // The rooms' QR overlay images (docs/overlay.md#the-overlay-image): rendered on demand for the
-        // current slug, overlay settings, public URL and profile, and right away when an edit changes them.
-        Overlays overlays = new Overlays(dataDir.rooms(), config.publicBaseUrl(),
-                () -> outputAssets.encoding().profile());
+        // A room edit re-renders its overlay image at once (the cards follow on their next use).
         roomsApi.editListener((before, after) -> {
             try {
                 overlays.roomEdited(after.id(), after.slug(), after.settings(), settings.overlayEnabled());
@@ -792,6 +801,21 @@ public final class Main {
      */
     static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, OutputAssets assets,
             SilenceFrame silence, Settings settings) {
+        return programOutputs(config, dataDir, database, assets, silence, settings, null);
+    }
+
+    /** A room's overlaid cards for an output on the encoding of {@code reference}. */
+    @FunctionalInterface
+    interface RoomOverlayCards {
+        ProgramMedia.OverlayCards forRoom(String roomId, ReferenceCard reference);
+    }
+
+    /**
+     * {@link #programOutputs(Config, DataDir, Database, OutputAssets, SilenceFrame, Settings)} with
+     * the rooms' overlaid cards ({@code docs/overlay.md#cards-cheap-path}); null: no overlay.
+     */
+    static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, OutputAssets assets,
+            SilenceFrame silence, Settings settings, RoomOverlayCards overlayCards) {
         ProgramOutputs.ItemKinds kinds = ProgramOutputs.itemKindsFrom(database);
         if (silence == null) {
             return new ProgramOutputs((roomId, cue) -> {
@@ -803,7 +827,7 @@ public final class Main {
         }
         AtomicReference<LoadedFillers> fillers = new AtomicReference<>();
         ReentrantLock fillersLock = new ReentrantLock();
-        ProgramPipeline.EncodedOpener opener = () -> {
+        ProgramPipeline.EncodedOpener opener = roomId -> {
             // Each start uses the encoding in use then, for its sources, cards and muxer alike; the
             // stream is padded to the encoding's cap (normal rooms: stream rate = cap).
             OutputAssets.Assets current = assets.current();
@@ -830,9 +854,11 @@ public final class Main {
             byte[] avcC = current.reference().avcC();
             // Each load reads the item's current media version, so a new play uses the newest files.
             ProgramMedia.ItemDirs dirs = id -> MediaVersions.versionDir(dataDir, id, currentVersion(database, id));
+            ProgramMedia.OverlayCards overlay = overlayCards == null ? null
+                    : overlayCards.forRoom(roomId, current.reference());
             return new ProgramPipeline.Opened(new ProgramMedia(dirs, current.encoding(), avcC, cardLoader,
                     cards, silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
-                    System::currentTimeMillis), avcC, current.encoding().videoBitrateBps(),
+                    System::currentTimeMillis, overlay), avcC, current.encoding().videoBitrateBps(),
                     audioOnlyBitrateBps(settings));
         };
         return new ProgramOutputs(new ProgramPipeline(opener, TimeSource.system(Clock.systemUTC())),

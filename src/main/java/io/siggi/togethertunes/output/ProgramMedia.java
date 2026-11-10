@@ -24,6 +24,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * The media one program output plays from ({@code docs/program-output.md#lifecycle}): it implements
@@ -48,6 +49,13 @@ import java.util.function.LongSupplier;
  * {@link #RETRY_MS} later, and each distinct failure is logged once.</li>
  * </ul>
  *
+ * <p><b>Overlay cards</b> ({@code docs/overlay.md#cards-cheap-path}), when the output is given the
+ * room's {@link OverlayCards}: an entry played as audio (current or next) gets its overlaid card
+ * made and loaded in the background, and the room's overlaid filler cards are looked up when the
+ * cue changes and every {@link #FILLER_RECHECK_MS} while a filler plays. Sources ask for them at
+ * every 2 s GOP ({@link CardGop#repeat(java.util.function.Supplier)}) and show the plain card until
+ * they are ready, so the overlay never delays a play; it appears at the next GOP boundary.
+ *
  * <p>One instance per {@link TimelineFollower}: it relies on the follower playing every item source
  * it returns right away, and on the unit builder playing one source at a time. The item playing is
  * kept loaded even when it is neither current nor next (output behind the room). Threads:
@@ -61,6 +69,40 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     public static final long RETRY_MS = 5000;
     /** How long {@link #item} waits for an index that isn't loaded yet, by default. */
     public static final long DEFAULT_WAIT_MS = 300;
+
+    /** How often the room's overlaid filler cards are looked up again while a filler plays. */
+    public static final long FILLER_RECHECK_MS = 5000;
+    /** A cue change looks the filler cards up again no more often than this. */
+    static final long FILLER_CUE_RECHECK_MS = 1000;
+    /** Overlaid cards kept in memory (by content key). */
+    static final int OVERLAY_CARDS_KEPT = 16;
+
+    /**
+     * A card file made for this room's output, and a key that changes whenever its content does
+     * (cards with equal keys are interchangeable, so a loaded card is reused by key).
+     */
+    public record CardFile(Path file, String key) {
+        public CardFile {
+            Objects.requireNonNull(file, "file");
+            Objects.requireNonNull(key, "key");
+        }
+    }
+
+    /**
+     * The room's overlaid cards ({@code docs/overlay.md#cards-cheap-path}). Both methods may block
+     * (database reads, a card encode); they run on the loading executor, never on the packager
+     * thread.
+     */
+    public interface OverlayCards {
+        /** The room's overlaid filler cards as things are now, or null when the room's overlay is off. */
+        Map<Filler, CardFile> fillers() throws IOException, InterruptedException;
+
+        /**
+         * The overlaid card for an entry played as audio, or null when the entry gets no overlay
+         * (its recorded decision is off).
+         */
+        CardFile item(ProgramCue.Entry entry) throws IOException, InterruptedException;
+    }
 
     /** Loads a card file that has no index (a video item's {@code card.mp4}, a filler card). */
     @FunctionalInterface
@@ -152,6 +194,41 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** By {@link #key}: the item id, with a suffix for a video's audio-only variant. */
     private final Map<String, Slot> slots = new HashMap<>();
+
+    /** An entry's overlaid card: made and loaded in the background, null until then (or if none). */
+    private static final class EntryCard {
+        final ProgramCue.Entry entry;
+        volatile CardGop card;
+        boolean loading;
+        boolean done;
+        long failedAtMs;
+        String loggedFailure;
+
+        EntryCard(ProgramCue.Entry entry) {
+            this.entry = entry;
+        }
+    }
+
+    private final OverlayCards overlay;
+    /** By entry id: the overlaid cards of the wanted entries and of the one playing. */
+    private final Map<String, EntryCard> entryCards = new HashMap<>();
+    /** The entry id of the source last handed out, until a filler. */
+    private String playingEntry;
+    /** The entry ids of the latest cue's current and next entries. */
+    private Set<String> wantedEntries = Set.of();
+    /** The room's overlaid filler cards, or null (overlay off, or not loaded yet). */
+    private volatile Map<Filler, CardGop> roomFillers;
+    private long fillersCheckedMs;
+    private boolean fillersRunning;
+    private boolean fillersAgain;
+    private String fillersLoggedFailure;
+    /** Loaded overlaid cards by {@link CardFile#key()}, least recently used first. */
+    private final Map<String, CardGop> overlayCardCache = new java.util.LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, CardGop> eldest) {
+            return size() > OVERLAY_CARDS_KEPT;
+        }
+    };
     /** The slot keys of the latest cue's current and next entries. */
     private Set<String> wanted = Set.of();
     /** The slot key of the source last handed to the follower, until it switches to a filler. */
@@ -178,6 +255,17 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     /** @param dirs where each item's current files are (see {@link ItemDirs}); the rest as above */
     public ProgramMedia(ItemDirs dirs, OutputEncoding profile, byte[] referenceAvcC, CardLoader cardLoader,
             Map<Filler, CardGop> fillers, byte[] silence, Executor executor, long waitMs, LongSupplier nowMs) {
+        this(dirs, profile, referenceAvcC, cardLoader, fillers, silence, executor, waitMs, nowMs, null);
+    }
+
+    /**
+     * @param overlay the room's overlaid cards (loaded with {@code cardLoader}), or null for none;
+     *                the rest as above
+     */
+    public ProgramMedia(ItemDirs dirs, OutputEncoding profile, byte[] referenceAvcC, CardLoader cardLoader,
+            Map<Filler, CardGop> fillers, byte[] silence, Executor executor, long waitMs, LongSupplier nowMs,
+            OverlayCards overlay) {
+        this.overlay = overlay;
         this.dirs = Objects.requireNonNull(dirs, "dirs");
         this.profile = Objects.requireNonNull(profile, "profile");
         this.referenceAvcC = referenceAvcC == null ? null : referenceAvcC.clone();
@@ -225,11 +313,21 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             wanted = w;
             evict(null);
+            Set<String> we = new HashSet<>();
+            for (ProgramCue.Entry e : entries) {
+                if (e != null) {
+                    we.add(e.entryId());
+                }
+            }
+            wantedEntries = we;
+            evictEntryCards();
             for (ProgramCue.Entry e : entries) {
                 if (e != null) {
                     ensure(e);
+                    ensureEntryCard(e);
                 }
             }
+            refreshFillers(FILLER_CUE_RECHECK_MS);
         }
     }
 
@@ -271,15 +369,18 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** Called with the lock held. */
     private ProgramSource open(Slot s, ProgramCue.Entry entry, long startMs) throws IOException {
+        EntryCard ec = ensureEntryCard(entry);
+        Supplier<CardGop> overlaid = ec == null ? null : () -> ec.card;
         ItemSource src;
         if (s.variant) {
-            src = new AudioItemSource(entry.itemId(), s.index, s.data, s.card, startMs, true);
+            src = new AudioItemSource(entry.itemId(), s.index, s.data, s.card, overlaid, startMs, true);
         } else {
             CardGop card = asAudioVideo(entry) ? s.card : null;
             src = ItemSources.forItem(entry.itemId(), entry.videoItem(), entry.playsAsAudio(), s.index,
-                    s.data, entry.videoItem() ? card : s.card, startMs);
+                    s.data, entry.videoItem() ? card : s.card, overlaid, startMs);
         }
         playing = s.key;
+        playingEntry = entry.entryId();
         return src;
     }
 
@@ -288,10 +389,163 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         synchronized (this) {
             if (!closed) {
                 evict(null);
+                refreshFillers(FILLER_RECHECK_MS);
             }
             playing = null;
+            playingEntry = null;
         }
-        return new FillerSource(filler, fillers.get(filler), silence);
+        if (overlay == null) {
+            return new FillerSource(filler, fillers.get(filler), silence);
+        }
+        return new FillerSource(filler, fillers.get(filler), () -> {
+            synchronized (this) {
+                if (closed) {
+                    return null;
+                }
+                refreshFillers(FILLER_RECHECK_MS);
+            }
+            Map<Filler, CardGop> m = roomFillers;
+            return m == null ? null : m.get(filler);
+        }, silence);
+    }
+
+    // ------------------------------------------------------------------ overlay cards
+
+    /**
+     * The entry's overlaid card holder, starting its load if needed (lock held); null when the
+     * output has no overlay or the entry doesn't play as audio.
+     */
+    private EntryCard ensureEntryCard(ProgramCue.Entry e) {
+        if (overlay == null || !e.playsAsAudio() || closed) {
+            return null;
+        }
+        EntryCard ec = entryCards.computeIfAbsent(e.entryId(), k -> new EntryCard(e));
+        if (ec.done || ec.loading) {
+            return ec;
+        }
+        if (ec.failedAtMs != 0 && nowMs.getAsLong() - ec.failedAtMs < RETRY_MS) {
+            return ec;
+        }
+        ec.loading = true;
+        try {
+            executor.execute(() -> loadEntryCard(ec));
+        } catch (RuntimeException ex) {
+            ec.loading = false;
+            ec.failedAtMs = nowMs.getAsLong();
+        }
+        return ec;
+    }
+
+    /** Drops the overlaid cards of entries that are neither wanted nor playing (lock held). */
+    private void evictEntryCards() {
+        entryCards.keySet().removeIf(id -> !wantedEntries.contains(id) && !id.equals(playingEntry));
+    }
+
+    /** Runs on the executor. */
+    private void loadEntryCard(EntryCard ec) {
+        try {
+            CardFile f = overlay.item(ec.entry);
+            CardGop card = f == null ? null : loadOverlayCard(f);
+            synchronized (this) {
+                ec.card = card;
+                ec.done = true;
+                ec.loading = false;
+            }
+        } catch (IOException | RuntimeException e) {
+            synchronized (this) {
+                ec.loading = false;
+                ec.failedAtMs = nowMs.getAsLong();
+                String msg = String.valueOf(e.getMessage());
+                if (!msg.equals(ec.loggedFailure)) {
+                    ec.loggedFailure = msg;
+                    LOG.log(System.Logger.Level.WARNING, "Program output: no overlay card for entry "
+                            + ec.entry.entryId() + " (item " + ec.entry.itemId() + "), playing its plain card: " + e);
+                }
+            }
+        } catch (InterruptedException e) {
+            synchronized (this) {
+                ec.loading = false;
+                ec.failedAtMs = nowMs.getAsLong();
+            }
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Looks the room's overlaid filler cards up again if the last look is at least
+     * {@code minGapMs} old (lock held). One look runs at a time; one asked for meanwhile follows it.
+     */
+    private void refreshFillers(long minGapMs) {
+        if (overlay == null || closed) {
+            return;
+        }
+        long now = nowMs.getAsLong();
+        if (fillersRunning) {
+            fillersAgain = true;
+            return;
+        }
+        if (fillersCheckedMs != 0 && now - fillersCheckedMs < minGapMs) {
+            return;
+        }
+        fillersRunning = true;
+        fillersCheckedMs = now;
+        try {
+            executor.execute(this::loadFillers);
+        } catch (RuntimeException ex) {
+            fillersRunning = false;
+        }
+    }
+
+    /** Runs on the executor. */
+    private void loadFillers() {
+        try {
+            Map<Filler, CardFile> files = overlay.fillers();
+            Map<Filler, CardGop> cards = null;
+            if (files != null) {
+                cards = new EnumMap<>(Filler.class);
+                for (Map.Entry<Filler, CardFile> f : files.entrySet()) {
+                    cards.put(f.getKey(), loadOverlayCard(f.getValue()));
+                }
+            }
+            roomFillers = cards;
+            synchronized (this) {
+                fillersLoggedFailure = null;
+            }
+        } catch (IOException | RuntimeException e) {
+            synchronized (this) {
+                String msg = String.valueOf(e.getMessage());
+                if (!msg.equals(fillersLoggedFailure)) {
+                    fillersLoggedFailure = msg;
+                    LOG.log(System.Logger.Level.WARNING, "Program output: no overlaid filler cards, keeping the"
+                            + " previous ones: " + e);
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            synchronized (this) {
+                fillersRunning = false;
+                if (fillersAgain && !closed) {
+                    fillersAgain = false;
+                    refreshFillers(0);
+                }
+            }
+        }
+    }
+
+    /** The card for {@code f}, from memory when one with its key was loaded (blocking; executor). */
+    private CardGop loadOverlayCard(CardFile f) throws IOException, InterruptedException {
+        synchronized (this) {
+            CardGop known = overlayCardCache.get(f.key());
+            if (known != null) {
+                return known;
+            }
+        }
+        CardGop card = cardLoader.load(f.file());
+        synchronized (this) {
+            overlayCardCache.put(f.key(), card);
+        }
+        return card;
     }
 
     /**
@@ -471,6 +725,9 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     @Override
     public synchronized void close() {
         closed = true;
+        entryCards.clear();
+        overlayCardCache.clear();
+        roomFillers = null;
         for (Slot s : slots.values()) {
             closeQuietly(s);
         }

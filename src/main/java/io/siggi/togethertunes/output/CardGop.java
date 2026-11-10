@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * A card held in memory: one closed 2 s GOP of {@value EncodeProfile#GOP_FRAMES} AVCC samples, the
@@ -108,18 +109,51 @@ public final class CardGop {
      * {@code n·3000} ticks, so every repeat starts with the IDR on a 2 s boundary. The unit builder
      * truncates the last GOP at the item's end.
      */
-    public final class Repeat {
+    public Repeat repeat() {
+        return new Repeat(this, null);
+    }
+
+    /**
+     * Like {@link #repeat()}, but each repeat (each 2 s GOP) shows {@code override}'s card when it
+     * gives one, and this card otherwise. The choice is made at the GOP's first frame only, so a
+     * card that becomes available (a room's overlaid card, {@code docs/overlay.md#cards-cheap-path})
+     * takes over at the next GOP boundary; every card is a closed GOP with the reference avcC
+     * (invariant 1), so the switch is seamless.
+     *
+     * @param override asked at every GOP start on the packager thread; must not block. Null result:
+     *                 this card
+     */
+    public Repeat repeat(Supplier<CardGop> override) {
+        return new Repeat(this, override);
+    }
+
+    /** See {@link #repeat()}. */
+    public static final class Repeat {
+        private final CardGop base;
+        private final Supplier<CardGop> override;
+        private CardGop showing;
         private long n;
 
+        private Repeat(CardGop base, Supplier<CardGop> override) {
+            this.base = base;
+            this.override = override;
+            this.showing = base;
+        }
+
         public VideoSample next() {
-            int i = (int) (n % frames.length);
-            VideoSample s = new VideoSample(frames[i], n * ProgramSource.VIDEO_FRAME_TICKS, i == 0);
+            int i = (int) (n % EncodeProfile.GOP_FRAMES);
+            if (i == 0) {
+                CardGop o = override == null ? null : override.get();
+                showing = o != null ? o : base;
+            }
+            VideoSample s = new VideoSample(showing.frames[i], n * ProgramSource.VIDEO_FRAME_TICKS, i == 0);
             n++;
             return s;
         }
-    }
 
-    public Repeat repeat() {
-        return new Repeat();
+        /** The card the current GOP shows (the base card before the first frame). */
+        public CardGop showing() {
+            return showing;
+        }
     }
 }
