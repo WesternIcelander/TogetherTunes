@@ -58,6 +58,13 @@ public final class TimelineFollower implements AutoCloseable {
 
         /** A filler source (never ends). */
         ProgramSource filler(Filler filler);
+
+        /**
+         * Called with every cue handed to {@link #update} (on the caller's thread), so the factory
+         * can load what the cue's current and next entries need ahead of time.
+         */
+        default void prepare(ProgramCue cue) {
+        }
     }
 
     private final UnitBuilder builder;
@@ -92,11 +99,15 @@ public final class TimelineFollower implements AutoCloseable {
         this.factory = factory;
         this.clock = clock;
         this.cue = initial;
+        if (initial != null) {
+            factory.prepare(initial);
+        }
     }
 
     /** The room's timeline changed: applied at the next unit boundary. Any thread. */
     public void update(ProgramCue newCue) {
         this.cue = newCue;
+        factory.prepare(newCue);
     }
 
     /** The latest cue handed over. */
