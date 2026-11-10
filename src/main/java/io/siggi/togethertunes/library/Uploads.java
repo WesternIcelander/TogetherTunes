@@ -16,6 +16,7 @@ import io.siggi.togethertunes.ingest.MediaProbe;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.retention.References;
+import io.siggi.togethertunes.storage.DiskSpace;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -117,6 +118,7 @@ public final class Uploads {
     /** Held around the content-hash lookup and the item insert. */
     private final ReentrantLock completeLock = new ReentrantLock();
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
+    private volatile DiskSpace diskSpace = DiskSpace.unlimited();
     private volatile long nextSweepAt;
 
     /**
@@ -171,6 +173,15 @@ public final class Uploads {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /**
+     * The free-space check ({@code storage.minFreeBytes}): new uploads and chunks are refused with
+     * {@code 507 insufficient_storage} while the data volume is (or would get) below the minimum.
+     * Unlimited until set.
+     */
+    public void diskSpace(DiskSpace diskSpace) {
+        this.diskSpace = Objects.requireNonNull(diskSpace);
+    }
+
     /** The guest upload quota. */
     public GuestUploadQuota guestQuota() {
         return guestQuota;
@@ -194,8 +205,10 @@ public final class Uploads {
      * Checks the file name and size of a new upload, as {@link #create} does.
      *
      * @return the file name as it is stored
-     * @throws HttpError {@code 400 invalid_filename} / {@code 400 invalid_size}, or
-     *                   {@code 413 payload_too_large} above {@code ingest.maxUploadBytes}
+     * @throws HttpError {@code 400 invalid_filename} / {@code 400 invalid_size},
+     *                   {@code 413 payload_too_large} above {@code ingest.maxUploadBytes}, or
+     *                   {@code 507 insufficient_storage} if the free space minus {@code size}
+     *                   would be below {@code storage.minFreeBytes}
      */
     public String validate(String filename, long size) {
         String name = filename == null ? null : UploadMetadata.clean(filename);
@@ -212,6 +225,7 @@ public final class Uploads {
         if (size > maxBytes) {
             throw HttpError.payloadTooLarge("The file is larger than the upload limit (" + maxBytes + " bytes)");
         }
+        diskSpace.requireRoomFor(size);
         return name;
     }
 
@@ -358,7 +372,9 @@ public final class Uploads {
      * @return the bytes received after it
      * @throws HttpError {@code 409 upload_offset_mismatch} if the chunk starts after the received
      *                   bytes, {@code 409 upload_completed}, {@code 409 upload_busy},
-     *                   {@code 400 invalid_content_range}, {@code 400 chunk_length_mismatch} if the
+     *                   {@code 400 invalid_content_range}, {@code 507 insufficient_storage} while
+     *                   the free space is below {@code storage.minFreeBytes} (the part file stays
+     *                   until the stale-upload sweep), {@code 400 chunk_length_mismatch} if the
      *                   body is shorter than the range (the bytes that came are kept), or the body
      *                   errors of {@link Request#copyBody}
      */
@@ -368,6 +384,7 @@ public final class Uploads {
             throw completedError();
         }
         ChunkRange range = parseRange(request.header("Content-Range"), upload.size());
+        diskSpace.requireRoomFor(0);
         Session session = sessions.computeIfAbsent(upload.id(), k -> new Session());
         if (!session.lock.tryLock()) {
             throw busy();

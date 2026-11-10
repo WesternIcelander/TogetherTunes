@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -249,6 +250,39 @@ class IngestQueueTest {
         assertEquals(0.1, jobs.get(job.id()).orElseThrow().progress(), 1e-9);
         finish.countDown();
         awaitState(job.id(), State.DONE);
+    }
+
+    @Test
+    void queuedJobsWaitWhileDiskSpaceIsLowAndResumeAfterwards() throws Exception {
+        java.util.concurrent.atomic.AtomicBoolean low = new java.util.concurrent.atomic.AtomicBoolean(true);
+        AtomicInteger runs = new AtomicInteger();
+        IngestQueue q = queue(1, job -> runs.incrementAndGet(), Duration.ofMillis(50));
+        q.pauseWhile(low::get);
+        q.start();
+        IngestJob upload = q.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        IngestJob reencode = q.enqueue(fixtures.item("ready"), Kind.REENCODE);
+        Thread.sleep(400); // several polls and the wake of each enqueue
+        assertEquals(0, runs.get(), "nothing runs while below the minimum");
+        assertEquals(State.QUEUED, jobs.get(upload.id()).orElseThrow().state());
+        assertEquals(State.QUEUED, jobs.get(reencode.id()).orElseThrow().state());
+        assertEquals(0, jobs.get(upload.id()).orElseThrow().attempts(), "waiting doesn't count as an attempt");
+        assertTrue(q.paused());
+
+        low.set(false); // space freed: the next poll picks them up
+        awaitState(upload.id(), State.DONE);
+        awaitState(reencode.id(), State.DONE);
+        assertEquals(2, runs.get());
+        assertFalse(q.paused());
+    }
+
+    @Test
+    void aPauseSupplierThatThrowsDoesNotStopIngest() throws Exception {
+        IngestQueue q = queue(1, job -> { }, Duration.ofMillis(50));
+        q.pauseWhile(() -> {
+            throw new IllegalStateException("broken");
+        });
+        q.start();
+        awaitState(q.enqueue(fixtures.item("pending"), Kind.UPLOAD).id(), State.DONE);
     }
 
     @Test

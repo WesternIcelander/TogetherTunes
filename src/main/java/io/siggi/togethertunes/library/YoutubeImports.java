@@ -14,6 +14,7 @@ import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.retention.References;
+import io.siggi.togethertunes.storage.DiskSpace;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -86,6 +87,7 @@ public final class YoutubeImports {
     private final Clock clock;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
+    private volatile DiskSpace diskSpace = DiskSpace.unlimited();
 
     /**
      * What an import produced.
@@ -123,6 +125,16 @@ public final class YoutubeImports {
     }
 
     /**
+     * The free-space check ({@code storage.minFreeBytes}): every new fetch (a new video, a purged
+     * item's refetch, a failed item's retry) is refused with {@code 507 insufficient_storage} while
+     * the data volume is below the minimum; items that are ready or on their way are still handed
+     * out. Unlimited until set.
+     */
+    public void diskSpace(DiskSpace diskSpace) {
+        this.diskSpace = Objects.requireNonNull(diskSpace);
+    }
+
+    /**
      * Imports {@code url} for {@code actor} (a user or a guest); see the class comment.
      *
      * @param presentAsAudio the item's {@code presentAsAudio} if this import creates it (null = false)
@@ -130,7 +142,8 @@ public final class YoutubeImports {
      * @throws HttpError {@code 400 invalid_youtube_url}, {@code 422 youtube_live},
      *                   {@code 422 too_long}, {@code 422 youtube_unavailable},
      *                   {@code 422 youtube_failed}, {@code 503 ytdlp_unavailable},
-     *                   {@code 504 youtube_timeout}, {@code 502 youtube_bad_metadata}
+     *                   {@code 504 youtube_timeout}, {@code 502 youtube_bad_metadata},
+     *                   {@code 507 insufficient_storage}
      */
     public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary)
             throws SQLException, InterruptedException {
@@ -149,6 +162,7 @@ public final class YoutubeImports {
             if (existing != null) {
                 return existing(existing, userId, presentAsAudio, library, VIA_IMPORT);
             }
+            diskSpace.requireRoomFor(0);
             YoutubeMetadata meta = fetchMetadata(videoId);
             String itemId = UuidV7.newId();
             long now = EpochMs.now(clock);
@@ -244,6 +258,7 @@ public final class YoutubeImports {
                                 + (waitSec + 59) / 60 + " min", waitSec);
                     }
                 }
+                diskSpace.requireRoomFor(0);
                 db.write(c -> {
                     if (presentAsAudio != null) {
                         setPresentAsAudio(c, itemId, presentAsAudio);

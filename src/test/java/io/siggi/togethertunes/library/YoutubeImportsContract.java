@@ -370,6 +370,44 @@ abstract class YoutubeImportsContract {
     }
 
     @Test
+    void lowDiskSpaceRefusesNewFetchesButNotReadyItems() throws Exception {
+        java.util.concurrent.atomic.AtomicLong free = new java.util.concurrent.atomic.AtomicLong(1_000);
+        java.util.concurrent.atomic.AtomicLong min = new java.util.concurrent.atomic.AtomicLong(5_000);
+        imports.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
+                () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(free.get(), 100_000), min::get,
+                java.time.Duration.ZERO, System::nanoTime));
+
+        // A new video: refused before yt-dlp runs, nothing written.
+        HttpError e = assertThrows(HttpError.class, () -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        assertEquals(507, e.status());
+        assertEquals("insufficient_storage", e.code());
+        assertEquals(0, calls().size());
+        assertEquals(0, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
+
+        // With space it goes through; a ready item is still handed out while low (nothing to download).
+        free.set(10_000);
+        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        finishJob(true);
+        free.set(1_000);
+        assertEquals(new YoutubeImports.Imported(itemId, true, "ready"),
+                imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, null, null));
+        assertEquals(itemId, imports.addExisting(bob, ID, "youtube").itemId());
+
+        // A purged item would be fetched again: refused while low, no job queued.
+        setStatus(itemId, "purged");
+        int jobsBefore = count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId);
+        assertEquals(507, assertThrows(HttpError.class,
+                () -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null)).status());
+        assertEquals(507, assertThrows(HttpError.class, () -> imports.useExisting(ID)).status());
+        assertEquals(jobsBefore, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
+        assertEquals("purged", item(itemId).get("status"));
+
+        // A minimum of 0 turns the check off.
+        min.set(0);
+        assertEquals("pending", imports.importUrl(bob, "https://youtu.be/" + ID, null, null).status());
+    }
+
+    @Test
     void aFailedItemIsRetriedAfterTenMinutes() throws Exception {
         String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
         jobs.claimNext();

@@ -57,6 +57,7 @@ class AdminApiTest {
     private StaticFiles staticFiles;
     private Database database;
     private Settings settings;
+    private final long freeBytes = 8 * Settings.GIB;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
@@ -91,6 +92,10 @@ class AdminApiTest {
                 presets.validate(key.name(), preset);
             }
         });
+        // a fake data volume: 8 GiB free of 100, against the storage.minFreeBytes setting
+        adminApi.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
+                () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(freeBytes, 100 * Settings.GIB),
+                settings::storageMinFreeBytes, java.time.Duration.ZERO, System::nanoTime));
         TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
                 new Permissions(database, settings), actors, new io.siggi.togethertunes.auth.IdentityTickets(), clock);
         server = WebServer.start("127.0.0.1", 0,
@@ -295,7 +300,7 @@ class AdminApiTest {
                 {"GET", "/api/admin/roles"}, {"POST", "/api/admin/roles"}, {"GET", "/api/admin/roles/x"},
                 {"PATCH", "/api/admin/roles/x"}, {"DELETE", "/api/admin/roles/x"},
                 {"GET", "/api/admin/roles/x/permissions"}, {"PUT", "/api/admin/roles/x/permissions"},
-                {"GET", "/api/admin/settings"}, {"PATCH", "/api/admin/settings"},
+                {"GET", "/api/admin/settings"}, {"PATCH", "/api/admin/settings"}, {"GET", "/api/admin/storage"},
                 {"GET", "/api/admin/guests"}, {"GET", "/api/admin/audit"}, {"GET", "/api/admin/ip/sessions/" + bobId},
         };
         for (String[] route : routes) {
@@ -570,6 +575,35 @@ class AdminApiTest {
                 .map(JsonElement::getAsJsonObject).filter(p -> p.get("name").getAsString().equals("library.youtube"))
                 .findFirst().orElseThrow();
         assertFalse(youtube.get("featureEnabled").getAsBoolean());
+    }
+
+    @Test
+    void storageMinimumAndFreeSpace() throws Exception {
+        JsonObject min = find(call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items"),
+                "storage.minFreeBytes");
+        assertEquals("bytes", min.get("type").getAsString());
+        assertEquals("storage", min.get("group").getAsString());
+        assertEquals(5 * Settings.GIB, min.get("value").getAsLong());
+        assertEquals(5 * Settings.GIB, min.get("default").getAsLong());
+
+        JsonObject storage = call(200, "GET", "/api/admin/storage", null, admin);
+        assertEquals(8 * Settings.GIB, storage.get("freeBytes").getAsLong());
+        assertEquals(100 * Settings.GIB, storage.get("totalBytes").getAsLong());
+        assertEquals(5 * Settings.GIB, storage.get("minFreeBytes").getAsLong());
+        assertFalse(storage.get("low").getAsBoolean());
+
+        call(200, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":" + 10 * Settings.GIB + "}", admin);
+        assertEquals(10 * Settings.GIB, settings.storageMinFreeBytes());
+        storage = call(200, "GET", "/api/admin/storage", null, admin);
+        assertEquals(10 * Settings.GIB, storage.get("minFreeBytes").getAsLong());
+        assertTrue(storage.get("low").getAsBoolean(), "8 GiB free is below a 10 GiB minimum");
+
+        call(200, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":0}", admin);
+        assertFalse(call(200, "GET", "/api/admin/storage", null, admin).get("low").getAsBoolean(), "0 disables it");
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":-1}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":1.5}", admin));
+        call(200, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":null}", admin);
+        assertEquals(5 * Settings.GIB, settings.storageMinFreeBytes());
     }
 
     private static JsonObject find(JsonArray items, String key) {

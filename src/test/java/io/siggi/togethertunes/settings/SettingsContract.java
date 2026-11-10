@@ -82,6 +82,7 @@ abstract class SettingsContract {
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(1800, settings.ingestMaxDurationSeconds());
         assertEquals(90, settings.roomsRequestHistoryDays());
+        assertEquals(5L * 1024 * 1024 * 1024, settings.storageMinFreeBytes());
         assertTrue(settings.outputsRtmpEnabled());
         assertEquals(60, settings.outputsRtmpMaxIdleStopMinutes());
         assertTrue(settings.outputsTsEnabled());
@@ -93,7 +94,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(23, all.size());
+        assertEquals(24, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -193,6 +194,18 @@ abstract class SettingsContract {
     }
 
     @Test
+    void storageMinFreeBytesTakesWholeBytesFromZero() throws SQLException {
+        settings.setJson("storage.minFreeBytes", "0");
+        assertEquals(0, settings.storageMinFreeBytes());
+        settings.setJson("storage.minFreeBytes", "21474836480"); // 20 GiB, beyond an int
+        assertEquals(20L * Settings.GIB, settings.storageMinFreeBytes());
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("storage.minFreeBytes", "-1"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("storage.minFreeBytes", "1.5"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("storage.minFreeBytes", "\"5\""));
+        assertEquals(20L * Settings.GIB, settings.storageMinFreeBytes());
+    }
+
+    @Test
     void badOrUnknownStoredRowsFallBackToDefaults() throws SQLException {
         putRaw("guests.enabled", "not json");
         putRaw("retention.unreferencedDays", "-5");
@@ -201,7 +214,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(23, settings.all().size());
+        assertEquals(24, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

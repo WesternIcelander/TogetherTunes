@@ -81,6 +81,17 @@ public final class Settings {
     public static final SettingKey<X264Preset> INGEST_QUALITY_PRESET = SettingKey.enumeration(
             "ingest.qualityPreset", X264Preset.class, X264Preset.DEFAULT_QUALITY, X264Preset::id);
 
+    // Storage
+    /** One GiB, the unit the admin page shows {@link #STORAGE_MIN_FREE_BYTES} in. */
+    public static final long GIB = 1024L * 1024 * 1024;
+    /**
+     * Adding media pauses while the data volume has less free space than this
+     * ({@code docs/library-and-ingest.md#free-disk-space}); 0 disables the check. At most 1 PiB
+     * (well inside what JavaScript numbers hold exactly).
+     */
+    public static final SettingKey<Long> STORAGE_MIN_FREE_BYTES = SettingKey.bytes(
+            "storage.minFreeBytes", 5 * GIB, 0, 1024L * 1024 * GIB);
+
     // Rooms
     /** Days a room's request history is kept ({@code room_requests}); 0 means never trim. */
     public static final SettingKey<Integer> ROOMS_REQUEST_HISTORY_DAYS = SettingKey.integer(
@@ -111,6 +122,7 @@ public final class Settings {
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
+                STORAGE_MIN_FREE_BYTES,
                 ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OVERLAY_ENABLED)) {
@@ -352,6 +364,11 @@ public final class Settings {
 
     public X264Preset ingestQualityPreset() throws SQLException {
         return get(INGEST_QUALITY_PRESET);
+    }
+
+    /** The minimum free space on the data volume in bytes; 0 means no minimum. */
+    public long storageMinFreeBytes() throws SQLException {
+        return get(STORAGE_MIN_FREE_BYTES);
     }
 
     public boolean outputsRtmpEnabled() throws SQLException {

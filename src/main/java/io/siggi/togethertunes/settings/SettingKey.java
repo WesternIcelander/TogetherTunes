@@ -138,6 +138,25 @@ public final class SettingKey<T> {
         });
     }
 
+    /** A size in bytes, as a JSON whole number from {@code min} to {@code max}. */
+    static SettingKey<Long> bytes(String name, long defaultValue, long min, long max) {
+        return new SettingKey<>(name, Long.class, defaultValue, false, new Codec<>() {
+            @Override
+            public Long decode(JsonElement json) {
+                long v = wholeNumber(json);
+                if (v < min || v > max) {
+                    throw new IllegalArgumentException("must be between " + min + " and " + max + " bytes, got " + v);
+                }
+                return v;
+            }
+
+            @Override
+            public JsonElement encode(Long value) {
+                return new JsonPrimitive(value);
+            }
+        });
+    }
+
     /** A free-form string; {@code null} (and the empty string, stored as null) means unset. */
     static SettingKey<String> optionalString(String name) {
         return new SettingKey<>(name, String.class, null, true, new Codec<>() {

@@ -32,7 +32,7 @@ public final class Response {
             Map.entry(429, "Too Many Requests"),
             Map.entry(500, "Internal Server Error"), Map.entry(501, "Not Implemented"),
             Map.entry(502, "Bad Gateway"), Map.entry(503, "Service Unavailable"),
-            Map.entry(504, "Gateway Timeout"));
+            Map.entry(504, "Gateway Timeout"), Map.entry(507, "Insufficient Storage"));
 
     private final HTTPRequest rawRequest;
     private final HTTPResponse raw;

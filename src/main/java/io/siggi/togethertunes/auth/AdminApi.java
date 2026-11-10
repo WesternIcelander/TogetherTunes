@@ -12,6 +12,7 @@ import io.siggi.togethertunes.settings.SettingKey;
 import io.siggi.togethertunes.settings.Settings;
 import io.siggi.togethertunes.settings.StringList;
 import io.siggi.togethertunes.settings.UploadQuota;
+import io.siggi.togethertunes.storage.DiskSpace;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -76,7 +77,8 @@ import java.util.Set;
  * <ul>
  *   <li>{@code GET /api/admin/settings} → {@code {"items": [{"key", "group", "type", "value"?,
  *       "default"?, "options"?}]}} in {@link Settings#KEYS} order. {@code type} is
- *       {@code boolean}, {@code integer}, {@code string}, {@code enum} (with {@code options}),
+ *       {@code boolean}, {@code integer}, {@code bytes} (a whole number of bytes; the admin page
+ *       shows it in GiB), {@code string}, {@code enum} (with {@code options}),
  *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}) or {@code stringList} (an array
  *       of strings); a {@code null} value (e.g. no
  *       yt-dlp cookies file) is left out.</li>
@@ -85,6 +87,10 @@ import java.util.Set;
  *       or {@code 400 invalid_setting} change nothing. {@code invalid_setting} also covers a value
  *       the server can't use, e.g. an x264 preset that doesn't give the reference avcC
  *       ({@link #settingCheck}).</li>
+ *   <li>{@code GET /api/admin/storage} → {@code {"freeBytes"?, "totalBytes"?, "minFreeBytes",
+ *       "low"}}: the data volume's free space now ({@link DiskSpace}; left out if it can't be
+ *       measured), the minimum ({@code storage.minFreeBytes}, 0 = no check) and whether adding
+ *       media is paused because the free space is below it.</li>
  * </ul>
  */
 public final class AdminApi {
@@ -106,6 +112,7 @@ public final class AdminApi {
     private final Settings settings;
     private volatile Runnable settingsListener = () -> { };
     private volatile SettingCheck settingCheck = (key, value) -> { };
+    private volatile DiskSpace diskSpace = DiskSpace.unlimited();
 
     /** A check a new setting value must pass beyond its own validation (e.g. an x264 preset that works). */
     @FunctionalInterface
@@ -140,6 +147,11 @@ public final class AdminApi {
         this.settingCheck = check == null ? (key, value) -> { } : check;
     }
 
+    /** The data volume {@code GET /api/admin/storage} reports on. */
+    public void diskSpace(DiskSpace diskSpace) {
+        this.diskSpace = Objects.requireNonNull(diskSpace);
+    }
+
     public void register(Router router) {
         var usersPerm = permissions.hook(Permission.ADMIN_USERS);
         var rolesPerm = permissions.hook(Permission.ADMIN_ROLES);
@@ -168,6 +180,7 @@ public final class AdminApi {
 
         router.get("/api/admin/settings", this::getSettings, settingsPerm);
         router.patch("/api/admin/settings", this::patchSettings, settingsPerm);
+        router.get("/api/admin/storage", this::getStorage, settingsPerm);
     }
 
     // ------------------------------------------------------------- users
@@ -486,6 +499,18 @@ public final class AdminApi {
         send(response, 200, settingsJson());
     }
 
+    private void getStorage(Request request, Response response) throws Exception {
+        DiskSpace.Status s = diskSpace.status();
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (s.freeBytes() >= 0) {
+            out.put("freeBytes", s.freeBytes());
+            out.put("totalBytes", s.totalBytes());
+        }
+        out.put("minFreeBytes", s.minFreeBytes());
+        out.put("low", s.low());
+        send(response, 200, out);
+    }
+
     private Map<String, Object> settingsJson() throws SQLException {
         List<Map<String, Object>> items = new ArrayList<>();
         for (Map.Entry<SettingKey<?>, Object> e : settings.all().entrySet()) {
@@ -520,6 +545,9 @@ public final class AdminApi {
         if (t == Integer.class) {
             return "integer";
         }
+        if (t == Long.class) {
+            return "bytes";
+        }
         if (t == String.class) {
             return "string";
         }
@@ -542,6 +570,9 @@ public final class AdminApi {
         }
         if (name.startsWith("guests.")) {
             return "guests";
+        }
+        if (name.startsWith("storage.")) {
+            return "storage";
         }
         if (name.startsWith("outputs.")) {
             return "outputs";

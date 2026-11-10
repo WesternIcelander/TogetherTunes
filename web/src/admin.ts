@@ -2,6 +2,7 @@
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
 import { api, ApiError } from "./api.js";
 import { pageSignal } from "./nav.js";
+import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
 
 interface RoleRef { id: string; name: string }
@@ -36,7 +37,7 @@ type SettingValue = boolean | number | string | string[] | { perHour: number; ma
 interface Setting {
   key: string;
   group: string;
-  type: "boolean" | "integer" | "string" | "enum" | "uploadQuota" | "stringList";
+  type: "boolean" | "integer" | "bytes" | "string" | "enum" | "uploadQuota" | "stringList";
   value?: SettingValue;
   default?: SettingValue;
   options?: string[];
@@ -46,6 +47,7 @@ const GROUPS: Record<string, string> = {
   accounts: "Accounts",
   guests: "Guests",
   library: "Library",
+  storage: "Storage",
   outputs: "Outputs",
   overlay: "Overlay",
 };
@@ -392,10 +394,26 @@ let loadedSettings: Setting[] = [];
 async function loadSettings(): Promise<void> {
   loadedSettings = (await api<{ items: Setting[] }>("GET", "/api/admin/settings")).items;
   renderSettings();
+  await loadStorage();
 }
 
-function describe(value: SettingValue): string {
+async function loadStorage(): Promise<void> {
+  const line = element("storage-line");
+  const warning = element("storage-warning");
+  try {
+    const text = storageText(await api<StorageStatus>("GET", "/api/admin/storage"));
+    line.textContent = text.line;
+    warning.textContent = text.warning ?? "";
+    warning.hidden = text.warning === undefined;
+  } catch (e) {
+    line.textContent = "Storage: " + message(e);
+    warning.hidden = true;
+  }
+}
+
+function describe(value: SettingValue, type?: Setting["type"]): string {
   if (value === undefined) return "(none)";
+  if (type === "bytes" && typeof value === "number") return value === 0 ? "0 (off)" : formatGib(value) + " GiB";
   if (Array.isArray(value)) return value.length === 0 ? "(empty)" : `${value.length} entries`;
   if (typeof value === "object") return `${value.perHour} per hour, ${value.maxItemBytes} bytes per item`;
   return String(value);
@@ -424,6 +442,12 @@ function settingRow(s: Setting): HTMLElement {
     case "integer":
       input = h("input", { type: "number", name, step: "1", value: String(s.value ?? "") });
       break;
+    case "bytes":
+      input = h("span", { class: "row" },
+        h("input", { type: "number", name, min: "0", step: "any", value: typeof s.value === "number" ? formatGib(s.value) : "",
+          "aria-label": s.key + " in GiB" }),
+        "GiB");
+      break;
     case "enum":
       input = h("select", { name }, ...(s.options ?? []).map((o) => h("option", { value: o, text: o, selected: o === s.value })));
       break;
@@ -443,17 +467,18 @@ function settingRow(s: Setting): HTMLElement {
     default:
       input = h("input", { type: "text", name, value: typeof s.value === "string" ? s.value : "", size: "40" });
   }
-  const reset = h("button", { type: "button", text: "Default", title: "Reset to " + describe(s.default) });
+  const reset = h("button", { type: "button", text: "Default", title: "Reset to " + describe(s.default, s.type) });
   reset.addEventListener("click", () => {
     const error = element("settings-form").querySelector<HTMLElement>(".error");
     void run(error, reset, async () => {
       loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", { [s.key]: null })).items;
       status(`Reset ${s.key}.`);
       renderSettings();
+      await loadStorage();
     });
   });
   return h("div", { class: "setting" }, h("span", { text: s.key }), input, reset,
-    h("span", { class: "muted", text: "default: " + describe(s.default) }));
+    h("span", { class: "muted", text: "default: " + describe(s.default, s.type) }));
 }
 
 /** The settings whose form value differs from the loaded one, as a PATCH body. */
@@ -470,6 +495,12 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
       case "integer":
         value = Number(data.get(name));
         break;
+      case "bytes": {
+        // Unchanged text keeps the stored value (GiB with 3 decimals may not round-trip exactly).
+        const text = String(data.get(name) ?? "");
+        value = typeof s.value === "number" && text.trim() === formatGib(s.value) ? s.value : parseGib(text);
+        break;
+      }
       case "uploadQuota":
         value = { perHour: Number(data.get(name + ":perHour")), maxItemBytes: Number(data.get(name + ":maxItemBytes")) };
         break;
@@ -505,6 +536,7 @@ function setUpSettings(): void {
       loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", changes)).items;
       status("Saved " + Object.keys(changes).join(", ") + ".");
       renderSettings();
+      await loadStorage();
     });
   });
 }

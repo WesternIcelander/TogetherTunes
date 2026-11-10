@@ -417,6 +417,44 @@ abstract class UploadsContract {
     }
 
     @Test
+    void lowDiskSpaceRefusesNewUploadsAndChunks() throws Exception {
+        java.util.concurrent.atomic.AtomicLong free = new java.util.concurrent.atomic.AtomicLong(10_000_000);
+        java.util.concurrent.atomic.AtomicLong min = new java.util.concurrent.atomic.AtomicLong(5_000_000);
+        uploads.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
+                () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(free.get(), 100_000_000), min::get,
+                Duration.ZERO, System::nanoTime));
+        byte[] file = random(1_000_000, 7);
+
+        // Above the minimum, also after the declared size: started.
+        String id = create(alice, "noise.bin", file.length);
+        // Size-aware: 10 MB free - 5 000 001 B would leave less than the 5 MB minimum.
+        Reply tooBig = json(alice, "POST", "/api/uploads", "{\"filename\":\"big.bin\",\"size\":5000001}");
+        assertEquals(507, tooBig.status(), tooBig.body());
+        assertEquals("insufficient_storage", tooBig.error());
+        assertTrue(tooBig.body().contains("The server is low on disk space; adding media is paused."), tooBig.body());
+        expect(201, json(alice, "POST", "/api/uploads", "{\"filename\":\"fits.bin\",\"size\":5000000}"));
+
+        expect(200, chunk(server, alice, id, file, 0, 400_000));
+        // Below the minimum: chunks of the started upload are refused, the bytes so far stay.
+        free.set(4_999_999);
+        Reply refused = chunk(server, alice, id, file, 400_000, 800_000);
+        assertEquals(507, refused.status(), refused.body());
+        assertEquals("insufficient_storage", refused.error());
+        assertEquals(400_000, received(alice, id));
+        assertEquals(507, json(alice, "POST", "/api/uploads", "{\"filename\":\"tiny.bin\",\"size\":1}").status());
+
+        // Space freed: the upload continues where it stopped.
+        free.set(6_000_000);
+        assertEquals(1_000_000, expect(200, chunk(server, alice, id, file, 400_000, 1_000_000)).json()
+                .get("receivedBytes").getAsLong());
+
+        // A minimum of 0 turns the check off.
+        min.set(0);
+        free.set(0);
+        expect(201, json(alice, "POST", "/api/uploads", "{\"filename\":\"any.bin\",\"size\":5000001}"));
+    }
+
+    @Test
     void chunkAndRequestErrors() throws Exception {
         byte[] file = random(1000, 2);
         String id = create(alice, "x.bin", file.length);

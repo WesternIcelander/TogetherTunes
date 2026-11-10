@@ -99,9 +99,13 @@ function sleep(ms: number, signal: { stopped: boolean }): Promise<void> {
   });
 }
 
-/** Whether an error is worth retrying: no connection, a timeout, or a server-side failure. */
-function retryable(e: unknown): boolean {
-  return e instanceof ApiError && (e.status === 0 || e.status === 408 || e.status >= 500);
+/**
+ * Whether an error is worth retrying: no connection, a timeout, or a server-side failure. Not
+ * `507 insufficient_storage` (the server is low on disk space): that waits for an admin, so the
+ * upload stops with the server's message and can be resumed later.
+ */
+export function retryable(e: unknown): boolean {
+  return e instanceof ApiError && e.status !== 507 && (e.status === 0 || e.status === 408 || e.status >= 500);
 }
 
 export class Upload {
@@ -166,8 +170,9 @@ export class Upload {
           }
           if (!retryable(e)) {
             // The server refused the file (unreadable, too long, too large…) or lost the upload:
-            // nothing left to resume. 401/403 keep it, so it can continue after logging in.
-            if (e instanceof ApiError && e.status !== 401 && e.status !== 403) storeRemove(this.key);
+            // nothing left to resume. 401/403 keep it, so it can continue after logging in, and
+            // 507 (low disk space) so it can continue once space is freed.
+            if (e instanceof ApiError && e.status !== 401 && e.status !== 403 && e.status !== 507) storeRemove(this.key);
             this.#report("failed", { error: e instanceof Error ? e.message : String(e) });
             return;
           }

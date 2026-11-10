@@ -14,6 +14,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 
 /**
  * The ingest worker pool ({@code docs/architecture.md#threading}): a fixed number of workers
@@ -39,6 +40,10 @@ import java.util.concurrent.locks.ReentrantLock;
  *       queue without counting the attempt, like at a shutdown; it starts again from the
  *       beginning once nothing more urgent is queued. A worker that has just claimed a re-encode
  *       while such a job is waiting puts it back at once.</li>
+ *   <li><b>Low disk space</b> ({@code docs/library-and-ingest.md#free-disk-space}): while
+ *       {@link #pauseWhile} says so (the data volume is below {@code storage.minFreeBytes}), no
+ *       worker takes a new job; queued jobs (and re-encodes) stay queued and start once it no
+ *       longer does, checked at every wake and poll. Jobs already running carry on.</li>
  * </ul>
  */
 public final class IngestQueue implements AutoCloseable {
@@ -132,6 +137,8 @@ public final class IngestQueue implements AutoCloseable {
     private final Condition signal = lock.newCondition();
     private long signals;
     private volatile boolean closing;
+    private volatile BooleanSupplier paused = () -> false;
+    private volatile boolean pauseLogged;
     private final List<Thread> workers = new ArrayList<>();
     /** The jobs running now, by job id. */
     private final Map<String, Running> running = new ConcurrentHashMap<>();
@@ -165,6 +172,24 @@ public final class IngestQueue implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock);
         this.pollInterval = Objects.requireNonNull(pollInterval);
         this.progressInterval = Objects.requireNonNull(progressInterval);
+    }
+
+    /**
+     * Workers take no new job while {@code paused} is true (low disk space); checked before each
+     * claim. A supplier that throws counts as not paused.
+     */
+    public void pauseWhile(BooleanSupplier paused) {
+        this.paused = Objects.requireNonNull(paused);
+    }
+
+    /** Whether workers are holding back queued jobs now. */
+    public boolean paused() {
+        try {
+            return paused.getAsBoolean();
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not check whether ingest should wait", e);
+            return false;
+        }
     }
 
     /** The table this queue runs. */
@@ -236,8 +261,8 @@ public final class IngestQueue implements AutoCloseable {
      * @return whether a re-encode was interrupted
      */
     boolean preemptIfNeeded() {
-        if (closing || running.size() < workerCount) {
-            return false;
+        if (closing || running.size() < workerCount || paused()) {
+            return false; // while paused, the new job couldn't start anyway
         }
         try {
             if (!jobs.hasQueuedNewItemJob()) {
@@ -280,7 +305,19 @@ public final class IngestQueue implements AutoCloseable {
             }
             IngestJob job;
             try {
-                job = jobs.claimNext();
+                if (paused()) {
+                    if (!pauseLogged) {
+                        pauseLogged = true;
+                        LOG.log(System.Logger.Level.INFO, "Ingest: queued jobs wait until there is free disk space");
+                    }
+                    job = null;
+                } else {
+                    if (pauseLogged) {
+                        pauseLogged = false;
+                        LOG.log(System.Logger.Level.INFO, "Ingest: free disk space again, queued jobs continue");
+                    }
+                    job = jobs.claimNext();
+                }
             } catch (SQLException | RuntimeException e) {
                 if (closing) {
                     return;

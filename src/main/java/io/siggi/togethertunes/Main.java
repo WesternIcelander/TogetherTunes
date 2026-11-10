@@ -74,6 +74,7 @@ import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
+import io.siggi.togethertunes.storage.DiskSpace;
 import io.siggi.togethertunes.rooms.DiagnosticsApi;
 import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomRequests;
@@ -186,7 +187,9 @@ public final class Main {
         EncodePresets presets = encodePresets(config, dataDir, referenceCard, settings, System.err);
         IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
                 referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
-        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, pipeline, System.err);
+        // Adding media pauses (and queued ingest jobs wait) while the data volume is below storage.minFreeBytes.
+        DiskSpace diskSpace = DiskSpace.of(dataDir.root(), settings::storageMinFreeBytes);
+        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, pipeline, diskSpace, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -212,6 +215,7 @@ public final class Main {
         Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
         Permissions permissions = new Permissions(database, settings);
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
+        admin.diskSpace(diskSpace);
         // An admin can't pick an x264 preset that doesn't give the reference avcC.
         admin.settingCheck((key, value) -> {
             if (value instanceof X264Preset preset
@@ -228,6 +232,7 @@ public final class Main {
         // Adding a quick-encoded item to a library queues its quality re-encode.
         LibraryAddListener qualityOnLibraryAdd = itemId -> ingest.jobs().enqueueQualityIfNeeded(itemId);
         uploads.libraryAddListener(qualityOnLibraryAdd);
+        uploads.diskSpace(diskSpace);
         try {
             int swept = uploads.sweep();
             if (swept > 0) {
@@ -250,6 +255,7 @@ public final class Main {
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
         YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
         youtubeImports.libraryAddListener(qualityOnLibraryAdd);
+        youtubeImports.diskSpace(diskSpace);
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
         library.libraryAddListener(qualityOnLibraryAdd);
@@ -369,7 +375,7 @@ public final class Main {
      * ingest stays off until the next start (the server still runs).
      */
     static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
-                                   IngestPipeline handler, PrintStream err) {
+                                   IngestPipeline handler, DiskSpace diskSpace, PrintStream err) {
         try {
             int cleaned = IngestPipeline.recoverDirectories(dataDir);
             if (cleaned > 0) {
@@ -381,6 +387,7 @@ public final class Main {
         IngestJobs jobs = new IngestJobs(database);
         jobs.qualityPreset(handler.presets()::quality);
         IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
+        queue.pauseWhile(diskSpace::low);
         if (referenceCard != null) {
             try {
                 int reencodes = jobs.enqueueReencodes(referenceCard.encoding());
