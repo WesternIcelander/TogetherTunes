@@ -11,7 +11,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 - **Rooms.** A user creates a room and others join it. The owner controls the queue, or lets listeners vote on songs or edit the queue directly. Each room keeps one history of what played; anyone in the room can add an item from it to their own library or (by the room's request rules) to the queue again.
 - **Guests.** Logged-out users can vote and request (from a library, by upload or by YouTube URL) where the admin and the room owner allow it. They get a generated name (adjective + noun) or, if the admin allows, a name of their choice. They are identified by a persistent cookie or by IP address (admin setting).
 - **Synchronised web/app playback.** Web and app listeners play the files locally, kept in sync with the room's server timeline. They can switch between video and audio-only without a break in the audio, or use **remote mode**, which plays nothing locally (for people who hear the room in VRChat).
-- **Program output for VRChat.** The server generates a continuous H.264/AAC stream of the room. It can be delivered by **RTMP push** (e.g. to VRCDN), as a **direct MPEG-TS URL**, or as **HLS**. The three are equal features: the admin enables or disables each one server-wide, and room owners switch on whichever are allowed.
+- **Program output for VRChat.** The server generates a continuous H.264/AAC stream of the room. It can be delivered by **RTMP push** (e.g. to VRCDN), as a **direct MPEG-TS URL**, or as **HLS**; its sound also as an **MP3 stream** for internet-radio players (e.g. Euro Truck Simulator 2 / American Truck Simulator radio). The four are equal features: the admin enables or disables each one server-wide, and room owners switch on whichever are allowed.
 - **QR overlay.** The program output can show a QR code and a link to the room's request/vote page. Audio items and filler screens get the overlay cheaply, through per-room cards. Music videos get it only by re-encoding the video, which the admin allows per role.
 - **Low CPU at playback time.** All encoding happens at ingest. The only exception is the optional overlay re-encode of music videos, which runs about 3× faster than real time on 2 cores. The program output itself is produced by **remuxing**: pre-encoded GOPs are spliced together and their timestamps rewritten.
 - **Retention.** Items that are in nobody's library or playlist are deleted after a configurable period (default 14 days).
@@ -36,7 +36,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | Web frontend | **Vanilla TypeScript**, no framework, no bundler. Compiled with `tsc` during the Maven build and served by the backend as static files |
 | Media tools | `ffmpeg` / `ffprobe` / `yt-dlp` as subprocesses: at ingest, for overlay encodes, and for the v1 RTMP pusher |
 | Codec profile | H.264 (x264 preset admin-chosen per tier, **veryfast** quick / **slow** quality by default, all with one avcC; no B-frames, closed 2 s GOPs, bitrate **capped** at `output.videoBitrateKbps`, nothing on disk padded; the packager pads the program output to a **constant rate**) + AAC-LC 48 kHz stereo, **720p30 by default** (1080p30 configurable). Identical for every item, card and overlay encode |
-| VRChat delivery | RTMP push, MPEG-TS and HLS, all built from one shared TS byte stream; each enabled or disabled independently |
+| VRChat delivery | RTMP push, MPEG-TS and HLS, all built from one shared TS byte stream; each enabled or disabled independently. Plus an MP3 stream (one ffmpeg audio encode per room with listeners) for internet radio |
 | Web sync | Server clock + timeline anchor; clients play the files locally and correct drift |
 | Web audio-only switch | Two media elements synced to the timeline and swapped with a short crossfade, rather than HLS (reasons in [rooms.md](rooms.md#audio-only-switching)) |
 
@@ -50,11 +50,11 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [libraries.md](libraries.md) | Items vs. libraries, playlists, sharing, visibility, media access rules, retention |
 | [library-and-ingest.md](library-and-ingest.md) | Upload and yt-dlp import, YouTube caching, the mezzanine encoding profile, cards, sample index |
 | [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, the room's history, clock sync, web playback modes |
-| [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS outputs |
+| [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS / MP3 outputs |
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
 | [api.md](api.md) | REST endpoints and WebSocket messages |
 | [milestones.md](milestones.md) | Build order, with acceptance criteria and testing strategy |
-| [user-guide.md](user-guide.md) | External user documentation: using the stream URLs in VRChat (allowlist, "Allow Untrusted URLs"), an RTMP service like VRCDN, HLS desync. The UI itself names no third-party products |
+| [user-guide.md](user-guide.md) | External user documentation: using the stream URLs in VRChat (allowlist, "Allow Untrusted URLs"), an RTMP service like VRCDN, HLS desync, MP3 in Euro Truck Simulator 2 / American Truck Simulator radio (`live_streams.sii`). The UI itself names no third-party products |
 | [future-ideas.md](future-ideas.md) | Ideas that are **not** to be implemented yet (e.g. live input from OBS) |
 
 ## Glossary

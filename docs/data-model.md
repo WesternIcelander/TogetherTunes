@@ -138,8 +138,8 @@ votes(entry_id FK, voter_user_id NULL, voter_guest_id NULL, value INTEGER, at,
       UNIQUE(entry_id, voter_user_id), UNIQUE(entry_id, voter_guest_id))
 skip_votes(entry_id FK, voter_user_id NULL, voter_guest_id NULL, at, same uniques)
 
-stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls'
-      token TEXT UNIQUE NULL,               -- path token for ts/hls
+stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls' | 'mp3'
+      token TEXT UNIQUE NULL,               -- path token for ts/hls/mp3
       rtmp_url NULL, rtmp_key_enc NULL,     -- rtmp_key_enc: unused since 0007, always NULL
       enabled INTEGER, created_at,
       rtmp_key TEXT NULL,                   -- the RTMP stream key, plain text (0007)
@@ -147,7 +147,7 @@ stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls'
       stopped_at BIGINT NULL, stopped_idle_minutes INTEGER NULL)
 ```
 
-`stream_outputs` has a unique index on `(room_id, kind)`: one output of each kind per room (migration 0006). Migration 0007 added `rtmp_key`: RTMP stream keys are stored in plain text (Siggi, 2026-11-10: RTMP sends the key in plain text anyway, and the owner can reveal and copy it). Keys that older versions stored encrypted in `rtmp_key_enc` are decrypted into `rtmp_key` by the server right after the migrations (`output/LegacyRtmpKeys`, every start, a no-op once done), which then sets `rtmp_key_enc` to NULL; a key that can't be decrypted is dropped with a warning naming the output, never the key. The old column stays, unused. Migration 0009 added `stopped_reason`, `stopped_at` and `stopped_idle_minutes`: set when the server's RTMP idle stop turns an output off ([program-output.md](program-output.md#idle-stop)), cleared whenever `enabled` changes again.
+`stream_outputs` has a unique index on `(room_id, kind)`: one output of each kind per room (migration 0006). Migration 0007 added `rtmp_key`: RTMP stream keys are stored in plain text (Siggi, 2026-11-10: RTMP sends the key in plain text anyway, and the owner can reveal and copy it). Keys that older versions stored encrypted in `rtmp_key_enc` are decrypted into `rtmp_key` by the server right after the migrations (`output/LegacyRtmpKeys`, every start, a no-op once done), which then sets `rtmp_key_enc` to NULL; a key that can't be decrypted is dropped with a warning naming the output, never the key. The old column stays, unused. Migration 0009 added `stopped_reason`, `stopped_at` and `stopped_idle_minutes`: set when the server's RTMP idle stop turns an output off ([program-output.md](program-output.md#idle-stop)), cleared whenever `enabled` changes again. The `mp3` kind (2026-11-10) needed no migration: `kind` is free text without a check constraint, and older versions skip rows of kinds they don't know.
 
 ## Secrets and IP addresses at rest
 

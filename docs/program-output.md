@@ -102,7 +102,7 @@ Each unit's TS bytes are produced **once** into an immutable `byte[]`, and that 
 
 ## Consumers
 
-All three outputs are equal features. Each one is enabled server-wide by the admin (`outputs.*.enabled`) and per room by the owner. They are all consumers of the same unit byte stream, so running all three costs barely more than running one.
+All four outputs (RTMP push, `.ts`, HLS, MP3) are equal features. Each one is enabled server-wide by the admin (`outputs.*.enabled`) and per room by the owner. They are all consumers of the same unit byte stream, so running the three video outputs costs barely more than running one; MP3 adds one audio encode per room with listeners.
 
 ### Direct MPEG-TS (`.ts`)
 
@@ -146,9 +146,23 @@ The RTMP service handles distribution to viewers, so this server sends one strea
 - **Idle stop:** see [below](#idle-stop).
 - **v2 (optional):** a native Java RTMP client (handshake, chunking, AMF0 `connect`/`publish`, FLV tags), to drop the ffmpeg dependency at playback time. With FLV, the AVC and AAC sequence headers must be sent once at the start; they never change, because the profile is fixed.
 
+### MP3 (internet-radio players)
+
+An audio-only MP3 stream in the Shoutcast/Icecast style, for internet-radio players (added 2026-11-10 for Euro Truck Simulator 2 and American Truck Simulator radio; the UI says only "internet-radio players", see [user-guide.md](user-guide.md#internet-radio-mp3)). MP3 needs an audio encode and the packager never encodes, so this is a **supervised ffmpeg per room**, like the v1 RTMP pusher.
+
+- `GET /live/{token}.mp3` (also `HEAD`): `200`, `Content-Type: audio/mpeg`, `Cache-Control: no-store`, close-delimited like `.ts` (no `Content-Length`, no `Transfer-Encoding`), `icy-name` (the room name as printable ASCII, accents dropped), `icy-br`, `icy-sr: 44100`, `icy-pub: 0`. `HEAD` sends the same headers and no body, and never starts the encoder.
+- **ICY metadata:** when the client sends `Icy-MetaData: 1`, the response has `icy-metaint: 16000` and after every 16000 bytes of audio one metadata block (length byte N, then 16·N bytes): `StreamTitle='Artist - Title';` (just the title without an artist; empty for fillers: paused, idle, loading), NUL-padded. A block repeats the title only when it changed since the last block on that connection (the first block always has it); otherwise it is the byte 0. The title is made safe: control characters become spaces, `'` becomes `’`, at most 250 characters. Clients that don't ask get plain MP3.
+- **Title timing:** every unit carries the item it plays (`TsUnit.itemId`); when it changes, the encoder notes the title at that unit's start position (ms since its first unit), and the frames from that output position on carry the new title. So the title changes as the item reaches the stream, not when the timeline moved.
+- **Encoder** (`output/Mp3Encoder`, `Mp3Encoders`): one per room, started by the first listener, holding a lease on the program output with a `join=latest` queue (like the RTMP pusher), stopped 15 s after its last listener left (a player that reconnects at once finds it running); the program output then stops at the usual 60 s. Command: `ffmpeg -analyzeduration 1000000 -f mpegts -i pipe:0 -map 0:a:0 -vn -c:a libmp3lame -b:a <rate>k -ar 44100 -ac 2 -id3v2_version 0 -write_xing 0 -flush_packets 1 -f mp3 pipe:1`: no ID3 tag, no Xing header, so the stream starts with an audio frame. Its output is cut into whole frames (`output/Mp3Frames`), so every listener starts on a frame boundary. Rate: server setting `outputs.mp3.bitrateKbps` (default 128, 64..320), read when each encode starts; 44.1 kHz stereo CBR. The ffmpeg in the Docker image needs libmp3lame.
+- **Listeners:** each has a bounded queue of 10 s of audio; one whose queue overflows is disconnected (as `.ts`). A new listener first gets the last ~2 s of audio at once (so a player's buffer fills at once; the encoder's output comes in bursts, a unit at a time), then everything from the current position on: no wait for an item start.
+- **Supervision:** when ffmpeg exits, the program output restarts or ffmpeg falls behind, the attempt ends and the next one starts after 1, 2, 5, 10, then every 30 s (an attempt that produced audio for 60 s resets the backoff). Listeners stay connected and hear a gap, not a disconnect. While it has no listeners, the encoder starts no new attempt (so it doesn't restart a stopped program output).
+- **Limits and revocation:** as `.ts` (`LiveLimits`: per-IP rate limit, 64 connections per token); rotate, turning it off, deleting it or the server switch `outputs.mp3.enabled` ending ends open connections (`LiveMp3Api.revalidate`, run with the `.ts` one by every reconcile). Without ffmpeg, `GET` is `503 output_unavailable` and the room page shows the output as `error`.
+- **Remote mode delay:** room setting `estimatedDelayMs.mp3`, default 3000 ms (a guess: units go to ffmpeg 1 s early and the encode adds little, so the delay is mostly the player's buffer; not measured in the games yet).
+- The `/live/{file}` route is shared with `.ts` (`LiveTsApi` hands `*.mp3` to `LiveMp3Api`).
+
 ## Lifecycle
 
-- The packager starts when the owner enables an output, or when the first `.ts`/HLS request arrives for an enabled output.
+- The packager starts when the owner enables an output, or when the first `.ts`/HLS/MP3 request arrives for an enabled output.
 - It stops 60 s after the last consumer leaves, unless an RTMP push is enabled. A new start resets the output clock, which only affects new connections.
 - As built (`output/ProgramOutputs`, `ProgramPipeline`): consumers are leases (`.ts` connections, the RTMP pusher); an HLS fetch or enabling an output counts as activity at that moment; a sweep every 5 s stops an output with no lease, no RTMP push and no activity for 60 s. A packager that stopped by itself is restarted by the next request, or by the sweep while RTMP is enabled. `ProgramOutputs` is the rooms' `PackagerHook`: each committed change is copied on the room's executor and, for rooms with an output, turned into a `ProgramCue` (item kinds from the database) on another thread; an output started before it saw a change reads the room once with a read-only mutation.
 - An enabled RTMP push keeps the output running only until the room has been idle too long ([idle stop](#idle-stop)).
@@ -164,7 +178,7 @@ An RTMP push sends a stream (and uses the RTMP service's capacity) even when nob
 - **Limit** = `min(room setting outputs.rtmp.idleStopMinutes, server setting outputs.rtmp.maxIdleStopMinutes)`: room default 10 (1..1440), server default 60 (1..1440). A room value above the server maximum is saved but acts as the maximum (clamped, not rejected; Manage room says so next to the field).
 - The timer for a room starts at the later of "went idle" and "its push started" (turned on, or at server start), so turning the output on again starts a fresh timer even while the room is still idle. Any activity (an item queued or playing) resets it.
 - Once the room's push has run for the limit while the room was idle, the server turns the room's RTMP output **off**, exactly like the owner pressing Turn off (`enabled = false`; the push and, with no other active output, the program output stop; URL and key stay), records why (`stream_outputs.stopped_reason = 'idle'`, `stopped_at`, `stopped_idle_minutes`) and writes the `room.output_updated` audit entry with no actor (the system) and `reason: "idle"`, `idleMinutes`. It stays off until the owner turns it on; a new request or play doesn't restart it. Turning it on (or off) clears the recorded reason.
-- Only RTMP: `.ts` and HLS are pulled by viewers and stop by themselves when nobody watches ([Lifecycle](#lifecycle)).
+- Only RTMP: `.ts`, HLS and MP3 are pulled by viewers and stop by themselves when nobody watches ([Lifecycle](#lifecycle)).
 - As built: `output/RtmpIdleStop` gets each room's idle state from `ProgramOutputs` (an `IdleListener` called on the room's executor after every committed change and every snapshot read, so it only records a timestamp; invariant 4: nothing feeds back into the timeline) and the push start/stop from `StreamOutputControl`'s reconcile; `StreamOutputControl` runs the check on its 10 s timer before each reconcile, so a push stops up to about 10 s after its limit.
 
 ## Testing the packager

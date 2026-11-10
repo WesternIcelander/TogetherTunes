@@ -2,7 +2,7 @@
 
 External documentation for people using a TogetherTunes server. The software itself never names third-party games or services (see `CLAUDE.md`); how to use the stream in a particular game or with a particular streaming service lives here instead. M7's deployment notes can build on this page.
 
-A room can have up to three **stream outputs** (see [program-output.md](program-output.md)): an **RTMP push** to a streaming service, a **direct MPEG-TS URL** (`.ts`) and **HLS** (`.m3u8`). The room page's **Stream outputs** panel shows their URLs with copy buttons. All three carry the same H.264/AAC program.
+A room can have up to four **stream outputs** (see [program-output.md](program-output.md)): an **RTMP push** to a streaming service, a **direct MPEG-TS URL** (`.ts`), **HLS** (`.m3u8`) and **MP3 audio** (`.mp3`, for internet-radio players). The room page's **Stream outputs** panel shows their URLs with copy buttons. The first three carry the same H.264/AAC program; MP3 carries its sound.
 
 ## In VRChat
 
@@ -21,3 +21,24 @@ The RTMP output pushes the program to an RTMP ingest, such as VRCDN, which then 
 ## HLS and staying in sync
 
 HLS players start about three segments behind the live edge, and not all at the same segment, so viewers on HLS (for example in a VRChat world) can be a few seconds apart from each other. When everyone in the same place should hear the same moment, use the `.ts` URL or an RTMP service instead. The room page shows a generic version of this note while HLS is on.
+
+## Internet radio (MP3)
+
+The **MP3 audio** output is a Shoutcast/Icecast-style MP3 stream (128 kb/s by default, 44.1 kHz stereo) that any internet-radio player can play: VLC, foobar2000, Winamp, a hardware radio, or a game's radio. The station name is the room's name, and players that show the "now playing" title get `Artist - Title` of what the stream is playing. The room page lists it as **MP3 audio** with its URL (`…/live/<token>.mp3`) and a Copy button; Rotate URL makes a new one (the old one stops at once).
+
+### Euro Truck Simulator 2 and American Truck Simulator
+
+Both games play internet radio from a list in `live_streams.sii`:
+
+1. Turn on the room's **MP3 audio** output and copy its URL.
+2. Close the game and open `Documents\Euro Truck Simulator 2\live_streams.sii` (or `Documents\American Truck Simulator\live_streams.sii`) in a text editor. The game writes this file after you have opened its radio once.
+3. In the `live_stream_def` block, raise the count in `stream_data: N` by one and add a line with the next index (the first index is 0, so the new line's index is the old count):
+
+   ```
+   stream_data[N]: "<the MP3 URL>|<room name>|TogetherTunes|EN|128|0"
+   ```
+
+   The fields are URL, station name, genre, language, bitrate (kb/s; use the server's MP3 bitrate, 128 by default) and favourite (`0` or `1`). Don't use `|` or `"` in the name.
+4. Start the game, open the radio (R by default), choose the station.
+
+What to expect: the station plays through item changes and pauses (a pause is silence, not a disconnect), and the game shows the station name. **HTTPS:** current versions of both games play the normal `https://` URL. Old (legacy) game versions may only play plain `http://` streams; that would need the reverse proxy to serve `/live/*.mp3` over plain HTTP too, which isn't a supported setup. Community reports say 128 kb/s MP3 is the safe choice, so keep the server's MP3 bitrate at 128 for the games.
