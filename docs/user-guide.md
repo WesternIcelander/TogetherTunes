@@ -18,6 +18,8 @@ The RTMP output pushes the program to an RTMP ingest, such as VRCDN, which then 
 2. On the room page, **Set up RTMP push** with the ingest URL and the stream key.
 3. Under **Manage room → Settings → Outputs**, save the service's viewer URL as the **RTMP viewer URL**. The room page then shows it to everyone under **Watch on the stream**, and that is the URL viewers paste into the world's video player.
 
+**Security note:** a plain `rtmp://` ingest URL sends your stream key unencrypted to the service, so someone on the network path could read it. If the service offers an `rtmps://` ingest address, use that instead. If you think a key has leaked, reset it at the service and paste the new one.
+
 ## HLS and staying in sync
 
 HLS players start about three segments behind the live edge, and not all at the same segment, so viewers on HLS (for example in a VRChat world) can be a few seconds apart from each other. When everyone in the same place should hear the same moment, use the `.ts` URL or an RTMP service instead. The room page shows a generic version of this note while HLS is on.
