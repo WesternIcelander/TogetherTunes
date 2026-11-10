@@ -71,6 +71,8 @@ class ItemsApiTest {
                 java.time.Duration.ZERO, System::nanoTime));
         new ItemsApi(new Items(db, io.siggi.togethertunes.DataDir.create(dir.resolve("data")), clock),
                 new Permissions(db, settings), youtube).register(router);
+        new LibraryApi(new Library(db, youtube, clock), TestUploads.policy(new Permissions(db, settings), settings))
+                .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(db, clock);
@@ -130,6 +132,40 @@ class ItemsApiTest {
 
     private static String code(HttpResponse<String> r) {
         return json(r).getAsJsonObject("error").get("code").getAsString();
+    }
+
+    @Test
+    void searchTheWholeServer() throws Exception {
+        String song = item("audio");
+        String purged = item("audio");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'purged' WHERE id = ?")) {
+                ps.setString(1, purged);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(401, call("GET", "/api/items/search", null, null).statusCode());
+        HttpResponse<String> r = call("GET", "/api/items/search?q=song", bob, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        // alice's item, found by bob: item metadata and bob's own library flag, nothing about alice
+        assertEquals(JsonParser.parseString("{\"items\":[{\"item\":{\"id\":\"" + song + "\",\"kind\":\"audio\","
+                + "\"title\":\"Song\",\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\","
+                + "\"presentAsAudio\":false},\"inYourLibrary\":false}]}"), json(r));
+        assertFalse(r.body().contains(aliceId));
+        assertTrue(json(call("GET", "/api/items/search", alice, null)).getAsJsonArray("items").get(0)
+                .getAsJsonObject().get("inYourLibrary").getAsBoolean());
+        // Add to Library from a result, then it shows as in bob's library
+        assertEquals(201, call("PUT", "/api/library/" + song, bob, null).statusCode());
+        assertTrue(json(call("GET", "/api/items/search?q=song", bob, null)).getAsJsonArray("items").get(0)
+                .getAsJsonObject().get("inYourLibrary").getAsBoolean());
+        assertEquals(400, call("GET", "/api/items/search?limit=0", bob, null).statusCode());
+        assertEquals("invalid_kind", code(call("GET", "/api/items/search?kind=x", bob, null)));
+        assertEquals("invalid_cursor", code(call("GET", "/api/items/search?cursor=x", bob, null)));
+        // a page of 1 has a cursor to the next (nothing; the purged one isn't listed)
+        JsonObject first = json(call("GET", "/api/items/search?limit=1", bob, null));
+        assertFalse(first.has("nextCursor"), first.toString());
     }
 
     @Test

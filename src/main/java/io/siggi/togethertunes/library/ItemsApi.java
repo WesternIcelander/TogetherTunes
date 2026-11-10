@@ -21,6 +21,12 @@ import java.util.Set;
  * are {@code Cache-Control: no-store}.
  *
  * <ul>
+ *   <li>{@code GET /api/items/search?q=&kind=&cursor=&limit=} (signed-in users; {@code 401
+ *       not_authenticated} otherwise) → {@code {"items": [{"item", "inYourLibrary"}], "nextCursor"?}}:
+ *       every item on the server that isn't purged ({@link ItemSearch}, the Library page's "Search the
+ *       whole server"), newest item first. Nothing about whose libraries hold an item. {@code limit}
+ *       1..{@value ItemSearch#LIST_MAX}, default {@value ItemSearch#LIST_DEFAULT}; {@code 400
+ *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
  *       "addedAt", "error"?, "you": {"inLibrary", "canEdit", "canPurge", "canRetry"}}}. {@code error} only for
@@ -55,6 +61,7 @@ public final class ItemsApi {
     private final Items items;
     private final Permissions permissions;
     private final YoutubeImports youtube;
+    private final ItemSearch search;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -66,9 +73,11 @@ public final class ItemsApi {
         this.items = Objects.requireNonNull(items);
         this.permissions = Objects.requireNonNull(permissions);
         this.youtube = youtube;
+        this.search = new ItemSearch(items.database());
     }
 
     public void register(Router router) {
+        router.get("/api/items/search", this::search);
         router.get("/api/items/{id}", this::get);
         router.patch("/api/items/{id}", this::update);
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
@@ -102,6 +111,32 @@ public final class ItemsApi {
         out.put("jobId", retried.jobId());
         out.put("status", retried.status());
         response.json(202, out);
+    }
+
+    private void search(Request request, Response response) throws Exception {
+        if (!(ActorResolver.actor(request) instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        int limit = ItemSearch.LIST_DEFAULT;
+        String param = request.query("limit");
+        if (param != null && !param.isEmpty()) {
+            try {
+                limit = Integer.parseInt(param);
+            } catch (NumberFormatException e) {
+                limit = -1;
+            }
+            if (limit < 1 || limit > ItemSearch.LIST_MAX) {
+                throw new HttpError(400, "invalid_limit", "limit must be 1.." + ItemSearch.LIST_MAX);
+            }
+        }
+        ItemSearch.Page page = search.search(ItemSearch.Scope.server(), user.userId(), request.query("q"),
+                emptyToNull(request.query("kind")), emptyToNull(request.query("cursor")), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private static String emptyToNull(String s) {
+        return s == null || s.isEmpty() ? null : s;
     }
 
     private void get(Request request, Response response) throws Exception {

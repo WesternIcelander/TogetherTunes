@@ -27,7 +27,7 @@ import java.util.function.Function;
  *
  * <table>
  *   <caption>Room settings</caption>
- *   <tr><td>{@code requestScope}</td><td>{@code "owner"}</td><td>{@code owner} | {@code owner+self} | {@code none}</td></tr>
+ *   <tr><td>{@code libraryRequests}</td><td>true</td><td>off: only the owner and moderators may search libraries and request items by id</td></tr>
  *   <tr><td>{@code requestsPerActor}</td><td>3</td><td>1..{@value ControlSettings#MAX_REQUESTS_PER_ACTOR}</td></tr>
  *   <tr><td>{@code allowDownvotes}</td><td>false</td><td></td></tr>
  *   <tr><td>{@code voteSkipThreshold}</td><td>0.5</td><td>a number in (0, 1], or {@code "off"}</td></tr>
@@ -62,30 +62,6 @@ public final class RoomSettings {
     public static final int DEFAULT_IDLE_STOP_MINUTES = 10;
     public static final int MAX_IDLE_STOP_MINUTES = 1440;
 
-    /** {@code requestScope}: whose library a room request may come from ({@code docs/libraries.md#visibility}). */
-    public enum RequestScope {
-        OWNER("owner"), OWNER_SELF("owner+self"), NONE("none");
-
-        private final String wire;
-
-        RequestScope(String wire) {
-            this.wire = wire;
-        }
-
-        public String wire() {
-            return wire;
-        }
-
-        static RequestScope parse(String s) {
-            for (RequestScope r : values()) {
-                if (r.wire.equals(s)) {
-                    return r;
-                }
-            }
-            throw new IllegalStateException("unknown request scope " + s);
-        }
-    }
-
     // ------------------------------------------------------------------ definitions
 
     /** One setting: its dotted name, default, and how a JSON value is checked. */
@@ -97,7 +73,7 @@ public final class RoomSettings {
     private static final Set<String> GROUPS;
 
     static {
-        def("requestScope", "owner", choice("owner", "owner+self", "none"));
+        def("libraryRequests", true, RoomSettings::bool);
         def("requestsPerActor", ControlSettings.DEFAULT_REQUESTS_PER_ACTOR,
                 whole(1, ControlSettings.MAX_REQUESTS_PER_ACTOR));
         def("allowDownvotes", false, RoomSettings::bool);
@@ -359,8 +335,12 @@ public final class RoomSettings {
         return control;
     }
 
-    public RequestScope requestScope() {
-        return RequestScope.parse((String) values.get("requestScope"));
+    /**
+     * {@code libraryRequests}: whether people other than the owner and moderators may search
+     * libraries and request items by id (YouTube links and uploads are unaffected).
+     */
+    public boolean libraryRequests() {
+        return (Boolean) values.get("libraryRequests");
     }
 
     public boolean transitionCard() {

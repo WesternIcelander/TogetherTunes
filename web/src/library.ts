@@ -1,6 +1,8 @@
 // The library page (/library/): the caller's library (`GET /api/library`) with search, kind
 // filter and paging, items still being ingested with their job status, received shares, and the
-// "Add media" panel (uploads and YouTube imports).
+// "Add media" panel (uploads and YouTube imports). "Search the whole server" switches the list to
+// every item on the server (`GET /api/items/search`): item metadata only, never whose libraries
+// hold an item, with Add to Library on the ones not in the caller's library.
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { renderAddMedia } from "./addmedia.js";
@@ -10,6 +12,7 @@ import {
   type Page, type ItemSummary,
 } from "./media.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
+import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 
 interface Share {
   id: string;
@@ -25,6 +28,8 @@ interface SharePage extends Page<Share> { unseenCount: number }
 let cursor: string | undefined;
 let query = "";
 let kind = "";
+/** Search the whole server instead of the caller's library. */
+let wholeServer = false;
 /** Stops the job pollers of the rows on screen (when the list is reloaded). */
 let stopWatchers: (() => void)[] = [];
 let reloadTimer: number | undefined;
@@ -77,6 +82,32 @@ function entryRow(entry: LibraryEntry): HTMLTableRowElement {
   return tr;
 }
 
+/** A whole-server search result (`GET /api/items/search`). */
+interface ServerHit { item: ItemSummary; inYourLibrary: boolean }
+
+function serverRow(hit: ServerHit): HTMLTableRowElement {
+  const item = hit.item;
+  const action = h("td", { class: "actions" });
+  const inLibrary = (): void => {
+    action.replaceChildren(h("span", { class: "muted small", text: "In your library" }));
+  };
+  if (hit.inYourLibrary) {
+    inLibrary();
+  } else {
+    action.append(button("Add to Library", async () => {
+      await api("PUT", "/api/library/" + encodeURIComponent(item.id));
+      inLibrary();
+    }, showError));
+  }
+  return h("tr", {},
+    h("td", {}, itemTitleCell(item)),
+    h("td", { class: "small", text: kindLabel(item) }),
+    h("td", { class: "small num", text: formatDuration(item.durationMs) }),
+    h("td", {}, ingestBadge(item.status, undefined) ?? ""),
+    h("td"),
+    action);
+}
+
 async function load(reset: boolean): Promise<void> {
   const tbody = element<HTMLTableSectionElement>("library-rows");
   if (reset) {
@@ -88,14 +119,24 @@ async function load(reset: boolean): Promise<void> {
   if (query !== "") params.set("q", query);
   if (kind !== "") params.set("kind", kind);
   if (cursor !== undefined) params.set("cursor", cursor);
-  const page = await api<Page<LibraryEntry>>("GET", "/api/library?" + params.toString());
-  if (reset) tbody.replaceChildren();
-  for (const entry of page.items) tbody.append(entryRow(entry));
-  cursor = page.nextCursor;
+  let next: string | undefined;
+  if (wholeServer) {
+    const page = await api<Page<ServerHit>>("GET", "/api/items/search?" + params.toString());
+    if (reset) tbody.replaceChildren();
+    for (const hit of page.items) tbody.append(serverRow(hit));
+    next = page.nextCursor;
+  } else {
+    const page = await api<Page<LibraryEntry>>("GET", "/api/library?" + params.toString());
+    if (reset) tbody.replaceChildren();
+    for (const entry of page.items) tbody.append(entryRow(entry));
+    next = page.nextCursor;
+  }
+  cursor = next;
   element("library-more").hidden = cursor === undefined;
   const empty = element("library-empty");
   empty.hidden = tbody.childElementCount > 0;
-  empty.textContent = query !== "" || kind !== "" ? "Nothing matches." : "Your library is empty. Add media below.";
+  empty.textContent = query !== "" || kind !== "" || wholeServer ? "Nothing matches."
+    : "Your library is empty. Add media below.";
 }
 
 /** Reloads the list soon (several changes in a row cause one reload). */
@@ -134,6 +175,8 @@ async function start(): Promise<void> {
     const data = new FormData(search);
     query = String(data.get("q") ?? "").trim();
     kind = String(data.get("kind") ?? "");
+    wholeServer = data.get("all") !== null;
+    rememberWholeServer(wholeServer);
     element("library-error").textContent = "";
     load(true).catch(showError);
   };
@@ -143,6 +186,10 @@ async function start(): Promise<void> {
   });
   // (form.requestSubmit needs Safari 16)
   element<HTMLSelectElement>("library-kind").addEventListener("change", applySearch);
+  const all = element<HTMLInputElement>("library-all");
+  all.checked = rememberedWholeServer();
+  wholeServer = all.checked;
+  all.addEventListener("change", applySearch);
   const more = element<HTMLButtonElement>("library-more");
   more.addEventListener("click", () => {
     more.disabled = true;

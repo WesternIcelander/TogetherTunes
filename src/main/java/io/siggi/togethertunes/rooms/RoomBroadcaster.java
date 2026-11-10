@@ -690,8 +690,11 @@ final class RoomBroadcaster implements RoomListener {
         o.addProperty("identified", a.identified());
         o.addProperty("canVote", c.canVote());
         o.addProperty("canRequest", c.canRequest());
-        // requests by item id (library search, the history's Add to Queue)
-        o.addProperty("canRequestLibrary", a.identified() && (a.moderates() || a.canRequestLibrary()));
+        // requests by item id (library search, the history's Add to Queue); room setting libraryRequests
+        JsonElement libraryRequests = s.settings().get("libraryRequests");
+        boolean libraryOn = libraryRequests == null || !libraryRequests.isJsonPrimitive()
+                || libraryRequests.getAsBoolean();
+        o.addProperty("canRequestLibrary", a.identified() && (a.moderates() || a.canRequestLibrary() && libraryOn));
         o.addProperty("canUpload", c.canUpload());
         o.addProperty("canYoutube", c.canYoutube());
         o.addProperty("canSkip", c.canSkip());

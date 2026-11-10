@@ -371,7 +371,7 @@ abstract class RoomHistoryContract {
 
     @Test
     void anEntryOfTheHistoryIsAddedAgain() throws Exception {
-        settingsJson("{\"requestsPerActor\":100,\"noRepeatWindow\":2,\"requestScope\":\"none\"}");
+        settingsJson("{\"requestsPerActor\":100,\"noRepeatWindow\":2,\"libraryRequests\":false}");
         String a = ready();
         String b = ready();
         String c = ready();
@@ -380,8 +380,13 @@ abstract class RoomHistoryContract {
         QueueOps.Added ec = add(owner, c);
         skip();
         skip(); // c current; b recent
-        // Library requests by id are off for bob (requestScope none), but the history works.
-        assertEquals("library_requests_disabled", refused(() -> add(bob, a)));
+        // libraryRequests off: no requests by id and no history adds for bob and guests
+        assertEquals("library_requests_off", refused(() -> add(bob, a)));
+        assertEquals("library_requests_off", refused(() -> queue.add(roomId, bobActor, bob,
+                RoomQueue.Source.history(ea.entryId()))));
+        assertEquals("library_requests_off", refused(() -> queue.add(roomId, guestActor, guest,
+                RoomQueue.Source.history(ea.entryId()))));
+        settingsJson("{\"requestsPerActor\":100,\"noRepeatWindow\":2}");
         events.clear();
         QueueOps.Added again = queue.add(roomId, bobActor, bob, RoomQueue.Source.history(ea.entryId()));
         assertEquals(a, again.itemId());

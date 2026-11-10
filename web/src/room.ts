@@ -3,8 +3,8 @@
 //
 // The page joins the room over the WebSocket (roomclient.ts) and shows what is playing, the
 // queue (with votes, pins, moves and removals as the control mode and the viewer's rights allow),
-// suggestions (accept/reject for the owner and moderators), the request panel (search within the
-// room's request scope, upload, YouTube link, and a playlist for the owner and moderators), the
+// suggestions (accept/reject for the owner and moderators), the request panel (search of the
+// owner's and the viewer's libraries, or the whole server; upload, YouTube link, and a playlist for the owner and moderators), the
 // history and who is here. The server's clock is estimated with ClockSync (clocksync.ts) on the
 // same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); in remote mode
 // (remote.ts) it loads no media and shows the timeline delayed by the active output's
@@ -52,6 +52,7 @@ import { Upload, type UploadProgress } from "./uploads.js";
 import { rememberPlaying } from "./nav.js";
 import { OutputsPanel } from "./outputspanel.js";
 import { Shell } from "./shell.js";
+import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
@@ -771,7 +772,8 @@ let requestKey = "";
 function renderRequests(s: RoomState): void {
   const you = s.room.you;
   const isUser = me.kind === "user";
-  const canSearch = you.canRequest || you.canModerate;
+  // library search: off for guests without the capability and when the room's libraryRequests is off
+  const canSearch = you.canRequestLibrary === true;
   const key = [s.room.controlMode, you.identified, canSearch, you.canUpload, you.canYoutube, you.canModerate, isUser].join(",");
   if (key === requestKey) return;
   requestKey = key;
@@ -799,7 +801,10 @@ function searchPanel(): HTMLElement {
   const kind = h("select", { name: "kind", "aria-label": "Kind" },
     h("option", { value: "", text: "All" }), h("option", { value: "audio", text: "Audio" }),
     h("option", { value: "video", text: "Video" }));
-  const form = h("form", { class: "row" }, input, kind, h("button", { type: "submit", text: "Search" }));
+  const all = h("input", { name: "all", type: "checkbox" });
+  all.checked = rememberedWholeServer();
+  const form = h("form", { class: "row" }, input, kind, h("button", { type: "submit", text: "Search" }),
+    h("label", { class: "small" }, all, " Search the whole server"));
   let cursor: string | undefined;
   let generation = 0;
 
@@ -826,6 +831,7 @@ function searchPanel(): HTMLElement {
     const params = new URLSearchParams();
     if (input.value.trim() !== "") params.set("q", input.value.trim());
     if (kind.value !== "") params.set("kind", kind.value);
+    if (all.checked) params.set("all", "1");
     params.set("limit", "25");
     if (cursor !== undefined) params.set("cursor", cursor);
     status.textContent = "Searching…";
@@ -839,13 +845,17 @@ function searchPanel(): HTMLElement {
     } catch (e) {
       if (mine !== generation) return;
       more.hidden = true;
-      status.textContent = e instanceof ApiError && e.code === "library_requests_disabled"
+      status.textContent = e instanceof ApiError && e.code === "library_requests_off"
         ? "This room doesn't take requests from the library." : message(e);
     }
   };
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     void load(true);
+  });
+  all.addEventListener("change", () => {
+    rememberWholeServer(all.checked);
+    if (results.childElementCount > 0 || status.textContent !== "") void load(true);
   });
   more.addEventListener("click", () => void load(false));
   return h("div", { class: "request-search" }, h("h3", { text: "From the library" }), form, status, results, more);

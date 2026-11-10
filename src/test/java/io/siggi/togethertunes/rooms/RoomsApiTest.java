@@ -308,7 +308,8 @@ class RoomsApiTest {
         JsonObject settings = json(r).getAsJsonObject("settings");
         assertEquals(5, settings.get("requestsPerActor").getAsInt());
         assertEquals("off", settings.get("voteSkipThreshold").getAsString());
-        assertEquals("owner", settings.get("requestScope").getAsString(), "defaults filled in");
+        assertTrue(settings.get("libraryRequests").getAsBoolean(), "defaults filled in");
+        assertFalse(settings.has("requestScope"), "removed");
         assertTrue(settings.getAsJsonObject("guests").get("canUpload").getAsBoolean());
         assertTrue(settings.getAsJsonObject("guests").get("canVote").getAsBoolean());
         assertEquals("tl", settings.getAsJsonObject("overlay").get("corner").getAsString());
@@ -468,13 +469,30 @@ class RoomsApiTest {
         expectError(400, "invalid_kind", call(bob, "GET", path + "?kind=x", null));
         expectError(400, "invalid_cursor", call(bob, "GET", path + "?cursor=x", null));
         expectError(404, "room_not_found", call(bob, "GET", "/api/rooms/no-such-room/search", null));
-        assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"requestScope\":\"none\"}}")
+        // all=1: the whole server, also an item in no library
+        String orphan = io.siggi.togethertunes.db.UuidV7.newId();
+        db.write(c -> {
+            try (var ps = c.prepareStatement("INSERT INTO items (id, kind, title, source, added_by_user_id,"
+                    + " added_at, status, output_profile, last_referenced_at) VALUES (?, 'audio', 'Orphan',"
+                    + " 'upload', ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, orphan);
+                ps.setString(2, aliceId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(0, json(call(bob, "GET", path + "?q=orphan", null)).getAsJsonArray("items").size());
+        assertEquals(orphan, json(call(bob, "GET", path + "?q=orphan&all=1", null)).getAsJsonArray("items").get(0)
+                .getAsJsonObject().get("id").getAsString());
+        expectError(400, "unknown_setting", call(alice, "PATCH", "/api/rooms/" + slug,
+                "{\"settings\":{\"requestScope\":\"none\"}}"));
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"libraryRequests\":false}}")
                 .statusCode());
-        expectError(403, "library_requests_disabled", call(bob, "GET", path, null));
-        expectError(403, "library_requests_disabled", call(null, "GET", path, null));
+        expectError(403, "library_requests_off", call(bob, "GET", path, null));
+        expectError(403, "library_requests_off", call(null, "GET", path + "?all=1", null));
         assertEquals(1, json(call(alice, "GET", path, null)).getAsJsonArray("items").size());
         assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug,
-                "{\"settings\":{\"requestScope\":null,\"guests\":{\"canRequestLibrary\":false}}}").statusCode());
+                "{\"settings\":{\"libraryRequests\":null,\"guests\":{\"canRequestLibrary\":false}}}").statusCode());
         expectError(403, "guest_library_requests_disabled", call(null, "GET", path, null));
         assertEquals(200, call(bob, "GET", path, null).statusCode());
     }

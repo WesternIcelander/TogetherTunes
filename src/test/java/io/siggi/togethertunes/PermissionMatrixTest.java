@@ -235,6 +235,7 @@ class PermissionMatrixTest {
             // adder (with the item in their library) or library.editAny (the matrix item was added
             // by the setup admin, so only the admin column may edit it); purging needs library.purge.
             // ItemsContract covers the adder rule.
+            row("GET /api/items/search", c -> Call.get("/api/items/search?q=song"), 401, 401, 200, 200),
             row("GET /api/items/{id}", c -> Call.get("/api/items/" + c.itemId()), 200, 200, 200, 200),
             row("PATCH /api/items/{id}", c -> Call.patch("/api/items/" + c.itemId(), "{\"title\":\"Renamed\"}"),
                     401, 401, 403, 200),

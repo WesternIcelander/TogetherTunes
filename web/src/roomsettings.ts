@@ -29,9 +29,8 @@ export const GROUPS: Array<[string, string]> = [
 
 /** Every room setting, in the order the view shows them. */
 export const SETTINGS: SettingDef[] = [
-  { key: "requestScope", label: "Library requests from", kind: "select", group: "requests", default: "owner",
-    options: [["owner", "the owner's library"], ["owner+self", "the owner's and the requester's library"],
-      ["none", "nowhere (no library requests)"]] },
+  { key: "libraryRequests", label: "Allow library requests", kind: "bool", group: "requests", default: true,
+    help: "Off: only you and moderators can search libraries and request items from them. YouTube links and uploads still work." },
   { key: "requestsPerActor", label: "Waiting requests per person", kind: "int", group: "requests", default: 3,
     min: 1, max: 1000 },
   { key: "noRepeatWindow", label: "No repeat within the last N items (0 = off)", kind: "int", group: "requests",

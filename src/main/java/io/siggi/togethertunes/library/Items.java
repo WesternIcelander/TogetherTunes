@@ -64,6 +64,11 @@ public final class Items {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /** The database (for {@link ItemSearch}). */
+    Database database() {
+        return db;
+    }
+
     /**
      * An item page: the item, and what the caller can do with it.
      *

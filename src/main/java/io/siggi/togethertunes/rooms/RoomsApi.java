@@ -60,12 +60,13 @@ import java.util.Set;
  *       "banned", "bannedAt"?, "warning"?, "ip"?}}: {@code warning} for an IP-mode guest (the ban
  *       covers everyone sharing its address), {@code ip} (the guest's last IP) only for
  *       {@code ip.view} holders.</li>
- *   <li>{@code GET /api/rooms/{room}/search?q=&kind=&cursor=&limit=} → {@code {"items": [item],
- *       "nextCursor"?}}: the request search within the room's {@code requestScope}
- *       ({@link RequestSearch}); an item is only its metadata, as in the library, never where it
- *       came from. Newest item first; {@code limit} 1..{@value RequestSearch#LIST_MAX}, default
+ *   <li>{@code GET /api/rooms/{room}/search?q=&kind=&cursor=&limit=&all=} → {@code {"items": [item],
+ *       "nextCursor"?}}: the request search ({@link RequestSearch}): the owner's library and
+ *       playlists and the requester's library, or with {@code all=1} every item on the server that
+ *       isn't purged; an item is only its metadata, never whose libraries hold it. Newest item
+ *       first; {@code limit} 1..{@value RequestSearch#LIST_MAX}, default
  *       {@value RequestSearch#LIST_DEFAULT}. Anyone who may open the room and request from the
- *       library; {@code 403 guest_library_requests_disabled} / {@code library_requests_disabled};
+ *       library; {@code 403 guest_library_requests_disabled} / {@code library_requests_off};
  *       {@code 400 invalid_query} / {@code invalid_kind} / {@code invalid_cursor} /
  *       {@code invalid_limit}.</li>
  *   <li>{@code GET /api/rooms/{room}/history?cursor=&limit=} → {@code {"items": [row], "nextCursor"?,
@@ -219,9 +220,15 @@ public final class RoomsApi {
         }
         String kind = request.query("kind");
         RequestSearch.Page page = search.search(ActorResolver.actor(request), request.pathParam("room"),
-                request.query("q"), kind == null || kind.isEmpty() ? null : kind, cursor(request), limit);
+                request.query("q"), kind == null || kind.isEmpty() ? null : kind, cursor(request), limit,
+                isTrue(request.query("all")));
         response.header("Cache-Control", "no-store");
         response.json(page);
+    }
+
+    /** A query flag: {@code 1} or {@code true}. */
+    private static boolean isTrue(String param) {
+        return "1".equals(param) || "true".equals(param);
     }
 
     private void history(Request request, Response response) throws Exception {

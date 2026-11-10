@@ -689,6 +689,28 @@ class RoomSocketTest {
         guest.ok("{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":0}");
         roomSettings("policy", "{\"guests\":null}");
 
+        // --- libraryRequests off: no requests by id, no search, you.canRequestLibrary false; the owner is unaffected
+        roomSettings("policy", "{\"libraryRequests\":false}");
+        guest.error("library_requests_off", "{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Off") + "\"}");
+        HttpResponse<String> off = callCookie(cookie, "/api/rooms/policy/search?q=Guest");
+        assertEquals(403, off.statusCode(), off.body());
+        assertTrue(off.body().contains("library_requests_off"), off.body());
+        Client late = connect(null, cookie);
+        late.next("identity");
+        late.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        JsonObject lateYou = late.await("state").getAsJsonObject("room").getAsJsonObject("you");
+        assertFalse(lateYou.get("canRequestLibrary").getAsBoolean());
+        assertTrue(lateYou.get("canRequest").getAsBoolean(), "other request paths may remain");
+        late.close();
+        Client owner2 = connect(alice, null);
+        owner2.next("identity");
+        owner2.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        assertTrue(owner2.await("state").getAsJsonObject("room").getAsJsonObject("you").get("canRequestLibrary")
+                .getAsBoolean());
+        owner2.close();
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Owner pick") + "\"}");
+        roomSettings("policy", "{\"libraryRequests\":null}");
+
         // --- server switches: off on the server → refused, though the room allows it
         settings.set(Settings.GUESTS_CAN_VOTE, false);
         guest.error("cannot_vote", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");

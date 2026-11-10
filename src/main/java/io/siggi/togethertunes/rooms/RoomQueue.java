@@ -41,8 +41,8 @@ public final class RoomQueue {
 
     /**
      * Where an added item comes from: exactly one of the four is set. {@code historyEntryId} is an
-     * entry of this room's history (one that started playing): its item is added again, with no
-     * request scope check (it was available here already).
+     * entry of this room's history (one that started playing): its item is added again, like a
+     * request by item id.
      */
     public record Source(String itemId, String uploadId, String youtubeUrl, String historyEntryId) {
         public Source(String itemId, String uploadId, String youtubeUrl) {
@@ -72,10 +72,6 @@ public final class RoomQueue {
         }
     }
 
-    /** The room's request scope and owner, read on the executor with the cheap checks. */
-    private record Scope(RoomSettings.RequestScope requestScope, String ownerId) {
-    }
-
     public RoomQueue(RoomRegistry registry, Database db, Uploads uploads, YoutubeImports youtube, Playlists playlists,
                      AddMediaPolicy addMedia, Random random) {
         this.registry = Objects.requireNonNull(registry);
@@ -90,16 +86,15 @@ public final class RoomQueue {
     /**
      * {@code queue.add}: see {@link QueueOps#add}. The entry records how it was added
      * ({@link Source#via}). A history entry's item is added like a library request (the same guest
-     * capability, {@code requestsPerActor}, {@code noRepeatWindow}, control mode), but without the
-     * request scope check.
+     * capability, {@code requestsPerActor}, {@code noRepeatWindow}, control mode). Any item on the
+     * server may be requested by id: there is no scope check (only {@code libraryRequests}).
      *
      * @throws HttpError {@code 400 invalid_source} (not exactly one source), {@code 404
      *                   history_entry_not_found} (not an entry of this room that started playing), as
      *                   {@link ControlPolicy#requireSource} (the actor's right to this request path:
      *                   for a guest the effective guest capability) and {@link QueueOps#add};
-     *                   by item id, outside the owner and moderators, the room's request scope
-     *                   ({@link RequestSearch#requireInScope}: {@code 403 library_requests_disabled}
-     *                   / {@code not_in_request_scope});
+     *                   by item id or history entry, outside the owner and moderators,
+     *                   {@code 403 library_requests_off} (room setting {@code libraryRequests} off);
      *                   for an upload {@code 404 upload_not_found} (not the actor's) and
      *                   {@code 409 upload_incomplete}; for a YouTube link (or a purged/failed
      *                   YouTube item) the import's errors and {@link AddMediaPolicy#requireYoutube}
@@ -121,14 +116,17 @@ public final class RoomQueue {
                     "Give exactly one of itemId, uploadId, youtubeUrl and historyEntryId");
         }
         ControlPolicy.requireSource(a, source.via());
-        Scope scope = registry.call(roomId, tx -> {
+        boolean byId = source.itemId() != null || source.historyEntryId() != null;
+        registry.call(roomId, tx -> {
             QueueOps.checkAdd(tx.state(), a);
-            return new Scope(tx.state().settings().requestScope(), tx.state().ownerId());
+            if (byId) {
+                requireLibraryRequests(tx.state().settings(), a);
+            }
+            return null;
         });
         String itemId;
         if (source.itemId() != null) {
             itemId = source.itemId();
-            RequestSearch.requireInScope(db, scope.requestScope(), scope.ownerId(), a, itemId);
             refetchIfNeeded(roomId, actor, itemId);
         } else if (source.historyEntryId() != null) {
             itemId = RoomHistory.itemOf(db, roomId, source.historyEntryId());
@@ -286,6 +284,18 @@ public final class RoomQueue {
      * A purged or failed YouTube item is fetched again (as an import of its link would be, so it
      * needs the YouTube rights); other items are left to {@link QueueOps#add}'s checks.
      */
+    /**
+     * The room setting {@code libraryRequests}: when off, only the owner and moderators request
+     * items by id (a library search result or a history entry).
+     *
+     * @throws HttpError {@code 403 library_requests_off}
+     */
+    static void requireLibraryRequests(RoomSettings settings, RoomActor a) {
+        if (!settings.libraryRequests() && !a.moderates()) {
+            throw new HttpError(403, "library_requests_off", "This room doesn't take requests from libraries");
+        }
+    }
+
     private void refetchIfNeeded(String roomId, Actor actor, String itemId) throws Exception {
         if (!UuidV7.isValid(itemId)) {
             return;

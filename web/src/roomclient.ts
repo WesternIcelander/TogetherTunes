@@ -91,7 +91,7 @@ export interface You {
 }
 
 export interface RoomSettingsView {
-  requestScope?: "owner" | "owner+self" | "none" | string;
+  libraryRequests?: boolean;
   allowDownvotes?: boolean;
   voteSkipThreshold?: number | "off";
   [key: string]: unknown;

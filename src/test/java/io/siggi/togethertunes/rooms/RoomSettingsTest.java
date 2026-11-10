@@ -26,7 +26,7 @@ class RoomSettingsTest {
     @Test
     void defaultsMatchTheDocs() {
         RoomSettings d = RoomSettings.DEFAULTS;
-        assertEquals(RoomSettings.RequestScope.OWNER, d.requestScope());
+        assertTrue(d.libraryRequests());
         assertEquals(ControlSettings.DEFAULTS, d.control());
         assertEquals(3, d.control().requestsPerActor());
         assertFalse(d.control().allowDownvotes());
@@ -58,7 +58,7 @@ class RoomSettingsTest {
     @Test
     void wireFormIsNestedAndComplete() {
         JsonObject j = RoomSettings.DEFAULTS.toJson();
-        assertEquals(obj("{\"requestScope\":\"owner\",\"requestsPerActor\":3,\"allowDownvotes\":false,"
+        assertEquals(obj("{\"libraryRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
                 + "\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
@@ -84,17 +84,18 @@ class RoomSettingsTest {
 
     @Test
     void storedJsonReadsLeniently() {
-        RoomSettings s = RoomSettings.parse("{\"requestScope\":\"owner+self\",\"allowDownvotes\":\"yes\","
+        RoomSettings s = RoomSettings.parse("{\"requestScope\":\"none\",\"libraryRequests\":false,\"allowDownvotes\":\"yes\","
                 + "\"gapMs\":20000,\"guests\":{\"canYoutube\":true,\"canFly\":true},\"overlay\":5,"
                 + "\"outputs\":{\"ts\":{\"join\":\"latest\"},\"rtmp\":{\"playbackUrl\":\"javascript:alert(1)\"}},"
                 + "\"futureSetting\":1}");
-        assertEquals(RoomSettings.RequestScope.OWNER_SELF, s.requestScope());
+        assertFalse(s.libraryRequests());
         assertFalse(s.control().allowDownvotes(), "invalid -> default");
         assertEquals(0, s.gapMs(), "out of range -> default");
         assertTrue(s.guestsCanYoutube());
         assertTrue(s.tsJoinLatest());
         assertNull(s.rtmpPlaybackUrl());
-        assertEquals(obj("{\"requestScope\":\"owner+self\",\"guests\":{\"canYoutube\":true},"
+        // the removed requestScope is dropped like any unknown name
+        assertEquals(obj("{\"libraryRequests\":false,\"guests\":{\"canYoutube\":true},"
                 + "\"outputs\":{\"ts\":{\"join\":\"latest\"}}}"), obj(s.toStoredJson()));
         assertEquals(s, RoomSettings.parse(s.toStoredJson()), "round trip");
     }
@@ -133,7 +134,8 @@ class RoomSettingsTest {
         assertEquals("unknown_setting", patchError("{\"guests\":{\"canFly\":true}}").code());
         assertEquals("unknown_setting", patchError("{\"guests.canVote\":true}").code());
         assertEquals("invalid_setting", patchError("{\"guests\":true}").code());
-        assertEquals("invalid_setting", patchError("{\"requestScope\":\"everyone\"}").code());
+        assertEquals("unknown_setting", patchError("{\"requestScope\":\"owner\"}").code(), "removed");
+        assertEquals("invalid_setting", patchError("{\"libraryRequests\":\"yes\"}").code());
         assertEquals("invalid_setting", patchError("{\"requestsPerActor\":0}").code());
         assertEquals("invalid_setting", patchError("{\"requestsPerActor\":2.5}").code());
         assertEquals("invalid_setting", patchError("{\"requestsPerActor\":\"3\"}").code());

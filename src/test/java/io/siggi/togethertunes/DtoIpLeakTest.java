@@ -149,6 +149,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBan",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBanPage",
             "io.siggi.togethertunes.rooms.RequestSearch$Page",
+            "io.siggi.togethertunes.library.ItemSearch$Page",
+            "io.siggi.togethertunes.library.ItemSearch$Hit",
             "io.siggi.togethertunes.rooms.RoomHistory$Row",
             "io.siggi.togethertunes.rooms.RoomHistory$Page",
             "io.siggi.togethertunes.settings.StringList",
@@ -321,10 +323,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$BanSet", "ban's result; the API sends its ban"),
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$ServerSwitches", "booleans; RoomsApi copies them"
                     + " into the server-switches answer (swept)"),
-            Map.entry("io.siggi.togethertunes.rooms.RequestSearch$Libraries", "user ids of the libraries in a room's"
-                    + " request scope; builds the query"),
-            Map.entry("io.siggi.togethertunes.rooms.RoomQueue$Scope", "request scope and owner id, read on the"
-                    + " executor for the scope check"),
+            Map.entry("io.siggi.togethertunes.library.ItemSearch$Scope", "user ids whose libraries and playlists"
+                    + " a search covers; builds the query"),
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$GuestRow", "guest name and kind (no IP column read)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Counts", "three counts; the WebSocket layer sends"
                     + " them as presence"),
@@ -659,6 +659,12 @@ class DtoIpLeakTest {
             produced.add(bans);
             produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
                     .search(aliceActor, r.id(), null, null, null, io.siggi.togethertunes.rooms.RequestSearch.LIST_MAX));
+            produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
+                    .search(aliceActor, r.id(), null, null, null, io.siggi.togethertunes.rooms.RequestSearch.LIST_MAX,
+                            true));
+            produced.add(new io.siggi.togethertunes.library.ItemSearch(database).search(
+                    io.siggi.togethertunes.library.ItemSearch.Scope.server(), aliceActor.userId(), null, null, null,
+                    io.siggi.togethertunes.library.ItemSearch.LIST_MAX));
             io.siggi.togethertunes.rooms.RoomHistory roomHistory = new io.siggi.togethertunes.rooms.RoomHistory(
                     database, rooms, settings::roomsRequestHistoryDays, clock);
             produced.add(roomHistory.list(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.RoomHistory.LIST_MAX));
@@ -800,7 +806,7 @@ class DtoIpLeakTest {
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
-                "/api/library?q=video&kind=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
+                "/api/library?q=video&kind=video", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
@@ -808,7 +814,7 @@ class DtoIpLeakTest {
                 "/media/" + f.itemId + "/v/0/audio.m4a", "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
-                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/history",
+                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
                 "/api/rooms/" + f.roomSlug + "/server-switches");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);

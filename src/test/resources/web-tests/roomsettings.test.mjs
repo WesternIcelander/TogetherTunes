@@ -21,8 +21,8 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   assert.equal(new Set(keys).size, keys.length);
   assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
-    "guests.canYoutube", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
-    "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestScope", "requestsPerActor", "transitionCard",
+    "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
+    "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard",
     "voteSkipThreshold"]);
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
 });
@@ -41,7 +41,7 @@ test("server switches grey out exactly what they turn off", () => {
   for (const k of ["guests.canVote", "guests.canRequestLibrary", "guests.canUpload", "guests.canYoutube"]) {
     assert.match(S.serverDisabledReason(k, noGuests), /^Guests are disabled by the server admin/, k);
   }
-  assert.equal(S.serverDisabledReason("requestScope", noGuests), null);
+  assert.equal(S.serverDisabledReason("libraryRequests", noGuests), null);
 
   const noOverlay = clone(ALL_ON);
   noOverlay.overlay.enabled = false;
@@ -80,14 +80,14 @@ test("the RTMP idle stop: the server's maximum is shown, and a higher value acts
 });
 
 test("dotted names read and write nested objects", () => {
-  const o = { guests: { canVote: true }, requestScope: "owner" };
+  const o = { guests: { canVote: true }, libraryRequests: true };
   assert.equal(S.getPath(o, "guests.canVote"), true);
-  assert.equal(S.getPath(o, "requestScope"), "owner");
+  assert.equal(S.getPath(o, "libraryRequests"), true);
   assert.equal(S.getPath(o, "outputs.rtmp.playbackUrl"), undefined);
-  assert.equal(S.getPath(o, "requestScope.x"), undefined);
+  assert.equal(S.getPath(o, "libraryRequests.x"), undefined);
   S.setPath(o, "outputs.rtmp.playbackUrl", "rtmp://x/y");
   S.setPath(o, "guests.canUpload", false);
-  assert.deepEqual(o, { guests: { canVote: true, canUpload: false }, requestScope: "owner",
+  assert.deepEqual(o, { guests: { canVote: true, canUpload: false }, libraryRequests: true,
     outputs: { rtmp: { playbackUrl: "rtmp://x/y" } } });
 });
 
@@ -98,8 +98,10 @@ function def(key) {
 test("form input is parsed per kind, with the server's ranges", () => {
   assert.equal(S.parseInput(def("allowDownvotes"), true), true);
   assert.equal(S.parseInput(def("allowDownvotes"), false), false);
-  assert.equal(S.parseInput(def("requestScope"), "owner+self"), "owner+self");
-  assert.throws(() => S.parseInput(def("requestScope"), "everyone"));
+  assert.equal(def("libraryRequests").default, true);
+  assert.equal(S.parseInput(def("libraryRequests"), false), false);
+  assert.equal(S.parseInput(def("overlay.corner"), "tl"), "tl");
+  assert.throws(() => S.parseInput(def("overlay.corner"), "middle"));
   assert.equal(S.parseInput(def("requestsPerActor"), " 7 "), 7);
   assert.throws(() => S.parseInput(def("requestsPerActor"), "0"), /1 to 1000/);
   assert.throws(() => S.parseInput(def("requestsPerActor"), "2.5"), /whole number/);
@@ -126,10 +128,10 @@ test("form input is parsed per kind, with the server's ranges", () => {
 
 test("the patch holds only what changed, nested", () => {
   const current = {
-    requestScope: "owner", requestsPerActor: 3, voteSkipThreshold: 0.5,
+    libraryRequests: true, requestsPerActor: 3, voteSkipThreshold: 0.5,
     guests: { canVote: true, canUpload: false }, outputs: { rtmp: { playbackUrl: "" }, ts: { join: "next" } },
   };
-  assert.equal(S.buildPatch(current, { requestScope: "owner", requestsPerActor: 3, voteSkipThreshold: 0.5 }), null);
+  assert.equal(S.buildPatch(current, { libraryRequests: true, requestsPerActor: 3, voteSkipThreshold: 0.5 }), null);
   assert.equal(S.buildPatch(current, {}), null);
   assert.deepEqual(S.buildPatch(current, { requestsPerActor: 5, "guests.canVote": true, "guests.canUpload": true,
     "outputs.ts.join": "latest", voteSkipThreshold: "off" }),

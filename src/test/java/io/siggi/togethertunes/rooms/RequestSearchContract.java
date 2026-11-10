@@ -3,6 +3,7 @@ package io.siggi.togethertunes.rooms;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import com.google.gson.JsonElement;
@@ -20,6 +21,7 @@ import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Json;
+import io.siggi.togethertunes.library.ItemSearch;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
@@ -38,10 +40,10 @@ import org.junit.jupiter.api.function.Executable;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * The room request search and request scope ({@link RequestSearch}) on a real database:
- * {@code owner} (the owner's library and playlists), {@code owner+self} (plus the searching
- * user's library, not for guests), {@code none}; who may search; filters and pagination; and
- * that a result never tells where an item came from.
+ * The room request search ({@link RequestSearch}) and the shared item search ({@link ItemSearch})
+ * on a real database: by default the owner's library and playlists plus the searching user's
+ * library (not for guests), with {@code all} the whole server; {@code libraryRequests} off; who
+ * may search; filters and pagination; and that a result never tells whose libraries hold an item.
  */
 abstract class RequestSearchContract {
     @TempDir
@@ -123,7 +125,7 @@ abstract class RequestSearchContract {
             sql("INSERT INTO playlist_entries (id, playlist_id, item_id, position, added_at) VALUES (?, ?, ?, 1, 1)",
                     UuidV7.newId(), playlist, item);
         }
-        // carol's playlist is never in scope
+        // carol's playlist is only found by a whole-server search
         String carolList = UuidV7.newId();
         sql("INSERT INTO playlists (id, owner_id, name, created_at, updated_at) VALUES (?, ?, 'C', 1, 1)",
                 carolList, carolId);
@@ -167,12 +169,16 @@ abstract class RequestSearchContract {
         });
     }
 
-    private void scope(String scope) throws SQLException {
-        sql("UPDATE rooms SET settings_json = ? WHERE id = ?", "{\"requestScope\":\"" + scope + "\"}", roomId);
+    private void roomSettings(String json) throws SQLException {
+        sql("UPDATE rooms SET settings_json = ? WHERE id = ?", json, roomId);
     }
 
     private Set<String> ids(Actor actor, String q) throws SQLException {
         return ids(search.search(actor, roomId, q, null, null, RequestSearch.LIST_MAX));
+    }
+
+    private Set<String> allIds(Actor actor, String q) throws SQLException {
+        return ids(search.search(actor, roomId, q, null, null, RequestSearch.LIST_MAX, true));
     }
 
     private static Set<String> ids(RequestSearch.Page page) {
@@ -189,11 +195,20 @@ abstract class RequestSearchContract {
     }
 
     @Test
-    void ownerScope() throws Exception {
-        Set<String> expected = new TreeSet<>(List.of(ownLib, ownList, shared, purgedYoutube, video));
-        for (Actor a : List.of(alice, bob, carol, dave, guest, Actor.ANONYMOUS)) {
-            assertEquals(expected, ids(a, null), "owner scope for " + a);
-        }
+    void theOwnersAndTheRequestersLibraries() throws Exception {
+        Set<String> base = new TreeSet<>(List.of(ownLib, ownList, shared, purgedYoutube, video));
+        Set<String> withCarol = new TreeSet<>(base);
+        withCarol.add(carolOnly);
+        Set<String> withDave = new TreeSet<>(base);
+        withDave.add(daveOnly);
+        assertEquals(base, ids(alice, null));
+        assertEquals(withCarol, ids(carol, null));
+        assertEquals(withDave, ids(dave, null), "a user without a room role in a public room");
+        assertEquals(base, ids(bob, null), "bob's library is empty");
+        assertEquals(base, ids(guest, null), "guests have no library: the owner's only");
+        assertEquals(base, ids(Actor.ANONYMOUS, null));
+        assertEquals(Set.of(carolOnly), ids(carol, "secret"));
+        assertEquals(Set.of(), ids(dave, "secret"), "not someone else's library by default");
         // the slug works too
         String slug = (String) db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT slug FROM rooms WHERE id = ?")) {
@@ -204,36 +219,46 @@ abstract class RequestSearchContract {
                 }
             }
         });
-        assertEquals(expected, ids(search.search(carol, slug, null, null, null, 50)));
+        assertEquals(withCarol, ids(search.search(carol, slug, null, null, null, 50)));
+        // a stored requestScope from before is ignored
+        roomSettings("{\"requestScope\":\"none\"}");
+        assertEquals(withDave, ids(dave, null));
     }
 
     @Test
-    void ownerPlusSelf() throws Exception {
-        scope("owner+self");
-        Set<String> base = new TreeSet<>(List.of(ownLib, ownList, shared, purgedYoutube, video));
-        Set<String> withCarol = new TreeSet<>(base);
-        withCarol.add(carolOnly);
-        Set<String> withDave = new TreeSet<>(base);
-        withDave.add(daveOnly);
-        assertEquals(base, ids(alice, null));
-        assertEquals(withCarol, ids(carol, null));
-        assertEquals(withDave, ids(dave, null), "a user without a room role in a public room");
-        assertEquals(base, ids(bob, null), "bob's library is empty");
-        assertEquals(base, ids(guest, null), "guests have no library");
-        assertEquals(base, ids(Actor.ANONYMOUS, null));
-        // in scope by request: carol's own item for carol, not for dave
-        assertEquals(Set.of(carolOnly), ids(carol, "secret"));
-        assertEquals(Set.of(), ids(dave, "secret"));
-    }
-
-    @Test
-    void none() throws Exception {
-        scope("none");
-        for (Actor a : List.of(bob, carol, dave, guest, Actor.ANONYMOUS)) {
-            assertEquals("library_requests_disabled", refused(() -> ids(a, null)), "none for " + a);
+    void theWholeServer() throws Exception {
+        // every item that isn't purged: a third user's library, a playlist, no library at all
+        Set<String> server = new TreeSet<>(List.of(ownLib, ownList, shared, carolOnly, daveOnly, nobody, video));
+        for (Actor a : List.of(alice, bob, carol, dave, guest, Actor.ANONYMOUS)) {
+            assertEquals(server, allIds(a, null), "whole server for " + a);
         }
-        assertEquals(Set.of(ownLib, ownList, shared, purgedYoutube, video), ids(alice, null),
-                "the owner still finds their own library");
+        assertEquals(Set.of(carolOnly), allIds(dave, "secret"), "carol's item found by dave");
+        assertEquals(Set.of(), allIds(dave, "old video"), "a purged item isn't on the server");
+        assertEquals(Set.of(), allIds(dave, "broken"), "nor a failed upload");
+        // the shared search behind it: whether it is in the searcher's own library, nothing more
+        ItemSearch items = new ItemSearch(db);
+        ItemSearch.Page page = items.search(ItemSearch.Scope.server(), carol.userId(), null, null, null, 50);
+        for (ItemSearch.Hit hit : page.items()) {
+            assertEquals(hit.item().id().equals(shared) || hit.item().id().equals(carolOnly), hit.inYourLibrary(),
+                    hit.item().title());
+        }
+        assertTrue(items.search(ItemSearch.Scope.server(), null, null, null, null, 50).items().stream()
+                .noneMatch(ItemSearch.Hit::inYourLibrary));
+        assertEquals(List.of(), items.search(ItemSearch.Scope.of(List.of(), List.of()), carol.userId(), null, null,
+                null, 50).items());
+    }
+
+    @Test
+    void libraryRequestsOff() throws Exception {
+        roomSettings("{\"libraryRequests\":false}");
+        for (Actor a : List.of(carol, dave, guest, Actor.ANONYMOUS)) {
+            assertEquals("library_requests_off", refused(() -> ids(a, null)), "off for " + a);
+            assertEquals("library_requests_off", refused(() -> allIds(a, null)), "off for " + a);
+        }
+        Set<String> base = Set.of(ownLib, ownList, shared, purgedYoutube, video);
+        assertEquals(base, ids(alice, null), "the owner is unaffected");
+        assertEquals(base, ids(bob, null), "moderators are unaffected");
+        assertEquals(7, allIds(bob, null).size());
     }
 
     @Test
@@ -241,7 +266,7 @@ abstract class RequestSearchContract {
         sql("UPDATE rooms SET settings_json = ? WHERE id = ?", "{\"guests\":{\"canRequestLibrary\":false}}", roomId);
         assertEquals("guest_library_requests_disabled", refused(() -> ids(guest, null)));
         assertEquals("guest_library_requests_disabled", refused(() -> ids(Actor.ANONYMOUS, null)));
-        assertEquals(5, ids(carol, null).size(), "users are not affected");
+        assertEquals(6, ids(carol, null).size(), "users are not affected");
         sql("UPDATE rooms SET settings_json = '{}' WHERE id = ?", roomId);
         settings.setJson("guests.canRequestLibrary", "false");
         assertEquals("guest_library_requests_disabled", refused(() -> ids(guest, null)), "server switch off");
@@ -268,7 +293,9 @@ abstract class RequestSearchContract {
         assertEquals(Set.of(), ids(carol, "Broken"), "a failed upload is left out");
         assertEquals(Set.of(purgedYoutube), ids(carol, "old"), "a purged YouTube item is listed");
         assertEquals(Set.of(video, purgedYoutube), ids(search.search(carol, roomId, null, "video", null, 50)));
-        assertEquals(Set.of(ownLib, ownList, shared), ids(search.search(carol, roomId, null, "audio", null, 50)));
+        assertEquals(Set.of(ownLib, ownList, shared, carolOnly),
+                ids(search.search(carol, roomId, null, "audio", null, 50)));
+        assertEquals(Set.of(video), ids(search.search(carol, roomId, null, "video", null, 50, true)));
         assertEquals("invalid_kind", refused(() -> search.search(carol, roomId, null, "image", null, 50)));
         assertEquals("invalid_query", refused(() -> search.search(carol, roomId, "x".repeat(201), null, null, 50)));
         assertEquals("invalid_cursor", refused(() -> search.search(carol, roomId, null, null, "nope", 50)));
@@ -282,64 +309,31 @@ abstract class RequestSearchContract {
             }
             cursor = page.nextCursor();
         } while (cursor != null);
-        List<String> expected = new ArrayList<>(List.of(ownLib, ownList, shared, purgedYoutube, video));
+        List<String> expected = new ArrayList<>(List.of(ownLib, ownList, shared, carolOnly, purgedYoutube, video));
         expected.sort(java.util.Comparator.reverseOrder());
         assertEquals(expected, all);
-        assertNull(search.search(carol, roomId, null, null, null, 5).nextCursor());
+        assertNull(search.search(carol, roomId, null, null, null, 6).nextCursor());
     }
 
     @Test
-    void noLibraryOrigin() throws Exception {
-        scope("owner+self");
-        RequestSearch.Page page = search.search(carol, roomId, null, null, null, 50);
-        JsonObject json = Json.GSON.toJsonTree(page).getAsJsonObject();
-        Set<String> allowed = Set.of("id", "kind", "title", "artist", "album", "durationMs", "source", "youtubeId",
-                "status", "presentAsAudio");
-        for (JsonElement e : json.getAsJsonArray("items")) {
-            for (String key : e.getAsJsonObject().keySet()) {
-                assertFalse(!allowed.contains(key), "unexpected field " + key + " in " + e);
+    void noLibraryMembership() throws Exception {
+        for (boolean all : List.of(false, true)) {
+            RequestSearch.Page page = search.search(carol, roomId, null, null, null, 50, all);
+            JsonObject json = Json.GSON.toJsonTree(page).getAsJsonObject();
+            Set<String> allowed = Set.of("id", "kind", "title", "artist", "album", "durationMs", "source",
+                    "youtubeId", "status", "presentAsAudio");
+            for (JsonElement e : json.getAsJsonArray("items")) {
+                for (String key : e.getAsJsonObject().keySet()) {
+                    assertFalse(!allowed.contains(key), "unexpected field " + key + " in " + e);
+                }
             }
-        }
-        String text = json.toString();
-        for (String leak : List.of("addedAt", "via", "sharedBy", carol.userId(), aliceId, "Alice")) {
-            assertFalse(text.contains(leak), leak + " in " + text);
-        }
-        for (String key : json.keySet()) {
-            assertFalse(!key.equals("items") && !key.equals("nextCursor"), "unexpected field " + key);
-        }
-    }
-
-    @Test
-    void requestByIdFollowsTheScope() throws Exception {
-        RoomActor carolA = RoomActor.user(carol.userId(), Rooms.Role.MEMBER);
-        RoomActor daveA = RoomActor.user(dave.userId(), null);
-        RoomActor guestA = RoomActor.guest(guest.guestId(), true, true);
-        RoomActor bobA = RoomActor.user(bobId, Rooms.Role.MODERATOR);
-        RoomActor aliceA = RoomActor.user(aliceId, Rooms.Role.OWNER);
-        RoomSettings.RequestScope owner = RoomSettings.RequestScope.OWNER;
-        RoomSettings.RequestScope self = RoomSettings.RequestScope.OWNER_SELF;
-        RoomSettings.RequestScope none = RoomSettings.RequestScope.NONE;
-        for (RoomActor a : List.of(carolA, daveA, guestA)) {
-            for (String in : List.of(ownLib, ownList, shared, purgedYoutube)) {
-                RequestSearch.requireInScope(db, owner, aliceId, a, in);
+            String text = json.toString();
+            for (String leak : List.of("addedAt", "via", "sharedBy", carol.userId(), aliceId, "Alice")) {
+                assertFalse(text.contains(leak), leak + " in " + text);
             }
-            for (String out : List.of(carolOnly, daveOnly, nobody, UuidV7.newId(), "not-an-id")) {
-                assertEquals("not_in_request_scope", refused(() -> RequestSearch.requireInScope(db, owner, aliceId,
-                        a, out)), "the same answer for unknown and out-of-scope items");
+            for (String key : json.keySet()) {
+                assertFalse(!key.equals("items") && !key.equals("nextCursor"), "unexpected field " + key);
             }
-            assertEquals("library_requests_disabled", refused(() -> RequestSearch.requireInScope(db, none, aliceId,
-                    a, ownLib)));
-        }
-        RequestSearch.requireInScope(db, self, aliceId, carolA, carolOnly);
-        assertEquals("not_in_request_scope", refused(() -> RequestSearch.requireInScope(db, self, aliceId, daveA,
-                carolOnly)));
-        RequestSearch.requireInScope(db, self, aliceId, daveA, daveOnly);
-        assertEquals("not_in_request_scope", refused(() -> RequestSearch.requireInScope(db, self, aliceId, guestA,
-                carolOnly)));
-        // owner and moderators add from anywhere, in any scope
-        for (RoomActor a : List.of(aliceA, bobA)) {
-            RequestSearch.requireInScope(db, none, aliceId, a, nobody);
-            RequestSearch.requireInScope(db, owner, aliceId, a, carolOnly);
         }
     }
 }
