@@ -3,6 +3,7 @@
 JSON over HTTPS. A request is made by a user (`sid` cookie or `Authorization: Bearer`), a guest (`gid` cookie, or IP in IP mode), or anonymously; see [auth.md](auth.md).
 
 - Errors: `{ "error": { "code": "snake_case", "message": "…" } }`, with the appropriate HTTP status.
+- `507 insufficient_storage` ("The server is low on disk space; adding media is paused."): starting an upload, an upload chunk or a new YouTube fetch while the data volume is below `storage.minFreeBytes` ([library-and-ingest.md](library-and-ingest.md#free-disk-space)). The same code comes back as a WebSocket `error` for a room's `queue.add` with a `youtubeUrl` (or a purged YouTube item).
 - List endpoints use cursor pagination: `?cursor=…&limit=…` → `{ items, nextCursor }`.
 - **No response contains an IP address**, except the endpoints marked *ip.view*.
 
@@ -49,11 +50,11 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/api/uploads` | `{filename, size, roomId?}` → `201 {uploadId, chunkSize, size}`. With `roomId`, the upload is a request in that room and the room's guest rules apply; guests need a `roomId` (else `401`). `413` over `ingest.maxUploadBytes` (guests: or the quota's item size), `429 upload_quota_exceeded` with `Retry-After` for guests over `guests.uploadQuota`; guest refusals per [library-and-ingest.md](library-and-ingest.md#who-can-add-media) |
-| PUT | `/api/uploads/{id}` | Chunk with `Content-Range: bytes start-end/size` → `{receivedBytes, size}`; idempotent (bytes already received are skipped); a chunk must start at or before `receivedBytes` (else `409 upload_offset_mismatch`) |
+| POST | `/api/uploads` | `{filename, size, roomId?}` → `201 {uploadId, chunkSize, size}`. With `roomId`, the upload is a request in that room and the room's guest rules apply; guests need a `roomId` (else `401`). `413` over `ingest.maxUploadBytes` (guests: or the quota's item size), `429 upload_quota_exceeded` with `Retry-After` for guests over `guests.uploadQuota`; `507 insufficient_storage` when the free space minus `size` would fall below `storage.minFreeBytes`; guest refusals per [library-and-ingest.md](library-and-ingest.md#who-can-add-media) |
+| PUT | `/api/uploads/{id}` | Chunk with `Content-Range: bytes start-end/size` → `{receivedBytes, size}`; idempotent (bytes already received are skipped); a chunk must start at or before `receivedBytes` (else `409 upload_offset_mismatch`); `507 insufficient_storage` while the free space is below `storage.minFreeBytes` (the bytes so far are kept; send the chunk again later) |
 | GET | `/api/uploads/{id}` | `{receivedBytes, size, itemId?}` (`itemId` once completed) |
 | POST | `/api/uploads/{id}/complete` | `{title?, artist?, addToLibrary?}` → `{itemId, deduplicated}`; repeatable. `422 unreadable_media` / `no_audio` / `too_long` (the upload is deleted) |
-| POST | `/api/imports/youtube` | `{url, presentAsAudio?, addToLibrary?}` → `{itemId, cached: true\|false, status}` (`cached`: the item was already ready; `status`: `ready`, `pending` or `processing`). `400 invalid_youtube_url`, `422 youtube_live` / `too_long` / `youtube_unavailable` (yt-dlp's error), `422 youtube_failed` with `Retry-After` (failed less than 10 min ago), `503 ytdlp_unavailable`, `504 youtube_timeout` |
+| POST | `/api/imports/youtube` | `{url, presentAsAudio?, addToLibrary?}` → `{itemId, cached: true\|false, status}` (`cached`: the item was already ready; `status`: `ready`, `pending` or `processing`). `400 invalid_youtube_url`, `422 youtube_live` / `too_long` / `youtube_unavailable` (yt-dlp's error), `422 youtube_failed` with `Retry-After` (failed less than 10 min ago), `503 ytdlp_unavailable`, `504 youtube_timeout`, `507 insufficient_storage` (a new video, refetch or retry while the free space is below `storage.minFreeBytes`; a ready, pending or processing item is still returned) |
 
 Inside a room, requests made by upload or YouTube go through the WebSocket `queue.add` message, which references an `uploadId` or a `youtubeUrl`. That is what writes the request and queue entry.
 
@@ -80,7 +81,8 @@ Inside a room, requests made by upload or YouTube go through the WebSocket `queu
 
 | Path | Notes |
 |---|---|
-| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)). `GET` lists `{key, group, type, value, default, options?}`; `PATCH {key: value}` is all-or-nothing, `null` resets to the default. `400 invalid_setting` for a value that fails validation, or that the server can't use: an `ingest.quickPreset`/`ingest.qualityPreset` whose test encode doesn't give the reference avcC ([library-and-ingest.md](library-and-ingest.md#presets)) |
+| `/api/admin/settings` | All server settings ([auth.md](auth.md#server-settings)). `GET` lists `{key, group, type, value, default, options?}` (`type`: `boolean`, `integer`, `bytes` (whole bytes; the admin page shows GiB), `string`, `enum`, `uploadQuota`, `stringList`); `PATCH {key: value}` is all-or-nothing, `null` resets to the default. `400 invalid_setting` for a value that fails validation, or that the server can't use: an `ingest.quickPreset`/`ingest.qualityPreset` whose test encode doesn't give the reference avcC ([library-and-ingest.md](library-and-ingest.md#presets)) |
+| `/api/admin/storage` | *admin.settings*. `GET` → `{freeBytes?, totalBytes?, minFreeBytes, low}`: the data volume's usable and total bytes now (left out if they can't be measured), `storage.minFreeBytes` (0 = no check) and whether adding media is paused ([library-and-ingest.md](library-and-ingest.md#free-disk-space)) |
 | `/api/admin/roles[/{id}]`, `/api/admin/roles/{id}/permissions` | `GET` (also with *admin.users*) / `POST`; `GET` / `PATCH {name?, isDefault?}` / `DELETE`; `GET` / `PUT {permissions}` |
 | `/api/admin/users[/{id}]`, `/api/admin/users/{id}/roles`, `/api/admin/users/{id}/password` | `GET ?q=` / `POST {username, password, displayName?, roleIds?}` (temporary password); `GET` / `PATCH {displayName?, disabled?}`; `GET` / `PUT {roleIds}`; `POST {password}` sets a temporary password. No escalation: see [auth.md](auth.md#roles-and-permissions) |
 | `/api/admin/providers` | |
