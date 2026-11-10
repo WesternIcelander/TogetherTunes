@@ -42,6 +42,7 @@ import io.siggi.togethertunes.output.FillerSource.Filler;
 import io.siggi.togethertunes.output.LiveHlsApi;
 import io.siggi.togethertunes.output.OutputStatusFeed;
 import io.siggi.togethertunes.output.LiveLimits;
+import io.siggi.togethertunes.output.LegacyRtmpKeys;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
@@ -145,7 +146,7 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(OIDC provider admin): pass `secrets` to the repositories with *_enc columns (stream outputs have it).
+        // TODO(OIDC provider admin): pass `secrets` to the repositories with *_enc columns (client_secret_enc).
         Database database;
         try {
             database = Database.open(config.dbUrl());
@@ -156,6 +157,11 @@ public final class Main {
         }
         try {
             MigrationRunner.migrate(database);
+            // Stream keys encrypted by older versions become plain text (migration 0007).
+            LegacyRtmpKeys.Result keys = LegacyRtmpKeys.convert(database, secrets, System.err);
+            if (keys.converted() > 0) {
+                System.out.println("Converted " + keys.converted() + " encrypted RTMP stream keys to plain text");
+            }
             BuiltinRoles.ensure(database);
         } catch (SQLException | RuntimeException e) {
             System.err.println("Could not migrate the database: " + e.getMessage());
@@ -272,7 +278,7 @@ public final class Main {
         new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis,
                 liveLimits).register(appRouter);
         // The rooms' outputs (/api/rooms/{room}/outputs...) and what keeps pushes and .ts viewers in line with them.
-        StreamOutputs streamOutputs = new StreamOutputs(database, secrets, new SecureRandom(), Clock.systemUTC());
+        StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
         StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
                 liveTs);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);

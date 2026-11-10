@@ -5,8 +5,6 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
-import io.siggi.togethertunes.secrets.SecretCipher;
-import io.siggi.togethertunes.secrets.SecretDecryptionException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.security.SecureRandom;
@@ -31,10 +29,11 @@ import java.util.Objects;
  *   <li><b>Tokens</b> ({@code .ts}/HLS): 128 random bits, base64url without padding (22
  *       characters), stored in plaintext (they are shown to the owner again); {@link #rotate}
  *       replaces one. They are capabilities: never logged, never in an audit entry (invariant 6).</li>
- *   <li><b>RTMP stream keys</b> are stored encrypted ({@link SecretCipher}, context
- *       {@code stream_outputs.rtmp_key_enc:<id>}) and only ever shown as their last 4 characters
- *       ({@link #keyLast4}). The RTMP ingest URL is not secret, but is left out of audit entries
- *       too (some services put the key in it).</li>
+ *   <li><b>RTMP stream keys</b> are stored in plain text ({@code rtmp_key}; RTMP sends them in
+ *       plain text anyway). The API shows the full key to the room's owner only, moderators get
+ *       its last 4 characters ({@link #keyLast4}). Keys are never logged or audited (invariant 6).
+ *       Keys encrypted by older versions are converted by {@link LegacyRtmpKeys}. The RTMP ingest
+ *       URL is not secret, but is left out of audit entries too (some services put the key in it).</li>
  * </ul>
  *
  * <p>Access checks (owner, moderators) and the server switches are the caller's job
@@ -82,8 +81,8 @@ public final class StreamOutputs {
         }
     }
 
-    /** A {@code stream_outputs} row. Internal: holds the token and the encrypted key. */
-    public record Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKeyEnc,
+    /** A {@code stream_outputs} row. Internal: holds the token and the stream key. */
+    public record Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
                          boolean enabled, long createdAt) {
         public Output {
             Objects.requireNonNull(id, "id");
@@ -92,7 +91,13 @@ public final class StreamOutputs {
         }
 
         public boolean hasRtmpKey() {
-            return rtmpKeyEnc != null;
+            return rtmpKey != null;
+        }
+
+        /** Without the token and the key (invariant 6). */
+        @Override
+        public String toString() {
+            return "Output[id=" + id + ", roomId=" + roomId + ", kind=" + kind.wire() + ", enabled=" + enabled + "]";
         }
     }
 
@@ -105,13 +110,11 @@ public final class StreamOutputs {
     }
 
     private final Database db;
-    private final SecretCipher cipher;
     private final SecureRandom random;
     private final Clock clock;
 
-    public StreamOutputs(Database db, SecretCipher cipher, SecureRandom random, Clock clock) {
+    public StreamOutputs(Database db, SecureRandom random, Clock clock) {
         this.db = Objects.requireNonNull(db, "db");
-        this.cipher = Objects.requireNonNull(cipher, "cipher");
         this.random = Objects.requireNonNull(random, "random");
         this.clock = Objects.requireNonNull(clock, "clock");
     }
@@ -121,10 +124,6 @@ public final class StreamOutputs {
         byte[] b = new byte[TOKEN_BYTES];
         random.nextBytes(b);
         return TOKEN_ENCODER.encodeToString(b);
-    }
-
-    static String keyContext(String outputId) {
-        return "stream_outputs.rtmp_key_enc:" + outputId;
     }
 
     /**
@@ -252,7 +251,6 @@ public final class StreamOutputs {
         String id = UuidV7.newId();
         long now = EpochMs.now(clock);
         String token = kind.hasToken() ? newToken() : null;
-        String keyEnc = rtmpKey == null ? null : cipher.encrypt(rtmpKey, keyContext(id));
         try {
             return db.write(c -> {
                 try (PreparedStatement ps = c.prepareStatement(
@@ -266,13 +264,13 @@ public final class StreamOutputs {
                     }
                 }
                 try (PreparedStatement ps = c.prepareStatement("INSERT INTO stream_outputs (id, room_id, kind, token,"
-                        + " rtmp_url, rtmp_key_enc, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+                        + " rtmp_url, rtmp_key, enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                     ps.setString(1, id);
                     ps.setString(2, roomId);
                     ps.setString(3, kind.wire());
                     ps.setString(4, token);
                     ps.setString(5, kind == Kind.RTMP ? rtmpUrl : null);
-                    ps.setString(6, kind == Kind.RTMP ? keyEnc : null);
+                    ps.setString(6, kind == Kind.RTMP ? rtmpKey : null);
                     ps.setInt(7, enabled ? 1 : 0);
                     ps.setLong(8, now);
                     ps.executeUpdate();
@@ -281,7 +279,7 @@ public final class StreamOutputs {
                 details.put("enabled", enabled);
                 AuditLog.write(c, now, actorUserId, null, ip, AUDIT_CREATED, roomId, details);
                 return new Output(id, roomId, kind, token, kind == Kind.RTMP ? rtmpUrl : null,
-                        kind == Kind.RTMP ? keyEnc : null, enabled, now);
+                        kind == Kind.RTMP ? rtmpKey : null, enabled, now);
             });
         } catch (SQLException e) {
             if (isUniqueViolation(e)) {
@@ -315,23 +313,19 @@ public final class StreamOutputs {
                 url = patch.rtmpUrl();
                 changed.add("rtmpUrl");
             }
-            String keyEnc = o.rtmpKeyEnc();
-            if (patch.setRtmpKey()) {
-                String newKey = patch.rtmpKey();
-                String oldKey = decryptOrNull(o);
-                if (newKey == null ? keyEnc != null : !newKey.equals(oldKey)) {
-                    keyEnc = newKey == null ? null : cipher.encrypt(newKey, keyContext(o.id()));
-                    changed.add("rtmpKey");
-                }
+            String key = o.rtmpKey();
+            if (patch.setRtmpKey() && !Objects.equals(patch.rtmpKey(), key)) {
+                key = patch.rtmpKey();
+                changed.add("rtmpKey");
             }
             if (changed.isEmpty()) {
                 return o;
             }
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE stream_outputs SET enabled = ?, rtmp_url = ?, rtmp_key_enc = ? WHERE id = ?")) {
+                    "UPDATE stream_outputs SET enabled = ?, rtmp_url = ?, rtmp_key = ? WHERE id = ?")) {
                 ps.setInt(1, enabled ? 1 : 0);
                 ps.setString(2, url);
-                ps.setString(3, keyEnc);
+                ps.setString(3, key);
                 ps.setString(4, o.id());
                 ps.executeUpdate();
             }
@@ -341,7 +335,7 @@ public final class StreamOutputs {
                 details.put("enabled", enabled);
             }
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_UPDATED, roomId, details);
-            return new Output(o.id(), roomId, o.kind(), o.token(), url, keyEnc, enabled, o.createdAt());
+            return new Output(o.id(), roomId, o.kind(), o.token(), url, key, enabled, o.createdAt());
         });
     }
 
@@ -385,43 +379,25 @@ public final class StreamOutputs {
             }
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_ROTATED, roomId,
                     details(o.id(), o.kind()));
-            return new Output(o.id(), roomId, o.kind(), token, o.rtmpUrl(), o.rtmpKeyEnc(), o.enabled(),
+            return new Output(o.id(), roomId, o.kind(), token, o.rtmpUrl(), o.rtmpKey(), o.enabled(),
                     o.createdAt());
         });
     }
 
     /**
-     * The output's RTMP stream key in plaintext (for ffmpeg only), or null if it has none.
-     *
-     * @throws SecretDecryptionException if it can't be decrypted (another server key)
+     * The last 4 characters of the output's stream key (what moderators see); null without a key
+     * or for keys shorter than {@value #KEY_HINT_MIN_LENGTH} characters.
      */
-    public String rtmpKey(Output o) throws SecretDecryptionException {
-        return o.rtmpKeyEnc() == null ? null : cipher.decrypt(o.rtmpKeyEnc(), keyContext(o.id()));
-    }
-
-    /**
-     * The last 4 characters of the output's stream key, the only part ever shown; null without a
-     * key, for keys shorter than {@value #KEY_HINT_MIN_LENGTH} characters, or if it can't be
-     * decrypted.
-     */
-    public String keyLast4(Output o) {
-        String key = decryptOrNull(o);
+    public static String keyLast4(Output o) {
+        String key = o.rtmpKey();
         if (key == null || key.length() < KEY_HINT_MIN_LENGTH) {
             return null;
         }
         return key.substring(key.length() - 4);
     }
 
-    private String decryptOrNull(Output o) {
-        try {
-            return rtmpKey(o);
-        } catch (SecretDecryptionException e) {
-            return null;
-        }
-    }
-
     private static final String SELECT =
-            "SELECT id, room_id, kind, token, rtmp_url, rtmp_key_enc, enabled, created_at FROM stream_outputs";
+            "SELECT id, room_id, kind, token, rtmp_url, rtmp_key, enabled, created_at FROM stream_outputs";
 
     private static Output find(Connection c, String roomId, String outputId) throws SQLException {
         if (outputId == null || roomId == null) {

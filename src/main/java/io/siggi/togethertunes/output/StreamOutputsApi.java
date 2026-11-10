@@ -40,7 +40,8 @@ import java.util.Set;
  *
  * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt"}} plus,
  * for ts/HLS, {@code "url"} (the tokenised URL), and for RTMP {@code "rtmpUrl"}, {@code
- * "hasRtmpKey"}, {@code "rtmpKeyLast4"?} (never more of the key), {@code "playbackUrl"?} (the room
+ * "hasRtmpKey"}, {@code "rtmpKeyLast4"?}, {@code "rtmpKey"?} (the full key, for the room's owner
+ * only; moderators get the last 4 at most), {@code "playbackUrl"?} (the room
  * setting {@code outputs.rtmp.playbackUrl}), {@code "rtmpAvailable"} (false if the server has no
  * ffmpeg) and {@code "status"?: {"state": "connecting"|"connected"|"retrying"|"error", "detail"?,
  * "failures", "since", "retryAt"?}} while a push runs. {@code active} = enabled AND the server
@@ -238,9 +239,13 @@ public final class StreamOutputsApi {
         } else {
             m.put("rtmpUrl", o.rtmpUrl());
             m.put("hasRtmpKey", o.hasRtmpKey());
-            String last4 = outputs.keyLast4(o);
+            String last4 = StreamOutputs.keyLast4(o);
             if (last4 != null) {
                 m.put("rtmpKeyLast4", last4);
+            }
+            // The full key only for the owner: it opens the owner's account at the RTMP service.
+            if (a.role() == Rooms.Role.OWNER && o.rtmpKey() != null) {
+                m.put("rtmpKey", o.rtmpKey());
             }
             String playback = a.room().settings().rtmpPlaybackUrl();
             if (playback != null) {

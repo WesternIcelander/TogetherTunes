@@ -24,7 +24,6 @@ import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.rooms.Rooms;
-import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.settings.Settings;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -49,7 +48,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * {@code /api/rooms/{room}/outputs…} over HTTP ({@link StreamOutputsApi}, {@link StreamOutputs},
  * {@link StreamOutputControl}): who may see and change outputs, one per kind, the server switches,
- * tokens (128-bit base64url, rotation), RTMP keys (encrypted at rest, last 4 only), audit entries
+ * tokens (128-bit base64url, rotation), RTMP keys (the owner sees them, moderators the last 4), audit entries
  * without secrets, and what the control does with pushes, {@code .ts} connections and the program
  * output.
  */
@@ -86,9 +85,7 @@ class StreamOutputsApiTest {
         settings = new Settings(db, config);
         Permissions permissions = new Permissions(db, settings);
         Rooms rooms = new Rooms(db, permissions, clock);
-        byte[] key = new byte[32];
-        new SecureRandom().nextBytes(key);
-        rows = new StreamOutputs(db, new SecretCipher(key), new SecureRandom(), clock);
+        rows = new StreamOutputs(db, new SecureRandom(), clock);
         control = new StreamOutputControl(rows, new StreamOutputControl.Switches() {
             @Override
             public boolean rtmp() throws SQLException {
@@ -279,7 +276,7 @@ class StreamOutputsApiTest {
     }
 
     @Test
-    void rtmpKeyIsEncryptedAndShownAsLast4Only() throws Exception {
+    void rtmpKeyIsShownToTheOwnerAndAsLast4ToModerators() throws Exception {
         expectError(400, "invalid_rtmp_url", call(alice, "POST", "/api/rooms/club/outputs", "{\"kind\":\"rtmp\"}"));
         for (String bad : List.of("http://ingest.example/live", "rtmp:///live", "rtmp://ingest example/live",
                 "ingest.example/live")) {
@@ -298,15 +295,27 @@ class StreamOutputsApiTest {
         assertTrue(rtmp.get("hasRtmpKey").getAsBoolean());
         assertEquals("WXYZ", rtmp.get("rtmpKeyLast4").getAsString());
         assertFalse(rtmp.has("url"));
-        assertFalse(rtmp.toString().contains(KEY.substring(0, KEY.length() - 4)), rtmp.toString());
+        // the owner gets the full key; moderators only the last 4
+        assertEquals(KEY, rtmp.get("rtmpKey").getAsString());
+        String rtmpId = rtmp.get("id").getAsString();
+        assertEquals(KEY, json(call(alice, "GET", "/api/rooms/club/outputs/" + rtmpId, null)).get("rtmpKey").getAsString());
+        JsonObject modView = json(call(bob, "GET", "/api/rooms/club/outputs/" + rtmpId, null));
+        assertFalse(modView.has("rtmpKey"), modView.toString());
+        assertTrue(modView.get("hasRtmpKey").getAsBoolean());
+        assertEquals("WXYZ", modView.get("rtmpKeyLast4").getAsString());
+        assertFalse(modView.toString().contains(KEY.substring(0, KEY.length() - 4)), modView.toString());
+        String modList = call(bob, "GET", "/api/rooms/club/outputs", null).body();
+        assertFalse(modList.contains(KEY.substring(0, KEY.length() - 4)), modList);
+        assertTrue(call(alice, "GET", "/api/rooms/club/outputs", null).body().contains(KEY));
+        expectError(403, "forbidden", call(carol, "GET", "/api/rooms/club/outputs/" + rtmpId, null));
         // the push runs with the plaintext key; the status shows while it runs
         assertEquals("rtmps://ingest.example/live|" + KEY, pushes.get(roomId));
         assertEquals("{\"state\":\"retrying\",\"detail\":\"Connection refused\",\"failures\":2,\"since\":5,"
                 + "\"retryAt\":9}", rtmp.get("status").toString());
         assertTrue(rtmp.get("rtmpAvailable").getAsBoolean());
-        // at rest: encrypted, bound to the row
-        String enc = column("SELECT rtmp_key_enc FROM stream_outputs WHERE kind = 'rtmp'");
-        assertFalse(enc.contains(KEY));
+        // at rest: plain text in rtmp_key; the old encrypted column stays unused
+        assertEquals(KEY, column("SELECT rtmp_key FROM stream_outputs WHERE kind = 'rtmp'"));
+        assertNull(column("SELECT rtmp_key_enc FROM stream_outputs WHERE kind = 'rtmp'"));
         assertNull(column("SELECT token FROM stream_outputs WHERE kind = 'rtmp'"));
 
         String path = "/api/rooms/club/outputs/" + rtmp.get("id").getAsString();
@@ -315,6 +324,7 @@ class StreamOutputsApiTest {
         JsonObject changed = json(call(alice, "PATCH", path, "{\"rtmpKey\":\"short\"}"));
         assertTrue(changed.get("hasRtmpKey").getAsBoolean());
         assertFalse(changed.has("rtmpKeyLast4"));
+        assertEquals("short", changed.get("rtmpKey").getAsString());
         assertEquals("rtmps://ingest.example/live|short", pushes.get(roomId));
         // the same key again changes nothing
         events.clear();
@@ -322,6 +332,7 @@ class StreamOutputsApiTest {
         assertFalse(events.contains("push"), events.toString());
         changed = json(call(alice, "PATCH", path, "{\"rtmpKey\":null}"));
         assertFalse(changed.get("hasRtmpKey").getAsBoolean());
+        assertFalse(changed.has("rtmpKey"));
         assertEquals("rtmps://ingest.example/live|null", pushes.get(roomId));
         expectError(400, "invalid_rtmp_url", call(alice, "PATCH", path, "{\"rtmpUrl\":null}"));
         // off: the push stops, and with nothing else on, the program output too

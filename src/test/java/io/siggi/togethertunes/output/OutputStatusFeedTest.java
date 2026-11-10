@@ -14,7 +14,6 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.rooms.RoomOutputs;
 import io.siggi.togethertunes.rooms.Rooms;
-import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.settings.Settings;
 import java.nio.file.Path;
 import java.security.SecureRandom;
@@ -59,9 +58,7 @@ class OutputStatusFeedTest {
         BuiltinRoles.ensure(db);
         Settings settings = new Settings(db, config);
         Rooms rooms = new Rooms(db, new Permissions(db, settings), clock);
-        byte[] key = new byte[32];
-        new SecureRandom().nextBytes(key);
-        rows = new StreamOutputs(db, new SecretCipher(key), new SecureRandom(), clock);
+        rows = new StreamOutputs(db, new SecureRandom(), clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         userId = accounts.createLocal("alice", "Alice", "alice-password", false, null, "account.register").id();
         Actor.User owner = new Actor.User(userId, "s", Actor.Via.BEARER);

@@ -1,7 +1,8 @@
 // The room page's outputs panel (docs/rooms.md#outputs). Everyone sees the RTMP playback URL
 // (the room setting `outputs.rtmp.playbackUrl`) while the RTMP output is active, with a copy
 // button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
-// the `.ts` and HLS URLs with copy buttons, the RTMP target, key (last 4 only) and live push status
+// the `.ts` and HLS URLs with copy buttons, the RTMP target, key (the owner: in a password field with
+// Reveal and Copy; moderators: last 4 only) and live push status
 // (from the room state, which `output.status` keeps current), the VRChat allowlist note and, with
 // HLS on, the HLS desync note. The owner turns outputs on and off, rotates the URLs' tokens, sets
 // the RTMP target and key, and removes outputs. The decisions are in outputs.ts.
@@ -15,17 +16,19 @@ import type { RoomState } from "./roomclient.js";
 import type { ServerSwitches } from "./roomsettings.js";
 import { message } from "./session.js";
 
-/** A read-only URL field with a Copy button; where the clipboard API is missing, selects the text. */
-export function copyField(url: string, label: string): HTMLElement {
-  const input = h("input", { type: "text", readonly: true, value: url, class: "grow copy-url", "aria-label": label });
-  input.addEventListener("focus", () => input.select());
-  const status = h("span", { class: "muted small", role: "status" });
+/**
+ * A Copy button for a read-only field: the clipboard API, else select + `execCommand("copy")`, else
+ * the text stays selected for the user to copy. `beforeSelect` runs before the fallback selects the
+ * field (a password field must show its text to be copied that way).
+ */
+function copyButton(input: HTMLInputElement, text: string, status: HTMLElement, beforeSelect?: () => void): HTMLElement {
   const copy = h("button", { type: "button", text: "Copy" });
   copy.addEventListener("click", () => {
     const done = (ok: boolean): void => {
       status.textContent = ok ? "Copied." : "Selected: copy it with Ctrl+C (or long-press).";
     };
     const fallback = (): void => {
+      if (beforeSelect !== undefined) beforeSelect();
       input.focus();
       input.select();
       let ok = false;
@@ -38,12 +41,40 @@ export function copyField(url: string, label: string): HTMLElement {
     };
     const clip = navigator.clipboard;
     if (clip !== undefined && typeof clip.writeText === "function") {
-      clip.writeText(url).then(() => done(true), fallback);
+      clip.writeText(text).then(() => done(true), fallback);
     } else {
       fallback();
     }
   });
-  return h("div", { class: "row copy-row" }, input, copy, status);
+  return copy;
+}
+
+/** A read-only URL field with a Copy button; where the clipboard API is missing, selects the text. */
+export function copyField(url: string, label: string): HTMLElement {
+  const input = h("input", { type: "text", readonly: true, value: url, class: "grow copy-url", "aria-label": label });
+  input.addEventListener("focus", () => input.select());
+  const status = h("span", { class: "muted small", role: "status" });
+  return h("div", { class: "row copy-row" }, input, copyButton(input, url, status), status);
+}
+
+/**
+ * A secret in a read-only password field with Reveal (toggles to text, then "Hide") and Copy (the
+ * same fallback chain as {@link copyField}; the fallback reveals the field, since browsers don't
+ * copy from password fields).
+ */
+export function secretField(secret: string, label: string): HTMLElement {
+  const input = h("input", { type: "password", readonly: true, value: secret, autocomplete: "off",
+    class: "grow copy-url", "aria-label": label });
+  input.addEventListener("focus", () => input.select());
+  const status = h("span", { class: "muted small", role: "status" });
+  const reveal = h("button", { type: "button", text: "Reveal", "aria-pressed": "false" });
+  const show = (on: boolean): void => {
+    input.type = on ? "text" : "password";
+    reveal.textContent = on ? "Hide" : "Reveal";
+    reveal.setAttribute("aria-pressed", on ? "true" : "false");
+  };
+  reveal.addEventListener("click", () => show(input.type === "password"));
+  return h("div", { class: "row copy-row" }, input, reveal, copyButton(input, secret, status, () => show(true)), status);
 }
 
 export class OutputsPanel {
@@ -239,7 +270,7 @@ export class OutputsPanel {
     return h("div", { class: "output-block" }, ...parts);
   }
 
-  /** RTMP: target, key (last 4), live status, playback URL, the target form, on/off, remove. */
+  /** RTMP: target, key (owner: Reveal/Copy; moderators: last 4), live status, playback URL, the target form, on/off, remove. */
   #rtmpBlock(row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
     const fail = (e: unknown): void => this.#fail(e);
     const title = h("h4", { text: OUTPUT_LABELS["rtmp"] ?? "RTMP" });
@@ -256,6 +287,8 @@ export class OutputsPanel {
     }
     this.#pushStatus = h("span", { class: "output-status" });
     this.#pushDetail = h("p", { class: "muted small output-detail" });
+    // The owner gets the full key (in a password field); moderators only its last 4.
+    const ownerKey = this.#owner && row.rtmpKey !== undefined ? row.rtmpKey : undefined;
     const key = row.hasRtmpKey === true ? (row.rtmpKeyLast4 !== undefined ? "…" + row.rtmpKeyLast4 : "set") : "none";
     // The room setting as the state has it now (the API's copy is from the last load).
     const playback = this.#state !== undefined ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings)
@@ -265,8 +298,12 @@ export class OutputsPanel {
       title,
       h("p", { class: "small" }, "Status: ", this.#pushStatus),
       this.#pushDetail,
-      h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }), " · Stream key: ", key),
+      ownerKey !== undefined ? h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }))
+        : h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }), " · Stream key: ", key),
     ];
+    if (ownerKey !== undefined) {
+      parts.push(h("p", { class: "small", text: "Stream key:" }), secretField(ownerKey, "RTMP stream key"));
+    }
     if (playback !== undefined) {
       parts.push(h("p", { class: "small", text: "Viewer URL (for VRChat):" }), copyField(playback, "RTMP viewer URL"));
     } else {
@@ -299,7 +336,8 @@ export class OutputsPanel {
       h("label", {}, "Ingest URL", url),
       h("label", {}, "Stream key", key),
       row?.hasRtmpKey === true ? h("label", { class: "check" }, removeKey, " Remove the stream key") : null,
-      h("small", { text: "The key is stored encrypted and never shown again (only its last 4 characters)." }),
+      h("small", { text: row === undefined ? "Only you (the owner) can see the key again, with Reveal or Copy."
+        : "Leave the key empty to keep the current one. Only you (the owner) can see it, with Reveal or Copy." }),
       h("div", { class: "row" }, save, cancel), status);
     form.addEventListener("submit", (ev) => {
       ev.preventDefault();

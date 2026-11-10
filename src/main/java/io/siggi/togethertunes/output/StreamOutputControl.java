@@ -1,6 +1,5 @@
 package io.siggi.togethertunes.output;
 
-import io.siggi.togethertunes.secrets.SecretDecryptionException;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.List;
@@ -63,7 +62,7 @@ public final class StreamOutputControl implements AutoCloseable {
     }
 
     /** What a running push was started with: restarted when either changes. */
-    private record Running(String outputId, String rtmpUrl, String rtmpKeyEnc) {
+    private record Running(String outputId, String rtmpUrl, String rtmpKey) {
     }
 
     private final StreamOutputs rows;
@@ -160,24 +159,12 @@ public final class StreamOutputControl implements AutoCloseable {
             }
         }
         for (StreamOutputs.Output o : desired.values()) {
-            Running want = new Running(o.id(), o.rtmpUrl(), o.rtmpKeyEnc());
+            Running want = new Running(o.id(), o.rtmpUrl(), o.rtmpKey());
             if (want.equals(running.get(o.roomId()))) {
                 continue;
             }
-            String key;
-            try {
-                key = rows.rtmpKey(o);
-            } catch (SecretDecryptionException e) {
-                if (running.remove(o.roomId()) != null) {
-                    pushers.stop(o.roomId());
-                }
-                LOG.log(System.Logger.Level.WARNING, "RTMP push of room " + o.roomId()
-                        + " not started: its stream key can't be decrypted (was the server's secret key changed?)"
-                        + " Enter the key again.");
-                continue;
-            }
             running.put(o.roomId(), want);
-            pushers.start(o.roomId(), o.rtmpUrl(), key);
+            pushers.start(o.roomId(), o.rtmpUrl(), o.rtmpKey());
             LOG.log(System.Logger.Level.INFO, "RTMP push of room " + o.roomId() + " started");
         }
     }
