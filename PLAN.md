@@ -457,7 +457,8 @@ Web client:
 
 **Done when:**
 
-- [ ] `ffmpeg -v error -i out.ts -f null -` is clean on a 30-minute scripted session.
+- [x] `ffmpeg -v error -i out.ts -f null -` is clean on a 30-minute scripted session.
+  - Checked 2026-11-10 at main `7bd10c7` (no code change): `mvn test -Dtest=OfflineHarnessTest -Dtt.harness.minutes=30 -Dtt.requireMediaTools=true -Dtt.harness.out=<scratch>/out.ts` passes (2 tests, about 16 s; 30 cycles of the scripted session: video to natural end, audio with pause/resume, video as audio + seek, empty queue, unknown state, skip, clear; ffprobe PTS strictly increasing, DTS = PTS, audio deltas exactly 1920, every frame present). Then ran `ffmpeg -nostdin -v error -i out.ts -f null -` by hand on the kept file (491 MB, 1801.68 s, ffmpeg 6.1.1): exit 0, no output. File deleted afterwards.
 - [ ] *(manual)* RTMP to VRCDN (or local nginx-rtmp) plays in VRChat and recovers from network cuts.
 - [ ] *(manual)* `.ts` and HLS each play in VRChat via AVPro on PC and Quest.
 - [ ] *(manual)* Skip, seek and pause show up within about 4 s on `.ts`.
