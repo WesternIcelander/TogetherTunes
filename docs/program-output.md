@@ -65,6 +65,8 @@ for each unit: wait until wallNow ≥ wallFor(unit.outStartPts) − LEAD (LEAD =
 
 The output is never more than about 1 unit plus LEAD ahead of real time, so a seek or skip shows up in VRChat within about 2–4 s, plus the player's own buffering.
 
+As implemented (`output/Packager`, `PacingClock`): the thread waits for the *next* unit's start (`nextUnitStart()`) minus LEAD **before** building it, so timeline changes are picked up as late as possible. Pacing uses a monotonic clock; the server-time mapping (`serverMsAt`, used by the timeline follower) is fixed at the same moment. If the thread falls more than 4 s behind (a stall), the mapping moves forward by the lag instead of bursting the missed output; output timestamps are unaffected. Each consumer is either a non-blocking sink (HLS ring) or a `ConsumerQueue` of 4 units (`.ts`, RTMP) that is closed, with its close action ending the connection, when a unit arrives while it is full. A failing build or mux stops the packager and closes its consumers.
+
 ## MPEG-TS muxer
 
 Write it in-house; it's small.
