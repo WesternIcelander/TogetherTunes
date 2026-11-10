@@ -11,7 +11,10 @@ import java.sql.SQLException;
 import java.sql.SQLNonTransientConnectionException;
 import java.sql.Statement;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Properties;
 import org.sqlite.SQLiteConfig;
 
@@ -23,7 +26,8 @@ import org.sqlite.SQLiteConfig;
  * throws. The callback must not close the connection or change its auto-commit, read-only or
  * isolation settings. A {@code read} or {@code write} called inside another one on the same
  * thread joins the outer transaction (and doesn't commit on its own); a {@code write} inside a
- * {@code read} is refused with {@link IllegalStateException}.
+ * {@code read} is refused with {@link IllegalStateException}. {@link #afterCommit} runs code once
+ * the outermost transaction has committed.
  *
  * <p><b>SQLite</b> ({@code jdbc:sqlite:}): every connection gets {@code journal_mode=WAL},
  * {@code foreign_keys=ON} and {@code busy_timeout=5000}, and {@link Dialect#initConnection}.
@@ -80,7 +84,7 @@ public final class Database implements AutoCloseable {
         }
     }
 
-    private record Tx(Connection connection, boolean write) {
+    private record Tx(Connection connection, boolean write, List<Runnable> afterCommit) {
     }
 
     private final Dialect dialect;
@@ -251,6 +255,15 @@ public final class Database implements AutoCloseable {
             }
             return work.run(outer.connection());
         }
+        List<Runnable> after = new ArrayList<>();
+        T result = runOutermost(pool, write, work, after);
+        // After the connection went back to the pool: an action may use the database itself.
+        runAfterCommit(after);
+        return result;
+    }
+
+    private <T> T runOutermost(ConnectionPool pool, boolean write, SqlWork<T> work, List<Runnable> after)
+            throws SQLException {
         ConnectionPool.Lease lease = pool.borrow();
         Connection c = lease.connection;
         boolean broken = false;
@@ -259,7 +272,7 @@ public final class Database implements AutoCloseable {
                 c.setReadOnly(!write);
             }
             c.setAutoCommit(false);
-            current.set(new Tx(c, write));
+            current.set(new Tx(c, write, after));
             try {
                 T result = work.run(c);
                 c.commit();
@@ -291,6 +304,33 @@ public final class Database implements AutoCloseable {
                 }
             }
             pool.release(lease, broken);
+        }
+    }
+
+    /**
+     * Runs {@code action} once the current transaction on this thread has committed (the outermost
+     * one, if {@code write}s are nested), or right away if there is none. Dropped if the
+     * transaction rolls back. For telling other parts of the server about a change only once
+     * they can read it. Actions run on the committing thread, in order; one that throws is
+     * logged and the rest still run.
+     */
+    public void afterCommit(Runnable action) {
+        Objects.requireNonNull(action);
+        Tx tx = current.get();
+        if (tx == null) {
+            runAfterCommit(List.of(action));
+        } else {
+            tx.afterCommit().add(action);
+        }
+    }
+
+    private static void runAfterCommit(List<Runnable> actions) {
+        for (Runnable r : actions) {
+            try {
+                r.run();
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "After-commit action failed", e);
+            }
         }
     }
 

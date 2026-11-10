@@ -260,6 +260,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryAdded", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryMoved", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryItemsChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.QueueOps$Added", "entry/item ids and state; the WebSocket layer"
                     + " acks with it"),
             Map.entry("io.siggi.togethertunes.rooms.QueueOps$PlaylistAdded", "entry ids and a count; the WebSocket"

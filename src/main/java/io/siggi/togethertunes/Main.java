@@ -216,6 +216,9 @@ public final class Main {
         SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
         // Guests may fetch the current and next items of any room (the room executors' live set).
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, roomRegistry.playingItems());
+        // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).
+        ingest.jobs().statusListener(roomRegistry);
+        items.statusListener(roomRegistry);
         try {
             int resumed = roomRegistry.resumePlaying();
             if (resumed > 0) {
@@ -223,6 +226,11 @@ public final class Main {
             }
         } catch (SQLException e) {
             System.err.println("WARNING: could not resume playing rooms: " + e.getMessage());
+        }
+        try {
+            roomRegistry.startIdleWithReadyEntries();
+        } catch (SQLException e) {
+            System.err.println("WARNING: could not start idle rooms with ready entries: " + e.getMessage());
         }
         RoomRequests roomRequests = new RoomRequests(database, rooms, library, addMedia,
                 settings::roomsRequestHistoryDays, Clock.systemUTC());

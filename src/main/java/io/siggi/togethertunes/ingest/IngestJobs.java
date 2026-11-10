@@ -46,6 +46,7 @@ public final class IngestJobs {
 
     private final Database db;
     private final Clock clock;
+    private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
 
     public IngestJobs(Database db) {
         this(db, Clock.systemUTC());
@@ -120,6 +121,14 @@ public final class IngestJobs {
             }
             return stale.size();
         });
+    }
+
+    /**
+     * Sets who is told when this class changes an item's status (after the commit): the rooms,
+     * once they exist ({@code Main} starts ingest before them).
+     */
+    public void statusListener(ItemStatusListener listener) {
+        this.statusListener = listener == null ? ItemStatusListener.NONE : listener;
     }
 
     /** The job with this id. */
@@ -375,7 +384,11 @@ public final class IngestJobs {
         }
     }
 
-    private static void setItemStatus(Connection c, String itemId, String status, String error) throws SQLException {
+    /**
+     * Sets the item's status and error; the {@link #statusListener} hears about it once the
+     * transaction (the caller's, if {@link #enqueue} joined one) has committed.
+     */
+    private void setItemStatus(Connection c, String itemId, String status, String error) throws SQLException {
         String e = error != null && error.length() > MAX_ERROR_CHARS ? error.substring(0, MAX_ERROR_CHARS) + "…" : error;
         try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = ?, error = ? WHERE id = ?")) {
             ps.setString(1, status);
@@ -383,6 +396,7 @@ public final class IngestJobs {
             ps.setString(3, itemId);
             ps.executeUpdate();
         }
+        db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
     }
 
     private static IngestJob row(ResultSet rs) throws SQLException {

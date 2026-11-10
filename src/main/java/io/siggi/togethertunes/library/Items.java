@@ -9,6 +9,7 @@ import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.ItemStatusListener;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -52,6 +53,7 @@ public final class Items {
     private final Database db;
     private final DataDir dataDir;
     private final Clock clock;
+    private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
 
     public Items(Database db, DataDir dataDir, Clock clock) {
         this.db = Objects.requireNonNull(db);
@@ -271,6 +273,11 @@ public final class Items {
         });
     }
 
+    /** Sets who is told (after the commit) when {@link #purge} marks an item {@code purged}: the rooms. */
+    public void statusListener(ItemStatusListener listener) {
+        this.statusListener = listener == null ? ItemStatusListener.NONE : listener;
+    }
+
     /** Runs inside the purge transaction, after the item row was read; throws to refuse the purge. */
     @FunctionalInterface
     public interface PurgeCheck {
@@ -330,6 +337,7 @@ public final class Items {
                     ps.setString(3, itemId);
                     ps.executeUpdate();
                 }
+                db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
                 // Renamed inside the transaction: nothing can publish new files for the item until
                 // the commit, and nothing can see it purged before they are gone from their place.
                 try {

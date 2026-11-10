@@ -2,6 +2,7 @@ package io.siggi.togethertunes.rooms;
 
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.ItemStatusListener;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
@@ -9,14 +10,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * The live rooms: one {@link RoomExecutor} per room, loaded from the database on first use and
  * kept until the room is deleted or the server stops. Thread-safe.
+ *
+ * <p>It is also the rooms' {@link ItemStatusListener}: when an item's status changes (ingest
+ * finished or failed, a re-ingest started, a purge), every room with an entry for it hears about
+ * it ({@link #itemStatusChanged}).
  */
-public final class RoomRegistry implements AutoCloseable {
+public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
     private static final System.Logger LOG = System.getLogger(RoomRegistry.class.getName());
     private static final int CLOSED_RETRIES = 3;
 
@@ -101,6 +107,41 @@ public final class RoomRegistry implements AutoCloseable {
     }
 
     /**
+     * Run once at server start, after the rooms became the ingest's {@link ItemStatusListener}:
+     * idle rooms with a queued entry whose item is ready (its ingest finished while no listener was
+     * set, e.g. during start-up or a crash) start it, as {@link #itemStatusChanged} would have.
+     *
+     * @return how many rooms were told
+     */
+    public int startIdleWithReadyEntries() throws SQLException {
+        List<String> ids = store.db().read(c -> {
+            List<String> out = new ArrayList<>();
+            try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT DISTINCT r.id FROM rooms r"
+                    + " JOIN queue_entries q ON q.room_id = r.id JOIN items i ON i.id = q.item_id"
+                    + " WHERE r.playback_state = ? AND q.state = ? AND i.status = 'ready' ORDER BY r.id")) {
+                ps.setString(1, PlaybackState.IDLE.wire());
+                ps.setString(2, QueueEntry.State.QUEUED.wire());
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.add(rs.getString(1));
+                    }
+                }
+            }
+            return out;
+        });
+        int told = 0;
+        for (String id : ids) {
+            try {
+                executor(id).submit(Playback::itemsChanged);
+                told++;
+            } catch (SQLException | RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not load idle room " + id, e);
+            }
+        }
+        return told;
+    }
+
+    /**
      * The current and next items of every loaded room, kept up to date by the room executors:
      * what guests may fetch from {@code /media} when {@code guests.download} is off.
      */
@@ -133,6 +174,67 @@ public final class RoomRegistry implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /**
+     * An item's status changed: every room that has it queued, suggested or current (loaded or
+     * not: an idle room may now start it) runs {@link Playback#itemsChanged} on its executor,
+     * which refreshes the entries, broadcasts the change and starts an idle room. Returns at once;
+     * the lookup runs on a virtual thread. Failures are logged.
+     */
+    @Override
+    public void itemStatusChanged(String itemId) {
+        if (closed || itemId == null) {
+            return;
+        }
+        Thread.ofVirtual().name("item-status-" + itemId).start(() -> {
+            try {
+                notifyRooms(itemId);
+            } catch (Throwable t) {
+                LOG.log(System.Logger.Level.WARNING, "Could not tell the rooms about item " + itemId, t);
+            }
+        });
+    }
+
+    /** {@link #itemStatusChanged}, on the calling thread; the futures complete when each room is done (tests). */
+    List<CompletableFuture<Boolean>> notifyRooms(String itemId) throws SQLException {
+        List<String> roomIds = store.db().read(c -> {
+            List<String> out = new ArrayList<>();
+            try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT DISTINCT room_id FROM queue_entries"
+                    + " WHERE item_id = ? AND state IN (?, ?, ?) ORDER BY room_id")) {
+                ps.setString(1, itemId);
+                ps.setString(2, QueueEntry.State.QUEUED.wire());
+                ps.setString(3, QueueEntry.State.SUGGESTED.wire());
+                ps.setString(4, QueueEntry.State.PLAYING.wire());
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        out.add(rs.getString(1));
+                    }
+                }
+            }
+            return out;
+        });
+        List<CompletableFuture<Boolean>> out = new ArrayList<>();
+        for (String roomId : roomIds) {
+            if (closed) {
+                break;
+            }
+            try {
+                CompletableFuture<Boolean> f = executor(roomId).submit(Playback::itemsChanged);
+                f.whenComplete((changed, failure) -> {
+                    if (failure != null && !(failure instanceof RoomClosedException)) {
+                        LOG.log(System.Logger.Level.WARNING, "Room " + roomId + " could not take the status of item "
+                                + itemId, failure);
+                    }
+                });
+                out.add(f);
+            } catch (HttpError e) {
+                // Deleted meanwhile, or shutting down.
+            } catch (SQLException | RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not load room " + roomId + " for item " + itemId, e);
+            }
+        }
+        return out;
     }
 
     private void closed(RoomExecutor e) {

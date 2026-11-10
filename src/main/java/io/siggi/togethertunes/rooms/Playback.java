@@ -3,8 +3,11 @@ package io.siggi.togethertunes.rooms;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
+import java.util.function.Consumer;
 
 /**
  * The room timeline's state machine ({@code docs/rooms.md#room-state}): play, pause, seek,
@@ -142,6 +145,57 @@ public final class Playback {
             }
             case PLAYING, PAUSED -> false;
         };
+    }
+
+    /**
+     * Some item changed status ({@code docs/rooms.md#room-state}: an entry becomes eligible as
+     * soon as its item is ready). Reads the status and duration of the items of the current,
+     * queued and suggested entries again; the entries that changed are announced
+     * ({@link RoomEvent.EntryItemsChanged}, so clients see e.g. {@code processing -> ready} or
+     * {@code failed}). Then a current entry whose item can never play now ({@code failed},
+     * {@code purged}) is skipped, and an idle room starts the next eligible entry. A room that is
+     * playing or paused keeps going; the entry that turned ready is picked up when the timeline
+     * advances. Failed entries stay in the queue (shown as failed) and are skipped over.
+     *
+     * @return whether anything changed
+     */
+    public static boolean itemsChanged(RoomTx tx) throws SQLException {
+        RoomState s = tx.state();
+        Map<String, QueueEntry> before = new HashMap<>();
+        if (s.current() != null) {
+            before.put(s.current().id(), s.current());
+        }
+        for (QueueEntry e : s.queue()) {
+            before.put(e.id(), e);
+        }
+        for (QueueEntry e : s.suggestions()) {
+            before.put(e.id(), e);
+        }
+        s.refreshItems(tx.store().itemInfo(s));
+        List<String> changed = new ArrayList<>();
+        Consumer<QueueEntry> check = e -> {
+            QueueEntry old = before.get(e.id());
+            if (old != null && !old.equals(e)) {
+                changed.add(e.id());
+            }
+        };
+        if (s.current() != null) {
+            check.accept(s.current());
+        }
+        s.queue().forEach(check);
+        s.suggestions().forEach(check);
+        if (!changed.isEmpty()) {
+            tx.event(new RoomEvent.EntryItemsChanged(changed));
+        }
+        QueueEntry current = s.current();
+        if (current != null && ("failed".equals(current.itemStatus()) || "purged".equals(current.itemStatus()))) {
+            advance(tx, QueueEntry.State.SKIPPED);
+            return true;
+        }
+        if (current != null && changed.contains(current.id())) {
+            tx.rescheduleAdvance(); // its duration may have changed
+        }
+        return startIfIdle(tx) || !changed.isEmpty();
     }
 
     /**

@@ -81,6 +81,38 @@ abstract class DatabaseContract {
     }
 
     @Test
+    void afterCommitRunsOnceTheOutermostTransactionCommittedAndNotOnRollback() throws Exception {
+        List<String> ran = new ArrayList<>();
+        db.write(c -> {
+            insertParent(c, "a");
+            db.write(inner -> {
+                db.afterCommit(() -> {
+                    // runs after the commit, with the connection back in the pool: it sees the row
+                    // and may use the database itself
+                    try {
+                        ran.add("inner:" + db.read(r -> count(r, "parent")));
+                    } catch (SQLException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+                return null;
+            });
+            db.afterCommit(() -> ran.add("outer"));
+            assertEquals(List.of(), ran);
+            return null;
+        });
+        assertEquals(List.of("inner:1", "outer"), ran);
+
+        ran.clear();
+        assertThrows(SQLException.class, () -> db.write(c -> {
+            db.afterCommit(() -> ran.add("rolled back"));
+            throw new SQLException("boom");
+        }));
+        db.afterCommit(() -> ran.add("no transaction"));
+        assertEquals(List.of("no transaction"), ran);
+    }
+
+    @Test
     void writeCommitsWhenWorkReturns() throws SQLException {
         String result = db.write(c -> {
             insertParent(c, "a");

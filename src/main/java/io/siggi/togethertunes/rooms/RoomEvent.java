@@ -35,6 +35,17 @@ public interface RoomEvent {
     record EntryStateChanged(String entryId, QueueEntry.State state) implements RoomEvent {
     }
 
+    /**
+     * The items of these entries (queued, suggested or the current one) changed status or
+     * duration, e.g. their ingest finished or failed, or the item was purged; the new values are
+     * in the {@link RoomState}'s entries.
+     */
+    record EntryItemsChanged(java.util.List<String> entryIds) implements RoomEvent {
+        public EntryItemsChanged {
+            entryIds = java.util.List.copyOf(entryIds);
+        }
+    }
+
     /** The votes on a queued entry changed; {@code total} is their new sum (the play order may have changed). */
     record VotesChanged(String entryId, int total) implements RoomEvent {
     }

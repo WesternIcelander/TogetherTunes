@@ -37,6 +37,8 @@ import io.siggi.togethertunes.http.Csrf;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.ingest.IngestJob;
+import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.net.URI;
@@ -78,6 +80,7 @@ class RoomSocketTest {
     private final List<String> leaks = new java.util.concurrent.CopyOnWriteArrayList<>();
     private Sessions sessions;
     private Settings settings;
+    private IngestJobs jobs;
     private String aliceId;
     private String bobId;
     private String alice;
@@ -99,6 +102,8 @@ class RoomSocketTest {
         IdentityTickets tickets = new IdentityTickets(clock);
         wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock);
         wiring.api().register(router);
+        jobs = new IngestJobs(db, clock);
+        jobs.statusListener(wiring.registry()); // as Main wires it
         TestUploads.mediaApi(db, dir, settings, wiring.registry().playingItems()).register(router);
         new MeApi(accounts, new Users(db, passwords, clock), permissions, new Guests(db, settings, false), settings,
                 tickets).register(router);
@@ -287,6 +292,38 @@ class RoomSocketTest {
                 id, title, aliceId);
         sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", aliceId, id);
         return id;
+    }
+
+    /**
+     * An upload in alice's library whose ingest is running (item {@code processing}, no duration
+     * yet), as right after the upload finished; returns {itemId, jobId}.
+     */
+    private String[] ingesting(String title) throws Exception {
+        String id = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, artist, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES (?, 'audio', ?, 'Artist', 'upload', ?, 1, 'pending', '720p30', 1)",
+                id, title, aliceId);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", aliceId, id);
+        jobs.enqueue(id, IngestJob.Kind.UPLOAD);
+        IngestJob job = jobs.claimNext();
+        assertEquals(id, job.itemId());
+        return new String[] {id, job.id()};
+    }
+
+    /** The ingest pipeline's publish step (duration known), then the queue marks the job done. */
+    private void finishIngest(String[] ingest) throws Exception {
+        sql("UPDATE items SET duration_ms = 90000, original_file = 'original.mp3', original_web = 1 WHERE id = ?",
+                ingest[0]);
+        assertTrue(jobs.complete(ingest[1], "done"));
+    }
+
+    private static JsonObject queued(JsonObject state, String entryId) {
+        for (JsonElement e : state.getAsJsonArray("queue")) {
+            if (e.getAsJsonObject().get("entryId").getAsString().equals(entryId)) {
+                return e.getAsJsonObject();
+            }
+        }
+        return null;
     }
 
     private void sql(String statement, Object... args) throws Exception {
@@ -797,6 +834,138 @@ class RoomSocketTest {
         assertEquals(List.of(entries.get(3)), strings(delta.getAsJsonArray("removed")));
         assertEquals(0, delta.getAsJsonArray("upsert").size());
         assertEquals(n - 1, delta.getAsJsonArray("order").size());
+    }
+
+    @Test
+    void anIdleRoomStartsAnUploadWhenItsIngestFinishes() throws Exception {
+        String roomId = room("idle", "public", "owner");
+        String[] upload = ingesting("Fresh Upload");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"idle\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.await("presence");
+        String entry = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + upload[0] + "\"}")
+                .get("entryId").getAsString();
+        JsonObject state = owner.await("state");
+        long v = version(state);
+        assertEquals("idle", state.getAsJsonObject("timeline").get("state").getAsString());
+        assertEquals("processing", queued(state, entry).get("status").getAsString());
+
+        // the ingest finishes: the room hears about it and starts the entry, in one change
+        finishIngest(upload);
+        state = owner.await("state");
+        assertEquals(v + 1, version(state), state.toString());
+        assertEquals("playing", state.getAsJsonObject("timeline").get("state").getAsString());
+        assertEquals(entry, state.getAsJsonObject("timeline").get("entryId").getAsString());
+        JsonObject current = state.getAsJsonObject("current");
+        assertEquals(entry, current.get("entryId").getAsString());
+        assertEquals("ready", current.get("status").getAsString());
+        assertEquals(0, state.getAsJsonArray("queue").size());
+        assertTrue(wiring.registry().playingItems().isCurrentOrNext(upload[0]));
+        // the advance task runs for the new entry's duration
+        long delay = wiring.registry().executor(roomId).advanceTaskDelayMs();
+        assertTrue(delay > 80_000 && delay <= 90_000, "advance in " + delay);
+        owner.quiet("state");
+    }
+
+    @Test
+    void aFinishedIngestTurnsTheEntryReadyWhileSomethingElsePlays() throws Exception {
+        room("busy", "public", "owner");
+        String song = item("Playing Song");
+        String[] upload = ingesting("Fresh Upload");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"busy\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.await("presence");
+        String playing = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}")
+                .get("entryId").getAsString();
+        owner.await("state");
+        String entry = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + upload[0] + "\"}")
+                .get("entryId").getAsString();
+        JsonObject state = owner.await("state");
+        long v = version(state);
+        assertEquals("processing", queued(state, entry).get("status").getAsString());
+        JsonObject timeline = state.getAsJsonObject("timeline");
+
+        clock.advance(10_000);
+        finishIngest(upload);
+        state = owner.await("state");
+        assertEquals(v + 1, version(state), state.toString());
+        assertEquals("ready", queued(state, entry).get("status").getAsString());
+        // the timeline wasn't touched: same entry, same anchor
+        assertEquals(timeline, state.getAsJsonObject("timeline"));
+        assertEquals(playing, state.getAsJsonObject("current").get("entryId").getAsString());
+        // the ready entry is now the next one guests may fetch
+        assertTrue(wiring.registry().playingItems().isCurrentOrNext(upload[0]));
+        owner.quiet("state");
+    }
+
+    @Test
+    void aFailedIngestShowsAsFailedAndIsSkipped() throws Exception {
+        room("broken", "public", "owner");
+        String[] upload = ingesting("Broken Upload");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"broken\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.await("presence");
+        String entry = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + upload[0] + "\"}")
+                .get("entryId").getAsString();
+        long v = version(owner.await("state"));
+
+        assertTrue(jobs.fail(upload[1], "ffmpeg could not read the file", "failed"));
+        JsonObject state = owner.await("state");
+        assertEquals(v + 1, version(state), state.toString());
+        assertEquals("failed", queued(state, entry).get("status").getAsString());
+        assertEquals("idle", state.getAsJsonObject("timeline").get("state").getAsString());
+        v = version(state);
+
+        // the next item plays; the failed entry stays (shown as failed) and is skipped over
+        String song = item("Good Song");
+        String good = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}").get("entryId").getAsString();
+        state = owner.await("state");
+        assertEquals(v + 1, version(state));
+        assertEquals(good, state.getAsJsonObject("current").get("entryId").getAsString());
+        assertEquals("failed", queued(state, entry).get("status").getAsString());
+    }
+
+    @Test
+    void anIdleRoomThatWasNotLoadedStartsWhenTheIngestFinishes() throws Exception {
+        String roomId = room("cold", "public", "owner");
+        String[] upload = ingesting("Fresh Upload");
+        String entry = UuidV7.newId();
+        sql("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id, added_at, state, position)"
+                + " VALUES (?, ?, ?, ?, 1, 'queued', 1)", entry, roomId, upload[0], aliceId);
+        assertEquals(null, wiring.registry().loaded(roomId));
+        finishIngest(upload);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        Timeline t = null;
+        while (System.nanoTime() < deadline) {
+            if (wiring.registry().loaded(roomId) != null) {
+                t = wiring.registry().call(roomId, tx -> tx.state().timeline());
+                if (t.state() == PlaybackState.PLAYING) {
+                    break;
+                }
+            }
+            Thread.sleep(20);
+        }
+        assertNotNull(t);
+        assertEquals(PlaybackState.PLAYING, t.state());
+        assertEquals(entry, t.entryId());
+    }
+
+    @Test
+    void atStartIdleRoomsWithAReadyQueuedEntryStartIt() throws Exception {
+        // e.g. an ingest that finished before the rooms listened (or before this fix)
+        String roomId = room("stuck", "public", "owner");
+        String song = item("Stuck Song");
+        String entry = UuidV7.newId();
+        sql("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id, added_at, state, position)"
+                + " VALUES (?, ?, ?, ?, 1, 'queued', 1)", entry, roomId, song, aliceId);
+        room("empty", "public", "owner");
+        assertEquals(1, wiring.registry().startIdleWithReadyEntries());
+        Timeline t = wiring.registry().call(roomId, tx -> tx.state().timeline());
+        assertEquals(PlaybackState.PLAYING, t.state());
+        assertEquals(entry, t.entryId());
     }
 
     private static List<String> strings(JsonArray a) {
