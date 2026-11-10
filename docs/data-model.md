@@ -55,7 +55,8 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       content_sha256 TEXT NULL,             -- of the original upload; dedupe
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
-      error NULL, output_profile TEXT, loudness_lufs NULL, metadata_json,
+      error NULL, loudness_lufs NULL, metadata_json,
+      output_profile TEXT,                  -- encoding its files were made for: profile + video bitrate, e.g. '720p30-3000k'
       original_file TEXT NULL,              -- e.g. 'original.flac', 'original.mkv'; the kept source (every item since 2026-11-10)
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
       original_web INTEGER,                 -- 1 if browsers can play the original (audio uploads only)

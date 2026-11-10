@@ -51,7 +51,7 @@
     index.bin             packager sample index (see library-and-ingest.md)
     cover.jpg             artwork (embedded, from YouTube thumbnail, or generated)
     original.<ext>        the item's source (upload or YouTube download) — feeds re-encodes; played by the web client for audio uploads only
-  cards/<profile>/        reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
+  cards/<encoding>/       (e.g. cards/720p30-3000k/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     cards/<key>.mp4       per-room cards: idle (room name), filler cards and item cards with the overlay
@@ -73,6 +73,7 @@ A single JSON config file, with environment-variable overrides. Keys:
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
 | `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
 | `output.profile` | `720p30` | `720p30` \| `1080p30`. Changing it marks every item for re-ingest |
+| `output.videoBitrateKbps` | 3000 (720p30), 6000 (1080p30) | Constant video bitrate of every encode (mezzanines and cards), 500–25000. Part of the SPS, so changing it re-encodes every item like a profile change ([library-and-ingest.md](library-and-ingest.md#the-mezzanine-profile)) |
 | `ingest.workers` | cores/2 | |
 | `ingest.maxUploadBytes` | 4 GiB | |
 | `ingest.maxDurationSeconds` | 1800 | Applies to both uploads and yt-dlp |

@@ -77,24 +77,28 @@ Every item is transcoded at ingest to one fixed profile, so the packager can spl
 | Frame rate | Constant 30 fps (the `fps=30` filter converts other rates) |
 | GOP | Closed, IDR exactly every 2 s (60 frames), forced IDR at t=0, no scene-cut keyframes |
 | B-frames | **None** (`-bf 0`), so PTS = DTS |
-| Rate control | CRF 20, capped at `-maxrate 6M -bufsize 12M` (1080p) / `3M`/`6M` (720p) |
+| Rate control | **Constant bitrate** `R` = `output.videoBitrateKbps` (default 3000 at 720p30, 6000 at 1080p30): `-b:v R -minrate R -maxrate R -bufsize R/2` with `-x264-params open-gop=0:nal-hrd=cbr:vbv-init=1`. x264 pads every frame up to the rate with H.264 filler data NAL units (type 12), so every 2 s GOP, a still card included, is `R × 2 s / 8` bytes |
 | Audio | AAC-LC, 48 kHz, stereo, 192 kb/s |
 | Loudness | Two-pass EBU R128 `loudnorm` to −14 LUFS integrated, −1 dBTP |
 | Container | MP4 with `+faststart` |
 
 **Why the preset is part of the profile:** the x264 preset changes SPS fields such as the reference frame count. In a test, `medium` and `veryfast` produced different extradata; with identical arguments, the extradata was identical. Every encode that feeds the packager must therefore use exactly the same argument list. Define it **once in code**, as a constant `List<String>`, and use it everywhere.
 
-`veryfast` was chosen so that overlay re-encodes run faster than real time: about 2.8× real time for 1080p30 on 2 cores in testing. The cost is about 10–15% more bitrate than `medium` at the same quality, which the 6 Mb/s cap absorbs.
+`veryfast` was chosen so that overlay re-encodes run faster than real time: about 2.8× real time for 1080p30 on 2 cores in testing. The cost is about 10–15% more bitrate than `medium` at the same quality.
 
-Reference command (video item at 1080p30; the second loudnorm pass is shown). At 720p30 use `scale=1280:720`/`pad=1280:720`, `-level:v 4.0`, `-maxrate 3M -bufsize 6M`:
+**Why constant bitrate, and why the bitrate is part of the profile** (2026-11-10, Siggi: "It should be constant bitrate (preferably configurable), and card view must also be at that constant bitrate"): the program output (MPEG-TS, HLS and the RTMP push, which copies the stream into FLV) carries a steady `R` whether an item or a card is showing. Filler NALs are the standard H.264 padding; the packager passes them through unchanged (AVCC → Annex B keeps every NAL except in-band AUD/SPS/PPS), `-c copy` to FLV keeps them, and pacing stays by timestamp. `nal-hrd=cbr` writes the HRD parameters (rate and buffer size) into the SPS's VUI, so **another bitrate is another avcC**: the reference card, the cards directory, `items.output_profile` and `index.bin` are all per *encoding* = profile + bitrate, named like `720p30-3000k`, and changing `output.videoBitrateKbps` re-encodes the library exactly like a profile change ([Re-encodes](#re-encodes)). Allowed range 500–25000 kb/s (25 Mb/s is level 4.0's High-profile MaxBR). Audio stays AAC 192 kb/s.
+
+**Buffer size**, measured 2026-11-10 with ffmpeg 6.1.1 at 720p30, 3 Mb/s, bytes per 2 s GOP against 750 000: with `-bufsize` = 0.5 s and `vbv-init=1` (the buffer starts full), a still card came out +0.1 %, `testsrc2` within ±0.01 %, a noisy fractal source −1…+2 %. Without `vbv-init=1` (x264 starts 90 % full) a card was −2.4 %; with a 1 s buffer the noisy source spread −2…+6 % and `testsrc2` −5…+10 %; with 2 s (the old cap's `2×`), −10…+18 %. Half a second still lets an IDR take up to half a second's worth of bits (~187 KB at 3 Mb/s). `vbv-init` isn't in the SPS (it only changes the buffering-period SEI), so it doesn't affect the avcC.
+
+Reference command (video item at 1080p30 at the default 6000 kb/s; the second loudnorm pass is shown). At 720p30 use `scale=1280:720`/`pad=1280:720`, `-level:v 4.0` and the 720p rate (default `3000k`, buffer `1500k`):
 
 ```sh
 ffmpeg -i src -map 0:v:0 -map 0:a:0 \
   -vf "scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2:out_color_matrix=bt709:out_range=tv,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" \
   -c:v libx264 -preset veryfast -profile:v high -level:v 4.1 -pix_fmt yuv420p \
   -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -chroma_sample_location left -bf 0 \
-  -g 60 -keyint_min 60 -sc_threshold 0 -force_key_frames "expr:gte(t,n_forced*2)" -x264-params open-gop=0 \
-  -crf 20 -maxrate 6M -bufsize 12M \
+  -g 60 -keyint_min 60 -sc_threshold 0 -force_key_frames "expr:gte(t,n_forced*2)" -x264-params open-gop=0:nal-hrd=cbr:vbv-init=1 \
+  -b:v 6000k -minrate 6000k -maxrate 6000k -bufsize 3000k \
   -af "loudnorm=I=-14:TP=-1:LRA=11:measured_I=…:measured_TP=…:measured_LRA=…:measured_thresh=…:offset=…:linear=true,aresample=48000" \
   -c:a aac -b:a 192k -ar 48000 -ac 2 \
   -movflags +faststart mezz.mp4
@@ -110,7 +114,7 @@ For **audio items**, encode only the audio, straight to `audio.m4a`; there is no
 
 ## Cards
 
-A card is a still image encoded as one 2 s GOP with the **same encoder arguments** as the mezzanine: one IDR followed by 59 P-frames of about 70 bytes each. A whole card is about 40–100 KB.
+A card is a still image encoded as one 2 s GOP with the **same encoder arguments** as the mezzanine: one IDR followed by 59 P-frames. The picture data is small (P-frames of about 70 bytes), but CBR pads every frame with filler NALs, so a card is `R × 2 s / 8` bytes like any other GOP: about 750 KB at 3 Mb/s, 1.5 MB at 6 Mb/s, almost all of it filler. Card view therefore runs at the same constant bitrate as items.
 
 ```sh
 ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf "<scale/pad/setsar=1/fps filter>" <PROFILE_VIDEO_ARGS> -an card.mp4
@@ -118,12 +122,12 @@ ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf "<scale/pad/setsar=1/fps filte
 
 The filter is the mezzanine's scale filter. Every card's avcC is checked against the reference card before the card is moved into place. `setsar=1` matters: a PNG without a `pHYs` chunk (Java2D writes none) has an unknown aspect ratio, x264 then omits it from the SPS, and the avcC differs from the mezzanines'.
 
-**Reference card:** at startup the server makes sure `cards/<profile>/reference.mp4` and `reference.avcC` exist (a black card). The stored avcC is the invariant reference for that profile. Each start also encodes a fresh card; if its avcC differs (e.g. after an ffmpeg/x264 upgrade), the server warns, keeps the stored reference, and new encodes fail the check until the library is re-encoded.
+**Reference card:** at startup the server makes sure `cards/<encoding>/reference.mp4` and `reference.avcC` exist (a black card), e.g. `cards/720p30-3000k/`. The stored avcC is the invariant reference for that profile and bitrate. Directories of encodings no longer configured are left alone (they are small; delete them by hand). Each start also encodes a fresh card; if its avcC differs (e.g. after an ffmpeg/x264 upgrade), the server warns, keeps the stored reference, and new encodes fail the check until the library is re-encoded.
 
 The image is rendered with Java2D at the output resolution:
 
 - **Item card:** artwork, title, artist and album. The text must fit (shrink, then ellipsize).
-- **Server filler cards:** "Paused", "Queue is empty", "Loading…". Stored as `cards/<profile>/paused.mp4`, `idle.mp4` and `loading.mp4`, each with a `.key` fingerprint (pixels, encoder arguments, reference avcC); startup re-encodes only the ones whose fingerprint or avcC no longer matches.
+- **Server filler cards:** "Paused", "Queue is empty", "Loading…". Stored as `cards/<encoding>/paused.mp4`, `idle.mp4` and `loading.mp4`, each with a `.key` fingerprint (pixels, encoder arguments incl. the bitrate, reference avcC); startup re-encodes only the ones whose fingerprint or avcC no longer matches.
 - **Room cards:** the idle card with the room's name; with the QR overlay enabled, overlaid versions of every card ([overlay.md](overlay.md)).
 
 Don't rely on colour alone to convey anything: use text labels and strong contrast.
@@ -150,7 +154,7 @@ ffprobe -v error -select_streams a -show_entries packet=pts,dts,duration,size,po
 Binary format (big-endian):
 
 ```
-magic "MSIX" | version u16 | profile u16 | file-ref table
+magic "MSIX" | version u16 | profile u16 | video bitrate u32 (kb/s) | file-ref table
 track count u8
 per track:
   kind u8 (0=video,1=audio) | timescale u32 | file-ref u8 | sample count u32
@@ -158,7 +162,7 @@ per track:
 avcC length u16 | avcC bytes
 ```
 
-- `version` is 1. `profile` codes: `1` = 720p30, `2` = 1080p30 (never renumbered).
+- `version` is 2. `profile` codes: `1` = 720p30, `2` = 1080p30 (never renumbered); with the bitrate they name the encoding the files were made for. Version 1 (before CBR, no bitrate field) is rejected, so such an item counts as not ready until its re-encode has run.
 - The file-ref table is `file count u8`, then per file `name length u16 | name` (UTF-8): a plain file name in the item directory, e.g. `mezz.mp4`, `card.mp4`, `audio.m4a`. A track's `file-ref` is its position in this table.
 - Samples are in file order, which is also PTS order (no B-frames); PTS strictly increases within a track. `index.bin` is written to a temp file and renamed into place.
 - The builder asks ffprobe for the stream time base in the same call (`-show_entries stream=time_base:packet=… -of csv`); the time base must be `1/N`, and `N` is the track timescale.
@@ -182,9 +186,9 @@ Steps: `probe → (download) → loudness pass 1 → encode → extract audio.m4
 
 ### Re-encodes
 
-If the output profile changes, every item that isn't purged gets a `reencode` job. Every item re-encodes from its kept [original](#originals). Items ingested before originals were kept for every item (2026-11-10) have none for video: their YouTube items are fetched again, their video uploads re-encode from their old mezzanine (one extra generation of loss).
+If the output profile or the video bitrate changes, every item that isn't purged gets a `reencode` job (items from before CBR stored the bare profile name, e.g. `720p30`, in `output_profile`, so they re-encode once to CBR). Every item re-encodes from its kept [original](#originals). Items ingested before originals were kept for every item (2026-11-10) have none for video: their YouTube items are fetched again, their video uploads re-encode from their old mezzanine (one extra generation of loss).
 
-- **When:** at startup, before the workers start, every `ready` item whose `output_profile` differs from the configured one gets a `reencode` job unless it already has an unfinished job. Pending, processing and failed items are skipped (their next ingest uses the current profile anyway), and so are purged ones. A re-encode that failed is therefore tried again at the next start.
+- **When:** at startup, before the workers start, every `ready` item whose `output_profile` differs from the configured encoding (e.g. `720p30-3000k`) gets a `reencode` job unless it already has an unfinished job. Pending, processing and failed items are skipped (their next ingest uses the current profile anyway), and so are purged ones. A re-encode that failed is therefore tried again at the next start.
 - **Order:** workers take `reencode` jobs only when no other job is queued, so a library re-encode doesn't hold up new uploads and imports.
 - **Sources:** an item with its original file re-encodes from it (loudness measured again, the original and its `original_*` columns kept), YouTube items included: no download. Without one (made before every item kept its original), a YouTube item downloads again and keeps that download as its original; if the download fails (e.g. the video is gone), it falls back to its old files. Anything else (an older video upload, an audio item without its original) re-encodes from its old `mezz.mp4`, or `audio.m4a` for an audio item, and its `original_*` columns are cleared. Old files were already normalised, so they are encoded without loudnorm and the stored `loudness_lufs` is kept. The item's `cover.jpg` is reused for the card. `ingest.maxDurationSeconds` doesn't apply to re-encodes.
-- **While it runs** the item stays `ready` with its old files, which the web player can keep using. Their `index.bin` and avcC belong to the old profile, so the packager must not splice them: it checks the index's profile code and treats such an item as not ready (Loading card, or skip). A job for an item that is no longer `ready`, or already encoded for the current profile, ends without doing anything.
+- **While it runs** the item stays `ready` with its old files, which the web player can keep using. Their `index.bin` and avcC belong to the old profile or bitrate, so the packager must not splice them: it checks the index's profile code and bitrate (and the avcC) and treats such an item as not ready (Loading card, or skip). A job for an item that is no longer `ready`, or already encoded for the current profile, ends without doing anything.

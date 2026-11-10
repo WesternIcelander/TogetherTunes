@@ -18,7 +18,7 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 
 ## Invariants that must not be broken
 
-1. All x264 encodes that feed the packager (mezzanines, cards, overlay re-encodes) use **one shared argument constant**, preset veryfast included. Their H.264 extradata must be byte-identical; ingest and the overlay encoder verify this.
+1. All x264 encodes that feed the packager (mezzanines, cards, overlay re-encodes) use **one shared argument constant**, preset veryfast included, and are **CBR at the configured `output.videoBitrateKbps`** (cards padded with filler NALs). Their H.264 extradata must be byte-identical; ingest and the overlay encoder verify this.
 2. Every video GOP is closed, has **no B-frames**, and starts with an IDR **every 2 s exactly**.
 3. Program-output timestamps increase smoothly forever. Audio frames are exactly 1920 ticks (90 kHz) apart. Never emit a discontinuity.
 4. The room timeline is the only source of truth. The program output follows it and never feeds back into it.

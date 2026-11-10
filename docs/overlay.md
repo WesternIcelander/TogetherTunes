@@ -54,7 +54,7 @@ ffmpeg -ss <g0*2> -i media/<itemId>/mezz.mp4 -i rooms/<roomId>/overlay.png \
   <PROFILE_VIDEO_ARGS> -an -f h264 pipe:1
 ```
 
-- `PROFILE_VIDEO_ARGS` is the same constant used for mezzanines (preset veryfast, no B-frames, 60-frame closed GOPs, forced keyframes). Because the input is the mezzanine itself, frame *i* of the output corresponds exactly to frame *i* of the original. Keyframes therefore land on the same frames, and the extradata is identical. This was verified: a veryfast overlay encode had byte-identical SPS/PPS to the plain mezzanine, with 300 frames and 5 IDRs for 10 s.
+- `PROFILE_VIDEO_ARGS` is the same constant used for mezzanines (preset veryfast, no B-frames, 60-frame closed GOPs, forced keyframes, CBR at `output.videoBitrateKbps` with filler NAL padding, so overlaid items and cards keep the output's constant bitrate). Because the input is the mezzanine itself, frame *i* of the output corresponds exactly to frame *i* of the original. Keyframes therefore land on the same frames, and the extradata is identical. This was verified: a veryfast overlay encode had byte-identical SPS/PPS to the plain mezzanine, with 300 frames and 5 IDRs for 10 s.
 - `g0` is the GOP index to start from: 0 when the job starts before the item plays, or `floor(position / 2 s)` when it starts mid-item. Input seeking to an exact keyframe time makes the first output frame frame `60·g0`.
 - **Speed:** about 2.9× real time for 1080p30 on 2 cores (roughly 0.7 cores of CPU per second of video), and much less at 720p.
 
