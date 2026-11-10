@@ -23,7 +23,7 @@ Every timeline change (play, pause, seek, skip, advance) **re-anchors** the time
 
 **Advancing:** the executor schedules a task for when the current entry ends. That task moves to the next entry, chosen according to the control mode, or sets `state = IDLE` (and `entryId = null`) if the queue is empty. The task is rescheduled on every re-anchor.
 
-**Entries that aren't ready:** an entry whose item is still being ingested (for example a YouTube request that is still downloading) stays in the queue, marked "processing", and is **skipped over** when choosing the next entry. It becomes eligible as soon as its item is ready.
+**Entries that aren't ready:** an entry whose item is still being ingested (for example a YouTube request that is still downloading) stays in the queue, marked "processing", and is **skipped over** when choosing the next entry. It becomes eligible as soon as its item is ready: every status change of an item (ingest done or failed, a re-ingest starting, a purge) is announced to each room that has it queued, suggested or current, which refreshes the entry for its clients and, if the room is idle, starts the next eligible entry. A failed entry stays in the queue, marked failed, and is skipped; a current entry whose item failed or was purged is skipped.
 
 **Restart:** the timeline is persisted. On startup, a room that was playing resumes from its computed position, or from the start of the entry if the server was down for longer than the entry's remaining time.
 
