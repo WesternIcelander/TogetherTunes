@@ -178,7 +178,7 @@ function renderSettings(): void {
     const fieldset = h("fieldset", { class: "panel" }, h("legend", { text: title }));
     if (group === "outputs") {
       fieldset.append(h("p", { class: "muted small",
-        text: "Turning outputs on and off, stream URLs and RTMP keys come with the outputs panel." }));
+        text: "Turning outputs on and off, their stream URLs and the RTMP target and key are on the room page, under \"Stream outputs\"." }));
     }
     for (const def of SETTINGS) {
       if (def.group !== group) continue;

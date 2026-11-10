@@ -1,0 +1,336 @@
+// The room page's outputs panel (docs/rooms.md#outputs). Everyone sees the RTMP playback URL
+// (the room setting `outputs.rtmp.playbackUrl`) while the RTMP output is active, with a copy
+// button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
+// the `.ts` and HLS URLs with copy buttons, the RTMP target, key (last 4 only) and live push status
+// (from the room state, which `output.status` keeps current), the VRChat allowlist note and, with
+// HLS on, the HLS desync note. The owner turns outputs on and off, rotates the URLs' tokens, sets
+// the RTMP target and key, and removes outputs. The decisions are in outputs.ts.
+import { api } from "./api.js";
+import { button, h } from "./dom.js";
+import {
+  activeKey, canCreate, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
+  validRtmpUrl, type OutputKind, type OutputRow,
+} from "./outputs.js";
+import type { RoomState } from "./roomclient.js";
+import type { ServerSwitches } from "./roomsettings.js";
+import { message } from "./session.js";
+
+/** A read-only URL field with a Copy button; where the clipboard API is missing, selects the text. */
+export function copyField(url: string, label: string): HTMLElement {
+  const input = h("input", { type: "text", readonly: true, value: url, class: "grow copy-url", "aria-label": label });
+  input.addEventListener("focus", () => input.select());
+  const status = h("span", { class: "muted small", role: "status" });
+  const copy = h("button", { type: "button", text: "Copy" });
+  copy.addEventListener("click", () => {
+    const done = (ok: boolean): void => {
+      status.textContent = ok ? "Copied." : "Selected: copy it with Ctrl+C (or long-press).";
+    };
+    const fallback = (): void => {
+      input.focus();
+      input.select();
+      let ok = false;
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+      done(ok);
+    };
+    const clip = navigator.clipboard;
+    if (clip !== undefined && typeof clip.writeText === "function") {
+      clip.writeText(url).then(() => done(true), fallback);
+    } else {
+      fallback();
+    }
+  });
+  return h("div", { class: "row copy-row" }, input, copy, status);
+}
+
+export class OutputsPanel {
+  readonly #el: HTMLElement;
+  #roomId = "";
+  #owner = false;
+  #moderator = false;
+  #state: RoomState | undefined;
+  /** The owner's/moderators' view; undefined until loaded. */
+  #rows: OutputRow[] | undefined;
+  #switches: ServerSwitches | undefined;
+  #loadedKey: string | undefined;
+  #loading = false;
+  #error = "";
+  /** Which RTMP target form is open: "create", "edit" or none. */
+  #rtmpForm: "create" | "edit" | undefined;
+  #playback: HTMLElement;
+  #manage: HTMLElement;
+  #pushStatus: HTMLElement | undefined;
+  #pushDetail: HTMLElement | undefined;
+  #drawnPlayback: string | undefined = "\u0000";
+  /** The viewer URL setting the management part was drawn with. */
+  #managePlayback: string | undefined;
+
+  constructor(el: HTMLElement) {
+    this.#el = el;
+    this.#playback = h("div", { class: "outputs-playback" });
+    this.#manage = h("div", { class: "outputs-manage" });
+    el.replaceChildren(this.#playback, this.#manage);
+  }
+
+  /** The room state changed (also on `output.status`). */
+  update(s: RoomState): void {
+    this.#state = s;
+    const roomChanged = this.#roomId !== s.room.id;
+    this.#roomId = s.room.id;
+    const owner = s.room.you.role === "owner";
+    const moderator = s.room.you.canModerate;
+    const rightsChanged = owner !== this.#owner || moderator !== this.#moderator;
+    this.#owner = owner;
+    this.#moderator = moderator;
+    if (roomChanged || rightsChanged) {
+      this.#rows = undefined;
+      this.#loadedKey = undefined;
+      this.#rtmpForm = undefined;
+    }
+    this.#renderPlayback(s);
+    if (moderator) {
+      // Another moderator (or the server) turned something on or off: load the URLs again.
+      const key = activeKey(s.outputs);
+      const playback = rtmpPlaybackUrl([{ kind: "rtmp" }], s.room.settings);
+      if (this.#loadedKey !== key && !this.#loading) void this.reload();
+      else if (rightsChanged || roomChanged || (playback !== this.#managePlayback && this.#rtmpForm === undefined)) {
+        this.#renderManage();
+      } else this.#renderLive();
+    } else {
+      this.#manage.replaceChildren();
+      this.#pushStatus = undefined;
+      this.#pushDetail = undefined;
+    }
+    this.#el.hidden = this.#playback.childElementCount === 0 && this.#manage.childElementCount === 0;
+  }
+
+  /** Loads the outputs and server switches (owner and moderators), then draws them. */
+  async reload(): Promise<void> {
+    const roomId = this.#roomId;
+    const key = activeKey(this.#state?.outputs);
+    this.#loading = true;
+    try {
+      const path = "/api/rooms/" + encodeURIComponent(roomId);
+      const [list, switches] = await Promise.all([
+        api<{ items: OutputRow[] }>("GET", path + "/outputs"),
+        api<ServerSwitches>("GET", path + "/server-switches"),
+      ]);
+      if (roomId !== this.#roomId) return;
+      this.#rows = list.items;
+      this.#switches = switches;
+      this.#loadedKey = key;
+      this.#error = "";
+    } catch (e) {
+      this.#error = message(e);
+      this.#loadedKey = key; // don't retry on every state message; actions and changes reload
+    } finally {
+      this.#loading = false;
+    }
+    this.#renderManage();
+    if (this.#state !== undefined && activeKey(this.#state.outputs) !== this.#loadedKey) void this.reload();
+  }
+
+  #renderPlayback(s: RoomState): void {
+    const url = rtmpPlaybackUrl(s.outputs, s.room.settings);
+    if (url === this.#drawnPlayback) return;
+    this.#drawnPlayback = url;
+    if (url === undefined) {
+      this.#playback.replaceChildren();
+      return;
+    }
+    this.#playback.replaceChildren(
+      h("h3", { text: "Watch in VRChat" }),
+      h("p", { class: "muted small", text: "Paste this URL into the world's video player." }),
+      copyField(url, "Stream URL for VRChat"));
+  }
+
+  #fail(e: unknown): void {
+    this.#error = message(e);
+    this.#renderManage();
+  }
+
+  async #act(method: string, path: string, body?: unknown): Promise<void> {
+    await api(method, "/api/rooms/" + encodeURIComponent(this.#roomId) + "/outputs" + path, body);
+    this.#rtmpForm = undefined;
+    await this.reload();
+  }
+
+  #renderManage(): void {
+    this.#managePlayback = this.#state !== undefined
+      ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings) : undefined;
+    const parts: Node[] = [h("h3", { text: "Stream outputs" })];
+    this.#pushStatus = undefined;
+    this.#pushDetail = undefined;
+    if (this.#error !== "") parts.push(h("p", { class: "error", role: "alert", text: this.#error }));
+    const rows = this.#rows;
+    if (rows === undefined) {
+      parts.push(h("p", { class: "muted small", text: this.#loading ? "Loading…" : "" }));
+      this.#manage.replaceChildren(...parts);
+      this.#el.hidden = false;
+      return;
+    }
+    if (!this.#owner) {
+      parts.push(h("p", { class: "muted small", text: "Only the room's owner changes the outputs." }));
+    }
+    for (const kind of OUTPUT_KINDS) {
+      const row = rows.find((r) => r.kind === kind);
+      parts.push(kind === "rtmp" ? this.#rtmpBlock(row, rows) : this.#urlBlock(kind, row, rows));
+    }
+    for (const note of outputNotes(rows)) parts.push(h("p", { class: "muted small output-note", text: note }));
+    this.#manage.replaceChildren(...parts);
+    this.#el.hidden = false;
+    this.#renderLive();
+  }
+
+  #serverOn(kind: OutputKind): boolean {
+    return this.#switches?.outputs[kind].enabled !== false;
+  }
+
+  /** On/off and remove buttons for an existing output (owner only). */
+  #rowButtons(row: OutputRow): Node[] {
+    if (!this.#owner) return [];
+    const fail = (e: unknown): void => this.#fail(e);
+    const out: Node[] = [];
+    if (row.enabled) {
+      out.push(button("Turn off", () => this.#act("PATCH", "/" + encodeURIComponent(row.id), { enabled: false }), fail));
+    } else if (row.serverEnabled) {
+      out.push(button("Turn on", () => this.#act("PATCH", "/" + encodeURIComponent(row.id), { enabled: true }), fail));
+    }
+    out.push(button("Remove", async () => {
+      if (!confirm("Remove the " + (OUTPUT_LABELS[row.kind] ?? row.kind) + " output?"
+        + (row.kind === "rtmp" ? " Its target and stream key are deleted." : " Its URL stops working for good."))) return;
+      await this.#act("DELETE", "/" + encodeURIComponent(row.id));
+    }, fail, "danger"));
+    return out;
+  }
+
+  #stateLine(row: OutputRow): string {
+    if (row.active) return "On";
+    return row.serverEnabled ? "Off" : "Off (disabled by the server admin)";
+  }
+
+  /** `.ts` or HLS: the tokenised URL with Copy, Rotate URL, on/off, remove. */
+  #urlBlock(kind: OutputKind, row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
+    const fail = (e: unknown): void => this.#fail(e);
+    const title = h("h4", { text: OUTPUT_LABELS[kind] ?? kind });
+    if (row === undefined) {
+      const serverOn = this.#serverOn(kind);
+      const parts: Node[] = [title, h("p", { class: "muted small", text: serverOn ? "Off" : "Disabled by the server admin" })];
+      if (this.#owner && canCreate(kind, rows, serverOn)) {
+        parts.push(button("Turn on", () => this.#act("POST", "", { kind }), fail));
+      }
+      return h("div", { class: "output-block" }, ...parts);
+    }
+    const parts: Node[] = [title, h("p", { class: "small", text: this.#stateLine(row) })];
+    if (row.url !== undefined) parts.push(copyField(row.url, (OUTPUT_LABELS[kind] ?? kind) + " URL"));
+    const buttons: Node[] = [];
+    if (this.#owner) {
+      buttons.push(button("Rotate URL", async () => {
+        if (!confirm("Make a new URL? The current one stops working at once (open .ts connections end); "
+          + "viewers and worlds need the new one.")) return;
+        await this.#act("POST", "/" + encodeURIComponent(row.id) + "/rotate");
+      }, fail));
+    }
+    buttons.push(...this.#rowButtons(row));
+    if (buttons.length > 0) parts.push(h("div", { class: "row" }, ...buttons));
+    return h("div", { class: "output-block" }, ...parts);
+  }
+
+  /** RTMP: target, key (last 4), live status, playback URL, the target form, on/off, remove. */
+  #rtmpBlock(row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
+    const fail = (e: unknown): void => this.#fail(e);
+    const title = h("h4", { text: OUTPUT_LABELS["rtmp"] ?? "RTMP" });
+    const serverOn = this.#serverOn("rtmp");
+    if (row === undefined) {
+      const parts: Node[] = [title, h("p", { class: "muted small",
+        text: serverOn ? "Off. Pushes the program to an RTMP service (e.g. VRCDN), whose viewer URL goes into VRChat."
+          : "Disabled by the server admin" })];
+      if (this.#owner && canCreate("rtmp", rows, serverOn)) {
+        if (this.#rtmpForm === "create") parts.push(this.#rtmpTargetForm(undefined));
+        else parts.push(button("Set up RTMP push", () => { this.#rtmpForm = "create"; this.#renderManage(); }, fail));
+      }
+      return h("div", { class: "output-block" }, ...parts);
+    }
+    this.#pushStatus = h("span", { class: "output-status" });
+    this.#pushDetail = h("p", { class: "muted small output-detail" });
+    const key = row.hasRtmpKey === true ? (row.rtmpKeyLast4 !== undefined ? "…" + row.rtmpKeyLast4 : "set") : "none";
+    // The room setting as the state has it now (the API's copy is from the last load).
+    const playback = this.#state !== undefined ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings)
+      : row.playbackUrl;
+    const manageHref = "/rooms/" + encodeURIComponent(this.#state?.room.slug ?? this.#roomId) + "/manage";
+    const parts: Node[] = [
+      title,
+      h("p", { class: "small" }, "Status: ", this.#pushStatus),
+      this.#pushDetail,
+      h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }), " · Stream key: ", key),
+    ];
+    if (playback !== undefined) {
+      parts.push(h("p", { class: "small", text: "Viewer URL (for VRChat):" }), copyField(playback, "RTMP viewer URL"));
+    } else {
+      parts.push(h("p", { class: "muted small" }, "No viewer URL saved. Viewers need the URL the RTMP service gives "
+        + "out: save it under ", h("a", { href: manageHref, text: "Manage room" }), " → Settings → Outputs."));
+    }
+    const buttons: Node[] = [];
+    if (this.#owner && this.#rtmpForm !== "edit") {
+      buttons.push(button("Change target or key", () => { this.#rtmpForm = "edit"; this.#renderManage(); }, fail));
+    }
+    buttons.push(...this.#rowButtons(row));
+    if (buttons.length > 0) parts.push(h("div", { class: "row" }, ...buttons));
+    if (this.#owner && this.#rtmpForm === "edit") parts.push(this.#rtmpTargetForm(row));
+    return h("div", { class: "output-block" }, ...parts);
+  }
+
+  /** The RTMP target form: ingest URL and stream key (blank keeps the key when editing). */
+  #rtmpTargetForm(row: OutputRow | undefined): HTMLElement {
+    const url = h("input", { type: "url", class: "grow", placeholder: "rtmp://ingest.example/live",
+      value: row?.rtmpUrl ?? "", autocomplete: "off", "aria-label": "RTMP ingest URL" });
+    const key = h("input", { type: "password", class: "grow", autocomplete: "new-password",
+      placeholder: row === undefined ? "Stream key (optional)" : (row.hasRtmpKey === true ? "Leave empty to keep the key" : "Stream key (optional)"),
+      "aria-label": "Stream key" });
+    const removeKey = h("input", { type: "checkbox" });
+    const status = h("p", { class: "error", role: "alert" });
+    const save = h("button", { type: "submit", text: row === undefined ? "Start pushing" : "Save" });
+    const cancel = h("button", { type: "button", class: "link", text: "Cancel" });
+    cancel.addEventListener("click", () => { this.#rtmpForm = undefined; this.#renderManage(); });
+    const form = h("form", { class: "form rtmp-form" },
+      h("label", {}, "Ingest URL", url),
+      h("label", {}, "Stream key", key),
+      row?.hasRtmpKey === true ? h("label", { class: "check" }, removeKey, " Remove the stream key") : null,
+      h("small", { text: "The key is stored encrypted and never shown again (only its last 4 characters)." }),
+      h("div", { class: "row" }, save, cancel), status);
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const target = url.value.trim();
+      if (!validRtmpUrl(target)) {
+        status.textContent = "Enter an rtmp:// or rtmps:// URL.";
+        return;
+      }
+      const body: Record<string, unknown> = row === undefined ? { kind: "rtmp", rtmpUrl: target } : { rtmpUrl: target };
+      if (key.value !== "") body["rtmpKey"] = key.value;
+      else if (row !== undefined && removeKey.checked) body["rtmpKey"] = null;
+      save.disabled = true;
+      const done = row === undefined ? this.#act("POST", "", body)
+        : this.#act("PATCH", "/" + encodeURIComponent(row.id), body);
+      done.catch((e: unknown) => {
+        status.textContent = message(e);
+      }).finally(() => { save.disabled = false; });
+    });
+    return form;
+  }
+
+  /** Updates the RTMP status line in place (no redraw, so forms keep what was typed). */
+  #renderLive(): void {
+    const row = this.#rows?.find((r) => r.kind === "rtmp");
+    if (row === undefined || this.#pushStatus === undefined || this.#pushDetail === undefined) return;
+    const live = this.#state?.outputs?.find((o) => o.kind === "rtmp");
+    const line = pushLine(live, row, Date.now());
+    this.#pushStatus.textContent = line;
+    this.#pushStatus.className = "output-status output-" + (row.active ? (live?.status ?? row.status?.state ?? "connecting") : "off");
+    const detail = pushDetail(live, row);
+    this.#pushDetail.textContent = detail ?? "";
+    this.#pushDetail.hidden = detail === undefined || detail === "";
+  }
+}

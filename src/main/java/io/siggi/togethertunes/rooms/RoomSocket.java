@@ -92,6 +92,7 @@ public final class RoomSocket {
     private final RoomViews views;
     private final Clock clock;
     private final Map<RoomExecutor, RoomBroadcaster> broadcasters = new ConcurrentHashMap<>();
+    private volatile RoomOutputs outputs = RoomOutputs.NONE;
 
     public RoomSocket(ActorResolver actors, IdentityTickets tickets, Guests guests, Settings settings, Rooms rooms,
                       RoomGuests roomGuests, RoomRegistry registry, RoomQueue queue, Database db, Clock clock) {
@@ -128,7 +129,8 @@ public final class RoomSocket {
     /** The broadcaster of a room executor, made and registered on first use. */
     private RoomBroadcaster broadcaster(RoomExecutor ex) {
         RoomBroadcaster b = broadcasters.computeIfAbsent(ex, e -> {
-            RoomBroadcaster nb = new RoomBroadcaster(e, views, roomGuests::roomActor, () -> broadcasters.remove(e));
+            RoomBroadcaster nb = new RoomBroadcaster(e, views, roomGuests::roomActor, () -> broadcasters.remove(e),
+                    roomId -> outputs.active(roomId));
             e.addListener(nb);
             return nb;
         });
@@ -138,6 +140,23 @@ public final class RoomSocket {
             throw new RoomClosedException(ex.roomId());
         }
         return b;
+    }
+
+    /** Where the rooms' program outputs come from (the {@code outputs} of {@code state}). */
+    public void outputs(RoomOutputs outputs) {
+        this.outputs = Objects.requireNonNull(outputs);
+    }
+
+    /**
+     * One of a room's outputs changed (status, turned on or off): sends {@code output.status} to
+     * the sockets in the room. Any thread; never blocks.
+     */
+    public void outputStatus(String roomId, RoomOutputs.Status status) {
+        for (RoomBroadcaster b : broadcasters.values()) {
+            if (b.roomId().equals(roomId)) {
+                b.outputStatus(status);
+            }
+        }
     }
 
     /** How many rooms have a broadcaster (tests). */

@@ -10,6 +10,8 @@
 // (remote.ts) it loads no media and shows the timeline delayed by the active output's
 // estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
 // room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
+// The outputs panel (outputspanel.ts) shows the RTMP viewer URL to everyone and the stream outputs
+// (URLs with copy buttons, push status, on/off, rotate) to the owner and moderators.
 // In listen mode, "Send diagnostics" posts what the player did (diagnostics.ts) to the server log,
 // for devices without a console; `?sync=rate|seek` overrides the sync mode for testing, and
 // The "Web Audio" setting (Auto / On / Off, per browser) decides whether the media elements play
@@ -42,6 +44,7 @@ import {
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
 import { rememberPlaying } from "./nav.js";
+import { OutputsPanel } from "./outputspanel.js";
 import { Shell } from "./shell.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
@@ -188,6 +191,8 @@ let roomName = "";
 let kickedText: string | undefined;
 /** Shows the site's other pages in place while the room plays (shell.ts). */
 let shell: Shell | undefined;
+/** The outputs panel (RTMP viewer URL; stream URLs and controls for the owner and moderators). */
+let outputsPanel: OutputsPanel | undefined;
 
 // ------------------------------------------------------------------ small helpers
 
@@ -817,6 +822,8 @@ function render(s: RoomState): void {
   renderSuggestions(s);
   renderRequests(s);
   renderHistory(s);
+  outputsPanel ??= new OutputsPanel(element("room-outputs"));
+  outputsPanel.update(s);
   renderRemoteDelay();
   element("room-main").hidden = false;
   if (mode === "listen") player?.update(s);

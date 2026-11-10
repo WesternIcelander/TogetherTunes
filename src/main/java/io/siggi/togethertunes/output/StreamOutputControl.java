@@ -73,6 +73,8 @@ public final class StreamOutputControl implements AutoCloseable {
     private final Runnable revalidateTs;
     private final Map<String, Running> running = new HashMap<>();
     private ScheduledExecutorService timer;
+    private volatile Runnable reconcileListener = () -> {
+    };
 
     public StreamOutputControl(StreamOutputs rows, Switches switches, Outputs outputs, Pushers pushers,
                                Runnable revalidateTs) {
@@ -115,10 +117,22 @@ public final class StreamOutputControl implements AutoCloseable {
         }
     }
 
+    /**
+     * Told after every {@link #reconcile} (the outputs' status feed re-checks every room). Must
+     * not block.
+     */
+    public void reconcileListener(Runnable listener) {
+        this.reconcileListener = Objects.requireNonNull(listener);
+    }
+
     /** Brings RTMP pushes and {@code .ts} connections in line with the rows and switches. */
     public void reconcile() {
-        reconcileRtmp();
-        revalidateTs.run();
+        try {
+            reconcileRtmp();
+            revalidateTs.run();
+        } finally {
+            reconcileListener.run();
+        }
     }
 
     private synchronized void reconcileRtmp() {

@@ -209,6 +209,20 @@ public final class StreamOutputs {
         return db.read(c -> find(c, roomId, outputId));
     }
 
+    /** The ids of the rooms that have at least one output (on or off). */
+    public java.util.Set<String> roomIds() throws SQLException {
+        return db.read(c -> {
+            java.util.Set<String> out = new java.util.HashSet<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT DISTINCT room_id FROM stream_outputs");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getString(1));
+                }
+            }
+            return out;
+        });
+    }
+
     /** Every enabled RTMP output (the pushes the server should run, server switch permitting). */
     public List<Output> enabledRtmp() throws SQLException {
         return db.read(c -> {

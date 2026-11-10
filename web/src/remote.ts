@@ -9,11 +9,17 @@
 /** A connection's mode (docs/rooms.md#web-and-app-playback). */
 export type RoomMode = "listen" | "remote";
 
-/** One output in the room state's `outputs` (filled from M4 on). */
+/**
+ * One output in the room state's `outputs`: the room's active outputs, kept current by
+ * `output.status` (outputs.ts `applyOutputStatus`).
+ */
 export interface OutputView {
   kind: "rtmp" | "ts" | "hls" | string;
+  /** RTMP: connecting | connected | retrying | error; `.ts`/HLS: ready. */
   status?: string;
   estimatedDelayMs?: number;
+  /** RTMP, owner and moderators only: the push's last ffmpeg message. */
+  detail?: string;
 }
 
 /** The output kinds, most preferred first, when the room has more than one. */
@@ -59,7 +65,7 @@ function validDelay(v: unknown): v is number {
  * The active output and its estimated delay. The active output is the most preferred one
  * (RTMP, `.ts`, HLS) that isn't in an error or off state; its delay is the one the server sent with
  * it, else the room setting `estimatedDelayMs.<kind>`, else the default. A room without any
- * listed output (always the case before M4) is treated as RTMP, the primary output.
+ * active output is treated as RTMP, the primary output.
  */
 export function outputDelay(outputs: OutputView[] | undefined, settings: Record<string, unknown> | undefined):
   { kind: string; delayMs: number } {

@@ -41,6 +41,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       above that. Room, settings and member changes always send the full state.</li>
  * </ul>
  * A {@link RoomEvent.RequestAdded} also sends {@code request.new} to the owner and moderators.
+ * The room's active program outputs ({@link RoomOutputs}) go into every {@code state}; a change of
+ * one of them ({@link #outputStatus}) is sent as {@code output.status}, without a version, in order
+ * with the other messages. Each output carries {@code estimatedDelayMs} (the room setting
+ * {@code estimatedDelayMs.<kind>}, whose defaults are 5000 / 2000 / 8000 ms); the RTMP
+ * {@code detail} goes to the owner and moderators only.
  * A banned guest's sockets ({@link RoomEvent.GuestBanned}), and sockets whose actor may no longer
  * see the room after a room, settings or member change, get {@code kicked} and leave the room.
  */
@@ -71,7 +76,10 @@ final class RoomBroadcaster implements RoomListener {
         RoomActor roomActor(Actor actor, String roomId) throws Exception;
     }
 
-    private sealed interface Task permits Join, Resend, Leave, Changed, Closed {
+    private sealed interface Task permits Join, Resend, Leave, Changed, Closed, OutputChanged {
+    }
+
+    private record OutputChanged(RoomOutputs.Status status) implements Task {
     }
 
     private record Join(Conn conn, RoomActor actor, RoomSnapshot snapshot) implements Task {
@@ -107,6 +115,7 @@ final class RoomBroadcaster implements RoomListener {
     private final RoomViews views;
     private final Access access;
     private final Runnable onStopped;
+    private final RoomOutputs outputs;
     private final LinkedBlockingQueue<Task> tasks = new LinkedBlockingQueue<>();
     /** Joins queued or done minus members removed: no snapshot is taken while nobody listens. */
     private final AtomicInteger interest = new AtomicInteger();
@@ -115,6 +124,11 @@ final class RoomBroadcaster implements RoomListener {
     private final Map<String, Member> members = new LinkedHashMap<>();
 
     RoomBroadcaster(RoomExecutor executor, RoomViews views, Access access, Runnable onStopped) {
+        this(executor, views, access, onStopped, RoomOutputs.NONE);
+    }
+
+    RoomBroadcaster(RoomExecutor executor, RoomViews views, Access access, Runnable onStopped, RoomOutputs outputs) {
+        this.outputs = Objects.requireNonNull(outputs);
         this.executor = Objects.requireNonNull(executor);
         this.roomId = executor.roomId();
         this.views = Objects.requireNonNull(views);
@@ -152,6 +166,13 @@ final class RoomBroadcaster implements RoomListener {
         tasks.add(new Leave(conn));
     }
 
+    /** One of the room's outputs changed: {@code output.status} to every socket in the room. Any thread. */
+    void outputStatus(RoomOutputs.Status status) {
+        if (interest.get() > 0) {
+            tasks.add(new OutputChanged(status));
+        }
+    }
+
     @Override
     public void onChange(RoomState state, RoomChange change) {
         if (interest.get() > 0) {
@@ -187,6 +208,7 @@ final class RoomBroadcaster implements RoomListener {
                             }
                         }
                         case Changed c -> changed(c.snapshot(), c.change());
+                        case OutputChanged o -> outputChanged(o.status());
                         case Closed c -> {
                             closed(c.deleted());
                             return;
@@ -364,10 +386,11 @@ final class RoomBroadcaster implements RoomListener {
             base.add("skipVotes", skip);
         }
         base.add("presence", RoomViews.presence(s.presence()));
-        // The program outputs (M4) and the overlay (M5) add their parts here.
-        base.add("outputs", new JsonArray());
+        // The overlay (M5) adds its part here.
+        List<RoomOutputs.Status> active = activeOutputs();
         for (Member m : to) {
             JsonObject msg = base.deepCopy();
+            msg.add("outputs", outputsJson(active, s.settings(), m.actor.moderates()));
             msg.getAsJsonObject("room").add("you", you(s, m.actor));
             yourVotes(msg.getAsJsonArray("queue"), s, m.actor);
             yourVotes(msg.getAsJsonArray("suggestions"), s, m.actor);
@@ -423,6 +446,60 @@ final class RoomBroadcaster implements RoomListener {
             yourVotes(copy.getAsJsonArray("upsert"), s, m.actor);
             m.conn.send(copy);
             m.base = s;
+        }
+    }
+
+    /** The room's active outputs; none if they can't be read (logged). */
+    private List<RoomOutputs.Status> activeOutputs() {
+        try {
+            return outputs.active(roomId);
+        } catch (Exception e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read the outputs of room " + roomId, e);
+            return List.of();
+        }
+    }
+
+    private static JsonArray outputsJson(List<RoomOutputs.Status> active, JsonObject settings, boolean moderator) {
+        JsonArray a = new JsonArray();
+        for (RoomOutputs.Status st : active) {
+            a.add(outputJson(new JsonObject(), st, settings, moderator));
+        }
+        return a;
+    }
+
+    /** {@code kind}, {@code status}, {@code estimatedDelayMs} (unless off) and, for moderators, {@code detail}. */
+    private static JsonObject outputJson(JsonObject o, RoomOutputs.Status st, JsonObject settings,
+                                         boolean moderator) {
+        o.addProperty("kind", st.kind());
+        o.addProperty("status", st.status());
+        Integer delay = "off".equals(st.status()) ? null : estimatedDelayMs(settings, st.kind());
+        if (delay != null) {
+            o.addProperty("estimatedDelayMs", delay);
+        }
+        if (moderator && st.detail() != null) {
+            o.addProperty("detail", st.detail());
+        }
+        return o;
+    }
+
+    /** The room setting {@code estimatedDelayMs.<kind>}, or null if the settings don't have it. */
+    static Integer estimatedDelayMs(JsonObject settings, String kind) {
+        if (settings == null || !(settings.get("estimatedDelayMs") instanceof JsonObject delays)) {
+            return null;
+        }
+        JsonElement v = delays.get(kind);
+        if (v == null || !v.isJsonPrimitive() || !v.getAsJsonPrimitive().isNumber()) {
+            return null;
+        }
+        return v.getAsInt();
+    }
+
+    /** {@code output.status} to every socket in the room (no version: it isn't a room change). */
+    private void outputChanged(RoomOutputs.Status st) {
+        for (Member m : members.values()) {
+            JsonObject msg = new JsonObject();
+            msg.addProperty("type", "output.status");
+            m.conn.send(outputJson(msg, st, m.base == null ? null : m.base.settings(), m.actor.moderates()));
         }
     }
 

@@ -327,6 +327,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Leave", "broadcaster task, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Changed", "broadcaster task, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$Closed", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBroadcaster$OutputChanged", "broadcaster task, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomOutputs$Status", "an output's kind, status and push message (key masked), copied field by field into room messages; no IP fields (RoomSocketTest checks the messages for IPs)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomSocket$Joined", "a socket's room and executor, in memory"
                     + " only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomViews$ItemRow", "items columns (no IP column read); the"

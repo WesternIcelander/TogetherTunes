@@ -40,6 +40,7 @@ import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.FillerSource.Filler;
 import io.siggi.togethertunes.output.LiveHlsApi;
+import io.siggi.togethertunes.output.OutputStatusFeed;
 import io.siggi.togethertunes.output.LiveLimits;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
@@ -276,6 +277,13 @@ public final class Main {
                 liveTs);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
         admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
+        // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.
+        OutputStatusFeed outputStatus = new OutputStatusFeed(streamOutputs, outputControl, roomSocket::outputStatus);
+        roomSocket.outputs(outputStatus);
+        outputControl.reconcileListener(outputStatus::allChanged);
+        if (rtmpPushers != null) {
+            rtmpPushers.statusListener((roomId, status) -> outputStatus.roomChanged(roomId));
+        }
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), appRouter,
@@ -297,6 +305,7 @@ public final class Main {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
             outputControl.close();
+            outputStatus.close();
             if (rtmpPushers != null) {
                 rtmpPushers.close();
             }

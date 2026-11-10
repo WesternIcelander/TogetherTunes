@@ -726,3 +726,72 @@ table.rooms td {
     display: none;
   }
 }
+
+/* The room page's outputs panel (outputspanel.ts). */
+.room-outputs h3 {
+  margin: 0 0 0.25rem;
+}
+
+.room-outputs h4 {
+  margin: 0.75rem 0 0.25rem;
+}
+
+.output-block p {
+  margin: 0.25rem 0;
+}
+
+.copy-row {
+  flex-wrap: wrap;
+  margin: 0.25rem 0;
+}
+
+.copy-row input.copy-url {
+  min-width: 12rem;
+  font-family: ui-monospace, monospace;
+}
+
+.output-status {
+  font-weight: 600;
+}
+
+.output-connected,
+.output-ready {
+  color: #1e7d32;
+}
+
+.output-retrying,
+.output-connecting {
+  color: #9a6700;
+}
+
+.output-error {
+  color: #c5221f;
+}
+
+@media (prefers-color-scheme: dark) {
+  .output-connected,
+  .output-ready {
+    color: #81c995;
+  }
+
+  .output-retrying,
+  .output-connecting {
+    color: #fdd663;
+  }
+
+  .output-error {
+    color: #f28b82;
+  }
+}
+
+.output-detail {
+  word-break: break-word;
+}
+
+.output-note {
+  margin: 0.5rem 0 0;
+}
+
+.rtmp-form .error:empty {
+  display: none;
+}

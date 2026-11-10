@@ -784,6 +784,71 @@ class RoomSocketTest {
         owner.error("not_joined", "{\"type\":\"play\"}");
     }
 
+    /**
+     * The room's active outputs are in every {@code state} with {@code estimatedDelayMs} (the room
+     * setting, defaults 5000 / 2000 / 8000); a change arrives as {@code output.status}; the RTMP
+     * {@code detail} only reaches the owner and moderators.
+     */
+    @Test
+    void outputsAreInTheStateAndChangesArriveAsOutputStatus() throws Exception {
+        String roomId = room("outs", "public", "vote");
+        java.util.concurrent.atomic.AtomicReference<List<RoomOutputs.Status>> active =
+                new java.util.concurrent.atomic.AtomicReference<>(List.of(
+                        new RoomOutputs.Status("rtmp", "retrying", "Connection refused"),
+                        new RoomOutputs.Status("hls", "ready", null)));
+        wiring.socket().outputs(r -> r.equals(roomId) ? active.get() : List.of());
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"outs\"}");
+        JsonArray outputs = owner.await("state").getAsJsonArray("outputs");
+        assertEquals(2, outputs.size(), outputs.toString());
+        JsonObject rtmp = outputs.get(0).getAsJsonObject();
+        assertEquals("rtmp", rtmp.get("kind").getAsString());
+        assertEquals("retrying", rtmp.get("status").getAsString());
+        assertEquals(5000, rtmp.get("estimatedDelayMs").getAsInt());
+        assertEquals("Connection refused", rtmp.get("detail").getAsString());
+        JsonObject hls = outputs.get(1).getAsJsonObject();
+        assertEquals("ready", hls.get("status").getAsString());
+        assertEquals(8000, hls.get("estimatedDelayMs").getAsInt());
+        assertFalse(hls.has("detail"));
+
+        Client member = connect(bob, null);
+        member.ok("{\"type\":\"join\",\"room\":\"outs\"}");
+        JsonArray seenByMember = member.await("state").getAsJsonArray("outputs");
+        assertEquals("retrying", seenByMember.get(0).getAsJsonObject().get("status").getAsString());
+        assertFalse(seenByMember.get(0).getAsJsonObject().has("detail"), "detail is for moderators");
+        Client anon = connect(null, null);
+        anon.ok("{\"type\":\"join\",\"room\":\"outs\"}");
+        assertFalse(anon.await("state").getAsJsonArray("outputs").get(0).getAsJsonObject().has("detail"));
+
+        // the owner's delay setting reaches the outputs
+        roomSettings("outs", "{\"estimatedDelayMs\":{\"hls\":9500}}");
+        JsonObject state = member.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonArray("outputs").size() == 2
+                && m.getAsJsonArray("outputs").get(1).getAsJsonObject().get("estimatedDelayMs").getAsInt() == 9500);
+        assertNotNull(state);
+
+        // a change: output.status to everyone, without a version, detail for moderators only
+        active.set(List.of(new RoomOutputs.Status("rtmp", "connected", "ok"), new RoomOutputs.Status("hls", "ready", null)));
+        wiring.socket().outputStatus(roomId, new RoomOutputs.Status("rtmp", "connected", "ok"));
+        JsonObject toOwner = owner.await("output.status");
+        assertEquals("rtmp", toOwner.get("kind").getAsString());
+        assertEquals("connected", toOwner.get("status").getAsString());
+        assertEquals("ok", toOwner.get("detail").getAsString());
+        assertEquals(5000, toOwner.get("estimatedDelayMs").getAsInt());
+        assertFalse(toOwner.has("version"));
+        JsonObject toMember = member.await("output.status");
+        assertEquals("connected", toMember.get("status").getAsString());
+        assertFalse(toMember.has("detail"));
+        assertEquals("connected", anon.await("output.status").get("status").getAsString());
+        // off carries no delay; other rooms hear nothing
+        wiring.socket().outputStatus(roomId, new RoomOutputs.Status("hls", "off", null));
+        JsonObject off = member.await("output.status");
+        assertEquals("off", off.get("status").getAsString());
+        assertFalse(off.has("estimatedDelayMs"));
+        wiring.socket().outputStatus("no-such-room", new RoomOutputs.Status("ts", "ready", null));
+        member.quiet("output.status");
+    }
+
     @Test
     void aRevokedSessionEndsTheSocket() throws Exception {
         room("revoke", "public", "owner");

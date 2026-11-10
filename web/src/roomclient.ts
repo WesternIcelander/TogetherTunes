@@ -12,6 +12,7 @@
 import { api, ApiError } from "./api.js";
 import type { ActorRef } from "./actor.js";
 import { clientNow } from "./clocksync.js";
+import { applyOutputStatus } from "./outputs.js";
 
 export type { RoomMode } from "./remote.js";
 import type { OutputView, RoomMode } from "./remote.js";
@@ -112,7 +113,7 @@ export interface RoomState {
   history: HistoryEntry[];
   skipVotes?: SkipVotes;
   presence: Presence;
-  /** The program outputs and their estimated delays (empty until M4). */
+  /** The active program outputs with their status and estimated delays (`output.status` updates them). */
   outputs?: OutputView[];
 }
 
@@ -364,6 +365,14 @@ export class RoomConnection {
         this.#applyDelta(msg);
         return;
       }
+      case "output.status": {
+        // Not a room change (no version): applied to the state as it is.
+        const s = this.state;
+        if (s === undefined) return;
+        s.outputs = applyOutputStatus(s.outputs, msg);
+        this.#events.state(s);
+        return;
+      }
       case "request.new": {
         this.#events.request(msg["request"] as NewRequest);
         return;
@@ -386,7 +395,7 @@ export class RoomConnection {
         return;
       }
       default:
-        // Unknown types (output.status until M4, newer servers) are no-ops.
+        // Unknown types (newer servers) are no-ops.
         return;
     }
   }
