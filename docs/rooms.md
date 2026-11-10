@@ -180,10 +180,10 @@ Each connection is in one of two modes, chosen with a toggle and remembered per 
 
 The client plays the media itself, in sync with the timeline. There is a **video / audio-only** toggle:
 
-- Audio items: the **original** file (`originalUrl`) in an `<audio>` element, with `originalGainDb` applied (as the element's `volume` on the direct path, through its `GainNode` with Web Audio; see "Direct path or Web Audio" below), when the item has a web-playable original and `canPlayType` agrees, and, on the direct path, the gain isn't positive. Otherwise `audio.m4a`. The cover art is shown.
+- Audio items: the **original** file (`originalUrl`) in an `<audio>` element (not while the item has an [audio trim](library-and-ingest.md#audio-trim): then `original_web` is 0 and `audio.m4a`, encoded for the range, plays), with `originalGainDb` applied (as the element's `volume` on the direct path, through its `GainNode` with Web Audio; see "Direct path or Web Audio" below), when the item has a web-playable original and `canPlayType` agrees, and, on the direct path, the gain isn't positive. Otherwise `audio.m4a`. The cover art is shown.
 - Video items with `presentAsAudio`: `audio.m4a` in an `<audio>` element, with the cover art shown.
 - Video items in video mode: `mezz.mp4` in a `<video>` element.
-- Video items in audio-only mode: `audio.m4a` only. The video is never requested, so it uses no bandwidth.
+- Video items in audio-only mode: `audio.m4a` only. The video is never requested, so it uses no bandwidth. This stays `audio.m4a` (the video trim's audio, in sync with the room) even when the video has an [audio trim](library-and-ingest.md#audio-trim): its separate `audio-only.m4a` is only for audio-only rooms, whose timeline uses that file's length (`items.audio_only_ms`).
 
 Sync loop (every 250 ms, on every state message, and on the elements' `playing` / `seeked` events):
 

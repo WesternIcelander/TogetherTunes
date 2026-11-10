@@ -65,13 +65,15 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
+      audio_only_ms BIGINT NULL,            -- a video's audio-only file's length (audio-only.m4a from its audio trim, library-and-ingest.md#audio-trim); NULL: none, it is audio.m4a (duration_ms)
       media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows (an undo links the old files into a new version), kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
 
 media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the current and the kept undo version were made with
       published_at BIGINT, kind, duration_ms, output_profile, loudness_lufs, encode_preset, encode_quality,  -- the items publish columns
-      edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, originalMs? (library-and-ingest.md#trim)
+      audio_only_ms, original_web, original_gain_db,  -- (migration 0015) also restored by an undo
+      edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs? (library-and-ingest.md#trim, #audio-trim)
 
 media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)
       switched_at BIGINT,                   -- when the item switched away from it; kept for media.undoHours from then
@@ -80,7 +82,7 @@ media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version,
 ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch' | 'quality' | 'trim'
       state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL,
       tier TEXT NULL,                       -- preset tier asked for when queued: 'quick' | 'quality' (NULL: decided at start)
-      edit_json TEXT NULL)                  -- a 'trim' job's target edit settings (library-and-ingest.md#trim); NULL otherwise
+      edit_json TEXT NULL)                  -- a 'trim' job's change: parts ("video"/"audio"; absent = video) and their keys (library-and-ingest.md#trim); NULL otherwise
 
 uploads(id PK, user_id NULL, guest_id NULL,  -- exactly one owner
       room_id NULL,                         -- set when the upload is a room request (M3)
