@@ -77,6 +77,7 @@ class RoomSocketTest {
     private final List<Client> clients = new ArrayList<>();
     private final List<String> leaks = new java.util.concurrent.CopyOnWriteArrayList<>();
     private Sessions sessions;
+    private Settings settings;
     private String aliceId;
     private String bobId;
     private String alice;
@@ -89,7 +90,7 @@ class RoomSocketTest {
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
-        Settings settings = new Settings(db, config);
+        settings = new Settings(db, config);
         ActorResolver actors = new ActorResolver(db, settings, clock, false);
         Router router = new Router(actors.hook());
         Permissions permissions = new Permissions(db, settings);
@@ -98,6 +99,7 @@ class RoomSocketTest {
         IdentityTickets tickets = new IdentityTickets(clock);
         wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock);
         wiring.api().register(router);
+        TestUploads.mediaApi(db, dir, settings, wiring.registry().playingItems()).register(router);
         new MeApi(accounts, new Users(db, passwords, clock), permissions, new Guests(db, settings, false), settings,
                 tickets).register(router);
         wiring.socket().register(router, new WebSockets(new Csrf(ORIGIN, List.of("sid", "gid"))));
@@ -519,6 +521,168 @@ class RoomSocketTest {
         assertEquals("banned_from_room", anon.await("kicked").get("reason").getAsString());
         anon.error("not_joined", "{\"type\":\"sync\"}");
         anon.error("banned_from_room", "{\"type\":\"join\",\"room\":\"votes\"}");
+    }
+
+    /** A ready audio item of alice's with {@code audio.m4a} on disk. */
+    private String servedItem(String title) throws Exception {
+        String id = item(title);
+        Path folder = dir.resolve("data").resolve("media").resolve(id);
+        java.nio.file.Files.createDirectories(folder);
+        java.nio.file.Files.write(folder.resolve("audio.m4a"), new byte[100]);
+        return id;
+    }
+
+    private int media(String cookie, String itemId) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/media/"
+                + itemId + "/audio.m4a"));
+        if (cookie != null) {
+            b.header("Cookie", cookie);
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
+    }
+
+    private void roomSettings(String room, String settingsJson) throws Exception {
+        HttpResponse<String> r = call(alice, "PATCH", "/api/rooms/" + room, "{\"settings\":" + settingsJson + "}");
+        assertEquals(200, r.statusCode(), r.body());
+    }
+
+    /**
+     * M3 acceptance: a guest votes and requests as the server AND room policy allow, and gets
+     * {@code 403} for media of an item that is neither current nor next anywhere while
+     * {@code guests.download} is off (the live current/next set of the room executors).
+     */
+    @Test
+    void guestsVoteAndRequestByPolicyAndOnlyStreamCurrentAndNext() throws Exception {
+        room("policy", "public", "vote");
+        String song1 = servedItem("One");
+        String song2 = servedItem("Two");
+        String song3 = servedItem("Three");
+        String elsewhere = servedItem("Not queued");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song1 + "\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song2 + "\"}");
+        String entry3 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song3 + "\"}").get("entryId").getAsString();
+
+        // a cookie guest (POST /api/me/guest), on the socket and over HTTP
+        HttpResponse<String> created = call(null, "POST", "/api/me/guest", null);
+        assertEquals(201, created.statusCode(), created.body());
+        String guestId = json(created).get("id").getAsString();
+        String cookie = created.headers().allValues("Set-Cookie").stream().filter(v -> v.startsWith("gid="))
+                .map(v -> v.substring(0, v.indexOf(';'))).findFirst().orElseThrow();
+        Client guest = connect(null, cookie);
+        assertEquals(guestId, guest.next("identity").getAsJsonObject("actor").get("id").getAsString());
+        guest.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        JsonObject you = guest.await("state").getAsJsonObject("room").getAsJsonObject("you");
+        assertTrue(you.get("canVote").getAsBoolean());
+        assertTrue(you.get("canRequest").getAsBoolean());
+        assertFalse(you.get("canSkip").getAsBoolean());
+
+        // --- media: current and next only, while guests.download is off
+        assertFalse(settings.guestsDownload());
+        assertEquals(200, media(cookie, song1), "current");
+        assertEquals(200, media(cookie, song2), "next");
+        assertEquals(403, media(cookie, song3), "queued but not next");
+        assertEquals(403, media(cookie, elsewhere), "not in any room");
+        assertEquals(403, media(null, song3), "anonymous too");
+        assertEquals(200, media(null, song1));
+        assertEquals(200, call(alice, "GET", "/media/" + elsewhere + "/audio.m4a", null).statusCode(), "users always");
+
+        // --- defaults (server and room on): the guest votes, vote-skips and requests
+        assertEquals(1, guest.ok("{\"type\":\"vote\",\"entryId\":\"" + entry3 + "\",\"value\":1}").get("votes")
+                .getAsInt());
+        // 1 of 2 present reaches the default threshold (0.5): song1 is skipped, the voted-up song3 plays
+        assertEquals(1, guest.ok("{\"type\":\"voteSkip\"}").get("votes").getAsInt());
+        JsonObject skipped = owner.await(m -> m.get("type").getAsString().equals("state") && m.has("current")
+                && m.getAsJsonObject("current").getAsJsonObject("item").get("id").getAsString().equals(song3));
+        String entry2 = skipped.getAsJsonArray("queue").get(0).getAsJsonObject().get("entryId").getAsString();
+        assertEquals(song2, skipped.getAsJsonArray("queue").get(0).getAsJsonObject().getAsJsonObject("item")
+                .get("id").getAsString());
+        assertEquals(403, media(cookie, song1), "skipped: neither current nor next");
+        assertEquals(200, media(cookie, song3), "now current");
+        assertEquals(200, media(cookie, song2), "still next");
+        guest.error("forbidden", "{\"type\":\"next\"}");
+        guest.error("forbidden", "{\"type\":\"queue.addPlaylist\",\"playlistId\":\"" + UuidV7.newId() + "\"}");
+        String req1 = servedItem("Guest pick 1");
+        JsonObject added = guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + req1 + "\"}");
+        assertEquals("queued", added.get("state").getAsString());
+        JsonObject req = owner.await("request.new").getAsJsonObject("request");
+        assertEquals(guestId, req.getAsJsonObject("by").get("id").getAsString());
+        assertTrue(req.getAsJsonObject("by").get("isGuest").getAsBoolean());
+        HttpResponse<String> search = callCookie(cookie, "/api/rooms/policy/search?q=Guest");
+        assertEquals(200, search.statusCode(), search.body());
+        // requestsPerActor (3): queued entries count
+        guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Guest pick 2") + "\"}");
+        guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Guest pick 3") + "\"}");
+        guest.error("request_limit", "{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Guest pick 4") + "\"}");
+        roomSettings("policy", "{\"requestsPerActor\":10}");
+        // uploads and links are off by default for guests
+        guest.error("guest_youtube_disabled",
+                "{\"type\":\"queue.add\",\"youtubeUrl\":\"https://youtu.be/jNQXAC9IVRw\"}");
+
+        // --- room switches: off in the room → refused, though the server allows it
+        roomSettings("policy", "{\"guests\":{\"canVote\":false}}");
+        guest.error("cannot_vote", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
+        guest.error("cannot_vote", "{\"type\":\"voteSkip\"}");
+        guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Still requests") + "\"}");
+        roomSettings("policy", "{\"guests\":{\"canVote\":null,\"canRequestLibrary\":false}}");
+        // no request path left at all: no request rights (cannot_request)
+        guest.error("cannot_request", "{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Refused") + "\"}");
+        assertEquals(403, callCookie(cookie, "/api/rooms/policy/search?q=Guest").statusCode());
+        guest.ok("{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":0}");
+        roomSettings("policy", "{\"guests\":null}");
+
+        // --- server switches: off on the server → refused, though the room allows it
+        settings.set(Settings.GUESTS_CAN_VOTE, false);
+        guest.error("cannot_vote", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
+        settings.set(Settings.GUESTS_CAN_VOTE, true);
+        settings.set(Settings.GUESTS_CAN_REQUEST_LIBRARY, false);
+        guest.error("cannot_request", "{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Refused 2") + "\"}");
+        settings.set(Settings.GUESTS_CAN_REQUEST_LIBRARY, true);
+        // guests off server-wide: the guest identity no longer counts at all
+        settings.set(Settings.GUESTS_ENABLED, false);
+        guest.error("session_ended", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
+        assertEquals(403, media(cookie, elsewhere));
+        settings.set(Settings.GUESTS_ENABLED, true);
+        guest = connect(null, cookie);
+        assertEquals(guestId, guest.next("identity").getAsJsonObject("actor").get("id").getAsString());
+        guest.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        assertEquals(1, guest.ok("{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}").get("votes")
+                .getAsInt());
+
+        // --- control modes: owner mode makes a guest's request a suggestion and has no votes
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/policy", "{\"controlMode\":\"owner\"}").statusCode());
+        assertEquals("suggested", guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Suggestion")
+                + "\"}").get("state").getAsString());
+        guest.error("wrong_control_mode", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
+        guest.error("forbidden", "{\"type\":\"pause\"}");
+        // open mode: request rights control playback too
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/policy", "{\"controlMode\":\"open\"}").statusCode());
+        guest.ok("{\"type\":\"pause\"}");
+        guest.ok("{\"type\":\"play\"}");
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/policy", "{\"controlMode\":\"vote\"}").statusCode());
+
+        // --- the media set follows the room: after next, the old current is refused
+        owner.ok("{\"type\":\"next\"}");
+        JsonObject state = owner.await(m -> m.get("type").getAsString().equals("state") && m.has("current")
+                && m.getAsJsonObject("current").getAsJsonObject("item").get("id").getAsString().equals(song2));
+        assertEquals(req1, state.getAsJsonArray("queue").get(0).getAsJsonObject().getAsJsonObject("item")
+                .get("id").getAsString(), "the guest's first request is next");
+        assertEquals(403, media(cookie, song3), "played: neither current nor next");
+        assertEquals(200, media(cookie, song2));
+        assertEquals(200, media(cookie, req1));
+        assertEquals(403, media(cookie, song1));
+
+        // guests.download on: every item
+        settings.set(Settings.GUESTS_DOWNLOAD, true);
+        assertEquals(200, media(cookie, song1));
+        assertEquals(200, media(cookie, elsewhere));
+        assertEquals(200, media(null, elsewhere));
+    }
+
+    private HttpResponse<String> callCookie(String cookie, String path) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .header("Cookie", cookie).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     @Test
