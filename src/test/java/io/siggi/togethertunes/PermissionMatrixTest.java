@@ -242,6 +242,8 @@ class PermissionMatrixTest {
             row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
             // Media files: users always; guests only with guests.download (off) or a playing item (no rooms yet).
             row("GET /media/{id}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/audio.m4a"), 403, 403, 200, 200),
+            row("GET /media/{id}/v/{version}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/v/0/audio.m4a"),
+                    403, 403, 200, 200),
 
             // The caller's own playlists: users only (guests have none); someone else's playlist is
             // 404 (PlaylistsContract covers that). Adding the matrix item needs no permission.

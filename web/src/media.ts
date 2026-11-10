@@ -25,6 +25,8 @@ export interface ItemSummary {
 export interface ItemPage extends ItemSummary {
   addedAt: number;
   error?: string;
+  /** The current version of its files: play `/media/{id}/v/{mediaVersion}/…` (docs/api.md#media-files). */
+  mediaVersion: number;
   you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean };
 }
 
@@ -67,8 +69,14 @@ export function itemPath(id: string): string {
   return "/items/" + encodeURIComponent(id);
 }
 
-export function mediaPath(id: string, file: "audio.m4a" | "mezz.mp4" | "original" | "cover.jpg"): string {
-  return "/media/" + encodeURIComponent(id) + "/" + file;
+/**
+ * A media file's URL. With `version` (the item's `mediaVersion`), the URL of that version's file,
+ * which stays the same file after a re-encode publishes a newer version, so a play that started on
+ * it can finish on it; without, the current version's file (revalidated on every use).
+ */
+export function mediaPath(id: string, file: "audio.m4a" | "mezz.mp4" | "original" | "cover.jpg",
+  version?: number): string {
+  return "/media/" + encodeURIComponent(id) + "/" + (version !== undefined && file !== "original" ? "v/" + String(version) + "/" : "") + file;
 }
 
 const STATUS_TEXT: Record<ItemStatus, string> = {

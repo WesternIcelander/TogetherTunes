@@ -162,6 +162,10 @@ class DtoIpLeakTest {
 
     /** Records that never reach a client, and why. */
     private static final Map<String, String> INTERNAL = Map.ofEntries(
+            Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Retired", "an old media version waiting for its"
+                    + " clean-up (item id, version, times); never sent"),
+            Map.entry("io.siggi.togethertunes.library.MediaApi$Located", "a media file's name and the item's"
+                    + " version, to find the file; never sent"),
             Map.entry("io.siggi.togethertunes.DataDir", "server paths"),
             Map.entry("io.siggi.togethertunes.Main$Startup", "startup status"),
             Map.entry("io.siggi.togethertunes.config.Config", "server configuration"),
@@ -804,7 +808,7 @@ class DtoIpLeakTest {
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
-                "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
+                "/media/" + f.itemId + "/v/0/audio.m4a", "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/requests",

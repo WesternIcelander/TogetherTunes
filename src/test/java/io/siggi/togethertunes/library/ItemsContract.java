@@ -191,7 +191,7 @@ abstract class ItemsContract {
         String id = aliceItem("audio");
         Items.ItemPage page = items.get(alice, id, NONE);
         assertEquals(new Items.ItemPage(id, "audio", "Song", "Artist", null, 5000L, "upload", null, "ready", false, 7,
-                null, new Items.You(true, true, false)), page);
+                null, 0, new Items.You(true, true, false)), page);
 
         assertEquals(new Items.You(false, false, false), items.get(bob, id, NONE).you());
         assertEquals(new Items.You(false, true, false), items.get(bob, id, EDIT_ANY).you());
@@ -307,6 +307,12 @@ abstract class ItemsContract {
         Files.createDirectories(itemDir);
         Files.writeString(itemDir.resolve("audio.m4a"), "audio");
         Files.writeString(itemDir.resolve("card.mp4"), "card");
+        // two media versions (the current one and one waiting for its clean-up) and the original
+        Files.createDirectories(itemDir.resolve("v1"));
+        Files.writeString(itemDir.resolve("v1").resolve("mezz.mp4"), "v1");
+        Files.createDirectories(itemDir.resolve("v2"));
+        Files.writeString(itemDir.resolve("v2").resolve("mezz.mp4"), "v2");
+        Files.writeString(itemDir.resolve("original.mp4"), "original");
         return itemDir;
     }
 
@@ -337,7 +343,7 @@ abstract class ItemsContract {
         clock.advance(5000);
         Items.Purged purged = items.purge(id, items.auditedBy(bob.userId(), "2001:db8::1"));
         assertEquals(new Items.Purged("ready", 0), purged);
-        assertFalse(Files.exists(itemDir));
+        assertFalse(Files.exists(itemDir), "every version and the original are gone");
         assertTrue(Files.exists(other.resolve("audio.m4a")), "other items are untouched");
         assertNoLeftovers();
         assertEquals("purged", column(id, "status"));

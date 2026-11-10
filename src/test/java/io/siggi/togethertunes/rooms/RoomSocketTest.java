@@ -418,7 +418,7 @@ class RoomSocketTest {
         assertEquals(entry1, current.get("entryId").getAsString());
         JsonObject item = current.getAsJsonObject("item");
         assertEquals("Song One", item.get("title").getAsString());
-        assertEquals("/media/" + song1 + "/audio.m4a", item.get("audioUrl").getAsString());
+        assertEquals("/media/" + song1 + "/v/0/audio.m4a", item.get("audioUrl").getAsString(), "the version's URL");
         assertEquals("/media/" + song1 + "/original", item.get("originalUrl").getAsString());
         assertEquals(-2.5, item.get("originalGainDb").getAsDouble());
         assertFalse(item.has("videoUrl"));

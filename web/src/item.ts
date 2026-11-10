@@ -58,8 +58,11 @@ function renderPlayer(item: ItemPage): HTMLElement | null {
     return null;
   }
   const video = item.kind === "video" && !item.presentAsAudio;
-  const src = mediaPath(item.id, video ? "mezz.mp4" : "audio.m4a");
-  if (player === undefined || playerFor !== src) {
+  // The version's URL: a re-encode published while this plays doesn't change the bytes under it.
+  const src = mediaPath(item.id, video ? "mezz.mp4" : "audio.m4a", item.mediaVersion);
+  // A newer version only replaces a player that isn't playing; one in mid-play finishes on its version.
+  const sameKind = player !== undefined && (player instanceof HTMLVideoElement) === video;
+  if (player === undefined || (playerFor !== src && !(sameKind && !player.paused))) {
     player = video
       ? h("video", { controls: true, preload: "metadata", playsinline: true, src })
       : h("audio", { controls: true, preload: "none", src });
@@ -145,7 +148,7 @@ function shareForm(item: ItemPage): HTMLElement {
 function render(item: ItemPage, job: JobView | undefined): void {
   document.title = item.title + " · TogetherTunes";
   const body = element("item-body");
-  const cover = h("img", { class: "cover", alt: "", src: mediaPath(item.id, "cover.jpg") });
+  const cover = h("img", { class: "cover", alt: "", src: mediaPath(item.id, "cover.jpg", item.mediaVersion) });
   cover.addEventListener("error", () => { cover.hidden = true; });
   const badge = statusBadge(item.status, job?.progress);
   const source = item.source === "youtube" && item.youtubeId !== undefined

@@ -40,6 +40,16 @@ class RoomViewsTest {
     }
 
     @Test
+    void mediaUrlsNameTheCurrentVersion() {
+        RoomViews.ItemRow row = new RoomViews.ItemRow(ID, "video", "T", null, 1000L, "ready", "youtube", false, null,
+                false, null, 4);
+        JsonObject o = RoomViews.item(new RoomViews.Lookup(Map.of(ID, row), Map.of()), ID);
+        assertEquals("/media/" + ID + "/v/4/mezz.mp4", o.get("videoUrl").getAsString());
+        assertEquals("/media/" + ID + "/v/4/audio.m4a", o.get("audioUrl").getAsString());
+        assertEquals("/media/" + ID + "/v/4/cover.jpg", o.get("coverUrl").getAsString());
+    }
+
+    @Test
     void noOriginalUnlessWebPlayableUpload() {
         assertFalse(item("upload", "original.wma", false, -1.0).has("originalUrl"));
         assertFalse(item("upload", "original.wma", false, -1.0).has("originalType"));

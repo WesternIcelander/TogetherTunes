@@ -9,6 +9,7 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.rooms.PlayingItems;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
@@ -30,6 +31,13 @@ import java.util.regex.Pattern;
  * {@code items.original_file}; the originals of video and YouTube items only feed re-encodes and
  * are never served) and {@code cover.jpg}.
  *
+ * <p><b>Versions</b> ({@code ingest.MediaVersions}). {@code GET /media/{itemId}/v/{N}/{file}}
+ * serves version {@code N} of the item's files, as long as it still exists (an old version is kept
+ * until nobody can still be playing it), so a player that started on version {@code N} stays on it
+ * after a re-encode switched the item to a newer one. These are the URLs the room state and the
+ * item page hand out. The unversioned URL serves the current version. {@code original} isn't
+ * versioned (one per item), but is served under both.
+ *
  * <ul>
  *   <li><b>Methods:</b> a {@code GET} route ({@code HEAD} runs it too; the router answers
  *       {@code OPTIONS} and refuses other methods). The handler checks the method again before
@@ -48,8 +56,11 @@ import java.util.regex.Pattern;
  *       no kept original).</li>
  *   <li><b>Headers:</b> the content type by file ({@link #contentType}; the original's by its
  *       extension), {@code X-Content-Type-Options: nosniff}, and
- *       {@code Cache-Control: private, no-cache}: a re-encode replaces the files under the same URL
- *       and guest access can end, so browsers revalidate (an unchanged file costs a {@code 304}).</li>
+ *       {@code Cache-Control: private, no-cache} on unversioned URLs: a re-encode changes what
+ *       they serve and guest access can end, so browsers revalidate (an unchanged file costs a
+ *       {@code 304}). A versioned URL never names other bytes (versions only grow), so it is
+ *       {@code private, max-age=31536000, immutable}; the original under a versioned URL is
+ *       revalidated like an unversioned one.</li>
  * </ul>
  */
 public final class MediaApi {
@@ -79,6 +90,12 @@ public final class MediaApi {
 
     private static final String ORIGINAL = "original";
 
+    /** A version number in the URL: 0 or a positive number without leading zeros, at most 9 digits. */
+    private static final Pattern VERSION = Pattern.compile("0|[1-9][0-9]{0,8}");
+
+    /** {@code Cache-Control} of a versioned file. */
+    static final String IMMUTABLE = "private, max-age=31536000, immutable";
+
     private final Database db;
     private final Path mediaDir;
     private final Settings settings;
@@ -93,6 +110,12 @@ public final class MediaApi {
 
     public void register(Router router) {
         router.get("/media/{id}/{file}", this::handle);
+        router.get("/media/{id}/v/{version}/{file}", this::handle);
+    }
+
+    /** The served URL of an item's file in one version (what clients are given). */
+    public static String url(String itemId, int version, String file) {
+        return "/media/" + itemId + "/v/" + version + "/" + file;
     }
 
     void handle(Request request, Response response) throws IOException, SQLException {
@@ -104,7 +127,11 @@ public final class MediaApi {
         }
         String itemId = request.pathParam("id");
         String name = request.pathParam("file");
+        String versionParam = request.pathParams().get("version");
         if (!FIXED.containsKey(name) && !name.equals(ORIGINAL)) {
+            throw HttpError.notFound();
+        }
+        if (versionParam != null && !VERSION.matcher(versionParam).matches()) {
             throw HttpError.notFound();
         }
         if (!allowed(ActorResolver.actor(request), itemId, name)) {
@@ -113,14 +140,20 @@ public final class MediaApi {
         if (!UuidV7.isValid(itemId)) {
             throw itemNotFound();
         }
-        String fileName = fileName(itemId, name);
-        Path file = mediaDir.resolve(itemId).resolve(fileName);
+        Located located = locate(itemId, name);
+        Path itemDir = mediaDir.resolve(itemId);
+        boolean versioned = versionParam != null && !name.equals(ORIGINAL);
+        Path dir = name.equals(ORIGINAL) ? itemDir
+                : MediaVersions.versionDir(itemDir, versioned ? Integer.parseInt(versionParam) : located.version());
+        Path file = dir.resolve(located.fileName());
         if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
-            throw new HttpError(404, "file_not_found", "The item has no " + name + " file");
+            throw new HttpError(404, "file_not_found", versioned
+                    ? "The item has no " + name + " file in version " + versionParam
+                    : "The item has no " + name + " file");
         }
-        response.header("Cache-Control", "private, no-cache");
+        response.header("Cache-Control", versioned ? IMMUTABLE : "private, no-cache");
         response.header("X-Content-Type-Options", "nosniff");
-        response.raw().returnFile(file.toFile(), contentType(fileName));
+        response.raw().returnFile(file.toFile(), contentType(located.fileName()));
     }
 
     /** The access rule for {@code actor} (see the class comment). */
@@ -131,15 +164,22 @@ public final class MediaApi {
         return playing.isCurrentOrNext(itemId) || settings.guestsDownload();
     }
 
-    /** The file in the item directory for a served name; {@code 404} if the item doesn't exist. */
-    private String fileName(String itemId, String name) throws SQLException {
+    /** A served name's file name, and the item's current media version. */
+    private record Located(String fileName, int version) {
+    }
+
+    /**
+     * The file name for a served name (in the version directory, or the original in the item
+     * directory) and the item's current version; {@code 404} if the item doesn't exist or was purged.
+     */
+    private Located locate(String itemId, String name) throws SQLException {
         String[] row = db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file, kind, source FROM items"
-                    + " WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file, kind, source, media_version"
+                    + " FROM items WHERE id = ?")) {
                 ps.setString(1, itemId);
                 try (ResultSet rs = ps.executeQuery()) {
                     return rs.next() ? new String[] {rs.getString(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4)} : null;
+                            rs.getString(4), Integer.toString(rs.getInt(5))} : null;
                 }
             }
         });
@@ -149,8 +189,9 @@ public final class MediaApi {
         if ("purged".equals(row[0])) {
             throw new HttpError(404, "file_not_found", "The item's media has been deleted");
         }
+        int version = Integer.parseInt(row[4]);
         if (!name.equals(ORIGINAL)) {
-            return name;
+            return new Located(name, version);
         }
         String original = row[1];
         // only an audio upload's original is played; a video or YouTube item's is for re-encodes
@@ -160,7 +201,7 @@ public final class MediaApi {
         if (original == null || !ORIGINAL_FILE.matcher(original).matches()) {
             throw new HttpError(404, "file_not_found", "The item has no original file");
         }
-        return original;
+        return new Located(original, version);
     }
 
     /** The {@code Content-Type} of a file in an item directory. */

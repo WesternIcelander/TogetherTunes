@@ -33,10 +33,19 @@ public final class IngestItems {
      * @param loudnessLufs  the source's integrated loudness as measured at ingest, or null
      * @param encodePreset  the x264 preset its files were made with ({@code encode_preset}), or null
      * @param encodeQuality whether its files are the quality encode ({@code encode_quality})
+     * @param mediaVersion  the current version of its files ({@code media_version}, {@link MediaVersions})
      */
     public record Item(String id, String kind, String title, String artist, String album, String source,
                        String youtubeId, String status, String outputProfile, String originalFile,
-                       Double loudnessLufs, String encodePreset, boolean encodeQuality) {
+                       Double loudnessLufs, String encodePreset, boolean encodeQuality, int mediaVersion) {
+        /** Without a media version (version 0, the flat layout). */
+        public Item(String id, String kind, String title, String artist, String album, String source,
+                    String youtubeId, String status, String outputProfile, String originalFile,
+                    Double loudnessLufs, String encodePreset, boolean encodeQuality) {
+            this(id, kind, title, artist, album, source, youtubeId, status, outputProfile, originalFile,
+                    loudnessLufs, encodePreset, encodeQuality, 0);
+        }
+
         public boolean fromYoutube() {
             return "youtube".equals(source);
         }
@@ -45,8 +54,8 @@ public final class IngestItems {
     public Optional<Item> get(String id) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, album, source, youtube_id,"
-                    + " status, output_profile, original_file, loudness_lufs, encode_preset, encode_quality"
-                    + " FROM items WHERE id = ?")) {
+                    + " status, output_profile, original_file, loudness_lufs, encode_preset, encode_quality,"
+                    + " media_version FROM items WHERE id = ?")) {
                 ps.setString(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
@@ -56,7 +65,7 @@ public final class IngestItems {
                     Double loudness = rs.wasNull() ? null : lufs;
                     return Optional.of(new Item(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                             rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8), rs.getString(9),
-                            rs.getString(10), loudness, rs.getString(12), rs.getInt(13) != 0));
+                            rs.getString(10), loudness, rs.getString(12), rs.getInt(13) != 0, rs.getInt(14)));
                 }
             }
         });
@@ -107,7 +116,7 @@ public final class IngestItems {
      * (null if it couldn't be measured, e.g. digital silence) and the kept original (null if none,
      * i.e. re-encoded from the previous encode; the {@code original_*} columns are then cleared). A purged
      * item that was fetched again is no longer purged. The status itself becomes {@code ready}
-     * when the queue marks the job done.
+     * when the queue marks the job done. These overloads leave {@code media_version} as it is.
      */
     public void published(String id, boolean video, long durationMs, OutputEncoding encoding, Double loudnessLufs,
                           Originals.Original original) throws SQLException {
@@ -117,10 +126,23 @@ public final class IngestItems {
     /** See {@link #published(String, boolean, long, OutputEncoding, Double, Originals.Original)}. */
     public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
                           boolean quality, Double loudnessLufs, Originals.Original original) throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, -1);
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, Double, Originals.Original)};
+     * also switches the item to {@code mediaVersion} (its files' new {@code v<N>} directory) in the
+     * same update, so the new files become current in one step. A negative version leaves
+     * {@code media_version} as it is.
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion)
+            throws SQLException {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?,"
+                    + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")
                     + " purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
                 ps.setLong(2, durationMs);

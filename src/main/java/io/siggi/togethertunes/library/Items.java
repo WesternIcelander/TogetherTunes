@@ -66,11 +66,13 @@ public final class Items {
      *
      * @param addedAt when the item was first added (epoch ms)
      * @param error   why the last ingest failed ({@code status = failed}), else null
+     * @param mediaVersion the current version of its files ({@code media_version}): the page plays
+     *                     {@code /media/{id}/v/{mediaVersion}/…}
      * @param you     the caller's relation to the item
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
-                           String error, You you) {
+                           String error, int mediaVersion, You you) {
     }
 
     /**
@@ -112,11 +114,11 @@ public final class Items {
     /** The columns {@link #page} and the checks need. */
     record Row(String id, String kind, String title, String artist, String album, Long durationMs, String source,
                String youtubeId, String status, boolean presentAsAudio, long addedAt, String error,
-               String addedByUserId) {
+               String addedByUserId, int mediaVersion) {
     }
 
     private static final String ROW = "SELECT id, kind, title, artist, album, duration_ms, source, youtube_id, status,"
-            + " present_as_audio, added_at, error, added_by_user_id FROM items WHERE id = ?";
+            + " present_as_audio, added_at, error, added_by_user_id, media_version FROM items WHERE id = ?";
 
     static Row row(Connection c, String itemId, boolean lock) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(ROW + (lock ? " FOR UPDATE" : ""))) {
@@ -129,7 +131,7 @@ public final class Items {
                 Long durationMs = rs.wasNull() ? null : duration;
                 return new Row(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
                         durationMs, rs.getString(7), rs.getString(8), rs.getString(9), rs.getInt(10) != 0,
-                        rs.getLong(11), rs.getString(12), rs.getString(13));
+                        rs.getLong(11), rs.getString(12), rs.getString(13), rs.getInt(14));
             }
         }
     }
@@ -167,7 +169,7 @@ public final class Items {
     private static ItemPage page(Row r, You you) {
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
-                "failed".equals(r.status()) ? r.error() : null, you);
+                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you);
     }
 
     /** The item page for {@code actor} (any actor: items are visible by direct link). {@code 404 item_not_found}. */
@@ -268,7 +270,8 @@ public final class Items {
             }
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_UPDATED, itemId, changed);
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),
-                    row.youtubeId(), row.status(), presentAsAudio, row.addedAt(), row.error(), row.addedByUserId());
+                    row.youtubeId(), row.status(), presentAsAudio, row.addedAt(), row.error(), row.addedByUserId(),
+                    row.mediaVersion());
             return page(after, you);
         });
     }

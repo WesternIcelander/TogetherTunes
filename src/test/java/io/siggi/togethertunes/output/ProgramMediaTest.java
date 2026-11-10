@@ -240,9 +240,49 @@ class ProgramMediaTest {
     }
 
     @Test
-    void badItemIdIsRejected() {
+    void badItemIdIsRejected() throws IOException {
         try (ProgramMedia pm = queuedMedia()) {
-            assertThrows(IllegalArgumentException.class, () -> pm.item(new Entry("e", "../x", false, false, 1), 0));
+            // the load fails, so nothing is played (the follower shows the Loading filler)
+            assertNull(pm.item(new Entry("e", "../x", false, false, 1), 0));
+            runLoads();
+            assertNull(pm.item(new Entry("e", "../x", false, false, 1), 0));
+            assertTrue(pm.loadedItems().isEmpty());
+        }
+    }
+
+    /**
+     * Every load asks where the item's current files are (its media version): a loaded item keeps
+     * the files it opened after a re-encode switched the item, and its next load uses the new ones.
+     */
+    @Test
+    void eachLoadUsesTheCurrentVersion() throws IOException {
+        write("audio1", SourcesTest.audioItem());
+        java.util.concurrent.atomic.AtomicReference<String> current = new java.util.concurrent.atomic.AtomicReference<>("audio1");
+        List<String> asked = new ArrayList<>();
+        ProgramMedia.ItemDirs dirs = id -> {
+            asked.add(id);
+            return media.resolve(current.get());
+        };
+        try (ProgramMedia pm = new ProgramMedia(dirs, OutputEncoding.defaultFor(OutputProfile.P720_30), SourcesTest.AVCC,
+                this::loadCard, fillers, SourcesTest.audioFrame(9999), queued::add, 0, now::get)) {
+            pm.prepare(cue(AUDIO, null));
+            runLoads();
+            assertNotNull(pm.item(AUDIO, 0));
+            write("audio1-v2", SourcesTest.audioItem());
+            current.set("audio1-v2"); // a re-encode was published
+            assertNotNull(pm.item(AUDIO, 2000), "the loaded item keeps its files");
+            assertEquals(List.of("audio1"), asked, "no reload while loaded");
+
+            pm.prepare(ProgramCue.IDLE);
+            pm.filler(Filler.IDLE);
+            pm.filler(Filler.IDLE);
+            assertEquals(Set.of(), pm.loadedItems());
+            io.siggi.togethertunes.ingest.IngestPipeline.deleteTree(media.resolve("audio1")); // the old version's clean-up
+            pm.prepare(cue(AUDIO, null));
+            runLoads();
+            assertEquals(Set.of("audio1"), pm.loadedItems());
+            assertNotNull(pm.item(AUDIO, 0), "loaded from the new version");
+            assertEquals(List.of("audio1", "audio1"), asked);
         }
     }
 

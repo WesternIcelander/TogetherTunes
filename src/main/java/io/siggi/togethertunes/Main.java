@@ -36,6 +36,7 @@ import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.JobsApi;
+import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.OutputAssets;
@@ -197,6 +198,9 @@ public final class Main {
                 referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
         pipeline.reference(outputAssets::reference);
         pipeline.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
+        // Old media versions are deleted once nobody can still be playing them (rooms set inUse below).
+        MediaVersions mediaVersions = new MediaVersions(dataDir);
+        pipeline.mediaVersions(mediaVersions);
         // Adding media pauses (and queued ingest jobs wait) while the data volume is below storage.minFreeBytes.
         DiskSpace diskSpace = DiskSpace.of(dataDir.root(), settings::storageMinFreeBytes);
         IngestQueue ingest = startIngest(setting(settings::ingestWorkers, config.ingestWorkers()), dataDir, database,
@@ -289,8 +293,9 @@ public final class Main {
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, roomRegistry.playingItems());
         // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).
         ingest.jobs().statusListener(roomRegistry);
-        // Re-encodes swap an item's files only while it isn't current or next in any room.
-        pipeline.inUse(roomRegistry.playingItems()::isCurrentOrNext);
+        // An old media version is kept while its item is current or next in a room (and for its duration + 5 min).
+        mediaVersions.inUse(roomRegistry.playingItems()::isCurrentOrNext);
+        mediaVersions.start();
         // Jobs of items a room is waiting on go first; a change in the rooms re-checks the give-way rule.
         ingest.jobs().wantedItems(roomRegistry.wantedItems(ingest::wake));
         items.statusListener(roomRegistry);
@@ -395,6 +400,7 @@ public final class Main {
             // After the web server (no new requests), before the database (rooms persist on the way out).
             roomRegistry.close();
             retention.close();
+            mediaVersions.close();
             // Before the database: running jobs are put back in the queue on the way out.
             ingest.close();
             staticFiles.close();
@@ -411,6 +417,15 @@ public final class Main {
      * get a {@code reencode} job ({@link IngestJobs#enqueueReencodes}). A database error here is reported and
      * ingest stays off until the next start (the server still runs).
      */
+    /** The item's {@code media_version} for the program output (0 if unknown); a database error is an I/O error. */
+    private static int currentVersion(Database database, String itemId) throws IOException {
+        try {
+            return MediaVersions.current(database, itemId).orElse(0);
+        } catch (SQLException e) {
+            throw new IOException("can't read the media version of item " + itemId + ": " + e.getMessage(), e);
+        }
+    }
+
     static IngestQueue startIngest(int workers, DataDir dataDir, Database database, OutputAssets outputAssets,
                                    IngestPipeline handler, DiskSpace diskSpace, PrintStream err) {
         ReferenceCard referenceCard = outputAssets.reference();
@@ -421,6 +436,15 @@ public final class Main {
             }
         } catch (IOException e) {
             err.println("WARNING: could not clean up after interrupted ingest jobs: " + e.getMessage());
+        }
+        try {
+            // No player survives a restart: only the current version of each item's files is kept.
+            int versions = MediaVersions.cleanUpAtStartup(database, dataDir);
+            if (versions > 0) {
+                err.println("Deleted " + versions + " old media versions");
+            }
+        } catch (IOException | SQLException e) {
+            err.println("WARNING: could not delete old media versions: " + e.getMessage());
         }
         IngestJobs jobs = new IngestJobs(database);
         jobs.qualityPreset(handler.presets()::quality);
@@ -695,7 +719,9 @@ public final class Main {
                 fillersLock.unlock();
             }
             byte[] avcC = current.reference().avcC();
-            return new ProgramPipeline.Opened(new ProgramMedia(dataDir.media(), current.encoding(), avcC, cardLoader,
+            // Each load reads the item's current media version, so a new play uses the newest files.
+            ProgramMedia.ItemDirs dirs = id -> MediaVersions.versionDir(dataDir, id, currentVersion(database, id));
+            return new ProgramPipeline.Opened(new ProgramMedia(dirs, current.encoding(), avcC, cardLoader,
                     cards, silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
                     System::currentTimeMillis), avcC);
         };

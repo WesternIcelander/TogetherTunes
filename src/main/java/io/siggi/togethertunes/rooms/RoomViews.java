@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.library.MediaApi;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -39,7 +40,14 @@ final class RoomViews {
 
     /** An item's columns as the room messages show it. */
     record ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
-                   boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb) {
+                   boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
+                   int mediaVersion) {
+        /** Version 0 (tests). */
+        ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
+                boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb) {
+            this(id, kind, title, artist, durationMs, status, source, presentAsAudio, originalFile, originalWeb,
+                    originalGainDb, 0);
+        }
     }
 
     /** A played or skipped entry of the room's history. */
@@ -89,7 +97,8 @@ final class RoomViews {
             Map<String, ItemRow> items = new HashMap<>();
             for (List<String> chunk : chunks(itemIds)) {
                 try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, duration_ms, status,"
-                        + " source, present_as_audio, original_file, original_web, original_gain_db FROM items"
+                        + " source, present_as_audio, original_file, original_web, original_gain_db, media_version"
+                        + " FROM items"
                         + " WHERE id IN (" + marks(chunk.size()) + ")")) {
                     bind(ps, chunk);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -100,7 +109,7 @@ final class RoomViews {
                             Double gainDb = rs.wasNull() ? null : gain;
                             items.put(rs.getString(1), new ItemRow(rs.getString(1), rs.getString(2), rs.getString(3),
                                     rs.getString(4), durationMs, rs.getString(6), rs.getString(7), rs.getInt(8) != 0,
-                                    rs.getString(9), rs.getInt(10) != 0, gainDb));
+                                    rs.getString(9), rs.getInt(10) != 0, gainDb, rs.getInt(12)));
                         }
                     }
                 }
@@ -160,7 +169,8 @@ final class RoomViews {
     /**
      * An item: {@code id, kind, presentAsAudio, title, artist?, durationMs?, status}, and once it
      * is {@code ready} its media URLs: {@code coverUrl}, {@code audioUrl}, {@code videoUrl} (video
-     * items), and for an audio upload whose original browsers can play, {@code originalUrl} with
+     * items), all of the item's current media version ({@code /media/{id}/v/{N}/…}, so a play
+     * that started on it stays on it after a re-encode), and for an audio upload whose original browsers can play, {@code originalUrl} with
      * {@code originalGainDb} (the gain that brings it to the loudness of {@code audio.m4a}) and
      * {@code originalType} (for {@code canPlayType}).
      */
@@ -183,10 +193,10 @@ final class RoomViews {
         o.addProperty("status", r.status());
         if ("ready".equals(r.status())) {
             String base = "/media/" + r.id() + "/";
-            o.addProperty("coverUrl", base + "cover.jpg");
-            o.addProperty("audioUrl", base + "audio.m4a");
+            o.addProperty("coverUrl", MediaApi.url(r.id(), r.mediaVersion(), "cover.jpg"));
+            o.addProperty("audioUrl", MediaApi.url(r.id(), r.mediaVersion(), "audio.m4a"));
             if ("video".equals(r.kind())) {
-                o.addProperty("videoUrl", base + "mezz.mp4");
+                o.addProperty("videoUrl", MediaApi.url(r.id(), r.mediaVersion(), "mezz.mp4"));
             }
             if ("audio".equals(r.kind()) && "upload".equals(r.source()) && r.originalWeb()
                     && r.originalFile() != null) {

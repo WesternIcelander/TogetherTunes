@@ -735,11 +735,14 @@ abstract class UploadsContract {
         assertEquals("ready", item(itemId).get("status"));
         Path itemDir = IngestPipeline.itemDir(data, itemId);
         try (Stream<Path> files = Files.list(itemDir)) {
-            assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.flac"),
+            assertEquals(List.of("original.flac", "v1"), files.map(p -> p.getFileName().toString()).sorted().toList());
+        }
+        try (Stream<Path> files = Files.list(itemDir.resolve("v1"))) {
+            assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin"),
                     files.map(p -> p.getFileName().toString()).sorted().toList());
         }
         assertArrayEquals(flac, Files.readAllBytes(itemDir.resolve("original.flac")));
-        assertTrue(Files.size(itemDir.resolve("cover.jpg")) > 1000, "the embedded cover became cover.jpg");
+        assertTrue(Files.size(itemDir.resolve("v1").resolve("cover.jpg")) > 1000, "the embedded cover became cover.jpg");
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, itemId)), "the staging dir is gone");
     }
 

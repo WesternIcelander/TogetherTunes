@@ -16,6 +16,7 @@ import io.siggi.togethertunes.media.SampleIndex.Kind;
 import io.siggi.togethertunes.media.SampleIndex.Track;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -341,28 +342,46 @@ class IngestStepsTest {
     }
 
     @Test
-    void publishSwapsTheDirectory() throws Exception {
+    void publishAddsAVersionAndSwitchesAfterIt() throws Exception {
         DataDir data = DataDir.create(dir.resolve("data"));
         String item = UuidV7.newId();
-        String job = UuidV7.newId();
         Path target = IngestPipeline.itemDir(data, item);
-        Path work = data.media().resolve(".ingest-" + job);
+        Path work = data.media().resolve(".ingest-" + UuidV7.newId());
         Files.createDirectories(work);
         Files.writeString(work.resolve("audio.m4a"), "first");
-        IngestPipeline.publish(work, target, item, job);
-        assertEquals("first", Files.readString(target.resolve("audio.m4a")));
+        Files.writeString(work.resolve("original.flac"), "orig");
+        List<Integer> switched = new ArrayList<>();
+        assertEquals(1, IngestPipeline.publish(work, target, 0, "original.flac", v -> {
+            // the files are in place before the database switch
+            assertTrue(Files.isRegularFile(target.resolve("v" + v).resolve("audio.m4a")));
+            switched.add(v);
+        }));
+        assertEquals(List.of(1), switched);
+        assertEquals("orig", Files.readString(target.resolve("original.flac")), "the original is outside the versions");
+        assertFalse(Files.exists(target.resolve("v1").resolve("original.flac")));
         assertFalse(Files.exists(work));
 
-        String job2 = UuidV7.newId();
-        Path work2 = data.media().resolve(".ingest-" + job2);
+        Path work2 = data.media().resolve(".ingest-" + UuidV7.newId());
         Files.createDirectories(work2);
         Files.writeString(work2.resolve("mezz.mp4"), "second");
-        IngestPipeline.publish(work2, target, item, job2);
-        assertEquals("second", Files.readString(target.resolve("mezz.mp4")));
-        assertFalse(Files.exists(target.resolve("audio.m4a")));
+        // a leftover v3 (crash before its switch) is skipped, never reused
+        Files.createDirectories(target.resolve("v3"));
+        assertEquals(4, IngestPipeline.publish(work2, target, 1, null, v -> { }));
+        assertEquals("second", Files.readString(target.resolve("v4").resolve("mezz.mp4")));
+        assertEquals("first", Files.readString(target.resolve("v1").resolve("audio.m4a")), "the old version stays");
         try (var s = Files.list(data.media())) {
             assertEquals(List.of(item), s.map(p -> p.getFileName().toString()).toList());
         }
+
+        // a failed switch removes the new version again
+        Path work3 = data.media().resolve(".ingest-" + UuidV7.newId());
+        Files.createDirectories(work3);
+        Files.writeString(work3.resolve("audio.m4a"), "third");
+        assertThrows(java.sql.SQLException.class, () -> IngestPipeline.publish(work3, target, 4, null, v -> {
+            throw new java.sql.SQLException("gone");
+        }));
+        assertFalse(Files.exists(target.resolve("v5")));
+        assertEquals("second", Files.readString(target.resolve("v4").resolve("mezz.mp4")));
     }
 
     @Test

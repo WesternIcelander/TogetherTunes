@@ -66,6 +66,17 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         CardGop load(Path cardFile) throws IOException, InterruptedException;
     }
 
+    /**
+     * Where an item's files are: the directory of its current media version
+     * ({@code media/<itemId>/v<N>}, {@code ingest.MediaVersions}). Asked at every load, so a play
+     * that starts after a re-encode was published uses the new files, while a loaded item keeps
+     * the files it opened.
+     */
+    @FunctionalInterface
+    public interface ItemDirs {
+        Path dir(String itemId) throws IOException;
+    }
+
     /** A {@link CardLoader} that indexes the card with ffprobe ({@link CardGop#load}). */
     public static CardLoader ffprobeCardLoader(Tools tools, OutputEncoding profile) {
         return file -> {
@@ -90,7 +101,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     /** What is known about one item: its loaded index and data, or the load in progress or failed. */
     private static final class Slot {
         final String itemId;
-        final Path dir;
+        /** The version directory {@link #data} was loaded from (null until loaded). */
+        Path dir;
         boolean videoItem;
         /** Whether some entry plays this video item as audio, so its {@code card.mp4} is needed. */
         boolean cardWanted;
@@ -106,9 +118,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         long failedAtMs;
         String loggedFailure;
 
-        Slot(String itemId, Path dir) {
+        Slot(String itemId) {
             this.itemId = itemId;
-            this.dir = dir;
         }
 
         boolean ready(ProgramCue.Entry e) {
@@ -116,7 +127,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         }
     }
 
-    private final Path mediaDir;
+    private final ItemDirs dirs;
     private final OutputEncoding profile;
     private final byte[] referenceAvcC;
     private final CardLoader cardLoader;
@@ -135,6 +146,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /**
      * @param mediaDir      {@code <data>/media}: item {@code id}'s files are in {@code mediaDir/id}
+     *                      (the flat layout; tests)
      * @param profile       the output encoding; indexes for another profile or video bitrate aren't played
      * @param referenceAvcC the profile's reference avcC (invariant 1), or null to skip the check
      * @param cardLoader    loads a video item's {@code card.mp4} when it is played as audio
@@ -146,7 +158,13 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
      */
     public ProgramMedia(Path mediaDir, OutputEncoding profile, byte[] referenceAvcC, CardLoader cardLoader,
             Map<Filler, CardGop> fillers, byte[] silence, Executor executor, long waitMs, LongSupplier nowMs) {
-        this.mediaDir = Objects.requireNonNull(mediaDir, "mediaDir");
+        this(flat(mediaDir), profile, referenceAvcC, cardLoader, fillers, silence, executor, waitMs, nowMs);
+    }
+
+    /** @param dirs where each item's current files are (see {@link ItemDirs}); the rest as above */
+    public ProgramMedia(ItemDirs dirs, OutputEncoding profile, byte[] referenceAvcC, CardLoader cardLoader,
+            Map<Filler, CardGop> fillers, byte[] silence, Executor executor, long waitMs, LongSupplier nowMs) {
+        this.dirs = Objects.requireNonNull(dirs, "dirs");
         this.profile = Objects.requireNonNull(profile, "profile");
         this.referenceAvcC = referenceAvcC == null ? null : referenceAvcC.clone();
         this.cardLoader = Objects.requireNonNull(cardLoader, "cardLoader");
@@ -269,7 +287,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** The slot for {@code e}'s item, starting its load if needed (lock held). */
     private Slot ensure(ProgramCue.Entry e) {
-        Slot s = slots.computeIfAbsent(e.itemId(), id -> new Slot(id, itemDir(id)));
+        Slot s = slots.computeIfAbsent(e.itemId(), Slot::new);
         if (s.data == null) {
             s.videoItem = e.videoItem();
         }
@@ -294,12 +312,16 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         return s;
     }
 
-    private Path itemDir(String itemId) {
-        Path dir = mediaDir.resolve(itemId).normalize();
-        if (!dir.getParent().equals(mediaDir.normalize()) || itemId.isEmpty() || itemId.startsWith(".")) {
-            throw new IllegalArgumentException("bad item id " + itemId);
-        }
-        return dir;
+    /** Every item's files directly in {@code mediaDir/<itemId>}. */
+    private static ItemDirs flat(Path mediaDir) {
+        Objects.requireNonNull(mediaDir, "mediaDir");
+        return itemId -> {
+            Path dir = mediaDir.resolve(itemId).normalize();
+            if (!dir.getParent().equals(mediaDir.normalize()) || itemId.isEmpty() || itemId.startsWith(".")) {
+                throw new IOException("bad item id " + itemId);
+            }
+            return dir;
+        };
     }
 
     /** Runs on the executor. */
@@ -308,27 +330,30 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             SampleIndex index;
             FileSampleData data;
             CardGop card;
+            Path dir;
             boolean videoItem;
             boolean needCard;
             synchronized (this) {
                 index = s.index;
                 data = s.data;
                 card = s.card;
+                dir = s.dir;
                 videoItem = s.videoItem;
                 needCard = videoItem && s.cardWanted && s.card == null;
             }
             boolean newData = false;
             try {
                 if (data == null) {
-                    index = readIndex(s);
-                    data = new FileSampleData(s.dir, index);
+                    dir = dirs.dir(s.itemId);
+                    index = readIndex(s, dir);
+                    data = new FileSampleData(dir, index);
                     newData = true;
                     if (!videoItem) {
                         card = CardGop.fromTrack(index, index.track(Kind.VIDEO), data);
                     }
                 }
                 if (needCard) {
-                    card = cardLoader.load(s.dir.resolve(IngestPipeline.CARD));
+                    card = cardLoader.load(dir.resolve(IngestPipeline.CARD));
                 }
             } catch (IOException | RuntimeException e) {
                 if (newData) {
@@ -352,6 +377,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
                 }
                 s.index = index;
                 s.data = data;
+                s.dir = dir;
                 s.card = card;
                 s.failure = null;
                 s.loggedFailure = null;
@@ -372,8 +398,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         }
     }
 
-    private SampleIndex readIndex(Slot s) throws IOException {
-        SampleIndex index = SampleIndex.read(s.dir.resolve(SampleIndex.FILE_NAME));
+    private SampleIndex readIndex(Slot s, Path dir) throws IOException {
+        SampleIndex index = SampleIndex.read(dir.resolve(SampleIndex.FILE_NAME));
         if (!index.encoding().equals(profile)) {
             throw new IOException("index is for " + index.encoding().id() + ", not " + profile.id()
                     + " (re-encode pending)");
@@ -410,6 +436,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             s.data = null;
         }
+        s.dir = null;
         s.index = null;
         s.card = null;
     }

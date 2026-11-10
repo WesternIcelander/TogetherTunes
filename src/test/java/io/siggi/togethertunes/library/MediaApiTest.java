@@ -130,8 +130,9 @@ class MediaApiTest {
         for (int i = 0; i < size; i++) {
             content[i] = (byte) (i * 7 + file.length());
         }
-        Files.createDirectories(media.resolve(itemId));
-        Files.write(media.resolve(itemId).resolve(file), content);
+        Path target = media.resolve(itemId).resolve(file);
+        Files.createDirectories(target.getParent());
+        Files.write(target, content);
         return content;
     }
 
@@ -258,6 +259,76 @@ class MediaApiTest {
         String video = item("video", "ready", "original.mkv");
         write(video, "original.mkv", 100);
         assertEquals("file_not_found", code(get("/media/" + video + "/original", alice)));
+    }
+
+    private void setVersion(String itemId, int version) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_version = ? WHERE id = ?")) {
+                ps.setInt(1, version);
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Versioned URLs: {@code /media/{id}/v/{N}/{file}} serves version N for as long as it exists,
+     * also after the item switched to a newer one (a player that started on it keeps getting its
+     * bytes), and may be cached as immutable; the unversioned URL follows the current version.
+     */
+    @Test
+    void versionedUrlsKeepServingTheirVersion() throws Exception {
+        String id = item("video", "ready", null);
+        byte[] flat = write(id, "mezz.mp4", 2000); // version 0: the flat layout
+        assertArrayEquals(flat, get("/media/" + id + "/v/0/mezz.mp4", alice).body());
+        byte[] v1 = write(id, "v1/mezz.mp4", 3000);
+        setVersion(id, 1); // a re-encode published version 1
+        HttpResponse<byte[]> current = get("/media/" + id + "/mezz.mp4", alice);
+        assertArrayEquals(v1, current.body());
+        assertEquals("private, no-cache", header(current, "Cache-Control"));
+        // a player that started on version 0 goes on reading it by Range
+        HttpResponse<byte[]> old = call("GET", "/media/" + id + "/v/0/mezz.mp4", alice, "bytes=1000-1099");
+        assertEquals(206, old.statusCode());
+        assertArrayEquals(Arrays.copyOfRange(flat, 1000, 1100), old.body());
+        assertEquals(MediaApi.IMMUTABLE, header(old, "Cache-Control"));
+        HttpResponse<byte[]> v1r = get(MediaApi.url(id, 1, "mezz.mp4"), alice);
+        assertArrayEquals(v1, v1r.body());
+        assertEquals("video/mp4", header(v1r, "Content-Type"));
+        assertEquals(MediaApi.IMMUTABLE, header(v1r, "Cache-Control"));
+
+        // once deleted, an old version is gone; a version that never existed is too
+        Files.delete(media.resolve(id).resolve("mezz.mp4"));
+        assertEquals("file_not_found", code(get("/media/" + id + "/v/0/mezz.mp4", alice)));
+        assertEquals("file_not_found", code(get("/media/" + id + "/v/7/mezz.mp4", alice)));
+        // only plain numbers; no other files
+        for (String bad : new String[] {"01", "-1", "x", "1.0", "9999999999"}) {
+            assertEquals(404, get("/media/" + id + "/v/" + bad + "/mezz.mp4", alice).statusCode(), bad);
+        }
+        assertEquals(404, get("/media/" + id + "/v/1/index.bin", alice).statusCode());
+
+        // the original isn't versioned: the same file under every version, revalidated
+        String song = item("audio", "ready", "original.flac");
+        byte[] original = write(song, "original.flac", 500);
+        write(song, "v3/audio.m4a", 100);
+        setVersion(song, 3);
+        HttpResponse<byte[]> orig = get("/media/" + song + "/v/3/original", alice);
+        assertArrayEquals(original, orig.body());
+        assertEquals("private, no-cache", header(orig, "Cache-Control"));
+
+        // the same access rules
+        assertEquals(403, get(MediaApi.url(id, 1, "mezz.mp4"), null).statusCode());
+        playing.add(id);
+        assertEquals(200, get(MediaApi.url(id, 1, "mezz.mp4"), null).statusCode());
+        // a purged item serves no version
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'purged' WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals("file_not_found", code(get(MediaApi.url(id, 1, "mezz.mp4"), alice)));
     }
 
     @Test

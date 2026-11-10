@@ -20,14 +20,12 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
-import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -55,8 +53,8 @@ import java.util.regex.Pattern;
  * else from its old {@code mezz.mp4}, or {@code audio.m4a} for an audio item. Old files were
  * normalised when first ingested, so they are encoded without
  * loudnorm and the stored {@code loudness_lufs} is kept. The item's {@code cover.jpg} is reused as
- * the staged cover. The item stays {@code ready} with its old files until the publish swaps the new
- * ones in. A job for an item that is no longer ready, or that is already encoded for the current
+ * the staged cover. The item stays {@code ready} with its old files until the publish switches to
+ * the new ones. A job for an item that is no longer ready, or that is already encoded for the current
  * profile, ends without doing anything. The duration limit isn't applied to re-encodes.
  *
  * <p><b>Steps.</b> ffprobe decides the item kind: a real video stream makes a video item
@@ -68,13 +66,18 @@ import java.util.regex.Pattern;
  * artist and album, and is checked against the reference avcC. The index is built and verified
  * ({@link IngestVerifier}).
  *
- * <p><b>Publish.</b> Everything is written into a new directory {@code <data>/media/.ingest-<jobId>}
- * (same file system as the item directory) and swapped in by renames: the old
- * {@code media/<itemId>} (if any) is renamed aside to {@code media/.old-<itemId>-<jobId>}, the
- * new one renamed into place, and the old one deleted. Files already open (the packager) keep
- * reading the old ones. {@link #recoverDirectories} cleans up after a crash in the middle. Then the
- * item row gets its kind, duration, profile and loudness; the queue marks it {@code ready}. The
- * staging directory is deleted after a successful publish.
+ * <p><b>Publish</b> ({@link MediaVersions}). Everything is written into a new directory
+ * {@code <data>/media/.ingest-<jobId>} (same file system as the item directory). The publish moves
+ * a newly kept original to {@code media/<itemId>/original.<ext>}, renames the rest to the item's
+ * next version directory {@code media/<itemId>/v<N>/}, and then switches the item row to it
+ * ({@code media_version}, together with its kind, duration, profile, loudness and original, in one
+ * update); the queue marks it {@code ready}. It never waits: new plays use the new version from
+ * then on, a web player in the middle of the item keeps fetching the old version's URL, and the
+ * program output keeps the files it opened. The old version is handed to {@link MediaVersions} to
+ * be deleted once nobody can still be playing it. A {@code v<N>} left by a crash before the
+ * switch is deleted at the next start ({@link MediaVersions#cleanUpAtStartup}); half-built
+ * {@code .ingest-*} directories by {@link #recoverDirectories}. The staging directory is deleted
+ * after a successful publish.
  *
  * <p><b>Originals.</b> Every item keeps its source as {@code original.<ext>} in the item directory
  * ({@link Originals}): the upload (hard-linked from the staging directory), or the merged YouTube
@@ -91,13 +94,6 @@ import java.util.regex.Pattern;
  * downloaded again; an item with neither is left as it is, since re-encoding its quick encode
  * would only lose quality). The preset used and whether it was the quality encode are recorded
  * on the item ({@code encode_preset}, {@code encode_quality}).
- *
- * <p><b>Swapping files under a playing item.</b> A {@code reencode} or {@code quality} job doesn't
- * publish while its item is the current or next entry of any room ({@link #inUse}): it waits (up
- * to {@link #DEFAULT_MAX_PUBLISH_WAIT}) until the item has finished playing everywhere, so the
- * web players' range requests never mix bytes of the old and the new {@code mezz.mp4}. The
- * program output is safe either way: it keeps reading the files it opened, which the rename
- * leaves intact.
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -113,6 +109,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
     public static final String COVER_NAME = "cover";
 
     static final String WORK_PREFIX = ".ingest-";
+    /**
+     * Prefix of an item directory moved aside by the publish of releases before media versions
+     * existed ({@code .old-<itemId>-<jobId>}); only {@link #recoverDirectories} still handles it.
+     */
     static final String OLD_PREFIX = ".old-";
     /**
      * Prefix of a directory moved aside to be deleted ({@link #moveAside}): a purged item's
@@ -127,14 +127,6 @@ public final class IngestPipeline implements IngestQueue.Handler {
     static final double MEASURE_SHARE = 0.15;
     static final double ENCODE_SHARE = 0.75;
 
-    /** How often a re-encode looks again whether its item is still playing before publishing. */
-    static final Duration DEFAULT_PUBLISH_POLL = Duration.ofSeconds(5);
-    /**
-     * How long a re-encode waits at most for its item to stop being current or next before it
-     * publishes anyway (e.g. a room left paused on the item for hours).
-     */
-    static final Duration DEFAULT_MAX_PUBLISH_WAIT = Duration.ofHours(1);
-
     private static final Pattern YTDLP_PERCENT = Pattern.compile("^\\[download\\]\\s+(\\d+(?:\\.\\d+)?)%");
 
     private final Tools tools;
@@ -144,9 +136,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private volatile java.util.function.IntSupplier maxDurationSec;
     private final Supplier<String> cookiesFile;
     private final EncodePresets presets;
-    private volatile Predicate<String> inUse = id -> false;
-    private volatile Duration publishPoll = DEFAULT_PUBLISH_POLL;
-    private volatile Duration maxPublishWait = DEFAULT_MAX_PUBLISH_WAIT;
+    private volatile MediaVersions versions;
 
     /** Without a cookies file. */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
@@ -180,12 +170,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     /**
-     * Sets which items are playing now (the current or next entry of a room; the rooms'
-     * {@code PlayingItems}): re-encodes wait to publish until their item isn't. Set once the rooms
-     * exist; until then nothing counts as playing.
+     * Where a publish hands the version it replaced, to be deleted once nobody can still be playing
+     * it. Without one, old versions stay until the clean-up at the next start.
      */
-    public void inUse(Predicate<String> playing) {
-        this.inUse = playing == null ? id -> false : playing;
+    public void mediaVersions(MediaVersions versions) {
+        this.versions = versions;
     }
 
     /**
@@ -203,12 +192,6 @@ public final class IngestPipeline implements IngestQueue.Handler {
         this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
     }
 
-    /** Test hook: how often and how long a re-encode waits for its item to stop playing. */
-    void publishWait(Duration poll, Duration max) {
-        this.publishPoll = Objects.requireNonNull(poll);
-        this.maxPublishWait = Objects.requireNonNull(max);
-    }
-
     /** The presets this pipeline encodes with. */
     public EncodePresets presets() {
         return presets;
@@ -219,7 +202,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return dataDir.tmp().resolve("ingest").resolve(checkId(itemId));
     }
 
-    /** An item's published directory: {@code <data>/media/<itemId>}. */
+    /**
+     * An item's directory: {@code <data>/media/<itemId>}, holding its kept original and its
+     * version directories ({@link MediaVersions#versionDir}).
+     */
     public static Path itemDir(DataDir dataDir, String itemId) {
         return dataDir.media().resolve(checkId(itemId));
     }
@@ -336,10 +322,13 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return !name.isEmpty() && !name.startsWith(".") && !name.contains("/") && !name.contains("\\");
     }
 
-    /** The previous encode to re-encode from: {@code mezz.mp4}, else {@code audio.m4a}. */
-    static Path previousSource(Path itemDir) throws IngestFailure {
+    /**
+     * The previous encode to re-encode from: {@code mezz.mp4}, else {@code audio.m4a}, in the
+     * current version's directory.
+     */
+    static Path previousSource(Path versionDir) throws IngestFailure {
         for (String name : List.of(MEZZ, AUDIO)) {
-            Path f = itemDir.resolve(name);
+            Path f = versionDir.resolve(name);
             if (Files.isRegularFile(f)) {
                 return f;
             }
@@ -376,6 +365,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 ? ", the same as the quality preset" : "") + ")");
         Path staging = stagingDir(dataDir, item.id());
         Path itemDir = itemDir(dataDir, item.id());
+        Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
         SourceKind sourceKind = sourceKind(job.kind(), item, itemDir);
         if (reencode) {
             log.append("[ingest] " + (job.kind() == Kind.QUALITY ? "quality re-encode" : "re-encoding")
@@ -402,14 +392,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     if (job.kind() != Kind.REENCODE || Thread.currentThread().isInterrupted()) {
                         throw e;
                     }
-                    source = previousSource(itemDir);
+                    source = previousSource(currentDir);
                     sourceKind = SourceKind.PREVIOUS;
                     log.append("[ingest] the download failed (" + e.getMessage() + "); re-encoding from the previous "
                             + source.getFileName() + " instead");
                 }
             }
             case ORIGINAL -> source = itemDir.resolve(item.originalFile());
-            case PREVIOUS -> source = previousSource(itemDir);
+            case PREVIOUS -> source = previousSource(currentDir);
             default -> {
                 source = staged(staging, SOURCE_NAME);
                 if (source == null) {
@@ -419,7 +409,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         boolean fromPrevious = sourceKind == SourceKind.PREVIOUS;
         // the item's own cover for a re-encode; the downloaded thumbnail for a YouTube item
-        Path stagedCover = reencode ? existingFile(itemDir.resolve(COVER)) : null;
+        Path stagedCover = reencode ? existingFile(currentDir.resolve(COVER)) : null;
         if (stagedCover == null) {
             stagedCover = staged(sourceKind == SourceKind.DOWNLOAD ? scratch : staging, COVER_NAME);
         }
@@ -539,19 +529,18 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     + ")" + (mismatch == null ? "" : "; not played in browsers: " + mismatch));
         }
 
-        // publish
+        // publish: a new version, then the switch in the database; never waits for a play to end
         step(log, "publish");
-        // Wait only when the old files are still of the current encoding: files of another
-        // encoding (profile, bitrate or encoder arguments) can't be spliced by the program output,
-        // which shows "Loading…" for them, so waiting for the item to stop playing would deadlock
-        // a room that has it current or next.
-        if (reencode && reference.encoding().id().equals(item.outputProfile())) {
-            waitUntilNotPlaying(item.id(), ctx);
-        }
-        publish(work, itemDir, item.id(), job.id());
         Double lufs = fromPrevious ? item.loudnessLufs() : loudness.usable() ? round2(loudness.inputI()) : null;
+        Originals.Original kept = original;
+        boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         // an audio item has no video, so its files are as good as they get with any preset
-        items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video, lufs, original);
+        int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
+                v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
+                        lufs, kept, v));
+        log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
+                + " is kept until nobody can still be playing it" : ""));
+        retire(item, itemDir, hadOld, original, durationUs / 1000);
         if (!reencode) {
             deleteQuietly(staging);
         }
@@ -559,25 +548,26 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     /**
-     * Waits while the item is the current or next entry of a room, so its files are swapped only
-     * between plays; gives up waiting after {@code maxPublishWait}.
+     * After the switch: hands the replaced version to {@link MediaVersions} (a play that started on
+     * it just before the switch lasts about the item's duration), and deletes an old original that
+     * the new one replaced under another name.
      */
-    private void waitUntilNotPlaying(String itemId, IngestQueue.Context ctx) throws InterruptedException {
-        if (!inUse.test(itemId)) {
-            return;
+    private void retire(IngestItems.Item item, Path itemDir, boolean hadOld, Originals.Original original,
+                        long durationMs) {
+        MediaVersions v = versions;
+        if (hadOld && v != null) {
+            v.retired(item.id(), item.mediaVersion(), durationMs);
         }
-        JobLog log = ctx.log();
-        log.append("[ingest] the item is playing (current or next in a room); publishing once it has finished");
-        ctx.flush();
-        long deadline = System.nanoTime() + maxPublishWait.toNanos();
-        while (inUse.test(itemId)) {
-            if (System.nanoTime() - deadline >= 0) {
-                log.append("[ingest] still playing after " + maxPublishWait.toMinutes() + " min; publishing anyway");
-                return;
+        String oldOriginal = item.originalFile();
+        if (oldOriginal != null && isPlainName(oldOriginal) && oldOriginal.startsWith("original.")
+                && (original == null || !oldOriginal.equals(original.file()))) {
+            try {
+                Files.deleteIfExists(itemDir.resolve(oldOriginal));
+            } catch (IOException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not delete the old original " + oldOriginal
+                        + " of item " + item.id() + ": " + e.getMessage());
             }
-            Thread.sleep(publishPoll.toMillis());
         }
-        log.append("[ingest] the item has finished playing");
     }
 
     private static void step(JobLog log, String name) {
@@ -845,33 +835,44 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     // ------------------------------------------------------------------ publish
 
+    /** The database switch of a publish: makes {@code version} the item's current one. */
+    @FunctionalInterface
+    interface Switch {
+        void to(int version) throws java.sql.SQLException;
+    }
+
     /**
-     * Swaps {@code work} in as {@code target}: renames an existing {@code target} aside, renames
-     * {@code work} to {@code target}, then deletes the old directory. If the second rename fails,
-     * the old directory is put back.
+     * Publishes {@code work} as the item's next version: moves the kept original {@code original}
+     * (if any) out of {@code work} into {@code itemDir}, renames {@code work} to
+     * {@code itemDir/v<N>} and runs {@code sw} for {@code N}. If the switch fails, the new version
+     * directory is deleted again (the original, if it replaced one of the same name, is the same
+     * source anyway); the old version is never touched here.
+     *
+     * @param current  the item's current {@code media_version}
+     * @param original the file name of the original in {@code work} to keep, or null
+     * @return the new version
      */
-    static void publish(Path work, Path target, String itemId, String jobId) throws IOException {
-        Path old = target.resolveSibling(OLD_PREFIX + itemId + "-" + jobId);
-        deleteTree(old);
-        boolean hadOld = Files.exists(target, LinkOption.NOFOLLOW_LINKS);
-        if (hadOld) {
-            rename(target, old);
-        }
-        try {
-            rename(work, target);
-        } catch (IOException e) {
-            if (hadOld) {
-                try {
-                    rename(old, target);
-                } catch (IOException e2) {
-                    e.addSuppressed(e2);
-                }
+    static int publish(Path work, Path itemDir, int current, String original, Switch sw)
+            throws IOException, java.sql.SQLException {
+        Files.createDirectories(itemDir);
+        int version = MediaVersions.nextVersion(itemDir, current);
+        Path target = MediaVersions.versionDir(itemDir, version);
+        if (original != null) {
+            Path from = work.resolve(original);
+            if (Files.exists(from, LinkOption.NOFOLLOW_LINKS)) {
+                renameReplacing(from, itemDir.resolve(original));
+                // a rename between two links to the same file (a re-encode from the original) does nothing
+                Files.deleteIfExists(from);
             }
+        }
+        rename(work, target);
+        try {
+            sw.to(version);
+        } catch (java.sql.SQLException | RuntimeException e) {
+            deleteQuietly(target);
             throw e;
         }
-        if (hadOld) {
-            deleteQuietly(old);
-        }
+        return version;
     }
 
     /**
@@ -885,6 +886,15 @@ public final class IngestPipeline implements IngestQueue.Handler {
         } catch (IOException | UnsupportedOperationException e) {
             Files.deleteIfExists(target);
             Files.copy(source, target);
+        }
+    }
+
+    /** Renames a file over an existing one (atomic where the file system allows it). */
+    private static void renameReplacing(Path from, Path to) throws IOException {
+        try {
+            Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(from, to, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
