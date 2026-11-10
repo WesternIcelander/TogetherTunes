@@ -57,13 +57,17 @@ class UnitBuilderTest {
             if (prev != null) {
                 long expected = switched || prev.sourceEnded() ? prev.audioEndPts() : prev.boundaryPts();
                 assertEquals(expected, u.startPts(), "units are contiguous");
+                assertTrue(u.startPts() - lastVideo >= 3000, "no picture shorter than a frame interval at "
+                        + lastVideo);
             }
             assertTrue(u.boundaryPts() > u.startPts());
             // 2 s at most; a unit can only run on by the part of its last audio frame past the 2 s mark
-            // (when its source ends there, or the next unit is a new source)
-            assertTrue(u.sourceEnded() ? u.boundaryPts() - u.startPts() < U + 1920
+            // (the next unit is a new source), or, when its source ends, by audio that ends less than a
+            // frame interval after the 2 s mark (plus that last frame)
+            assertTrue(u.sourceEnded() ? u.boundaryPts() - u.startPts() < U + 3000 + 1920
                     : u.boundaryPts() - u.startPts() <= U, "unit length");
-            assertTrue(u.audioEndPts() - u.startPts() < U + 1920, "unit length incl. its audio");
+            assertTrue(u.audioEndPts() - u.startPts() < U + (u.sourceEnded() ? 3000 + 1920 : 1920),
+                    "unit length incl. its audio");
             for (Unit.Video v : u.video()) {
                 assertTrue(v.pts() > lastVideo, "video PTS strictly increasing");
                 assertTrue(v.pts() < u.boundaryPts(), "video before the boundary");
@@ -161,10 +165,11 @@ class UnitBuilderTest {
             assertEquals(end, u3.audioEndPts());
             assertEquals(end, b.nextUnitStart());
             assertEquals(end, b.switchPoint());
-            // card frames n·3000 < 451200: frames 120..150 of the repeated card, i.e. card frames 0..30
-            assertEquals(31, u3.video().size());
+            // card frames n·3000 ≤ 451200 − 3000 (a frame interval before E_n): frames 120..149 of the
+            // repeated card, i.e. card frames 0..29 (frame 30, 1200 ticks before E_n, is dropped)
+            assertEquals(30, u3.video().size());
             assertEquals(1000, frameNumber(u3.video().get(0).data()));
-            assertEquals(1030, frameNumber(u3.video().get(30).data()));
+            assertEquals(1029, frameNumber(u3.video().get(29).data()));
             assertEquals(234, audioNumber(u3.audio().get(46).data()));
             assertThrows(IllegalStateException.class, b::next);
 
@@ -377,6 +382,54 @@ class UnitBuilderTest {
             assertTrue(c.lastVideo > OutputClock.WRAP, "kept unwrapped internally");
         }
         assertEquals(OutputClock.WRAP - 63_000, OutputClock.wrap(-63_000));
+    }
+
+    @Test
+    void audioEndingLessThanAFrameAfterAnIdrEndsTheUnitBefore() throws Exception {
+        Checker c = new Checker();
+        try (UnitBuilder b = new UnitBuilder()) {
+            // 95 frames end at 182400, 2400 ticks past the next IDR: they stay in the first unit
+            b.play(new Scripted(120, 60, 95, true));
+            Unit u = c.add(b.next());
+            assertTrue(u.sourceEnded());
+            assertEquals(95, u.audio().size());
+            assertEquals(S0 + 182_400, u.boundaryPts());
+            assertEquals(S0 + 182_400, u.audioEndPts());
+            assertEquals(60, u.video().size(), "the GOP up to the next IDR");
+            b.play(filler(Filler.IDLE));
+            c.switched();
+            assertEquals(S0 + 182_400, c.add(b.next()).startPts());
+        }
+        c = new Checker();
+        try (UnitBuilder b = new UnitBuilder()) {
+            // 96 frames end at 184320, 4320 ticks past it: a short last unit with just its IDR
+            b.play(new Scripted(120, 60, 96, true));
+            assertEquals(94, c.add(b.next()).audio().size());
+            Unit u = c.add(b.next());
+            assertTrue(u.sourceEnded());
+            assertEquals(2, u.audio().size());
+            assertEquals(1, u.video().size(), "frame 61 at 183000 is less than a frame before 184320");
+            assertEquals(S0 + 184_320, u.boundaryPts());
+            b.play(filler(Filler.IDLE));
+            c.add(b.next());
+        }
+    }
+
+    @Test
+    void sourceWithLessAudioThanAFrameGivesNoUnit() throws Exception {
+        try (UnitBuilder b = new UnitBuilder()) {
+            b.play(filler(Filler.IDLE));
+            Unit f = b.next();
+            b.play(new Scripted(60, 60, 1, true)); // 1920 ticks of audio
+            assertNull(b.next());
+            assertTrue(b.sourceEnded());
+            assertEquals(f.audioEndPts(), b.switchPoint(), "nothing emitted");
+            b.play(new Scripted(60, 60, 2, true)); // 3840 ticks: a unit with just the IDR
+            Unit u = b.next();
+            assertEquals(1, u.video().size());
+            assertEquals(2, u.audio().size());
+            assertTrue(u.sourceEnded());
+        }
     }
 
     @Test

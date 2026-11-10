@@ -24,8 +24,10 @@ import java.util.List;
  * @param audio       AAC frames exactly 1920 ticks apart, PTS in {@code [startPts, boundaryPts)}
  * @param source      the source the unit came from (for status and logs; don't pull from it)
  * @param sourceEnded true if the source ended in this unit: then
- *                    {@code boundaryPts == audioEndPts == E_n} (which may lie up to 1919 ticks past
- *                    the 2 s mark when the video ran out there), and the next unit needs a new source
+ *                    {@code boundaryPts == audioEndPts == E_n} (which may lie up to 3000 + 1919
+ *                    ticks past the 2 s mark, when the source's audio ended less than a frame
+ *                    interval after its next IDR), and the next unit needs a new source. No video
+ *                    frame is then less than 3000 ticks before {@code E_n}, apart from the IDR
  */
 public record Unit(long startPts, long boundaryPts, long audioEndPts, List<Video> video, List<Audio> audio,
         ProgramSource source, boolean sourceEnded) {

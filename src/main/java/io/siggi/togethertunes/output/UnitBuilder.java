@@ -19,9 +19,14 @@ import java.util.List;
  * same holds with <i>K</i> = the frames emitted so far: the new source starts where the emitted
  * audio ends, which is up to one frame past the unit boundary.</li>
  * <li><b>Video follows audio.</b> A video sample at source-relative PTS <i>p</i> goes out at
- * {@code S_n + p}. Frames at or after {@code E_n} are dropped, which truncates a repeated card GOP
- * (or a video longer than its audio) at the end; the next source starts with a fresh IDR at
- * {@code S_{n+1}}.</li>
+ * {@code S_n + p}. Frames less than one frame interval (3000 ticks) before {@code E_n} are
+ * dropped (apart from the unit's IDR), which truncates a repeated card GOP (or a video longer than
+ * its audio) at the end; the next source starts with a fresh IDR at {@code S_{n+1}}, so no picture
+ * lasts less than a frame interval at a splice (players and ffmpeg retime by frame rate and choke on
+ * two frames within one interval). For the same reason a source whose audio would end less than a
+ * frame interval after a unit start doesn't get that unit: its last frames go into the unit before
+ * (which then lasts up to 3000 + 1919 ticks longer than 2 s), and a source with less audio than
+ * that in all gives no unit at all.</li>
  * <li><b>Units</b> run from one of the source's IDRs to its next (2 s for the profile's closed
  * 60-frame GOPs) and carry the audio frames whose PTS falls in that span, so a filler, which never
  * ends by itself, is always emitted in whole 2 s units. A unit ends early where its source
@@ -58,8 +63,10 @@ public final class UnitBuilder implements AutoCloseable {
     private boolean ended;
     /** The current source's next IDR (source-relative), read ahead; null once its video ran out. */
     private VideoSample pendingVideo;
-    /** The next audio frame, read ahead; null once the source ended. */
-    private byte[] pendingAudio;
+    /** Audio frames read ahead of {@link #audioFrames} (at most a few). */
+    private final List<byte[]> aheadAudio = new ArrayList<>(4);
+    /** Whether the source's audio has ended (the read-ahead holds what is left). */
+    private boolean audioDone;
     /** The last IDR the current source gave, repeated if its video runs out before its audio. */
     private VideoSample lastIdr;
 
@@ -95,7 +102,8 @@ public final class UnitBuilder implements AutoCloseable {
         started = false;
         ended = false;
         pendingVideo = null;
-        pendingAudio = null;
+        aheadAudio.clear();
+        audioDone = false;
         lastIdr = null;
     }
 
@@ -149,10 +157,15 @@ public final class UnitBuilder implements AutoCloseable {
                 throw new IOException(source.describe() + ": video must start with an IDR at 0");
             }
             pendingVideo = first;
-            pendingAudio = source.nextAudio();
             started = true;
         }
         long start = clock;
+        if (audioFrames == 0 && audioEndsBefore(start + ProgramSource.VIDEO_FRAME_TICKS)) {
+            // less audio than one video frame (none at all, or e.g. a seek to the very end): playing
+            // it would put the next source's IDR less than a frame after this one, so it gives nothing
+            ended = true;
+            return null;
+        }
 
         List<Unit.Video> video = new ArrayList<>(EncodeProfile.GOP_FRAMES);
         long boundary;
@@ -184,31 +197,59 @@ public final class UnitBuilder implements AutoCloseable {
         }
 
         List<Unit.Audio> audio = new ArrayList<>((int) (UNIT_TICKS / AUDIO) + 2);
-        while (pendingAudio != null) {
+        // a source whose audio ends less than one video frame past the boundary ends in this unit
+        // instead (its next unit would be shorter than a frame)
+        long limit = audioEndsBefore(boundary + ProgramSource.VIDEO_FRAME_TICKS) ? Long.MAX_VALUE : boundary;
+        while (peekAudio(0) != null) {
             long pts = sourceStart + audioFrames * AUDIO;
-            if (pts >= boundary) {
+            if (pts >= limit) {
                 break;
             }
-            audio.add(new Unit.Audio(pendingAudio, pts));
+            audio.add(new Unit.Audio(aheadAudio.remove(0), pts));
             audioFrames++;
-            pendingAudio = source.nextAudio();
         }
         long sourceAudioEnd = sourceStart + audioFrames * AUDIO;
         audioEnd = Math.max(audioEnd, sourceAudioEnd);
 
-        if (pendingAudio == null) {
-            // the source ended in this unit, at E_n: drop video at or after it (truncates a card GOP)
+        if (peekAudio(0) == null) {
+            // the source ended in this unit, at E_n: drop video less than a frame before it (truncates
+            // a card GOP or a video longer than its audio), so the next source's IDR at E_n comes at
+            // least one frame interval after this unit's last picture; the unit's IDR always stays
             ended = true;
             long end = sourceAudioEnd;
-            video.removeIf(v -> v.pts() >= end);
+            long lastAllowed = end - ProgramSource.VIDEO_FRAME_TICKS;
+            Unit.Video idr = video.get(0);
+            video.removeIf(v -> v != idr && v.pts() > lastAllowed);
             clock = Math.max(start, end);
-            if (video.isEmpty()) {
-                return null;
-            }
             return new Unit(start, end, end, video, audio, source, true);
         }
         clock = boundary;
         return new Unit(start, boundary, audioEnd, video, audio, source, false);
+    }
+
+    /** Audio frame {@code audioFrames + i} of the source, reading ahead; null past its end. */
+    private byte[] peekAudio(int i) throws IOException {
+        while (aheadAudio.size() <= i && !audioDone) {
+            byte[] f = source.nextAudio();
+            if (f == null) {
+                audioDone = true;
+            } else {
+                aheadAudio.add(f);
+            }
+        }
+        return i < aheadAudio.size() ? aheadAudio.get(i) : null;
+    }
+
+    /** Whether the source's audio (from frame {@link #audioFrames} on) ends before {@code limit}. */
+    private boolean audioEndsBefore(long limit) throws IOException {
+        for (int i = 0; ; i++) {
+            if (sourceStart + (audioFrames + i) * AUDIO >= limit) {
+                return false;
+            }
+            if (peekAudio(i) == null) {
+                return true;
+            }
+        }
     }
 
     @Override
