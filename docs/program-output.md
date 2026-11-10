@@ -116,6 +116,7 @@ seg/1234.ts
 - List the 6 most recent segments, and keep 2 more available for slow fetchers. `EXTINF` = the unit's real duration, with 3 decimals.
 - Segments are slices of the same TS byte stream, so continuity counters already run continuously across them.
 - Players typically start about 3 segments behind the live edge, and different players start at different segments. That means VRChat viewers on HLS can be a few seconds apart from each other. The room page should mention this when HLS is enabled.
+- As built (`output/HlsSegmenter`, `LiveHlsApi`): `EXTINF` = the next unit's start − this unit's start, so a unit is listed once its successor exists (about 1 s after its real-time start, as units are emitted LEAD early). Media sequence numbers are the segmenter's own and continue across packager restarts; the first segment after a restart is marked `#EXT-X-DISCONTINUITY` (with `#EXT-X-DISCONTINUITY-SEQUENCE` once it leaves the playlist), and the ring is emptied when the packager stops. Segments: `video/mp2t`, `Content-Length`, `Cache-Control: no-cache`; gone or not yet made → `404`. Each fetch counts as activity and starts the output if needed; a fresh output's first playlist request waits up to 5 s for a segment (else `503`, `Retry-After: 1`). The ring follows a room's packager from the first HLS fetch, and after a restart only if HLS was fetched in the last 60 s.
 
 ### RTMP push (VRCDN etc.)
 
