@@ -157,7 +157,7 @@ class CardEncoderTest {
         Path cards = dir.resolve("cards");
         // Simulate an encoder change: the stored reference avcC differs from what ffmpeg makes now.
         ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
-        Path avcFile = cards.resolve("720p30-3000k").resolve(ReferenceCard.AVCC_FILE);
+        Path avcFile = cards.resolve("720p30-3000k-v2").resolve(ReferenceCard.AVCC_FILE);
         byte[] other = p720.avcC();
         other[other.length - 1] ^= 0x01;
         Files.write(avcFile, other);

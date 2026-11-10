@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -31,6 +33,12 @@ import java.util.concurrent.locks.ReentrantLock;
  *       {@code progressInterval}, and the final log when the job ends.</li>
  *   <li><b>Outcome:</b> the handler returning means {@code done}; throwing means {@code failed},
  *       with the exception's message as the item's error.</li>
+ *   <li><b>Re-encodes give way</b> ({@code docs/library-and-ingest.md#presets}): when a job that
+ *       someone waits for (an upload, import or refetch) is queued and every worker is busy, one
+ *       running re-encode ({@code reencode} or {@code quality}) is interrupted and put back in the
+ *       queue without counting the attempt, like at a shutdown; it starts again from the
+ *       beginning once nothing more urgent is queued. A worker that has just claimed a re-encode
+ *       while such a job is waiting puts it back at once.</li>
  * </ul>
  */
 public final class IngestQueue implements AutoCloseable {
@@ -125,6 +133,22 @@ public final class IngestQueue implements AutoCloseable {
     private long signals;
     private volatile boolean closing;
     private final List<Thread> workers = new ArrayList<>();
+    /** The jobs running now, by job id. */
+    private final Map<String, Running> running = new ConcurrentHashMap<>();
+
+    /** A running job and its worker; {@link #finished} and {@link #preempted} change under its lock. */
+    private static final class Running {
+        final IngestJob job;
+        final Thread thread;
+        final long startedNanos = System.nanoTime();
+        boolean finished;
+        volatile boolean preempted;
+
+        Running(IngestJob job, Thread thread) {
+            this.job = job;
+            this.thread = thread;
+        }
+    }
 
     public IngestQueue(IngestJobs jobs, int workers, Handler handler) {
         this(jobs, workers, handler, Clock.systemUTC(), DEFAULT_POLL_INTERVAL, DEFAULT_PROGRESS_INTERVAL);
@@ -160,6 +184,7 @@ public final class IngestQueue implements AutoCloseable {
         if (!workers.isEmpty() || closing) {
             throw new IllegalStateException("already started or closed");
         }
+        jobs.enqueueListener(this::wake);
         IngestJobs.Recovered recovered = jobs.recoverInterrupted();
         if (recovered.requeued() > 0 || recovered.failed() > 0) {
             LOG.log(System.Logger.Level.INFO, "Ingest jobs interrupted by the last shutdown: " + recovered.requeued()
@@ -178,7 +203,10 @@ public final class IngestQueue implements AutoCloseable {
         return job;
     }
 
-    /** Wakes the workers to look for queued jobs (e.g. after queuing inside a larger transaction). */
+    /**
+     * Wakes the workers to look for queued jobs (e.g. after queuing inside a larger transaction),
+     * and, if every worker is busy, makes a running re-encode give way to a waiting new job.
+     */
     public void wake() {
         lock.lock();
         try {
@@ -187,6 +215,58 @@ public final class IngestQueue implements AutoCloseable {
         } finally {
             lock.unlock();
         }
+        if (!closing && running.size() >= workerCount && hasPreemptible()) {
+            Thread.ofVirtual().name("ingest-preempt").start(this::preemptIfNeeded);
+        }
+    }
+
+    private boolean hasPreemptible() {
+        for (Running r : running.values()) {
+            if (r.job.kind().replacesReadyFiles() && !r.preempted) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * If every worker is busy and a new-item job is queued, interrupts the most recently started
+     * running re-encode; its worker puts it back in the queue and takes the new job.
+     *
+     * @return whether a re-encode was interrupted
+     */
+    boolean preemptIfNeeded() {
+        if (closing || running.size() < workerCount) {
+            return false;
+        }
+        try {
+            if (!jobs.hasQueuedNewItemJob()) {
+                return false;
+            }
+        } catch (SQLException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not look for waiting ingest jobs", e);
+            return false;
+        }
+        Running victim = null;
+        for (Running r : running.values()) {
+            if (r.job.kind().replacesReadyFiles() && !r.preempted
+                    && (victim == null || r.startedNanos > victim.startedNanos)) {
+                victim = r;
+            }
+        }
+        if (victim == null) {
+            return false;
+        }
+        synchronized (victim) {
+            if (victim.finished || victim.preempted) {
+                return false;
+            }
+            victim.preempted = true;
+            victim.thread.interrupt();
+        }
+        LOG.log(System.Logger.Level.INFO, "Ingest: " + victim.job.kind().wire() + " job " + victim.job.id()
+                + " gives way to a new job; it runs again later");
+        return true;
     }
 
     private void workerLoop() {
@@ -209,6 +289,15 @@ public final class IngestQueue implements AutoCloseable {
                 job = null;
             }
             if (job != null) {
+                if (job.kind().replacesReadyFiles() && newItemJobWaiting()) {
+                    // Claimed a re-encode just as a new job came in: let the new job go first.
+                    try {
+                        jobs.release(job.id(), job.log());
+                    } catch (SQLException | RuntimeException e) {
+                        LOG.log(System.Logger.Level.WARNING, "Could not put ingest job " + job.id() + " back", e);
+                    }
+                    continue;
+                }
                 run(job);
                 continue;
             }
@@ -232,7 +321,26 @@ public final class IngestQueue implements AutoCloseable {
         }
     }
 
+    /** Whether a new-item job is queued (a database error counts as no). */
+    private boolean newItemJobWaiting() {
+        try {
+            return jobs.hasQueuedNewItemJob();
+        } catch (SQLException | RuntimeException e) {
+            return false;
+        }
+    }
+
     private void run(IngestJob job) {
+        Running r = new Running(job, Thread.currentThread());
+        running.put(job.id(), r);
+        try {
+            run(job, r);
+        } finally {
+            running.remove(job.id());
+        }
+    }
+
+    private void run(IngestJob job, Running r) {
         JobLog log = JobLog.resume(job.log());
         long startNanos = System.nanoTime();
         log.append("[ingest] " + job.kind().wire() + " job started (attempt " + job.attempts() + ") at "
@@ -244,14 +352,22 @@ public final class IngestQueue implements AutoCloseable {
         } catch (Throwable t) {
             failure = t;
         }
+        boolean preempted;
+        synchronized (r) {
+            r.finished = true;
+            preempted = r.preempted;
+        }
         boolean stopping = closing;
-        // A shutdown interrupt must not break the final database writes. A job that returned
-        // normally is done even when the shutdown came in at the end.
+        // A shutdown (or give-way) interrupt must not break the final database writes. A job that
+        // returned normally is done even when the interrupt came in at the end.
         Thread.interrupted();
         String took = String.format(Locale.ROOT, "%.1f s", (System.nanoTime() - startNanos) / 1e9);
         try {
             if (stopping && failure != null) {
                 log.append("[ingest] Stopped by a server shutdown after " + took + "; it runs again after the restart");
+                jobs.release(job.id(), log.tail());
+            } else if (preempted && failure != null) {
+                log.append("[ingest] Stopped after " + took + " to make way for a new job; it runs again later");
                 jobs.release(job.id(), log.tail());
             } else if (failure == null) {
                 log.append("[ingest] Done after " + took);

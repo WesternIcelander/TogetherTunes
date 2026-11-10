@@ -43,6 +43,7 @@ public final class Library {
     private final Database db;
     private final YoutubeImports youtube;
     private final Clock clock;
+    private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
 
     /**
      * An item as lists and item pages show it: metadata and state, nothing about who has it.
@@ -285,6 +286,7 @@ public final class Library {
                     ps.executeUpdate();
                 }
                 References.touch(c, itemId, now);
+                libraryAddListener.addedToLibrary(itemId);
                 return null;
             });
         }
@@ -324,5 +326,10 @@ public final class Library {
     @FunctionalInterface
     public interface YoutubeCheck {
         void check() throws SQLException;
+    }
+
+    /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */
+    public void libraryAddListener(LibraryAddListener listener) {
+        this.libraryAddListener = listener == null ? LibraryAddListener.NONE : listener;
     }
 }

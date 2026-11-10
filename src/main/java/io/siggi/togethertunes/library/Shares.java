@@ -74,6 +74,7 @@ public final class Shares {
     private final Database db;
     private final YoutubeImports youtube;
     private final Clock clock;
+    private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
 
     /**
      * One share.
@@ -183,6 +184,7 @@ public final class Shares {
                 ps.setString(5, fromId);
                 ps.executeUpdate();
             }
+            libraryAddListener.addedToLibrary(itemId);
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO shares (id, item_id, from_user_id,"
                     + " to_user_id, message, created_at, seen) VALUES (?, ?, ?, ?, ?, ?, 0)")) {
                 ps.setString(1, shareId);
@@ -368,5 +370,10 @@ public final class Shares {
             }
             return unseenCount(c, userId);
         });
+    }
+
+    /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */
+    public void libraryAddListener(LibraryAddListener listener) {
+        this.libraryAddListener = listener == null ? LibraryAddListener.NONE : listener;
     }
 }

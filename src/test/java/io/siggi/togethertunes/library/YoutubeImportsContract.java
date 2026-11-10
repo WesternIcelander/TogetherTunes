@@ -239,7 +239,7 @@ abstract class YoutubeImportsContract {
         assertEquals(alice.userId(), item.get("added_by_user_id"));
         assertNull(item.get("added_by_guest_id"));
         assertEquals("pending", item.get("status"));
-        assertEquals("720p30-3000k", item.get("output_profile"));
+        assertEquals("720p30-3000k-v2", item.get("output_profile"));
         assertNull(item.get("content_sha256"));
         assertEquals(0, ((Number) item.get("present_as_audio")).intValue());
         assertEquals(clock.millis(), ((Number) item.get("last_referenced_at")).longValue());
@@ -308,6 +308,35 @@ abstract class YoutubeImportsContract {
         assertEquals(0, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", g.itemId()));
         assertThrows(IllegalArgumentException.class,
                 () -> imports.importUrl(new Actor.Anonymous(), "https://youtu.be/" + ID, null, null));
+    }
+
+    /**
+     * The preset tier asked for (docs/library-and-ingest.md#presets): an import into a library
+     * asks for the quality preset, one without (a room request, a guest) for the quick preset; and
+     * every library add tells the listener (which queues the quality re-encode).
+     */
+    @Test
+    void importsAskForATierAndTellTheLibraryListener() throws Exception {
+        List<String> added = new java.util.ArrayList<>();
+        imports.libraryAddListener(added::add);
+        String library = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        assertEquals(IngestJob.Tier.QUALITY, jobs.latestForItem(library).orElseThrow().tier());
+        assertEquals(List.of(library), added);
+        meta("{\"id\":\"abcdefghijk\",\"title\":\"Room request\",\"uploader\":\"Somebody\"}");
+        String room = imports.importUrl(alice, "https://youtu.be/abcdefghijk", null, false).itemId();
+        assertEquals(IngestJob.Tier.QUICK, jobs.latestForItem(room).orElseThrow().tier());
+        assertEquals(List.of(library), added, "no library entry, no call");
+        // adding the ready room item to a library later: the listener hears it
+        finishJob(true);
+        finishJob(true);
+        imports.addExisting(bob, "abcdefghijk", "library");
+        assertEquals(List.of(library, room), added);
+        // a purged item fetched again for a room only: quick
+        setStatus(room, "purged");
+        imports.useExisting("abcdefghijk");
+        IngestJob refetch = jobs.latestForItem(room).orElseThrow();
+        assertEquals(IngestJob.Kind.REFETCH, refetch.kind());
+        assertEquals(IngestJob.Tier.QUICK, refetch.tier());
     }
 
     @Test

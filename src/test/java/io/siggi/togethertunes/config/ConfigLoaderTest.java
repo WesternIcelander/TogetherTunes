@@ -73,7 +73,9 @@ class ConfigLoaderTest {
         assertEquals(bin.resolve("yt-dlp").toString(), c.ytdlp());
         assertEquals(OutputProfile.P720_30, c.outputProfile());
         assertEquals(3000, c.outputVideoBitrateKbps());
-        assertEquals("720p30-3000k", c.outputEncoding().id());
+        assertEquals("720p30-3000k-v2", c.outputEncoding().id());
+        assertEquals(X264Preset.VERYFAST, c.ingestQuickPreset());
+        assertEquals(X264Preset.SLOW, c.ingestQualityPreset());
         assertEquals(4, c.ingestWorkers());
         assertEquals(4L << 30, c.ingestMaxUploadBytes());
         assertEquals(1800, c.ingestMaxDurationSeconds());
@@ -154,7 +156,7 @@ class ConfigLoaderTest {
         Config c = load("{\"http.publicBaseUrl\": \"https://music.example.com\", \"output\": {\"videoBitrateKbps\": 4500}}");
         assertEquals(4500, c.outputVideoBitrateKbps());
         assertEquals(new OutputEncoding(OutputProfile.P720_30, 4500), c.outputEncoding());
-        assertEquals("720p30-4500k", c.outputEncoding().id());
+        assertEquals("720p30-4500k-v2", c.outputEncoding().id());
         env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "2500");
         assertEquals(2500, load(URL_ONLY).outputVideoBitrateKbps());
         env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "499");
@@ -167,6 +169,21 @@ class ConfigLoaderTest {
                 + " \"output\": {\"profile\": \"4k60\", \"videoBitrateKbps\": \"fast\"}}");
         assertProblem(e, "'output.profile'");
         assertProblem(e, "'output.videoBitrateKbps'");
+    }
+
+    @Test
+    void presets() throws ConfigException {
+        Config c = load("{\"http.publicBaseUrl\": \"https://music.example.com\","
+                + " \"ingest\": {\"quickPreset\": \"faster\", \"qualityPreset\": \"veryslow\"}}");
+        assertEquals(X264Preset.FASTER, c.ingestQuickPreset());
+        assertEquals(X264Preset.VERYSLOW, c.ingestQualityPreset());
+        env.put("TOGETHERTUNES_INGEST_QUALITY_PRESET", "medium");
+        assertEquals(X264Preset.MEDIUM, load(URL_ONLY).ingestQualityPreset());
+        env.put("TOGETHERTUNES_INGEST_QUALITY_PRESET", "ultrafast");
+        assertProblem(fails(URL_ONLY), "must be one of veryfast, faster, fast, medium, slow, slower, veryslow");
+        env.remove("TOGETHERTUNES_INGEST_QUALITY_PRESET");
+        env.put("TOGETHERTUNES_INGEST_QUICK_PRESET", "Slow");
+        assertProblem(fails(URL_ONLY), "TOGETHERTUNES_INGEST_QUICK_PRESET");
     }
 
     @Test
@@ -191,7 +208,8 @@ class ConfigLoaderTest {
         // docs/architecture.md#configuration
         assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "data.dir", "db.url",
                 "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps", "ingest.workers",
-                "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "overlay.workers",
+                "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
+                "overlay.workers",
                 "overlay.cacheMaxBytes", "http.trustedProxies"), ConfigLoader.KEYS);
     }
 

@@ -17,9 +17,11 @@ import java.util.Locale;
  * @param startedAt  epoch ms of the latest start, or null while it never ran
  * @param finishedAt epoch ms, set for {@code done} and {@code failed}
  * @param log        tail of the job log ({@link JobLog}), or null
+ * @param tier       the preset tier asked for when the job was queued, or null (decided when it
+ *                   starts; {@code docs/library-and-ingest.md#presets})
  */
 public record IngestJob(String id, String itemId, Kind kind, State state, int attempts, double progress,
-                        long createdAt, Long startedAt, Long finishedAt, String log) {
+                        long createdAt, Long startedAt, Long finishedAt, String log, Tier tier) {
 
     /** {@code ingest_jobs.kind}. */
     public enum Kind {
@@ -33,7 +35,13 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
          */
         REENCODE,
         /** Fetch a purged YouTube item again into the same row. */
-        REFETCH;
+        REFETCH,
+        /**
+         * Re-encode a ready item that was made with the quick preset with the quality preset, once
+         * it is in a library. Like {@link #REENCODE} the item stays {@code ready} meanwhile. The
+         * lowest priority: runs only when nothing else is queued, and gives way to a new job.
+         */
+        QUALITY;
 
         /** The value stored in the database. */
         public String wire() {
@@ -51,7 +59,39 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
 
         /** Whether this kind drives the item's status ({@code processing → ready | failed}). */
         public boolean ownsItemStatus() {
-            return this != REENCODE;
+            return this != REENCODE && this != QUALITY;
+        }
+
+        /**
+         * Whether this kind replaces the files of a ready item (re-encodes): it gives way to a new
+         * job when every worker is busy ({@link IngestQueue}), and waits to publish while the item
+         * is the current or next entry of a room.
+         */
+        public boolean replacesReadyFiles() {
+            return !ownsItemStatus();
+        }
+    }
+
+    /** {@code ingest_jobs.tier}: which x264 preset a job should use ({@code docs/library-and-ingest.md#presets}). */
+    public enum Tier {
+        /** {@code ingest.quickPreset}: the item is wanted in a room now. */
+        QUICK,
+        /** {@code ingest.qualityPreset}: the item is for a library. */
+        QUALITY;
+
+        /** The value stored in the database. */
+        public String wire() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+
+        /** The tier with this stored value; null for null or an unknown value. */
+        public static Tier fromWire(String s) {
+            for (Tier t : values()) {
+                if (t.wire().equals(s)) {
+                    return t;
+                }
+            }
+            return null;
         }
     }
 

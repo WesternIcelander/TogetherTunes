@@ -169,8 +169,11 @@ abstract class SharesContract {
     @Test
     void aShareAddsTheItemToTheRecipientsLibrary() throws Exception {
         String song = song("Song");
+        List<String> told = new java.util.ArrayList<>();
+        shares.libraryAddListener(told::add); // the server queues the quality re-encode there
         clock.set(1_800_000_100_000L);
         Shares.Share s = share(alice, song, "bob.b", "  Listen\r\n\r\n\r\nto  this \t ");
+        assertEquals(List.of(song), told);
         assertEquals(song, s.item().id());
         assertEquals("Song", s.item().title());
         assertEquals("ready", s.item().status());

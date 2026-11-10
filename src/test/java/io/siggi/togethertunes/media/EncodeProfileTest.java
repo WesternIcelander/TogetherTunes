@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
 import java.io.File;
@@ -57,12 +58,33 @@ class EncodeProfileTest {
         assertEquals("60", option(args, "-keyint_min"));
         assertEquals("0", option(args, "-sc_threshold"));
         assertEquals("expr:gte(t,n_forced*2)", option(args, "-force_key_frames"));
-        assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1", option(args, "-x264-params"));
+        assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1:ref=4:chroma-qp-offset=-2", option(args, "-x264-params"));
         assertFalse(args.contains("-crf"), "constant bitrate, no CRF");
         assertEquals(EncodeProfile.GOP_FRAMES, profile.fps() * EncodeProfile.GOP_MS / 1000);
         for (String arg : args) {
             assertFalse(arg.equals("-i") || arg.equals("-vf") || arg.equals("-r") || arg.equals("-s"),
                     "encoder options only: " + arg);
+        }
+    }
+
+    /** Each preset: its name and chroma offset; nothing else differs from the reference preset's list. */
+    @Test
+    void presetsChangeOnlyThePresetAndTheChromaOffset() {
+        OutputEncoding encoding = OutputEncoding.DEFAULT;
+        List<String> reference = EncodeProfile.videoArgs(encoding);
+        assertEquals(reference, EncodeProfile.videoArgs(encoding, X264Preset.REFERENCE));
+        for (X264Preset preset : X264Preset.values()) {
+            List<String> args = EncodeProfile.videoArgs(encoding, preset);
+            assertEquals(preset.id(), option(args, "-preset"));
+            String offset = preset == X264Preset.VERYFAST || preset == X264Preset.FASTER ? "-2" : "0";
+            assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1:ref=4:chroma-qp-offset=" + offset, option(args, "-x264-params"));
+            assertEquals(reference.size(), args.size());
+            for (int i = 0; i < args.size(); i++) {
+                if (!reference.get(i).equals(args.get(i))) {
+                    assertTrue(args.get(i - 1).equals("-preset") || args.get(i - 1).equals("-x264-params"),
+                            preset + ": " + args.get(i - 1) + " differs");
+                }
+            }
         }
     }
 
@@ -129,6 +151,18 @@ class EncodeProfileTest {
         List<String> args = new ArrayList<>(List.of("-f", "lavfi", "-i", source,
                 "-vf", EncodeProfile.scaleFilter(profile)));
         args.addAll(EncodeProfile.videoArgs(profile));
+        args.addAll(List.of("-an", out.toString()));
+        tools.ffmpeg(args).run();
+        return out;
+    }
+
+    /** {@link #encodeVideo} with an x264 preset. */
+    private Path encodeVideo(Tools tools, OutputEncoding profile, X264Preset preset, String name, String source)
+            throws Exception {
+        Path out = dir.resolve(name + ".mp4");
+        List<String> args = new ArrayList<>(List.of("-f", "lavfi", "-i", source,
+                "-vf", EncodeProfile.scaleFilter(profile)));
+        args.addAll(EncodeProfile.videoArgs(profile, preset));
         args.addAll(List.of("-an", out.toString()));
         tools.ffmpeg(args).run();
         return out;
@@ -233,6 +267,28 @@ class EncodeProfileTest {
         String reference = extradata(tools, card);
         assertEquals(reference, extradata(tools, landscape24), "24 fps landscape vs card");
         assertEquals(reference, extradata(tools, portrait60), "60 fps portrait vs card");
+    }
+
+    /**
+     * Every preset an admin can pick (quick or quality) gives the card's extradata on a moving
+     * source, so quick and quality encodes splice together (invariant 1;
+     * docs/library-and-ingest.md#presets), and keeps the GOP structure.
+     */
+    @ParameterizedTest
+    @EnumSource(OutputProfile.class)
+    @Timeout(300)
+    void everyPresetSharesTheExtradata(OutputProfile p) throws Exception {
+        OutputEncoding profile = OutputEncoding.defaultFor(p);
+        Tools tools = tools();
+        String reference = extradata(tools, encodeCard(tools, profile));
+        for (X264Preset preset : X264Preset.values()) {
+            Path out = encodeVideo(tools, profile, preset, "preset-" + preset,
+                    "testsrc2=size=640x360:rate=30:duration=2.5");
+            assertEquals(reference, extradata(tools, out), preset + " vs the card");
+            if (preset == X264Preset.DEFAULT_QUALITY || preset == X264Preset.VERYSLOW) {
+                checkStructure(tools, out, profile, 75);
+            }
+        }
     }
 
     /**

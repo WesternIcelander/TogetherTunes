@@ -25,6 +25,7 @@ import io.siggi.togethertunes.auth.SetupApi;
 import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.RateLimiter;
@@ -82,6 +83,14 @@ class AdminApiTest {
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         AdminApi adminApi = new AdminApi(database, accounts, new Users(database, passwords, clock), new Roles(database),
                 new Permissions(database, settings), settings);
+        // as Main wires it, with a fake check: this "x264 build" can't do veryslow with the reference avcC
+        io.siggi.togethertunes.ingest.EncodePresets presets = new io.siggi.togethertunes.ingest.EncodePresets(
+                p -> p != X264Preset.VERYSLOW, settings::ingestQuickPreset, settings::ingestQualityPreset);
+        adminApi.settingCheck((key, value) -> {
+            if (value instanceof X264Preset preset) {
+                presets.validate(key.name(), preset);
+            }
+        });
         TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
                 new Permissions(database, settings), actors, new io.siggi.togethertunes.auth.IdentityTickets(), clock);
         server = WebServer.start("127.0.0.1", 0,
@@ -530,11 +539,30 @@ class AdminApiTest {
         assertTrue(settings.overlayEnabled());
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"registration.mode\":\"sometimes\"}", admin));
 
+        // x264 presets: the allowed ones as options; one that fails the avcC check is refused.
+        JsonObject quality = find(call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items"),
+                "ingest.qualityPreset");
+        assertEquals("enum", quality.get("type").getAsString());
+        assertEquals("library", quality.get("group").getAsString());
+        assertEquals("slow", quality.get("value").getAsString());
+        assertEquals(List.of("veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"),
+                strings(quality.getAsJsonArray("options")));
+        call(200, "PATCH", "/api/admin/settings", "{\"ingest.qualityPreset\":\"slower\"}", admin);
+        assertEquals(X264Preset.SLOWER, settings.ingestQualityPreset());
+        JsonObject refused = call(400, "PATCH", "/api/admin/settings",
+                "{\"ingest.quickPreset\":\"faster\",\"ingest.qualityPreset\":\"veryslow\"}", admin);
+        assertError("invalid_setting", refused);
+        assertTrue(refused.toString().contains("veryslow doesn't produce the same"), refused.toString());
+        assertEquals(X264Preset.VERYFAST, settings.ingestQuickPreset(), "all or nothing");
+        assertEquals(X264Preset.SLOWER, settings.ingestQualityPreset());
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"ingest.quickPreset\":\"ultrafast\"}", admin));
+        call(200, "PATCH", "/api/admin/settings", "{\"ingest.qualityPreset\":null}", admin);
+
         // null resets to the default.
         call(200, "PATCH", "/api/admin/settings", "{\"overlay.enabled\":null,\"ytdlp.cookiesFile\":null}", admin);
         assertFalse(settings.overlayEnabled());
         assertEquals(null, settings.ytdlpCookiesFile());
-        assertEquals(3, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
+        assertEquals(5, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
 
         // Feature switches show up in the role editor.
         call(200, "PATCH", "/api/admin/settings", "{\"ytdlp.enabled\":false}", admin);

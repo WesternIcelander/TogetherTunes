@@ -2,15 +2,17 @@ package io.siggi.togethertunes.media;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import java.util.List;
 
 /**
  * The x264 arguments shared by every encode that feeds the packager: mezzanines, cards and
- * overlay re-encodes (invariant 1). Their H.264 extradata must be byte-identical, and the x264
- * preset changes SPS fields, so these lists are the <em>only</em> place the encoder settings
+ * overlay re-encodes (invariant 1). Their H.264 extradata must be byte-identical, so these lists
+ * plus the per-preset table ({@link X264Preset}) are the <em>only</em> place the encoder settings
  * live. Never add, drop or reorder encoder arguments next to them at a call site.
  *
- * <p>Every list gives: libx264, preset veryfast, High profile, yuv420p, no B-frames (so PTS =
+ * <p>Every list gives: libx264, the chosen preset (with its {@code chroma-qp-offset} and
+ * {@code ref=4} pinned, so all presets write the same SPS and PPS), High profile, yuv420p, no B-frames (so PTS =
  * DTS), closed 60-frame GOPs with an IDR forced every 2 s from t = 0 and no scene-cut keyframes
  * (invariant 2), constant bitrate at the configured rate with filler NAL padding (so cards and
  * mezzanines alike are exactly CBR; {@code docs/library-and-ingest.md#the-mezzanine-profile}).
@@ -67,15 +69,25 @@ public final class EncodeProfile {
     private EncodeProfile() {
     }
 
+    /** Reference frames, pinned for every preset (they change the SPS); fits level 4.1's DPB at 1080p. */
+    public static final int REF_FRAMES = 4;
+
+    /** {@link #videoArgs(OutputEncoding, X264Preset)} with the {@link X264Preset#REFERENCE reference preset} (cards). */
+    public static List<String> videoArgs(OutputEncoding encoding) {
+        return videoArgs(encoding, X264Preset.REFERENCE);
+    }
+
     /**
-     * The x264 argument list for {@code encoding} (immutable): the profile's H.264 level and
+     * The x264 argument list for {@code encoding} and {@code preset} (immutable): the preset with
+     * {@code ref=4} and the preset's {@code chroma-qp-offset} (so every preset gives the same avcC),
+     * the profile's H.264 level and
      * constant bitrate {@code R = encoding.videoBitrateKbps()}: {@code -b:v R -minrate R -maxrate R
      * -bufsize R/2} with {@code nal-hrd=cbr:vbv-init=1}, so x264 signals CBR in the SPS (VUI HRD
      * parameters, which carry the rate and buffer size: another bitrate is another avcC) and pads
      * every frame up to the rate with filler data NAL units (type 12). The VBV buffer is
-     * {@link #BUFSIZE_MS} of video, started full. Equal encodings give equal lists.
+     * {@link #BUFSIZE_MS} of video, started full. Equal encodings and presets give equal lists.
      */
-    public static List<String> videoArgs(OutputEncoding encoding) {
+    public static List<String> videoArgs(OutputEncoding encoding, X264Preset preset) {
         String level = switch (encoding.profile()) {
             case P720_30 -> "4.0";
             case P1080_30 -> "4.1";
@@ -84,7 +96,7 @@ public final class EncodeProfile {
         String bufsize = (encoding.videoBitrateKbps() * BUFSIZE_MS / 1000) + "k";
         return List.of(
                 "-c:v", "libx264",
-                "-preset", "veryfast",
+                "-preset", preset.id(),
                 "-profile:v", "high",
                 "-level:v", level,
                 "-pix_fmt", "yuv420p",
@@ -98,7 +110,8 @@ public final class EncodeProfile {
                 "-keyint_min", Integer.toString(GOP_FRAMES),
                 "-sc_threshold", "0",
                 "-force_key_frames", "expr:gte(t,n_forced*" + (GOP_MS / 1000) + ")",
-                "-x264-params", "open-gop=0:nal-hrd=cbr:vbv-init=1",
+                "-x264-params", "open-gop=0:nal-hrd=cbr:vbv-init=1:ref=" + REF_FRAMES
+                        + ":chroma-qp-offset=" + preset.chromaQpOffset(),
                 "-b:v", rate,
                 "-minrate", rate,
                 "-maxrate", rate,

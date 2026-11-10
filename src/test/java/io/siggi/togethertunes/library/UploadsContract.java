@@ -142,10 +142,15 @@ abstract class UploadsContract {
         }
     }
 
+    /** Items the uploads told their library listener about. */
+    private final List<String> libraryAdds = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private Uploads uploads() {
         Tools t = tools != null ? tools : new Tools(null, null, null);
-        return new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
+        Uploads u = new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
+        u.libraryAddListener(libraryAdds::add);
+        return u;
     }
 
     private WebServer start(Uploads u) throws Exception {
@@ -502,12 +507,15 @@ abstract class UploadsContract {
         assertEquals(sha256(mp3), row.get("content_sha256"));
         assertEquals(aliceId, row.get("added_by_user_id"));
         assertEquals("pending", row.get("status"));
-        assertEquals("720p30-3000k", row.get("output_profile"));
+        assertEquals("720p30-3000k-v2", row.get("output_profile"));
         assertEquals(clock.millis(), ((Number) row.get("last_referenced_at")).longValue());
         assertEquals(List.of("upload"), queuedJobs(itemId));
         Path staged = IngestPipeline.stagingDir(data, itemId).resolve("source.mp3");
         assertArrayEquals(mp3, Files.readAllBytes(staged));
         assertEquals("upload", libraryVia(aliceId, itemId));
+        // into a library: the job asks for the quality preset, and the library listener hears it
+        assertEquals(1L, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ? AND tier = 'quality'", itemId));
+        assertEquals(List.of(itemId), libraryAdds);
         assertEquals(List.of(), partFiles());
         assertEquals(done, expect(200, complete(alice, id, null)).json(), "complete is repeatable");
 
@@ -517,6 +525,7 @@ abstract class UploadsContract {
         assertEquals(itemId, dup.get("itemId").getAsString());
         assertTrue(dup.get("deduplicated").getAsBoolean());
         assertNull(libraryVia(bobId, itemId));
+        assertEquals(List.of(itemId), libraryAdds, "no library entry, no call");
         assertEquals("Tagged Song", item(itemId).get("title"), "a duplicate doesn't change the item");
         assertEquals(1, count("SELECT COUNT(*) FROM items"));
         assertEquals(1, count("SELECT COUNT(*) FROM ingest_jobs"));

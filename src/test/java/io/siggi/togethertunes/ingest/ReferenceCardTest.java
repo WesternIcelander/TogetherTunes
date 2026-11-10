@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.media.EncodeProfile;
 import java.io.File;
 import java.io.IOException;
@@ -138,7 +139,7 @@ class ReferenceCardTest {
         assertFalse(Arrays.equals(p720.avcC(), p1080.avcC()));
         ReferenceCard.AvcCMismatchException e = assertThrows(ReferenceCard.AvcCMismatchException.class,
                 () -> p720.verify(p1080.avcC(), "mezz.mp4"));
-        assertTrue(e.getMessage().startsWith("mezz.mp4: avcC differs from the 720p30-3000k reference card"), e.getMessage());
+        assertTrue(e.getMessage().startsWith("mezz.mp4: avcC differs from the 720p30-3000k-v2 reference card"), e.getMessage());
         assertThrows(ReferenceCard.AvcCMismatchException.class, () -> p720.verify(null, "x"));
     }
 
@@ -150,8 +151,8 @@ class ReferenceCardTest {
         Path cards = dir.resolve("cards");
         ReferenceCard r3000 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         ReferenceCard r4000 = ReferenceCard.ensure(tools, cards, new OutputEncoding(OutputProfile.P720_30, 4000), null);
-        assertEquals(cards.resolve("720p30-3000k").resolve(ReferenceCard.CARD_FILE), r3000.card());
-        assertEquals(cards.resolve("720p30-4000k").resolve(ReferenceCard.CARD_FILE), r4000.card());
+        assertEquals(cards.resolve("720p30-3000k-v2").resolve(ReferenceCard.CARD_FILE), r3000.card());
+        assertEquals(cards.resolve("720p30-4000k-v2").resolve(ReferenceCard.CARD_FILE), r4000.card());
         assertTrue(r4000.created());
         assertFalse(Arrays.equals(r3000.avcC(), r4000.avcC()));
         assertThrows(ReferenceCard.AvcCMismatchException.class, () -> r3000.verify(r4000.avcC(), "mezz.mp4"));
@@ -185,12 +186,51 @@ class ReferenceCardTest {
         assertThrows(IOException.class, () -> ReferenceCard.ensure(tools, cards, profile, null));
     }
 
+    /**
+     * The startup check of the configured presets against the real encoder: every preset matches
+     * the reference; with a stored reference from "another encoder" none does, and
+     * {@link EncodePresets} then falls back (the forced-mismatch case).
+     */
+    @Test
+    @Timeout(180)
+    void presetsMatchTheReference() throws Exception {
+        Tools tools = tools();
+        Path cards = dir.resolve("cards");
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
+        for (X264Preset preset : X264Preset.values()) {
+            assertTrue(ref.presetMatches(tools, cards, preset), preset.id());
+        }
+        try (var files = Files.list(cards.resolve(profile.id()))) {
+            assertEquals(List.of(ReferenceCard.AVCC_FILE, ReferenceCard.CARD_FILE),
+                    files.map(f -> f.getFileName().toString()).sorted().toList(), "no temporary files left");
+        }
+        EncodePresets presets = EncodePresets.checkedAgainst(ref, tools, cards, () -> X264Preset.FASTER,
+                () -> X264Preset.SLOWER);
+        assertEquals(List.of(), presets.checkConfigured());
+        assertEquals(X264Preset.SLOWER, presets.quality());
+
+        // a stored reference this encoder doesn't reproduce: no preset matches, all fall back
+        Path avcFile = cards.resolve(profile.id()).resolve(ReferenceCard.AVCC_FILE);
+        byte[] other = ref.avcC();
+        other[other.length - 1] ^= 0x01;
+        Files.write(avcFile, other);
+        ReferenceCard changed = ReferenceCard.ensure(tools, cards, profile, null);
+        assertFalse(changed.presetMatches(tools, cards, X264Preset.SLOW));
+        assertFalse(changed.presetMatches(tools, cards, X264Preset.VERYFAST));
+        EncodePresets fallback = EncodePresets.checkedAgainst(changed, tools, cards, () -> X264Preset.FASTER,
+                () -> X264Preset.SLOW);
+        assertEquals(2, fallback.checkConfigured().size());
+        assertEquals(X264Preset.REFERENCE, fallback.quick());
+        assertEquals(X264Preset.REFERENCE, fallback.quality());
+    }
+
     @Test
     void missingToolsFail() {
         Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe", null);
         ToolException e = assertThrows(ToolException.class,
                 () -> ReferenceCard.ensure(none, dir.resolve("cards"), OutputEncoding.defaultFor(OutputProfile.P720_30), null));
         assertEquals(ToolException.Kind.START_FAILED, e.kind());
-        assertFalse(Files.exists(dir.resolve("cards").resolve("720p30-3000k").resolve(ReferenceCard.AVCC_FILE)));
+        assertFalse(Files.exists(dir.resolve("cards").resolve("720p30-3000k-v2").resolve(ReferenceCard.AVCC_FILE)));
     }
 }

@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.media.EncodeProfile;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -39,7 +40,17 @@ public final class CardEncoder {
      */
     public static void encodePng(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
             throws ToolException, InterruptedException {
-        ToolCall call = tools.ffmpeg(command(png, out, encoding)).timeout(ENCODE_TIMEOUT);
+        encodePng(tools, png, out, encoding, X264Preset.REFERENCE, log);
+    }
+
+    /**
+     * {@link #encodePng(Tools, Path, Path, OutputEncoding, JobLog)} with another x264 preset (the
+     * startup and admin preset check, {@link ReferenceCard#presetMatches}). Cards themselves always
+     * use {@link X264Preset#REFERENCE}.
+     */
+    public static void encodePng(Tools tools, Path png, Path out, OutputEncoding encoding, X264Preset preset,
+                                 JobLog log) throws ToolException, InterruptedException {
+        ToolCall call = tools.ffmpeg(command(png, out, encoding, preset)).timeout(ENCODE_TIMEOUT);
         if (log != null) {
             call.log(log);
         }
@@ -48,10 +59,14 @@ public final class CardEncoder {
 
     /** The ffmpeg arguments of the card command (without the {@code -hide_banner -nostdin} prefix). */
     static List<String> command(Path png, Path out, OutputEncoding encoding) {
+        return command(png, out, encoding, X264Preset.REFERENCE);
+    }
+
+    static List<String> command(Path png, Path out, OutputEncoding encoding, X264Preset preset) {
         List<String> args = new ArrayList<>(List.of("-y", "-loop", "1", "-framerate", Integer.toString(encoding.fps()),
                 "-i", png.toString(), "-t", Integer.toString(EncodeProfile.GOP_MS / 1000),
                 "-vf", EncodeProfile.scaleFilter(encoding)));
-        args.addAll(EncodeProfile.videoArgs(encoding));
+        args.addAll(EncodeProfile.videoArgs(encoding, preset));
         args.addAll(List.of("-an", "-f", "mp4", out.toString()));
         return args;
     }

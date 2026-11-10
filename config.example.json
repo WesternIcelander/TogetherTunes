@@ -14,7 +14,9 @@
   },
   "ingest": {
     "maxUploadBytes": "4 GiB",
-    "maxDurationSeconds": 1800
+    "maxDurationSeconds": 1800,
+    "quickPreset": "veryfast",
+    "qualityPreset": "slow"
   },
   "overlay": {
     "workers": 1,

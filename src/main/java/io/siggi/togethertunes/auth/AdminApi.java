@@ -82,7 +82,9 @@ import java.util.Set;
  *       yt-dlp cookies file) is left out.</li>
  *   <li>{@code PATCH /api/admin/settings} {@code {"key": value, ...}} → the same as {@code GET}.
  *       {@code null} resets a setting to its default. All or nothing: {@code 400 unknown_setting}
- *       or {@code 400 invalid_setting} change nothing.</li>
+ *       or {@code 400 invalid_setting} change nothing. {@code invalid_setting} also covers a value
+ *       the server can't use, e.g. an x264 preset that doesn't give the reference avcC
+ *       ({@link #settingCheck}).</li>
  * </ul>
  */
 public final class AdminApi {
@@ -103,6 +105,14 @@ public final class AdminApi {
     private final Permissions permissions;
     private final Settings settings;
     private volatile Runnable settingsListener = () -> { };
+    private volatile SettingCheck settingCheck = (key, value) -> { };
+
+    /** A check a new setting value must pass beyond its own validation (e.g. an x264 preset that works). */
+    @FunctionalInterface
+    public interface SettingCheck {
+        /** @throws IllegalArgumentException with a message for the admin if {@code value} can't be used */
+        void check(SettingKey<?> key, Object value);
+    }
 
     public AdminApi(Database db, Accounts accounts, Users users, Roles roles, Permissions permissions,
                     Settings settings) {
@@ -120,6 +130,14 @@ public final class AdminApi {
      */
     public void settingsListener(Runnable listener) {
         this.settingsListener = Objects.requireNonNull(listener);
+    }
+
+    /**
+     * Sets a check every value set through {@code PATCH /api/admin/settings} must pass (on the
+     * request thread, before anything is stored; may take a moment, e.g. a test encode).
+     */
+    public void settingCheck(SettingCheck check) {
+        this.settingCheck = check == null ? (key, value) -> { } : check;
     }
 
     public void register(Router router) {
@@ -432,6 +450,12 @@ public final class AdminApi {
         Map<String, JsonElement> set = new LinkedHashMap<>();
         List<String> reset = new ArrayList<>();
         try {
+            for (Map.Entry<String, JsonElement> e : body.entrySet()) {
+                if (!e.getValue().isJsonNull()) {
+                    SettingKey<?> key = Settings.KEYS.get(e.getKey());
+                    settingCheck.check(key, key.decode(e.getValue()));
+                }
+            }
             db.write(c -> {
                 for (Map.Entry<String, JsonElement> e : body.entrySet()) {
                     SettingKey<?> key = Settings.KEYS.get(e.getKey());

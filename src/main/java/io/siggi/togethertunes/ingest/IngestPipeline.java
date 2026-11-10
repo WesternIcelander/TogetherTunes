@@ -2,8 +2,10 @@ package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
+import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.SampleIndex;
 import java.awt.image.BufferedImage;
@@ -18,12 +20,14 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -79,6 +83,21 @@ import java.util.regex.Pattern;
  * {@code original_gain_db} (the web client may play it); a video item's or a YouTube item's
  * original only feeds re-encodes. A re-encode from the original keeps it; one from the previous
  * encode (no original) clears the {@code original_*} columns.
+ *
+ * <p><b>Presets</b> ({@code docs/library-and-ingest.md#presets}). Each job picks its x264 preset
+ * when it starts ({@link #tier}): the quick preset when a room wants the item now, the quality
+ * preset for an item that is only wanted for a library. A {@code quality} job re-encodes a ready
+ * item that was made with the quick preset, from its original (a YouTube item without one is
+ * downloaded again; an item with neither is left as it is, since re-encoding its quick encode
+ * would only lose quality). The preset used and whether it was the quality encode are recorded
+ * on the item ({@code encode_preset}, {@code encode_quality}).
+ *
+ * <p><b>Swapping files under a playing item.</b> A {@code reencode} or {@code quality} job doesn't
+ * publish while its item is the current or next entry of any room ({@link #inUse}): it waits (up
+ * to {@link #DEFAULT_MAX_PUBLISH_WAIT}) until the item has finished playing everywhere, so the
+ * web players' range requests never mix bytes of the old and the new {@code mezz.mp4}. The
+ * program output is safe either way: it keeps reading the files it opened, which the rename
+ * leaves intact.
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -108,6 +127,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
     static final double MEASURE_SHARE = 0.15;
     static final double ENCODE_SHARE = 0.75;
 
+    /** How often a re-encode looks again whether its item is still playing before publishing. */
+    static final Duration DEFAULT_PUBLISH_POLL = Duration.ofSeconds(5);
+    /**
+     * How long a re-encode waits at most for its item to stop being current or next before it
+     * publishes anyway (e.g. a room left paused on the item for hours).
+     */
+    static final Duration DEFAULT_MAX_PUBLISH_WAIT = Duration.ofHours(1);
+
     private static final Pattern YTDLP_PERCENT = Pattern.compile("^\\[download\\]\\s+(\\d+(?:\\.\\d+)?)%");
 
     private final Tools tools;
@@ -116,6 +143,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final ReferenceCard reference;
     private final long maxDurationUs;
     private final Supplier<String> cookiesFile;
+    private final EncodePresets presets;
+    private volatile Predicate<String> inUse = id -> false;
+    private volatile Duration publishPoll = DEFAULT_PUBLISH_POLL;
+    private volatile Duration maxPublishWait = DEFAULT_MAX_PUBLISH_WAIT;
 
     /** Without a cookies file. */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
@@ -132,12 +163,40 @@ public final class IngestPipeline implements IngestQueue.Handler {
      */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
                           int maxDurationSec, Supplier<String> cookiesFile) {
+        this(tools, dataDir, items, reference, maxDurationSec, cookiesFile,
+                EncodePresets.fixed(X264Preset.REFERENCE, X264Preset.REFERENCE));
+    }
+
+    /** @param presets the quick and quality x264 presets ({@code ingest.quickPreset}, {@code ingest.qualityPreset}) */
+    public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
+                          int maxDurationSec, Supplier<String> cookiesFile, EncodePresets presets) {
+        this.presets = Objects.requireNonNull(presets);
         this.tools = Objects.requireNonNull(tools);
         this.dataDir = Objects.requireNonNull(dataDir);
         this.items = Objects.requireNonNull(items);
         this.reference = reference;
         this.maxDurationUs = maxDurationSec * 1_000_000L;
         this.cookiesFile = Objects.requireNonNull(cookiesFile);
+    }
+
+    /**
+     * Sets which items are playing now (the current or next entry of a room; the rooms'
+     * {@code PlayingItems}): re-encodes wait to publish until their item isn't. Set once the rooms
+     * exist; until then nothing counts as playing.
+     */
+    public void inUse(Predicate<String> playing) {
+        this.inUse = playing == null ? id -> false : playing;
+    }
+
+    /** Test hook: how often and how long a re-encode waits for its item to stop playing. */
+    void publishWait(Duration poll, Duration max) {
+        this.publishPoll = Objects.requireNonNull(poll);
+        this.maxPublishWait = Objects.requireNonNull(max);
+    }
+
+    /** The presets this pipeline encodes with. */
+    public EncodePresets presets() {
+        return presets;
     }
 
     /** The staging directory of an item's upload: {@code <data>/tmp/ingest/<itemId>}. */
@@ -182,6 +241,33 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 return;
             }
         }
+        if (job.kind() == Kind.QUALITY) {
+            if (!"ready".equals(item.status())) {
+                log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
+                return;
+            }
+            if (item.encodeQuality()) {
+                log.append("[ingest] the item already has its quality encode (" + item.encodePreset() + ")");
+                return;
+            }
+            if ("audio".equals(item.kind())) {
+                log.append("[ingest] an audio item has no video to re-encode");
+                items.markQuality(item.id());
+                return;
+            }
+            X264Preset quality = presets.quality();
+            if (quality.id().equals(item.encodePreset()) && reference.encoding().id().equals(item.outputProfile())) {
+                log.append("[ingest] the item was already encoded with the quality preset " + quality);
+                items.markQuality(item.id());
+                return;
+            }
+            if (sourceKind(job.kind(), item, itemDir(dataDir, item.id())) == SourceKind.PREVIOUS) {
+                log.append("[ingest] the item has no original to re-encode from (and isn't from YouTube);"
+                        + " re-encoding its quick encode would only lose quality, so it stays as it is");
+                items.markQuality(item.id());
+                return;
+            }
+        }
         Path scratch = scratchDir(dataDir, job.id());
         Path work = dataDir.media().resolve(WORK_PREFIX + job.id());
         deleteTree(scratch);
@@ -217,7 +303,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return switch (kind) {
             case UPLOAD -> SourceKind.STAGED;
             case YOUTUBE, REFETCH -> SourceKind.DOWNLOAD;
-            case REENCODE -> {
+            case REENCODE, QUALITY -> {
                 String original = item.originalFile();
                 if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))) {
                     yield SourceKind.ORIGINAL;
@@ -245,16 +331,39 @@ public final class IngestPipeline implements IngestQueue.Handler {
         throw new IngestFailure("The item has no files to re-encode from");
     }
 
+    /**
+     * The preset tier of a job, decided when it starts: a {@code quality} job uses the quality
+     * preset; any other job uses it only if the item is wanted for a library and no room wants it
+     * now (it is queued, suggested or playing nowhere): a new item whose job was queued with the
+     * quality tier (added straight to a library), or a {@code reencode} of an item in a library.
+     * Everything else (requests in a room, guests, playlists, jobs queued before tiers existed)
+     * uses the quick preset.
+     */
+    Tier tier(IngestJob job, IngestItems.Item item) throws java.sql.SQLException {
+        return switch (job.kind()) {
+            case QUALITY -> Tier.QUALITY;
+            case REENCODE -> items.inLibrary(item.id()) && !items.wantedInRoom(item.id()) ? Tier.QUALITY : Tier.QUICK;
+            default -> job.tier() == Tier.QUALITY && !items.wantedInRoom(item.id()) ? Tier.QUALITY : Tier.QUICK;
+        };
+    }
+
     private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work) throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
         OutputEncoding profile = reference.encoding();
-        boolean reencode = job.kind() == Kind.REENCODE;
+        boolean reencode = job.kind().replacesReadyFiles();
+        Tier tier = tier(job, item);
+        X264Preset preset = presets.preset(tier);
+        boolean qualityEncode = preset == presets.quality();
+        log.append("[ingest] x264 preset " + preset + " (" + tier.wire() + (qualityEncode && tier == Tier.QUICK
+                ? ", the same as the quality preset" : "") + ")");
         Path staging = stagingDir(dataDir, item.id());
         Path itemDir = itemDir(dataDir, item.id());
         SourceKind sourceKind = sourceKind(job.kind(), item, itemDir);
         if (reencode) {
-            log.append("[ingest] re-encoding for " + profile.id() + " (was " + item.outputProfile() + ") from "
+            log.append("[ingest] " + (job.kind() == Kind.QUALITY ? "quality re-encode" : "re-encoding")
+                    + " for " + profile.id() + " (was " + item.outputProfile() + ", preset "
+                    + (item.encodePreset() == null ? "unknown" : item.encodePreset()) + ") from "
                     + switch (sourceKind) {
                         case DOWNLOAD -> "a new download";
                         case ORIGINAL -> "the original " + item.originalFile();
@@ -273,7 +382,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 try {
                     source = download(item, scratch, log, range(ctx, 0, base));
                 } catch (IngestFailure | ToolException | IOException e) {
-                    if (!reencode || Thread.currentThread().isInterrupted()) {
+                    if (job.kind() != Kind.REENCODE || Thread.currentThread().isInterrupted()) {
                         throw e;
                     }
                     source = previousSource(itemDir);
@@ -344,7 +453,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path mezz = work.resolve(MEZZ);
         Path audio = work.resolve(AUDIO);
         List<String> encode = video
-                ? videoEncodeArgs(source, probe, loudness, profile, mezz)
+                ? videoEncodeArgs(source, probe, loudness, profile, preset, mezz)
                 : audioEncodeArgs(source, probe, loudness, audio);
         tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(expectedUs))).run();
         double after = encodeTo;
@@ -415,13 +524,39 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // publish
         step(log, "publish");
+        if (reencode) {
+            waitUntilNotPlaying(item.id(), ctx);
+        }
         publish(work, itemDir, item.id(), job.id());
         Double lufs = fromPrevious ? item.loudnessLufs() : loudness.usable() ? round2(loudness.inputI()) : null;
-        items.published(item.id(), video, durationUs / 1000, profile, lufs, original);
+        // an audio item has no video, so its files are as good as they get with any preset
+        items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video, lufs, original);
         if (!reencode) {
             deleteQuietly(staging);
         }
         ctx.progress(1);
+    }
+
+    /**
+     * Waits while the item is the current or next entry of a room, so its files are swapped only
+     * between plays; gives up waiting after {@code maxPublishWait}.
+     */
+    private void waitUntilNotPlaying(String itemId, IngestQueue.Context ctx) throws InterruptedException {
+        if (!inUse.test(itemId)) {
+            return;
+        }
+        JobLog log = ctx.log();
+        log.append("[ingest] the item is playing (current or next in a room); publishing once it has finished");
+        ctx.flush();
+        long deadline = System.nanoTime() + maxPublishWait.toNanos();
+        while (inUse.test(itemId)) {
+            if (System.nanoTime() - deadline >= 0) {
+                log.append("[ingest] still playing after " + maxPublishWait.toMinutes() + " min; publishing anyway");
+                return;
+            }
+            Thread.sleep(publishPoll.toMillis());
+        }
+        log.append("[ingest] the item has finished playing");
     }
 
     private static void step(JobLog log, String name) {
@@ -500,11 +635,16 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     static List<String> videoEncodeArgs(Path source, MediaProbe probe, Loudness.Measurement loudness,
                                         OutputEncoding profile, Path out) {
+        return videoEncodeArgs(source, probe, loudness, profile, X264Preset.REFERENCE, out);
+    }
+
+    static List<String> videoEncodeArgs(Path source, MediaProbe probe, Loudness.Measurement loudness,
+                                        OutputEncoding profile, X264Preset preset, Path out) {
         List<String> args = new ArrayList<>(List.of("-y", "-i", source.toString(),
                 "-map", probe.video().map(), "-map", probe.audio().map(),
                 "-map_metadata", "-1", "-map_chapters", "-1",
                 "-vf", EncodeProfile.scaleFilter(profile)));
-        args.addAll(EncodeProfile.videoArgs(profile));
+        args.addAll(EncodeProfile.videoArgs(profile, preset));
         args.addAll(List.of("-af", loudness.filter()));
         args.addAll(EncodeProfile.AUDIO_ARGS);
         args.addAll(List.of("-movflags", "+faststart", "-f", "mp4", out.toString()));

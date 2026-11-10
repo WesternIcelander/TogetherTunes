@@ -1,12 +1,14 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
+import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -17,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Supplier;
 
 /**
  * The {@code ingest_jobs} table: the DB-backed ingest queue. {@link IngestQueue} runs the jobs;
@@ -34,6 +37,10 @@ import java.util.Optional;
  *
  * <p>Retention: a running job references its item, so a job that finishes or fails (of any
  * kind) sets the item's {@code last_referenced_at} to now ({@link References#touch}).
+ *
+ * <p>Quality re-encodes ({@code docs/library-and-ingest.md#presets}): a ready item in a library
+ * whose files aren't the quality encode gets a {@code quality} job ({@link #enqueueQualityIfNeeded}),
+ * checked when a job for it finishes, when it is added to a library, and at startup.
  */
 public final class IngestJobs {
     /** A job is started at most this many times; a crash during the last start fails it. */
@@ -42,11 +49,13 @@ public final class IngestJobs {
     static final int MAX_ERROR_CHARS = 2000;
 
     private static final String COLUMNS =
-            "id, item_id, kind, state, attempts, progress, created_at, started_at, finished_at, log";
+            "id, item_id, kind, state, attempts, progress, created_at, started_at, finished_at, log, tier";
 
     private final Database db;
     private final Clock clock;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
+    private volatile Runnable enqueueListener = () -> { };
+    private volatile Supplier<X264Preset> qualityPreset;
 
     public IngestJobs(Database db) {
         this(db, Clock.systemUTC());
@@ -64,6 +73,16 @@ public final class IngestJobs {
      * be created together.
      */
     public IngestJob enqueue(String itemId, Kind kind) throws SQLException {
+        return enqueue(itemId, kind, null);
+    }
+
+    /**
+     * {@link #enqueue(String, Kind)} with the preset tier the caller asks for: {@code QUICK} for an
+     * item wanted in a room now, {@code QUALITY} for one added straight to a library, null to
+     * decide when the job starts ({@code docs/library-and-ingest.md#presets}). If the item already
+     * has an unfinished job, that one is returned unchanged.
+     */
+    public IngestJob enqueue(String itemId, Kind kind, Tier tier) throws SQLException {
         Objects.requireNonNull(itemId);
         Objects.requireNonNull(kind);
         return db.write(c -> {
@@ -74,18 +93,127 @@ public final class IngestJobs {
             String id = UuidV7.newId();
             long now = EpochMs.now(clock);
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO ingest_jobs"
-                    + " (id, item_id, kind, state, attempts, progress, created_at) VALUES (?, ?, ?, ?, 0, 0, ?)")) {
+                    + " (id, item_id, kind, state, attempts, progress, created_at, tier) VALUES (?, ?, ?, ?, 0, 0, ?, ?)")) {
                 ps.setString(1, id);
                 ps.setString(2, itemId);
                 ps.setString(3, kind.wire());
                 ps.setString(4, State.QUEUED.wire());
                 ps.setLong(5, now);
+                ps.setString(6, tier == null ? null : tier.wire());
                 ps.executeUpdate();
             }
             if (kind.ownsItemStatus()) {
                 setItemStatus(c, itemId, "pending", null);
             }
-            return new IngestJob(id, itemId, kind, State.QUEUED, 0, 0, now, null, null, null);
+            db.afterCommit(enqueueListener);
+            return new IngestJob(id, itemId, kind, State.QUEUED, 0, 0, now, null, null, null, tier);
+        });
+    }
+
+    /**
+     * Who is told after a job was queued (once the transaction has committed): the ingest queue,
+     * which wakes a worker or makes a re-encode give way ({@link IngestQueue}).
+     */
+    public void enqueueListener(Runnable listener) {
+        this.enqueueListener = listener == null ? () -> { } : listener;
+    }
+
+    /**
+     * Sets where the current quality preset comes from (the effective {@code ingest.qualityPreset},
+     * {@link EncodePresets#quality()}). Until it is set, no {@code quality} jobs are queued.
+     */
+    public void qualityPreset(Supplier<X264Preset> preset) {
+        this.qualityPreset = preset;
+    }
+
+    /**
+     * Queues a {@code quality} job for {@code itemId} if it needs one: the item is a {@code ready}
+     * video item (an audio item has no video to improve), in at least one library, its files aren't the quality encode ({@code encode_quality = 0}) and
+     * weren't made with the current quality preset anyway, and it has no unfinished job (an
+     * unfinished one checks again when it finishes). Joins the caller's transaction.
+     *
+     * @return whether a job was queued
+     */
+    public boolean enqueueQualityIfNeeded(String itemId) throws SQLException {
+        Objects.requireNonNull(itemId);
+        Supplier<X264Preset> preset = qualityPreset;
+        if (preset == null) {
+            return false;
+        }
+        String quality = preset.get().id();
+        return db.write(c -> {
+            if (activeForItem(c, itemId) != null) {
+                return false;
+            }
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items i WHERE id = ? AND "
+                    + NEEDS_QUALITY)) {
+                ps.setString(1, itemId);
+                ps.setString(2, quality);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return false;
+                    }
+                }
+            }
+            enqueue(itemId, Kind.QUALITY, Tier.QUALITY);
+            return true;
+        });
+    }
+
+    /** The items (alias {@code i}) that need a quality encode; one parameter, the quality preset. */
+    private static final String NEEDS_QUALITY = "i.status = 'ready' AND i.kind = 'video' AND i.encode_quality = 0"
+            + " AND (i.encode_preset IS NULL OR i.encode_preset <> ?)"
+            + " AND EXISTS (SELECT 1 FROM library_entries l WHERE l.item_id = i.id)";
+
+    /**
+     * Run at startup, after {@link #enqueueReencodes}: queues a {@code quality} job for every item
+     * that needs one ({@link #enqueueQualityIfNeeded}), e.g. one whose quality job failed or was
+     * cut short by a crash before it could be queued again.
+     *
+     * @return the number of jobs queued
+     */
+    public int enqueueQualityReencodes() throws SQLException {
+        Supplier<X264Preset> preset = qualityPreset;
+        if (preset == null) {
+            return 0;
+        }
+        String quality = preset.get().id();
+        return db.write(c -> {
+            List<String> ids = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE " + NEEDS_QUALITY
+                    + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
+                    + " ORDER BY added_at, id")) {
+                ps.setString(1, quality);
+                ps.setString(2, State.QUEUED.wire());
+                ps.setString(3, State.RUNNING.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getString(1));
+                    }
+                }
+            }
+            for (String itemId : ids) {
+                enqueue(itemId, Kind.QUALITY, Tier.QUALITY);
+            }
+            return ids.size();
+        });
+    }
+
+    /**
+     * Whether a job of a kind that owns its item's status (an upload, import or refetch: someone
+     * is waiting for it) is queued. Re-encodes give way to such a job ({@link IngestQueue}).
+     */
+    public boolean hasQueuedNewItemJob() throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM ingest_jobs WHERE state = ?"
+                    + " AND kind NOT IN (?, ?) LIMIT 1")) {
+                ps.setString(1, State.QUEUED.wire());
+                ps.setString(2, Kind.REENCODE.wire());
+                ps.setString(3, Kind.QUALITY.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next();
+                }
+            }
         });
     }
 
@@ -179,16 +307,18 @@ public final class IngestJobs {
      * progress and marks its item {@code processing}. Returns null if nothing is queued. Safe
      * to call from several workers (and processes): a job is handed to exactly one of them.
      * {@code reencode} jobs come after every other kind, so that a library re-encode after an
-     * output profile change doesn't hold up new uploads and imports.
+     * output profile change doesn't hold up new uploads and imports, and {@code quality} jobs come
+     * last of all.
      */
     public IngestJob claimNext() throws SQLException {
         while (true) {
             IngestJob candidate = db.read(c -> {
                 try (PreparedStatement ps = c.prepareStatement("SELECT " + COLUMNS
                         + " FROM ingest_jobs WHERE state = ?"
-                        + " ORDER BY CASE WHEN kind = ? THEN 1 ELSE 0 END, created_at, id LIMIT 1")) {
+                        + " ORDER BY CASE WHEN kind = ? THEN 2 WHEN kind = ? THEN 1 ELSE 0 END, created_at, id LIMIT 1")) {
                     ps.setString(1, State.QUEUED.wire());
-                    ps.setString(2, Kind.REENCODE.wire());
+                    ps.setString(2, Kind.QUALITY.wire());
+                    ps.setString(3, Kind.REENCODE.wire());
                     try (ResultSet rs = ps.executeQuery()) {
                         return rs.next() ? row(rs) : null;
                     }
@@ -214,7 +344,7 @@ public final class IngestJobs {
                     setItemStatus(c, candidate.itemId(), "processing", null);
                 }
                 return new IngestJob(candidate.id(), candidate.itemId(), candidate.kind(), State.RUNNING,
-                        candidate.attempts() + 1, 0, candidate.createdAt(), now, null, candidate.log());
+                        candidate.attempts() + 1, 0, candidate.createdAt(), now, null, candidate.log(), candidate.tier());
             });
             if (claimed != null) {
                 return claimed;
@@ -240,7 +370,8 @@ public final class IngestJobs {
 
     /**
      * Marks a running job {@code done} (progress 1) and, for kinds that own it, its item
-     * {@code ready}. Returns false if the job wasn't running.
+     * {@code ready}; then queues a quality re-encode if the item needs one
+     * ({@link #enqueueQualityIfNeeded}). Returns false if the job wasn't running.
      */
     public boolean complete(String id, String log) throws SQLException {
         return finish(id, State.DONE, null, log);
@@ -275,6 +406,9 @@ public final class IngestJobs {
             }
             // A running job references its item; it stops doing so now.
             References.touch(c, job.itemId(), now);
+            if (state == State.DONE) {
+                enqueueQualityIfNeeded(job.itemId());
+            }
             return true;
         });
     }
@@ -403,6 +537,6 @@ public final class IngestJobs {
         return new IngestJob(rs.getString("id"), rs.getString("item_id"), Kind.fromWire(rs.getString("kind")),
                 State.fromWire(rs.getString("state")), rs.getInt("attempts"), rs.getDouble("progress"),
                 rs.getLong("created_at"), EpochMs.get(rs, "started_at"), EpochMs.get(rs, "finished_at"),
-                rs.getString("log"));
+                rs.getString("log"), Tier.fromWire(rs.getString("tier")));
     }
 }

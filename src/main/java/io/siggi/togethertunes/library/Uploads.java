@@ -116,6 +116,7 @@ public final class Uploads {
     private final ConcurrentHashMap<String, Session> sessions = new ConcurrentHashMap<>();
     /** Held around the content-hash lookup and the item insert. */
     private final ReentrantLock completeLock = new ReentrantLock();
+    private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
     private volatile long nextSweepAt;
 
     /**
@@ -656,7 +657,7 @@ public final class Uploads {
                 } else {
                     References.touch(c, itemId, now);
                 }
-                jobs.enqueue(itemId, IngestJob.Kind.UPLOAD);
+                jobs.enqueue(itemId, IngestJob.Kind.UPLOAD, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                 if (library) {
                     addToLibrary(c, upload.userId(), itemId, now);
                 }
@@ -706,6 +707,7 @@ public final class Uploads {
             ps.setString(4, "upload");
             ps.executeUpdate();
         }
+        libraryAddListener.addedToLibrary(itemId);
     }
 
     private static void finish(Connection c, String uploadId, String itemId, boolean deduplicated, long now)
@@ -890,5 +892,10 @@ public final class Uploads {
         } catch (UncheckedIOException e) {
             throw e.getCause();
         }
+    }
+
+    /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */
+    public void libraryAddListener(LibraryAddListener listener) {
+        this.libraryAddListener = listener == null ? LibraryAddListener.NONE : listener;
     }
 }

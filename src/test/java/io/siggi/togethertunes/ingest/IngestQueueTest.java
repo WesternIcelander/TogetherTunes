@@ -101,6 +101,70 @@ class IngestQueueTest {
         assertEquals("The video is a live stream", fixtures.itemStatus(bad)[1]);
     }
 
+    /**
+     * With every worker busy on a re-encode, a new job (a request) doesn't wait: the re-encode is
+     * interrupted, put back without counting the attempt, and runs again after the new job.
+     */
+    @Test
+    void aReencodeGivesWayToANewJob() throws Exception {
+        CountDownLatch qualityStarted = new CountDownLatch(1);
+        AtomicInteger qualityRuns = new AtomicInteger();
+        List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
+        IngestQueue q = queue(1, job -> {
+            order.add(job.job().kind().wire());
+            if (job.job().kind() == Kind.QUALITY && qualityRuns.incrementAndGet() == 1) {
+                qualityStarted.countDown();
+                Thread.sleep(60_000); // a long slow-preset encode; interrupted by the new job
+            }
+        }, LONG_POLL);
+        q.start();
+        String libraryItem = fixtures.item("ready");
+        IngestJob quality = q.enqueue(libraryItem, Kind.QUALITY);
+        assertTrue(qualityStarted.await(20, TimeUnit.SECONDS));
+        long t0 = System.nanoTime();
+        IngestJob request = q.enqueue(fixtures.item("pending"), Kind.YOUTUBE);
+        awaitState(request.id(), State.DONE);
+        assertTrue(System.nanoTime() - t0 < TimeUnit.SECONDS.toNanos(15), "the request didn't wait for the re-encode");
+        IngestJob again = awaitState(quality.id(), State.DONE);
+        assertEquals(1, again.attempts(), "giving way isn't a failed attempt");
+        assertTrue(again.log().contains("to make way for a new job"), again.log());
+        assertEquals(List.of("quality", "youtube", "quality"), order);
+        assertEquals("ready", fixtures.itemStatus(libraryItem)[0]);
+    }
+
+    /** A new job never interrupts another new job, and nothing is interrupted while a worker is free. */
+    @Test
+    void onlyReencodesGiveWayAndOnlyWhenAllWorkersAreBusy() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        CountDownLatch bothStarted = new CountDownLatch(2);
+        AtomicInteger interrupted = new AtomicInteger();
+        IngestQueue q = queue(2, job -> {
+            if (job.job().kind() != Kind.YOUTUBE) {
+                bothStarted.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    interrupted.incrementAndGet();
+                    throw e;
+                }
+            }
+        }, LONG_POLL);
+        q.start();
+        IngestJob upload = q.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        // one worker busy, one free: a new re-encode doesn't interrupt anything
+        IngestJob reencode = q.enqueue(fixtures.item("ready"), Kind.REENCODE);
+        assertTrue(bothStarted.await(20, TimeUnit.SECONDS));
+        // both busy, one with a re-encode: the request makes the re-encode give way, not the upload
+        IngestJob request = q.enqueue(fixtures.item("pending"), Kind.YOUTUBE);
+        awaitState(request.id(), State.DONE);
+        assertEquals(1, interrupted.get());
+        assertEquals(State.RUNNING, jobs.get(upload.id()).orElseThrow().state());
+        release.countDown();
+        awaitState(upload.id(), State.DONE);
+        awaitState(reencode.id(), State.DONE);
+        assertEquals(1, interrupted.get());
+    }
+
     @Test
     void unexpectedExceptionsFailTheJobAndTheWorkerCarriesOn() throws Exception {
         AtomicInteger runs = new AtomicInteger();

@@ -79,6 +79,8 @@ public final class ConfigLoader {
     public static final String INGEST_WORKERS = "ingest.workers";
     public static final String INGEST_MAX_UPLOAD_BYTES = "ingest.maxUploadBytes";
     public static final String INGEST_MAX_DURATION_SECONDS = "ingest.maxDurationSeconds";
+    public static final String INGEST_QUICK_PRESET = "ingest.quickPreset";
+    public static final String INGEST_QUALITY_PRESET = "ingest.qualityPreset";
     public static final String OVERLAY_WORKERS = "overlay.workers";
     public static final String OVERLAY_CACHE_MAX_BYTES = "overlay.cacheMaxBytes";
 
@@ -87,6 +89,7 @@ public final class ConfigLoader {
             HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, DATA_DIR, DB_URL,
             TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
+            INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
             OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES);
 
     private static final long KIB = 1024L;
@@ -312,6 +315,8 @@ public final class ConfigLoader {
         int ingestWorkers = v.integer(INGEST_WORKERS, Math.max(1, availableProcessors / 2), 1, MAX_WORKERS);
         long maxUpload = v.size(INGEST_MAX_UPLOAD_BYTES, DEFAULT_MAX_UPLOAD_BYTES, 1);
         int maxDuration = v.integer(INGEST_MAX_DURATION_SECONDS, DEFAULT_MAX_DURATION_SECONDS, 1, Integer.MAX_VALUE);
+        X264Preset quickPreset = preset(v, INGEST_QUICK_PRESET, X264Preset.DEFAULT_QUICK);
+        X264Preset qualityPreset = preset(v, INGEST_QUALITY_PRESET, X264Preset.DEFAULT_QUALITY);
         int overlayWorkers = v.integer(OVERLAY_WORKERS, 1, 1, MAX_WORKERS);
         long overlayCache = v.size(OVERLAY_CACHE_MAX_BYTES, DEFAULT_OVERLAY_CACHE_MAX_BYTES, 0);
 
@@ -320,8 +325,18 @@ public final class ConfigLoader {
         }
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
                 ffmpeg, ffprobe, ytdlp, profile, videoBitrate, ingestWorkers, maxUpload, maxDuration,
-                overlayWorkers, overlayCache);
+                quickPreset, qualityPreset, overlayWorkers, overlayCache);
         return new Loaded(config, json == null ? null : file, warnings);
+    }
+
+    private static X264Preset preset(Values v, String key, X264Preset dflt) {
+        return v.check(key, dflt, s -> {
+            X264Preset p = X264Preset.byId(s);
+            if (p == null) {
+                throw new IllegalArgumentException("must be one of " + X264Preset.allowed());
+            }
+            return p;
+        });
     }
 
     // ---- JSON ----

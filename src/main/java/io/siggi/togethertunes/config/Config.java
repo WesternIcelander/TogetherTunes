@@ -26,6 +26,9 @@ import java.util.List;
  * @param ingestMaxUploadBytes     upload size limit ({@code ingest.maxUploadBytes})
  * @param ingestMaxDurationSeconds media duration limit for uploads and yt-dlp
  *                                 ({@code ingest.maxDurationSeconds})
+ * @param ingestQuickPreset        default x264 preset of quick encodes ({@code ingest.quickPreset};
+ *                                 the admin settings can override it)
+ * @param ingestQualityPreset      default x264 preset of quality encodes ({@code ingest.qualityPreset})
  * @param overlayWorkers           concurrent overlay re-encodes ({@code overlay.workers})
  * @param overlayCacheMaxBytes     size limit of the overlay re-encode cache
  *                                 ({@code overlay.cacheMaxBytes})
@@ -45,6 +48,8 @@ public record Config(
         int ingestWorkers,
         long ingestMaxUploadBytes,
         int ingestMaxDurationSeconds,
+        X264Preset ingestQuickPreset,
+        X264Preset ingestQualityPreset,
         int overlayWorkers,
         long overlayCacheMaxBytes) {
 

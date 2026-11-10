@@ -20,6 +20,7 @@ import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.http.EchoEndpoint;
@@ -28,6 +29,7 @@ import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.ingest.EncodePresets;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
@@ -56,6 +58,7 @@ import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.Library;
+import io.siggi.togethertunes.library.LibraryAddListener;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
 import io.siggi.togethertunes.library.LibraryApi;
@@ -177,7 +180,11 @@ public final class Main {
         SilenceFrame silence = loadSilenceFrame(config, System.err);
         Settings settings = new Settings(database, config);
         Supplier<String> cookiesFile = cookiesFile(settings);
-        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, cookiesFile, System.err);
+        // The quick and quality x264 presets, each checked against the reference avcC before use.
+        EncodePresets presets = encodePresets(config, dataDir, referenceCard, settings, System.err);
+        IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
+                referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
+        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, pipeline, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -203,12 +210,22 @@ public final class Main {
         Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
         Permissions permissions = new Permissions(database, settings);
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
+        // An admin can't pick an x264 preset that doesn't give the reference avcC.
+        admin.settingCheck((key, value) -> {
+            if (value instanceof X264Preset preset
+                    && (key == Settings.INGEST_QUICK_PRESET || key == Settings.INGEST_QUALITY_PRESET)) {
+                presets.validate(key.name(), preset);
+            }
+        });
         // Shared with the room WebSocket (RoomSocket), which redeems the tickets.
         IdentityTickets identityTickets = new IdentityTickets();
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
         Uploads uploads = uploads(config, dataDir, database, ingest, settings);
+        // Adding a quick-encoded item to a library queues its quality re-encode.
+        LibraryAddListener qualityOnLibraryAdd = itemId -> ingest.jobs().enqueueQualityIfNeeded(itemId);
+        uploads.libraryAddListener(qualityOnLibraryAdd);
         try {
             int swept = uploads.sweep();
             if (swept > 0) {
@@ -230,8 +247,10 @@ public final class Main {
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
         YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
+        youtubeImports.libraryAddListener(qualityOnLibraryAdd);
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
+        library.libraryAddListener(qualityOnLibraryAdd);
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
         Items items = new Items(database, dataDir, Clock.systemUTC());
         ItemsApi itemsApi = new ItemsApi(items, permissions);
@@ -239,11 +258,15 @@ public final class Main {
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
-        SharesApi sharesApi = new SharesApi(new Shares(database, youtubeImports, Clock.systemUTC()), addMedia);
+        Shares shares = new Shares(database, youtubeImports, Clock.systemUTC());
+        shares.libraryAddListener(qualityOnLibraryAdd);
+        SharesApi sharesApi = new SharesApi(shares, addMedia);
         // Guests may fetch the current and next items of any room (the room executors' live set).
         MediaApi mediaApi = new MediaApi(database, dataDir, settings, roomRegistry.playingItems());
         // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).
         ingest.jobs().statusListener(roomRegistry);
+        // Re-encodes swap an item's files only while it isn't current or next in any room.
+        pipeline.inUse(roomRegistry.playingItems()::isCurrentOrNext);
         items.statusListener(roomRegistry);
         try {
             int resumed = roomRegistry.resumePlaying();
@@ -336,7 +359,7 @@ public final class Main {
      * ingest stays off until the next start (the server still runs).
      */
     static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
-                                   Supplier<String> cookiesFile, PrintStream err) {
+                                   IngestPipeline handler, PrintStream err) {
         try {
             int cleaned = IngestPipeline.recoverDirectories(dataDir);
             if (cleaned > 0) {
@@ -345,9 +368,8 @@ public final class Main {
         } catch (IOException e) {
             err.println("WARNING: could not clean up after interrupted ingest jobs: " + e.getMessage());
         }
-        IngestQueue.Handler handler = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
-                referenceCard, config.ingestMaxDurationSeconds(), cookiesFile);
         IngestJobs jobs = new IngestJobs(database);
+        jobs.qualityPreset(handler.presets()::quality);
         IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
         if (referenceCard != null) {
             try {
@@ -359,6 +381,14 @@ public final class Main {
             } catch (SQLException e) {
                 err.println("WARNING: could not queue re-encode jobs for the output profile: " + e.getMessage());
             }
+            try {
+                int quality = jobs.enqueueQualityReencodes();
+                if (quality > 0) {
+                    err.println("Queued " + quality + " quality re-encode jobs (library items made with the quick preset)");
+                }
+            } catch (SQLException e) {
+                err.println("WARNING: could not queue quality re-encode jobs: " + e.getMessage());
+            }
         }
         try {
             queue.start();
@@ -366,6 +396,24 @@ public final class Main {
             err.println("WARNING: could not start the ingest queue: " + e.getMessage());
         }
         return queue;
+    }
+
+    /**
+     * The x264 presets ({@code ingest.quickPreset}, {@code ingest.qualityPreset}), checked against
+     * the reference avcC; a configured preset that fails the check is reported and not used. Without
+     * a reference card (no ffmpeg) both are {@link X264Preset#REFERENCE}.
+     */
+    static EncodePresets encodePresets(Config config, DataDir dataDir, ReferenceCard reference, Settings settings,
+                                       PrintStream err) {
+        if (reference == null) {
+            return EncodePresets.fixed(X264Preset.REFERENCE, X264Preset.REFERENCE);
+        }
+        EncodePresets presets = EncodePresets.checkedAgainst(reference, Tools.from(config), dataDir.cards(),
+                settings::ingestQuickPreset, settings::ingestQualityPreset);
+        for (String problem : presets.checkConfigured()) {
+            err.println("WARNING: " + problem);
+        }
+        return presets;
     }
 
     /**

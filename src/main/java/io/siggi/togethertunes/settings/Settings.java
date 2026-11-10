@@ -7,6 +7,7 @@ import com.google.gson.Strictness;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import io.siggi.togethertunes.config.Config;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import java.io.IOException;
 import java.io.StringReader;
@@ -70,6 +71,15 @@ public final class Settings {
     /** Default here is the documented 1800; {@link #Settings(Database, Config)} uses the config file's value. */
     public static final SettingKey<Integer> INGEST_MAX_DURATION_SECONDS = SettingKey.integer(
             "ingest.maxDurationSeconds", 1800, 1, Integer.MAX_VALUE);
+    /**
+     * x264 preset of quick encodes: items wanted in a room now
+     * ({@code docs/library-and-ingest.md#presets}). Default from the config file.
+     */
+    public static final SettingKey<X264Preset> INGEST_QUICK_PRESET = SettingKey.enumeration(
+            "ingest.quickPreset", X264Preset.class, X264Preset.DEFAULT_QUICK, X264Preset::id);
+    /** x264 preset of quality encodes: library items. Default from the config file. */
+    public static final SettingKey<X264Preset> INGEST_QUALITY_PRESET = SettingKey.enumeration(
+            "ingest.qualityPreset", X264Preset.class, X264Preset.DEFAULT_QUALITY, X264Preset::id);
 
     // Rooms
     /** Days a room's request history is kept ({@code room_requests}); 0 means never trim. */
@@ -94,6 +104,7 @@ public final class Settings {
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
+                INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
                 ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OVERLAY_ENABLED)) {
@@ -113,11 +124,14 @@ public final class Settings {
     }
 
     /**
-     * Settings whose {@code ingest.maxDurationSeconds} default comes from the config file
-     * ({@code docs/architecture.md#configuration}); the admin UI can still override it.
+     * Settings whose {@code ingest.maxDurationSeconds}, {@code ingest.quickPreset} and
+     * {@code ingest.qualityPreset} defaults come from the config file
+     * ({@code docs/architecture.md#configuration}); the admin UI can still override them.
      */
     public Settings(Database db, Config config) {
-        this(db, Map.of(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds()));
+        this(db, Map.of(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds(),
+                INGEST_QUICK_PRESET, config.ingestQuickPreset(),
+                INGEST_QUALITY_PRESET, config.ingestQualityPreset()));
     }
 
     private Settings(Database db, Map<SettingKey<?>, Object> defaultOverrides) {
@@ -324,6 +338,14 @@ public final class Settings {
 
     public int ingestMaxDurationSeconds() throws SQLException {
         return get(INGEST_MAX_DURATION_SECONDS);
+    }
+
+    public X264Preset ingestQuickPreset() throws SQLException {
+        return get(INGEST_QUICK_PRESET);
+    }
+
+    public X264Preset ingestQualityPreset() throws SQLException {
+        return get(INGEST_QUALITY_PRESET);
     }
 
     public boolean outputsRtmpEnabled() throws SQLException {

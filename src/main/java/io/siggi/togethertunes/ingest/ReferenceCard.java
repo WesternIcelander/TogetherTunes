@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -158,6 +159,41 @@ public final class ReferenceCard {
         }
         if ((avcC[5] & 0x1f) == 0) {
             throw new IOException("avcC has no SPS");
+        }
+    }
+
+    /**
+     * Whether an encode with {@code preset} gives exactly the reference avcC: encodes the
+     * reference's black card with that preset (in the encoding's cards directory, as temporary
+     * files) and compares. {@link X264Preset#REFERENCE} is not encoded again: it made the
+     * reference, so it matches unless {@link #encoderChanged()}.
+     * ({@code docs/library-and-ingest.md#presets}; the presets are built to match, but a different
+     * x264 build may not.)
+     *
+     * @param cardsDir the server's cards directory ({@code <data>/cards})
+     */
+    public boolean presetMatches(Tools tools, Path cardsDir, X264Preset preset)
+            throws ToolException, IOException, InterruptedException {
+        if (preset == X264Preset.REFERENCE) {
+            return !encoderChanged();
+        }
+        return matches(presetAvcC(tools, cardsDir, preset));
+    }
+
+    /** The avcC of the reference's black card encoded with {@code preset}. */
+    byte[] presetAvcC(Tools tools, Path cardsDir, X264Preset preset)
+            throws ToolException, IOException, InterruptedException {
+        Path dir = encodingDir(cardsDir, encoding);
+        Files.createDirectories(dir);
+        Path png = Files.createTempFile(dir, ".preset-", ".png");
+        Path mp4 = Files.createTempFile(dir, ".preset-", ".mp4");
+        try {
+            writeBlackPng(png, encoding);
+            CardEncoder.encodePng(tools, png, mp4, encoding, preset, null);
+            return Mp4Boxes.readAvcC(mp4);
+        } finally {
+            Files.deleteIfExists(png);
+            Files.deleteIfExists(mp4);
         }
     }
 

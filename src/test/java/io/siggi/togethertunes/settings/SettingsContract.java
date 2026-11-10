@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import java.nio.file.Path;
@@ -91,7 +92,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(20, all.size());
+        assertEquals(22, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -195,7 +196,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(20, settings.all().size());
+        assertEquals(22, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());
@@ -212,11 +213,18 @@ abstract class SettingsContract {
     }
 
     @Test
-    void configSuppliesTheMaxDurationDefault() throws SQLException {
+    void configSuppliesTheMaxDurationAndPresetDefaults() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
                 "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.values()[0], 3000, 1,
-                1L << 32, 600, 1, 1L << 34);
+                1L << 32, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 34);
         Settings withConfig = new Settings(db, config);
+        assertEquals(X264Preset.FASTER, withConfig.ingestQuickPreset());
+        assertEquals(X264Preset.SLOWER, withConfig.ingestQualityPreset());
+        assertEquals(X264Preset.VERYFAST, settings.ingestQuickPreset(), "built-in default");
+        assertEquals(X264Preset.SLOW, settings.ingestQualityPreset(), "built-in default");
+        withConfig.setJson("ingest.qualityPreset", "\"veryslow\"");
+        assertEquals(X264Preset.VERYSLOW, withConfig.ingestQualityPreset());
+        assertThrows(IllegalArgumentException.class, () -> withConfig.setJson("ingest.quickPreset", "\"ultrafast\""));
         assertEquals(600, withConfig.ingestMaxDurationSeconds());
         assertEquals(600, withConfig.defaultValue(Settings.INGEST_MAX_DURATION_SECONDS));
         withConfig.set(Settings.INGEST_MAX_DURATION_SECONDS, 3600);

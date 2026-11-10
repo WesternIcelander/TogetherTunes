@@ -165,6 +165,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.DataDir", "server paths"),
             Map.entry("io.siggi.togethertunes.Main$Startup", "startup status"),
             Map.entry("io.siggi.togethertunes.config.Config", "server configuration"),
+            Map.entry("io.siggi.togethertunes.config.OutputEncoding", "server configuration (output profile and bitrate)"),
             Map.entry("io.siggi.togethertunes.config.ConfigLoader$Loaded", "server configuration"),
             Map.entry("io.siggi.togethertunes.config.ConfigLoader$Raw", "server configuration"),
             Map.entry("io.siggi.togethertunes.secrets.ServerSecret$Loaded", "the server secret"),

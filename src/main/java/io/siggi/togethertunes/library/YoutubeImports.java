@@ -85,6 +85,7 @@ public final class YoutubeImports {
     private final Supplier<String> cookiesFile;
     private final Clock clock;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
+    private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
 
     /**
      * What an import produced.
@@ -153,7 +154,7 @@ public final class YoutubeImports {
             long now = EpochMs.now(clock);
             db.write(c -> {
                 insertItem(c, itemId, videoId, meta, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
-                jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE);
+                jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                 if (library) {
                     addToLibrary(c, userId, itemId, now, VIA_IMPORT);
                 }
@@ -248,7 +249,7 @@ public final class YoutubeImports {
                         setPresentAsAudio(c, itemId, presentAsAudio);
                     }
                     References.touch(c, itemId, now);
-                    jobs.enqueue(itemId, kind);
+                    jobs.enqueue(itemId, kind, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                     if (library) {
                         addToLibrary(c, userId, itemId, now, via);
                     }
@@ -400,5 +401,11 @@ public final class YoutubeImports {
             ps.setString(4, via);
             ps.executeUpdate();
         }
+        libraryAddListener.addedToLibrary(itemId);
+    }
+
+    /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */
+    public void libraryAddListener(LibraryAddListener listener) {
+        this.libraryAddListener = listener == null ? LibraryAddListener.NONE : listener;
     }
 }

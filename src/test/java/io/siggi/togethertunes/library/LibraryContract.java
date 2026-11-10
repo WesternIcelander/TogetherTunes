@@ -254,6 +254,8 @@ abstract class LibraryContract {
     void addByIdIsIdempotentAndReferencesTheItem() throws Exception {
         String ready = song("Ready", null, null);
         String pending = item("audio", "Pending", null, null, "pending", null);
+        List<String> told = new java.util.ArrayList<>();
+        library.libraryAddListener(told::add); // the server queues the quality re-encode there
         clock.set(1_800_000_100_000L);
         Library.Added added = library.add(alice, ready, () -> {
             throw new AssertionError("no YouTube check for an upload");
@@ -262,6 +264,7 @@ abstract class LibraryContract {
         assertEquals("manual", added.entry().via());
         assertEquals(1_800_000_100_000L, added.entry().addedAt());
         assertEquals(1_800_000_100_000L, lastReferenced(ready));
+        assertEquals(List.of(ready), told);
 
         clock.advance(5000);
         Library.Added again = library.add(alice, ready, () -> {

@@ -11,11 +11,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
+import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -69,23 +71,197 @@ abstract class IngestJobsContract {
             return null;
         });
         assertEquals(new IngestItems.Item(item, "audio", "Song", "Artist", null, "youtube", "dQw4w9WgXcQ", "purged",
-                "720p30", null, -9.0),
+                "720p30", null, -9.0, null, false),
                 items.get(item).orElseThrow());
         assertTrue(items.get("nope").isEmpty());
 
         items.published(item, false, 61_234, OutputEncoding.defaultFor(OutputProfile.P1080_30), -17.25,
                 new Originals.Original("original.flac", "flac/flac", true, 3.25));
-        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30-6000k", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
+        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30-6000k-v2", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
                 publishedRow(item));
         items.published(item, false, 1, OutputEncoding.defaultFor(OutputProfile.P720_30), null,
                 new Originals.Original("original.wma", "wmav2/asf", false, null));
-        assertArrayEquals(new Object[] {"audio", 1L, "720p30-3000k", null, null, "original.wma", "wmav2/asf", 0, null},
+        assertArrayEquals(new Object[] {"audio", 1L, "720p30-3000k-v2", null, null, "original.wma", "wmav2/asf", 0, null},
                 publishedRow(item));
         // a video (or YouTube) publish clears an earlier original
         items.published(item, true, 2, OutputEncoding.defaultFor(OutputProfile.P720_30), -9.5, null);
-        assertArrayEquals(new Object[] {"video", 2L, "720p30-3000k", -9.5, null, null, null, 0, null}, publishedRow(item));
+        assertArrayEquals(new Object[] {"video", 2L, "720p30-3000k-v2", -9.5, null, null, null, 0, null}, publishedRow(item));
         assertThrows(SQLException.class, () -> items.published("nope", false, 1,
                 OutputEncoding.defaultFor(OutputProfile.P720_30), null, null));
+        // the preset columns: the short form records the reference preset as not the quality encode
+        assertArrayEquals(new Object[] {"veryfast", false}, fixtures.encode(item));
+        items.published(item, true, 2, OutputEncoding.DEFAULT, X264Preset.SLOWER, true, -9.5, null);
+        assertArrayEquals(new Object[] {"slower", true}, fixtures.encode(item));
+        assertEquals("slower", items.get(item).orElseThrow().encodePreset());
+        assertTrue(items.get(item).orElseThrow().encodeQuality());
+        items.published(item, true, 2, OutputEncoding.DEFAULT, X264Preset.FASTER, false, -9.5, null);
+        assertArrayEquals(new Object[] {"faster", false}, fixtures.encode(item));
+        items.markQuality(item);
+        assertArrayEquals(new Object[] {"faster", true}, fixtures.encode(item));
+    }
+
+    /** What decides the preset tier when a job starts: library entries and room queues. */
+    @Test
+    void ingestItemsKnowsLibrariesAndRooms() throws SQLException {
+        IngestItems items = new IngestItems(db);
+        String item = fixtures.item("pending");
+        assertFalse(items.inLibrary(item));
+        assertFalse(items.wantedInRoom(item));
+        fixtures.addToLibrary(item);
+        assertTrue(items.inLibrary(item));
+        for (String state : List.of("played", "skipped", "removed")) {
+            fixtures.queue(item, state);
+        }
+        assertFalse(items.wantedInRoom(item), "finished entries don't count");
+        for (String state : List.of("queued", "suggested", "playing")) {
+            String other = fixtures.item("pending");
+            fixtures.queue(other, state);
+            assertTrue(items.wantedInRoom(other), state);
+        }
+    }
+
+    @Test
+    void enqueueStoresTheTier() throws SQLException {
+        IngestJob quick = jobs.enqueue(fixtures.item("pending"), Kind.YOUTUBE, Tier.QUICK);
+        IngestJob quality = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD, Tier.QUALITY);
+        IngestJob none = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertEquals(Tier.QUICK, jobs.get(quick.id()).orElseThrow().tier());
+        assertEquals(Tier.QUALITY, jobs.get(quality.id()).orElseThrow().tier());
+        assertNull(jobs.get(none.id()).orElseThrow().tier());
+        assertEquals(Tier.QUICK, jobs.claimNext().tier());
+    }
+
+    @Test
+    void enqueueTellsTheListenerAfterTheCommit() throws SQLException {
+        int[] calls = {0};
+        jobs.enqueueListener(() -> calls[0]++);
+        String item = fixtures.item("pending");
+        assertThrows(IllegalStateException.class, () -> db.write(c -> {
+            jobs.enqueue(item, Kind.UPLOAD);
+            throw new IllegalStateException("roll back");
+        }));
+        assertEquals(0, calls[0]);
+        jobs.enqueue(item, Kind.UPLOAD);
+        assertEquals(1, calls[0]);
+        jobs.enqueue(item, Kind.UPLOAD); // attaches to the unfinished job: nothing new
+        assertEquals(1, calls[0]);
+    }
+
+    /** A quick encode of a library item gets a quality job when it finishes; nothing else does. */
+    @Test
+    void aFinishedQuickEncodeOfALibraryItemQueuesItsQualityJob() throws SQLException {
+        jobs.qualityPreset(() -> X264Preset.SLOW);
+        // in a room only: no quality job
+        String roomOnly = fixtures.item("pending");
+        IngestJob j1 = jobs.enqueue(roomOnly, Kind.YOUTUBE, Tier.QUICK);
+        jobs.claimNext();
+        fixtures.encoded(roomOnly, "video", "veryfast", false);
+        jobs.complete(j1.id(), null);
+        assertEquals(j1.id(), jobs.latestForItem(roomOnly).orElseThrow().id());
+
+        // in a library: the quality job follows, low priority and owning nothing
+        String library = fixtures.item("pending");
+        fixtures.addToLibrary(library);
+        IngestJob j2 = jobs.enqueue(library, Kind.YOUTUBE, Tier.QUICK);
+        jobs.claimNext();
+        fixtures.encoded(library, "video", "veryfast", false);
+        jobs.complete(j2.id(), null);
+        IngestJob quality = jobs.latestForItem(library).orElseThrow();
+        assertEquals(Kind.QUALITY, quality.kind());
+        assertEquals(Tier.QUALITY, quality.tier());
+        assertEquals(State.QUEUED, quality.state());
+        assertEquals("ready", fixtures.itemStatus(library)[0], "the item stays ready");
+        // when the quality job finishes with the quality encode, nothing more is queued
+        assertEquals(quality.id(), jobs.claimNext().id());
+        fixtures.encoded(library, "video", "slow", true);
+        jobs.complete(quality.id(), null);
+        assertEquals(quality.id(), jobs.latestForItem(library).orElseThrow().id());
+
+        // made with the quality preset already (equal presets): no second job
+        String equal = fixtures.item("pending");
+        fixtures.addToLibrary(equal);
+        IngestJob j3 = jobs.enqueue(equal, Kind.UPLOAD, Tier.QUICK);
+        jobs.claimNext();
+        fixtures.encoded(equal, "video", "slow", false);
+        jobs.complete(j3.id(), null);
+        assertEquals(j3.id(), jobs.latestForItem(equal).orElseThrow().id());
+
+        // an audio item has no video to improve
+        String audio = fixtures.item("pending");
+        fixtures.addToLibrary(audio);
+        IngestJob j4 = jobs.enqueue(audio, Kind.UPLOAD, Tier.QUICK);
+        jobs.claimNext();
+        fixtures.encoded(audio, "audio", "veryfast", false);
+        jobs.complete(j4.id(), null);
+        assertEquals(j4.id(), jobs.latestForItem(audio).orElseThrow().id());
+
+        // a failed job queues nothing
+        String failing = fixtures.item("pending");
+        fixtures.addToLibrary(failing);
+        fixtures.encoded(failing, "video", "veryfast", false);
+        IngestJob j5 = jobs.enqueue(failing, Kind.UPLOAD, Tier.QUICK);
+        jobs.claimNext();
+        jobs.fail(j5.id(), "broken", null);
+        assertEquals(j5.id(), jobs.latestForItem(failing).orElseThrow().id());
+    }
+
+    /** Adding a ready quick-encoded item to a library (the listener's call), and the startup sweep. */
+    @Test
+    void enqueueQualityIfNeededAndAtStartup() throws SQLException {
+        String item = fixtures.item("ready");
+        fixtures.encoded(item, "video", "veryfast", false);
+        assertFalse(jobs.enqueueQualityIfNeeded(item), "no quality preset known yet");
+        jobs.qualityPreset(() -> X264Preset.SLOWER);
+        assertFalse(jobs.enqueueQualityIfNeeded(item), "not in a library");
+        fixtures.addToLibrary(item);
+        assertTrue(jobs.enqueueQualityIfNeeded(item));
+        assertFalse(jobs.enqueueQualityIfNeeded(item), "it has an unfinished job now");
+        assertEquals(Kind.QUALITY, jobs.latestForItem(item).orElseThrow().kind());
+
+        String pending = fixtures.item("pending");
+        fixtures.addToLibrary(pending);
+        assertFalse(jobs.enqueueQualityIfNeeded(pending), "not ready: its job checks when it finishes");
+
+        String done = fixtures.item("ready");
+        fixtures.encoded(done, "video", "slow", true);
+        fixtures.addToLibrary(done);
+        assertFalse(jobs.enqueueQualityIfNeeded(done), "already the quality encode, even with another preset now");
+
+        String legacy = fixtures.item("ready");
+        fixtures.encoded(legacy, "video", null, false);
+        fixtures.addToLibrary(legacy);
+        String failedBefore = fixtures.item("ready");
+        fixtures.encoded(failedBefore, "video", "faster", false);
+        fixtures.addToLibrary(failedBefore);
+        IngestJob old = jobs.enqueue(failedBefore, Kind.QUALITY, Tier.QUALITY);
+        // claim in order: item's job first
+        assertEquals(Kind.QUALITY, jobs.claimNext().kind());
+        assertEquals(old.id(), jobs.claimNext().id());
+        jobs.fail(old.id(), "broke", null);
+
+        assertEquals(2, jobs.enqueueQualityReencodes(), "the legacy item and the one whose quality job failed");
+        assertEquals(Kind.QUALITY, jobs.latestForItem(legacy).orElseThrow().kind());
+        assertNotEquals(old.id(), jobs.latestForItem(failedBefore).orElseThrow().id());
+        assertEquals(0, jobs.enqueueQualityReencodes());
+    }
+
+    /** New jobs first, then profile re-encodes, then quality re-encodes. */
+    @Test
+    void qualityJobsComeLast() throws SQLException {
+        String q = fixtures.item("ready");
+        IngestJob quality = jobs.enqueue(q, Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        IngestJob reencode = jobs.enqueue(fixtures.item("ready"), Kind.REENCODE);
+        assertFalse(jobs.hasQueuedNewItemJob());
+        clock.advance(1);
+        IngestJob upload = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertTrue(jobs.hasQueuedNewItemJob());
+        assertEquals(upload.id(), jobs.claimNext().id());
+        assertFalse(jobs.hasQueuedNewItemJob());
+        assertEquals(reencode.id(), jobs.claimNext().id());
+        assertEquals(quality.id(), jobs.claimNext().id());
+        assertEquals("ready", fixtures.itemStatus(q)[0], "a quality job leaves the item ready");
+        assertNull(jobs.claimNext());
     }
 
     private Object[] publishedRow(String item) throws SQLException {
@@ -224,6 +400,7 @@ abstract class IngestJobsContract {
         String current = fixtures.item("ready");
         String old = fixtures.item("ready");
         String otherRate = fixtures.item("ready");
+        String olderArgs = fixtures.item("ready");
         String bare = fixtures.item("ready");
         String unknown = fixtures.item("ready");
         String purged = fixtures.item("purged");
@@ -236,10 +413,13 @@ abstract class IngestJobsContract {
                     ps.setString(2, id);
                     ps.executeUpdate();
                 }
-                ps.setString(1, "1080p30-6000k");
+                ps.setString(1, "1080p30-6000k-v2");
                 ps.setString(2, current);
                 ps.executeUpdate();
-                ps.setString(1, "1080p30-8000k"); // same profile, another bitrate
+                ps.setString(1, "1080p30-6000k"); // the same encoding before ref=4 (encoder args v1)
+                ps.setString(2, olderArgs);
+                ps.executeUpdate();
+                ps.setString(1, "1080p30-8000k-v2"); // same profile, another bitrate
                 ps.setString(2, otherRate);
                 ps.executeUpdate();
                 ps.setString(1, "1080p30"); // before CBR: the profile name only
@@ -254,16 +434,16 @@ abstract class IngestJobsContract {
         IngestJob busyJob = jobs.enqueue(busy, Kind.UPLOAD);
         clock.advance(1000);
 
-        assertEquals(4, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
+        assertEquals(5, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
         List<IngestJob> queued = jobs.list(State.QUEUED, 10);
-        assertEquals(5, queued.size());
+        assertEquals(6, queued.size());
         Set<String> reencoded = new HashSet<>();
         for (IngestJob j : queued) {
             if (j.kind() == Kind.REENCODE) {
                 reencoded.add(j.itemId());
             }
         }
-        assertEquals(Set.of(old, unknown, otherRate, bare), reencoded);
+        assertEquals(Set.of(old, unknown, otherRate, olderArgs, bare), reencoded);
         assertEquals("ready", fixtures.itemStatus(old)[0], "a re-encode leaves the item ready");
         assertEquals("ready", fixtures.itemStatus(unknown)[0]);
         // they already have unfinished jobs now
@@ -275,10 +455,9 @@ abstract class IngestJobsContract {
         IngestJob newer = jobs.enqueue(upload, Kind.UPLOAD);
         assertEquals(busyJob.id(), jobs.claimNext().id());
         assertEquals(newer.id(), jobs.claimNext().id());
-        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
-        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
-        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
-        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
+        for (int i = 0; i < 5; i++) {
+            assertEquals(Kind.REENCODE, jobs.claimNext().kind());
+        }
         assertNull(jobs.claimNext());
     }
 
