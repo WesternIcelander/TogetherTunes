@@ -123,14 +123,16 @@ room_requests(id PK, room_id FK, item_id FK,
 
 stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls'
       token TEXT UNIQUE NULL,               -- path token for ts/hls
-      rtmp_url NULL, rtmp_key_enc NULL, enabled INTEGER, created_at)
+      rtmp_url NULL, rtmp_key_enc NULL,     -- rtmp_key_enc: unused since 0007, always NULL
+      enabled INTEGER, created_at,
+      rtmp_key TEXT NULL)                   -- the RTMP stream key, plain text (0007)
 ```
 
-`stream_outputs` has a unique index on `(room_id, kind)`: one output of each kind per room (migration 0006).
+`stream_outputs` has a unique index on `(room_id, kind)`: one output of each kind per room (migration 0006). Migration 0007 added `rtmp_key`: RTMP stream keys are stored in plain text (Siggi, 2026-11-10: RTMP sends the key in plain text anyway, and the owner can reveal and copy it). Keys that older versions stored encrypted in `rtmp_key_enc` are decrypted into `rtmp_key` by the server right after the migrations (`output/LegacyRtmpKeys`, every start, a no-op once done), which then sets `rtmp_key_enc` to NULL; a key that can't be decrypted is dropped with a warning naming the output, never the key. The old column stays, unused.
 
 ## Secrets and IP addresses at rest
 
-- `client_secret_enc` and `rtmp_key_enc` are encrypted with AES-GCM. The key comes from `<data>/secret.key`, generated on first start with permissions 0600, or from an environment variable.
+- `client_secret_enc` is encrypted with AES-GCM (so was `rtmp_key_enc` before migration 0007; RTMP stream keys are now plain text in `rtmp_key`, see above). The key comes from `<data>/secret.key`, generated on first start with permissions 0600, or from an environment variable.
 - Session tokens and guest cookie tokens are stored only as SHA-256 hashes.
 - Stream URL tokens are stored in plaintext: they have to be shown to the owner again, and they are bearer capabilities that can be rotated.
 - IP addresses (`sessions.ip`, `guests.ip_last`, `audit_log.ip`) are stored in plaintext, so that admins with `ip.view` can see them. Repository classes **never** put them in the general-purpose DTOs. They are read only by a separate `IpAccess` service, which checks `ip.view` (see [auth.md](auth.md#ip-address-policy)).
