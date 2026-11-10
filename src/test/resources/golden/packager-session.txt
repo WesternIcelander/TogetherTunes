@@ -1,0 +1,109 @@
+# Packager golden file: PackagerGoldenFileTest, 2 scripted minutes (HarnessFixture.cycle) through OfflineHarness.
+# Regenerate after an intended change: mvn test -Dtest=PackagerGoldenFileTest -Dtt.golden.update=true
+[ffprobe]
+program|program_id=1|pmt_pid=256|pcr_pid=257|stream|index=0|codec_name=h264|profile=High|codec_type=video|width=1280|height=720|has_b_frames=0|pix_fmt=yuv420p|id=0x101|r_frame_rate=30/1
+stream|index=1|codec_name=aac|profile=LC|codec_type=audio|sample_rate=48000|channels=2|id=0x102|r_frame_rate=0/0
+stream|index=0|codec_name=h264|profile=High|codec_type=video|width=1280|height=720|has_b_frames=0|pix_fmt=yuv420p|id=0x101|r_frame_rate=30/1
+stream|index=1|codec_name=aac|profile=LC|codec_type=audio|sample_rate=48000|channels=2|id=0x102|r_frame_rate=0/0
+[harness]
+units=67 videoFrames=3642 audioFrames=5704 endPts=11851680 durationMs=121685
+[log]
+timeline 0 ms: add [v0, a0, s0]
+unit 1 pts 900000..1080480 video item video1@0ms
+unit 2 pts 1080000..1260960 video item video1@0ms
+unit 3 pts 1260000..1441440 video item video1@0ms
+unit 4 pts 1440000..1620000 video item video1@0ms
+unit 5 pts 1620000..1800480 video item video1@0ms
+unit 6 pts 1800000..1827360 video item video1@0ms (ended)
+unit 7 pts 1827360..2007840 audio item audio1@0ms
+timeline 10300 ms: natural end of v0
+unit 8 pts 2007360..2188320 audio item audio1@0ms
+timeline 13000 ms: pause at 2700 ms
+unit 9 pts 2188320..2368800 filler paused
+unit 10 pts 2368320..2549280 filler paused
+timeline 16000 ms: play from 2700 ms
+unit 11 pts 2549280..2729760 audio item audio1@5013ms
+unit 12 pts 2729280..2773920 audio item audio1@5013ms (ended)
+unit 13 pts 2773920..2954400 video item as audio video1@0ms
+timeline 20800 ms: natural end of a0
+unit 14 pts 2953920..3134880 video item as audio video1@0ms
+timeline 23000 ms: seek to 6000 ms
+unit 15 pts 3134880..3315360 video item as audio video1@7829ms
+unit 16 pts 3314880..3357600 video item as audio video1@7829ms (ended)
+unit 17 pts 3357600..3538080 filler idle
+timeline 27300 ms: natural end of s0
+unit 18 pts 3537600..3718560 filler idle
+unit 19 pts 3717600..3899040 filler idle
+timeline 32000 ms: add [w0]
+unit 20 pts 3899040..4079520 video item video1@0ms
+unit 21 pts 4079040..4260000 video item video1@0ms
+timeline 35000 ms: seek to 2000 ms
+unit 22 pts 4260000..4440480 video item video1@3989ms
+timeline 37000 ms: unknown state
+unit 23 pts 4440480..4620960 filler paused
+timeline 39000 ms: back from unknown state
+unit 24 pts 4620960..4801440 video item video1@8000ms
+timeline 42000 ms: add [b0]
+unit 25 pts 4800960..4828320 video item video1@8000ms (ended)
+unit 26 pts 4828320..5008800 audio item audio1@0ms
+timeline 43300 ms: natural end of w0
+unit 27 pts 5008320..5189280 audio item audio1@0ms
+timeline 46000 ms: skip b0
+unit 28 pts 5189280..5369760 filler idle
+timeline 48000 ms: add [x0]
+unit 29 pts 5369760..5550240 video item video1@0ms
+timeline 50000 ms: clear
+unit 30 pts 5550240..5730720 filler idle
+unit 31 pts 5730240..5911200 filler idle
+unit 32 pts 5910240..6091680 filler idle
+unit 33 pts 6090240..6270240 filler idle
+unit 34 pts 6270240..6450720 filler idle
+timeline 60000 ms: add [v1, a1, s1]
+unit 35 pts 6450720..6631200 video item video1@0ms
+unit 36 pts 6630720..6811680 video item video1@0ms
+unit 37 pts 6810720..6992160 video item video1@0ms
+unit 38 pts 6990720..7170720 video item video1@0ms
+unit 39 pts 7170720..7351200 video item video1@0ms
+timeline 70300 ms: natural end of v1
+unit 40 pts 7350720..7378080 video item video1@0ms (ended)
+unit 41 pts 7378080..7558560 audio item audio1@0ms
+unit 42 pts 7558080..7739040 audio item audio1@0ms
+timeline 73000 ms: pause at 2700 ms
+unit 43 pts 7739040..7919520 filler paused
+timeline 76000 ms: play from 2700 ms
+unit 44 pts 7919520..8100000 audio item audio1@4693ms
+unit 45 pts 8099520..8172960 audio item audio1@4693ms (ended)
+unit 46 pts 8172960..8353440 video item as audio video1@0ms
+timeline 80800 ms: natural end of a1
+unit 47 pts 8352960..8533920 video item as audio video1@0ms
+timeline 83000 ms: seek to 6000 ms
+unit 48 pts 8533920..8714400 video item as audio video1@7808ms
+unit 49 pts 8713920..8758560 video item as audio video1@7808ms (ended)
+unit 50 pts 8758560..8939040 filler idle
+timeline 87300 ms: natural end of s1
+unit 51 pts 8938560..9119520 filler idle
+unit 52 pts 9118560..9300000 filler idle
+timeline 92000 ms: add [w1]
+unit 53 pts 9300000..9480480 video item video1@0ms
+unit 54 pts 9480000..9660960 video item video1@0ms
+timeline 95000 ms: seek to 2000 ms
+unit 55 pts 9660960..9841440 video item video1@3989ms
+timeline 97000 ms: unknown state
+unit 56 pts 9841440..10021920 filler paused
+timeline 99000 ms: back from unknown state
+unit 57 pts 10021920..10202400 video item video1@8000ms
+timeline 102000 ms: add [b1]
+unit 58 pts 10201920..10229280 video item video1@8000ms (ended)
+unit 59 pts 10229280..10409760 audio item audio1@0ms
+timeline 103300 ms: natural end of w1
+unit 60 pts 10409280..10590240 audio item audio1@0ms
+timeline 106000 ms: skip b1
+unit 61 pts 10590240..10770720 filler idle
+timeline 108000 ms: add [x1]
+unit 62 pts 10770720..10951200 video item video1@0ms
+timeline 110000 ms: clear
+unit 63 pts 10951200..11131680 filler idle
+unit 64 pts 11131200..11312160 filler idle
+unit 65 pts 11311200..11492640 filler idle
+unit 66 pts 11491200..11671200 filler idle
+unit 67 pts 11671200..11851680 filler idle
