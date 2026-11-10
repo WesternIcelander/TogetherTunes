@@ -348,7 +348,8 @@ public final class RoomExecutor {
 
     /**
      * Publishes the room's current and next items ({@link LivePlayingItems#of}) for the media
-     * access check. Runs after every mutation and scheduled task (whatever its outcome: a failure
+     * access check, and its ranked wanted items ({@link LivePlayingItems#ranks(RoomState)}) for
+     * the ingest claim order. Runs after every mutation and scheduled task (whatever its outcome: a failure
      * may have reloaded the state), on the executor thread; a no-op once closed.
      */
     private void publishPlaying() {
@@ -356,7 +357,7 @@ public final class RoomExecutor {
             return;
         }
         try {
-            playing.update(roomId, this, LivePlayingItems.of(state));
+            playing.update(roomId, this, LivePlayingItems.of(state), LivePlayingItems.ranks(state));
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING, "Could not publish the playing items of room " + roomId, t);
         }

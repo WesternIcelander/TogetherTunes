@@ -75,7 +75,7 @@ class JobsApiTest {
         Settings settings = new Settings(db, config);
         jobs = new IngestJobs(db, clock);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        new JobsApi(jobs, new JobList(db, clock), new Permissions(db, settings), paused::get, clock).register(router);
+        new JobsApi(jobs, new JobList(db, jobs, clock), new Permissions(db, settings), paused::get, clock).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(db, clock);

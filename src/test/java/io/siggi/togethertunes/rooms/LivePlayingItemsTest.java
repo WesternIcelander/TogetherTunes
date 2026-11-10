@@ -34,6 +34,25 @@ class LivePlayingItemsTest {
         assertEquals(0, p.size());
     }
 
+    /** Ranks merge across rooms (the earliest wins); the listener hears changes only. */
+    @Test
+    void ranksMergeAcrossRoomsAndTellTheListener() {
+        LivePlayingItems p = new LivePlayingItems();
+        java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
+        p.changeListener(changes::incrementAndGet);
+        p.update("r1", exec1, Set.of("x"), java.util.Map.of("x", 0, "y", 3));
+        p.update("r2", exec2, Set.of("y"), java.util.Map.of("y", 1, "z", 2));
+        assertEquals(java.util.Map.of("x", 0, "y", 1, "z", 2), p.ranks());
+        assertEquals(2, changes.get());
+        p.update("r2", exec2, Set.of("y"), java.util.Map.of("y", 1, "z", 2));
+        assertEquals(2, changes.get(), "unchanged");
+        p.remove("r2", exec1);
+        assertEquals(2, changes.get(), "not the owner");
+        p.remove("r2", exec2);
+        assertEquals(java.util.Map.of("x", 0, "y", 3), p.ranks());
+        assertEquals(3, changes.get());
+    }
+
     @Test
     void onlyTheExecutorThatPublishedCanWithdraw() {
         LivePlayingItems p = new LivePlayingItems();

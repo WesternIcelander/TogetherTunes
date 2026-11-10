@@ -264,6 +264,131 @@ abstract class IngestJobsContract {
         assertNull(jobs.claimNext());
     }
 
+    // ------------------------------------------------------------------ queued items first
+
+    /** Rooms' wanted items, changeable by a test (what LivePlayingItems publishes in the server). */
+    private static final class FakeWanted implements WantedItems {
+        volatile java.util.Map<String, Integer> ranks = java.util.Map.of();
+
+        @Override
+        public java.util.Map<String, Integer> ranks() {
+            return ranks;
+        }
+    }
+
+    /**
+     * Jobs of items a room is waiting on go before every job for an item no room wants, of any
+     * kind: the current item first, then by how soon it plays, then items only in a queue in the
+     * database; then the kind order and age. The jobs page lists the same order.
+     */
+    @Test
+    void jobsOfItemsRoomsWaitOnComeFirstAcrossKinds() throws SQLException {
+        FakeWanted wanted = new FakeWanted();
+        jobs.wantedItems(wanted);
+        JobList list = new JobList(db, jobs, clock);
+        IngestJob upload = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        clock.advance(1);
+        IngestJob reencode = jobs.enqueue(fixtures.item("ready"), Kind.REENCODE);
+        clock.advance(1);
+        String later = fixtures.item("ready");
+        IngestJob laterQuality = jobs.enqueue(later, Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        String soon = fixtures.item("pending");
+        IngestJob soonYoutube = jobs.enqueue(soon, Kind.YOUTUBE);
+        clock.advance(1);
+        String current = fixtures.item("ready");
+        IngestJob currentReencode = jobs.enqueue(current, Kind.REENCODE);
+        clock.advance(1);
+        String dbOnly = fixtures.item("ready");
+        IngestJob dbOnlyQuality = jobs.enqueue(dbOnly, Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        String played = fixtures.item("ready");
+        IngestJob playedQuality = jobs.enqueue(played, Kind.QUALITY, Tier.QUALITY);
+        fixtures.queue(dbOnly, "suggested"); // a room nobody has loaded since a restart
+        fixtures.queue(played, "played"); // already played: no room waits on it
+        wanted.ranks = java.util.Map.of(current, 0, soon, 1, later, 4);
+
+        List<String> expected = List.of(currentReencode.id(), soonYoutube.id(), laterQuality.id(), dbOnlyQuality.id(),
+                upload.id(), reencode.id(), playedQuality.id());
+        assertEquals(expected, ids(list.list(JobList.View.ACTIVE, null, 0, 50)), "the jobs page shows the claim order");
+        IngestJobs.Priority first = jobs.nextQueuedPriority().orElseThrow();
+        assertEquals(new IngestJobs.Priority(0, false), first);
+        assertTrue(first.wanted());
+        assertEquals(new IngestJobs.Priority(IngestJobs.IN_A_QUEUE, false), jobs.priority(dbOnlyQuality).orElseThrow());
+        assertEquals(new IngestJobs.Priority(IngestJobs.NOT_WANTED, true), jobs.priority(upload).orElseThrow());
+        assertFalse(jobs.priority(upload).orElseThrow().wanted());
+        for (String next : expected) {
+            assertEquals(next, jobs.claimNext().id());
+        }
+        assertNull(jobs.claimNext());
+    }
+
+    /** The order is read at claim time: queueing an item later moves its pending job forward. */
+    @Test
+    void aLaterQueueAddMovesAPendingJobForward() throws SQLException {
+        FakeWanted wanted = new FakeWanted();
+        jobs.wantedItems(wanted);
+        JobList list = new JobList(db, jobs, clock);
+        String a = fixtures.item("ready");
+        IngestJob quality = jobs.enqueue(a, Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        IngestJob upload = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        clock.advance(1);
+        String b = fixtures.item("ready");
+        IngestJob reencode = jobs.enqueue(b, Kind.REENCODE);
+        assertEquals(List.of(upload.id(), reencode.id(), quality.id()), ids(list.list(JobList.View.ACTIVE, null, 0, 50)));
+
+        wanted.ranks = java.util.Map.of(a, 3); // a room queues item a
+        assertEquals(List.of(quality.id(), upload.id(), reencode.id()), ids(list.list(JobList.View.ACTIVE, null, 0, 50)));
+        wanted.ranks = java.util.Map.of(a, 3, b, 1); // and b ahead of it
+        assertEquals(List.of(reencode.id(), quality.id(), upload.id()), ids(list.list(JobList.View.ACTIVE, null, 0, 50)));
+        wanted.ranks = java.util.Map.of(a, 3); // b was removed from the queue again
+        assertEquals(quality.id(), jobs.claimNext().id());
+        assertEquals(upload.id(), jobs.claimNext().id());
+        assertEquals(reencode.id(), jobs.claimNext().id());
+
+        // the database's queues count without a live room too
+        jobs.wantedItems(null);
+        IngestJob q2 = jobs.enqueue(fixtures.item("ready"), Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        IngestJob u2 = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertEquals(u2.id(), ids(list.list(JobList.View.ACTIVE, null, 0, 50)).get(3));
+        fixtures.queue(q2.itemId(), "queued");
+        assertEquals(q2.id(), jobs.claimNext().id());
+        assertEquals(u2.id(), jobs.claimNext().id());
+    }
+
+    /** A ranks source that throws counts as no live rooms (the database's queues still count). */
+    @Test
+    void aFailingWantedSourceDoesNotStopClaims() throws SQLException {
+        jobs.wantedItems(() -> {
+            throw new IllegalStateException("boom");
+        });
+        IngestJob upload = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertEquals(upload.id(), jobs.claimNext().id());
+    }
+
+    /** The give-way comparison: wanted beats not wanted, never the reverse; sooner beats later; new beats re-encode among equals. */
+    @Test
+    void priorityGoesBefore() {
+        IngestJobs.Priority currentQuality = new IngestJobs.Priority(0, false);
+        IngestJobs.Priority laterReencode = new IngestJobs.Priority(5, false);
+        IngestJobs.Priority dbOnly = new IngestJobs.Priority(IngestJobs.IN_A_QUEUE, false);
+        IngestJobs.Priority unwantedUpload = new IngestJobs.Priority(IngestJobs.NOT_WANTED, true);
+        IngestJobs.Priority unwantedReencode = new IngestJobs.Priority(IngestJobs.NOT_WANTED, false);
+        assertTrue(currentQuality.goesBefore(unwantedReencode));
+        assertTrue(laterReencode.goesBefore(unwantedReencode));
+        assertTrue(dbOnly.goesBefore(unwantedReencode));
+        assertFalse(unwantedUpload.goesBefore(laterReencode), "an unqueued job never interrupts a queued item's job");
+        assertFalse(unwantedUpload.goesBefore(dbOnly));
+        assertTrue(currentQuality.goesBefore(laterReencode));
+        assertFalse(laterReencode.goesBefore(currentQuality));
+        assertTrue(unwantedUpload.goesBefore(unwantedReencode), "the old rule: a new job interrupts a re-encode");
+        assertFalse(unwantedReencode.goesBefore(new IngestJobs.Priority(IngestJobs.NOT_WANTED, false)),
+                "equals don't interrupt each other");
+        assertTrue(new IngestJobs.Priority(2, true).goesBefore(new IngestJobs.Priority(2, false)));
+    }
+
     private Object[] publishedRow(String item) throws SQLException {
         return db.read(c -> {
             try (var ps = c.prepareStatement("SELECT kind, duration_ms, output_profile, loudness_lufs, purged_at,"
@@ -611,7 +736,7 @@ abstract class IngestJobsContract {
     /** The active list: running first, then the queue in claim order with its positions. */
     @Test
     void activeListShowsRunningThenTheQueueInClaimOrder() throws SQLException {
-        JobList list = new JobList(db, clock);
+        JobList list = new JobList(db, jobs, clock);
         IngestJob quality = jobs.enqueue(fixtures.item("ready"), Kind.QUALITY, Tier.QUALITY);
         clock.advance(1);
         IngestJob reencode = jobs.enqueue(fixtures.item("ready"), Kind.REENCODE);
@@ -651,7 +776,7 @@ abstract class IngestJobsContract {
     /** A user's lists hold only items in their library (shares count); positions stay global. */
     @Test
     void aUsersListHoldsOnlyTheirLibrarysItems() throws SQLException {
-        JobList list = new JobList(db, clock);
+        JobList list = new JobList(db, jobs, clock);
         String bob = fixtures.newUser("bob");
         String carol = fixtures.newUser("carol");
         String others = fixtures.item("pending");
@@ -682,7 +807,7 @@ abstract class IngestJobsContract {
     /** Failed: only unresolved failures of items that aren't purged; done: the last 24 h. */
     @Test
     void failedAndDoneLists() throws SQLException {
-        JobList list = new JobList(db, clock);
+        JobList list = new JobList(db, jobs, clock);
         String a = fixtures.item("pending");
         IngestJob aJob = jobs.enqueue(a, Kind.UPLOAD);
         jobs.claimNext();

@@ -128,7 +128,7 @@ class IngestQueueTest {
         assertTrue(System.nanoTime() - t0 < TimeUnit.SECONDS.toNanos(15), "the request didn't wait for the re-encode");
         IngestJob again = awaitState(quality.id(), State.DONE);
         assertEquals(1, again.attempts(), "giving way isn't a failed attempt");
-        assertTrue(again.log().contains("to make way for a new job"), again.log());
+        assertTrue(again.log().contains("to make way for a more urgent job"), again.log());
         assertEquals(List.of("quality", "youtube", "quality"), order);
         assertEquals("ready", fixtures.itemStatus(libraryItem)[0]);
     }
@@ -164,6 +164,83 @@ class IngestQueueTest {
         awaitState(upload.id(), State.DONE);
         awaitState(reencode.id(), State.DONE);
         assertEquals(1, interrupted.get());
+    }
+
+    /**
+     * The give-way rule follows the claim order: a job of an item a room is waiting on interrupts a
+     * re-encode of an item no room wants, also when the item is queued in a room only after its
+     * job was (the rooms' change wakes the queue).
+     */
+    @Test
+    void aQueuedItemsJobInterruptsAnUnwantedReencode() throws Exception {
+        java.util.concurrent.ConcurrentHashMap<String, Integer> ranks = new java.util.concurrent.ConcurrentHashMap<>();
+        jobs.wantedItems(() -> java.util.Map.copyOf(ranks));
+        CountDownLatch reencodeStarted = new CountDownLatch(1);
+        AtomicInteger reencodeRuns = new AtomicInteger();
+        List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
+        IngestQueue q = queue(1, job -> {
+            order.add(job.job().itemId());
+            if (job.job().kind() == Kind.REENCODE && reencodeRuns.incrementAndGet() == 1) {
+                reencodeStarted.countDown();
+                Thread.sleep(60_000); // a long library re-encode; interrupted by the queued item's job
+            }
+        }, LONG_POLL);
+        q.start();
+        String unwanted = fixtures.item("ready");
+        IngestJob reencode = q.enqueue(unwanted, Kind.REENCODE);
+        assertTrue(reencodeStarted.await(20, TimeUnit.SECONDS));
+
+        // a quality job of an item no room wants waits behind the running re-encode
+        String queued = fixtures.item("ready");
+        IngestJob quality = q.enqueue(queued, Kind.QUALITY);
+        Thread.sleep(300);
+        assertEquals(State.QUEUED, jobs.get(quality.id()).orElseThrow().state());
+        assertEquals(State.RUNNING, jobs.get(reencode.id()).orElseThrow().state());
+
+        // a room queues the item: its job moves forward and the unwanted re-encode gives way
+        long t0 = System.nanoTime();
+        ranks.put(queued, 2);
+        q.wake();
+        awaitState(quality.id(), State.DONE);
+        assertTrue(System.nanoTime() - t0 < TimeUnit.SECONDS.toNanos(15), "the queued item's job didn't wait");
+        IngestJob again = awaitState(reencode.id(), State.DONE);
+        assertEquals(1, again.attempts(), "giving way isn't a failed attempt");
+        assertEquals(List.of(unwanted, queued, unwanted), order);
+    }
+
+    /** Never the reverse: a new job of an item no room wants doesn't interrupt a queued item's re-encode. */
+    @Test
+    void anUnwantedJobNeverInterruptsAQueuedItemsReencode() throws Exception {
+        String queued = fixtures.item("ready");
+        jobs.wantedItems(() -> java.util.Map.of(queued, 0));
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicInteger interrupted = new AtomicInteger();
+        IngestQueue q = queue(1, job -> {
+            if (job.job().kind() == Kind.QUALITY) {
+                started.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    interrupted.incrementAndGet();
+                    throw e;
+                }
+            }
+        }, LONG_POLL);
+        q.start();
+        IngestJob quality = q.enqueue(queued, Kind.QUALITY);
+        assertTrue(started.await(20, TimeUnit.SECONDS));
+        IngestJob upload = q.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertFalse(q.preemptIfNeeded());
+        Thread.sleep(300);
+        assertEquals(0, interrupted.get());
+        assertEquals(State.RUNNING, jobs.get(quality.id()).orElseThrow().state());
+        assertEquals(State.QUEUED, jobs.get(upload.id()).orElseThrow().state());
+        release.countDown();
+        awaitState(quality.id(), State.DONE);
+        awaitState(upload.id(), State.DONE);
+        assertEquals(1, jobs.get(quality.id()).orElseThrow().attempts());
+        assertEquals(0, interrupted.get());
     }
 
     @Test

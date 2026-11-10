@@ -1,6 +1,8 @@
 package io.siggi.togethertunes.rooms;
 
+import io.siggi.togethertunes.ingest.WantedItems;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -22,8 +24,14 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>Only loaded rooms count. A room is loaded by anything that opens it (the room view, a member
  * joining) and every playing room is loaded at server start, so a paused room nobody has opened
  * since a restart lists nothing until someone does.
+ *
+ * <p>It is also the rooms' {@link WantedItems} for the ingest claim order
+ * ({@code docs/library-and-ingest.md#priorities}): each room publishes its whole wish list
+ * ranked by how soon each item plays ({@link #ranks(RoomState)}); {@link #ranks()} merges them
+ * (the earliest across rooms) and is rebuilt after every change, and the change listener
+ * ({@link #changeListener}) is told so the ingest workers look again.
  */
-public final class LivePlayingItems implements PlayingItems {
+public final class LivePlayingItems implements PlayingItems, WantedItems {
     /** item id -> how many rooms list it (absent: none). */
     private final ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();
     /** room id -> what the room published and which executor published it. Guarded by {@link #lock}. */
@@ -31,7 +39,44 @@ public final class LivePlayingItems implements PlayingItems {
     /** A ReentrantLock, not synchronized: the critical sections are short but run on virtual threads. */
     private final ReentrantLock lock = new ReentrantLock();
 
-    private record Published(Object owner, Set<String> items) {
+    private record Published(Object owner, Set<String> items, Map<String, Integer> ranks) {
+    }
+
+    /** Every loaded room's ranks merged (the lowest rank per item); replaced, never changed. */
+    private volatile Map<String, Integer> merged = Map.of();
+    private volatile Runnable changeListener = () -> { };
+
+    /** The merged ranks of every loaded room's wanted items ({@link WantedItems}). */
+    @Override
+    public Map<String, Integer> ranks() {
+        return merged;
+    }
+
+    /** Who is told (outside the lock) after the merged ranks changed: the ingest queue. */
+    public void changeListener(Runnable listener) {
+        this.changeListener = listener == null ? () -> { } : listener;
+    }
+
+    /**
+     * Everything a room is waiting on, ranked by how soon it plays: the current entry's item 0,
+     * the queued entries in play order 1, 2, …, then the suggestions oldest first (they would play
+     * once accepted); an item listed twice keeps its earliest rank. Read on the room's executor
+     * thread.
+     */
+    static Map<String, Integer> ranks(RoomState state) {
+        Map<String, Integer> out = new LinkedHashMap<>();
+        QueueEntry current = state.current();
+        if (current != null) {
+            out.put(current.itemId(), 0);
+        }
+        int rank = 1;
+        for (QueueEntry e : Playback.playOrder(state)) {
+            out.putIfAbsent(e.itemId(), rank++);
+        }
+        for (QueueEntry e : Playback.suggestionOrder(state)) {
+            out.putIfAbsent(e.itemId(), rank++);
+        }
+        return out;
     }
 
     @Override
@@ -71,16 +116,24 @@ public final class LivePlayingItems implements PlayingItems {
      * room, so a closing executor can't wipe what its replacement already published.
      */
     void update(String roomId, Object owner, Set<String> items) {
+        update(roomId, owner, items, Map.of());
+    }
+
+    /** {@link #update(String, Object, Set)} with the room's ranked wanted items ({@link #ranks(RoomState)}). */
+    void update(String roomId, Object owner, Set<String> items, Map<String, Integer> ranks) {
         Objects.requireNonNull(roomId, "roomId");
         Objects.requireNonNull(owner, "owner");
         Set<String> copy = Set.copyOf(items);
+        Map<String, Integer> rankCopy = Map.copyOf(ranks);
+        boolean ranksChanged;
         lock.lock();
         try {
             Published old = byRoom.get(roomId);
-            if (old != null && old.owner == owner && old.items.equals(copy)) {
+            if (old != null && old.owner == owner && old.items.equals(copy) && old.ranks.equals(rankCopy)) {
                 return;
             }
-            byRoom.put(roomId, new Published(owner, copy));
+            ranksChanged = old == null ? !rankCopy.isEmpty() : !old.ranks.equals(rankCopy);
+            byRoom.put(roomId, new Published(owner, copy, rankCopy));
             for (String item : copy) {
                 if (old == null || !old.items.contains(item)) {
                     counts.merge(item, 1, Integer::sum);
@@ -93,13 +146,20 @@ public final class LivePlayingItems implements PlayingItems {
                     }
                 }
             }
+            if (ranksChanged) {
+                remerge();
+            }
         } finally {
             lock.unlock();
+        }
+        if (ranksChanged) {
+            notifyChanged();
         }
     }
 
     /** Withdraws what room {@code roomId} lists, if {@code owner} published it (the executor closed). */
     void remove(String roomId, Object owner) {
+        boolean ranksChanged;
         lock.lock();
         try {
             Published old = byRoom.get(roomId);
@@ -110,8 +170,35 @@ public final class LivePlayingItems implements PlayingItems {
             for (String item : old.items) {
                 decrement(item);
             }
+            ranksChanged = !old.ranks.isEmpty();
+            if (ranksChanged) {
+                remerge();
+            }
         } finally {
             lock.unlock();
+        }
+        if (ranksChanged) {
+            notifyChanged();
+        }
+    }
+
+    /** Rebuilds {@link #merged}; under {@link #lock}. */
+    private void remerge() {
+        Map<String, Integer> out = new HashMap<>();
+        for (Published p : byRoom.values()) {
+            for (Map.Entry<String, Integer> e : p.ranks.entrySet()) {
+                out.merge(e.getKey(), e.getValue(), Math::min);
+            }
+        }
+        merged = Map.copyOf(out);
+    }
+
+    private void notifyChanged() {
+        try {
+            changeListener.run();
+        } catch (RuntimeException e) {
+            System.getLogger(LivePlayingItems.class.getName()).log(System.Logger.Level.WARNING,
+                    "Could not tell ingest that the rooms' wanted items changed", e);
         }
     }
 

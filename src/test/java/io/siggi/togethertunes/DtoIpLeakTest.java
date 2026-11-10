@@ -205,6 +205,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.ToolResult", "tool output, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJob", "ingest_jobs row; GET /api/items/{id}/job (later step) builds its own view of it"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Recovered", "startup recovery counts, server log only"),
+            Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Priority", "claim order rank and kind, inside the ingest queue only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Retry", "retry outcome; JobsApi answers with the new job's JobList row"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$Row", "jobs page row; JobsApi.json builds the response from named fields (no IP column is read)"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$ItemRef", "item columns of a jobs page row; JobsApi.json copies named fields, no adder, no IP"),

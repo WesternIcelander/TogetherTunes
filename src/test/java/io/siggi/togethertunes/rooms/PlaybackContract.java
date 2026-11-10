@@ -431,6 +431,45 @@ abstract class PlaybackContract {
         return out;
     }
 
+    /**
+     * The rooms' wanted items for the ingest claim order: the current item 0, the queue in play
+     * order, then the suggestions; the listener hears every change.
+     */
+    @Test
+    void wantedItemsRankTheWholeQueueByHowSoonItPlays() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("processing", null);
+        String[] c = entry("ready", 60_000L);
+        String[] s = entry("pending", null);
+        db.write(conn -> {
+            try (PreparedStatement ps = conn.prepareStatement("UPDATE queue_entries SET state = 'suggested' WHERE id = ?")) {
+                ps.setString(1, s[0]);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        java.util.concurrent.atomic.AtomicInteger changes = new java.util.concurrent.atomic.AtomicInteger();
+        io.siggi.togethertunes.ingest.WantedItems wanted = registry.wantedItems(changes::incrementAndGet);
+        assertEquals(java.util.Map.of(), wanted.ranks(), "room not loaded");
+
+        registry.call(roomId, tx -> null);
+        assertEquals(java.util.Map.of(a[1], 1, b[1], 2, c[1], 3, s[1], 4), wanted.ranks());
+        int seen = changes.get();
+        assertTrue(seen >= 1);
+
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(java.util.Map.of(a[1], 0, b[1], 1, c[1], 2, s[1], 3), wanted.ranks());
+        assertTrue(changes.get() > seen);
+        seen = changes.get();
+        registry.call(roomId, Playback::pause);
+        assertEquals(seen, changes.get(), "nothing changed, nobody is told");
+
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(java.util.Map.of(b[1], 1, c[1], 0, s[1], 2), wanted.ranks(), "C plays now; B still waits");
+        registry.close();
+        assertEquals(java.util.Map.of(), wanted.ranks(), "a closed room wants nothing");
+    }
+
     @Test
     void theLiveSetFollowsTheCurrentAndNextEntries() throws Exception {
         String[] a = entry("ready", 60_000L);

@@ -39,7 +39,8 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
         /**
          * Re-encode a ready item that was made with the quick preset with the quality preset, once
          * it is in a library. Like {@link #REENCODE} the item stays {@code ready} meanwhile. The
-         * lowest priority: runs only when nothing else is queued, and gives way to a new job.
+         * lowest kind in the claim order, and gives way to a more urgent job (for example one of an
+         * item a room is waiting on; {@code docs/library-and-ingest.md#presets}).
          */
         QUALITY;
 

@@ -149,6 +149,16 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         return playing;
     }
 
+    /**
+     * What the loaded rooms are waiting on, ranked by how soon it plays: the ingest claim order
+     * ({@code docs/library-and-ingest.md#priorities}). {@code listener} is told (on the thread
+     * that changed a room) whenever the ranks change.
+     */
+    public io.siggi.togethertunes.ingest.WantedItems wantedItems(Runnable listener) {
+        playing.changeListener(listener);
+        return playing;
+    }
+
     /** The room's executor if it is loaded, else {@code null}. */
     public RoomExecutor loaded(String roomId) {
         RoomExecutor e = executors.get(roomId);

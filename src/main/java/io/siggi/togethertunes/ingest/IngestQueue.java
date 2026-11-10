@@ -34,12 +34,16 @@ import java.util.function.BooleanSupplier;
  *       {@code progressInterval}, and the final log when the job ends.</li>
  *   <li><b>Outcome:</b> the handler returning means {@code done}; throwing means {@code failed},
  *       with the exception's message as the item's error.</li>
- *   <li><b>Re-encodes give way</b> ({@code docs/library-and-ingest.md#presets}): when a job that
- *       someone waits for (an upload, import or refetch) is queued and every worker is busy, one
- *       running re-encode ({@code reencode} or {@code quality}) is interrupted and put back in the
+ *   <li><b>Re-encodes give way</b> ({@code docs/library-and-ingest.md#priorities}): when every
+ *       worker is busy and the job first in the claim order ({@link IngestJobs#claimOrder}) comes
+ *       strictly before a running re-encode ({@code reencode} or {@code quality};
+ *       {@link IngestJobs.Priority#goesBefore}), that re-encode is interrupted and put back in the
  *       queue without counting the attempt, like at a shutdown; it starts again from the
- *       beginning once nothing more urgent is queued. A worker that has just claimed a re-encode
- *       while such a job is waiting puts it back at once.</li>
+ *       beginning later. So a job of an item a room is waiting on interrupts a re-encode of an
+ *       item no room wants (never the reverse), and a new upload, import or refetch interrupts a
+ *       re-encode of an item that is wanted no more than it. A worker that has just claimed a
+ *       re-encode while such a job is waiting puts it back at once. Checked whenever a job is
+ *       queued and whenever the rooms' wanted items change ({@link #wake}).</li>
  *   <li><b>Low disk space</b> ({@code docs/library-and-ingest.md#free-disk-space}): while
  *       {@link #pauseWhile} says so (the data volume is below {@code storage.minFreeBytes}), no
  *       worker takes a new job; queued jobs (and re-encodes) stay queued and start once it no
@@ -229,8 +233,9 @@ public final class IngestQueue implements AutoCloseable {
     }
 
     /**
-     * Wakes the workers to look for queued jobs (e.g. after queuing inside a larger transaction),
-     * and, if every worker is busy, makes a running re-encode give way to a waiting new job.
+     * Wakes the workers to look for queued jobs (e.g. after queuing inside a larger transaction, or
+     * when the rooms' wanted items changed), and, if every worker is busy, makes a running
+     * re-encode give way to a more urgent waiting job.
      */
     public void wake() {
         lock.lock();
@@ -255,29 +260,42 @@ public final class IngestQueue implements AutoCloseable {
     }
 
     /**
-     * If every worker is busy and a new-item job is queued, interrupts the most recently started
-     * running re-encode; its worker puts it back in the queue and takes the new job.
+     * If every worker is busy and the job first in the claim order comes before a running
+     * re-encode ({@link IngestJobs.Priority#goesBefore}), interrupts the running re-encode that
+     * comes last (the most recently started one among equals); its worker puts it back in the
+     * queue and takes the waiting job.
      *
      * @return whether a re-encode was interrupted
      */
     boolean preemptIfNeeded() {
         if (closing || running.size() < workerCount || paused()) {
-            return false; // while paused, the new job couldn't start anyway
+            return false; // while paused, the waiting job couldn't start anyway
         }
+        IngestJobs.Priority next;
+        Running victim = null;
+        IngestJobs.Priority victimPriority = null;
         try {
-            if (!jobs.hasQueuedNewItemJob()) {
+            next = jobs.nextQueuedPriority().orElse(null);
+            if (next == null) {
                 return false;
+            }
+            for (Running r : running.values()) {
+                if (!r.job.kind().replacesReadyFiles() || r.preempted) {
+                    continue;
+                }
+                IngestJobs.Priority p = jobs.priority(r.job).orElse(null);
+                if (p == null || !next.goesBefore(p)) {
+                    continue;
+                }
+                int c = victim == null ? 1 : p.compareTo(victimPriority);
+                if (c > 0 || (c == 0 && r.startedNanos > victim.startedNanos)) {
+                    victim = r;
+                    victimPriority = p;
+                }
             }
         } catch (SQLException | RuntimeException e) {
             LOG.log(System.Logger.Level.WARNING, "Could not look for waiting ingest jobs", e);
             return false;
-        }
-        Running victim = null;
-        for (Running r : running.values()) {
-            if (r.job.kind().replacesReadyFiles() && !r.preempted
-                    && (victim == null || r.startedNanos > victim.startedNanos)) {
-                victim = r;
-            }
         }
         if (victim == null) {
             return false;
@@ -290,7 +308,7 @@ public final class IngestQueue implements AutoCloseable {
             victim.thread.interrupt();
         }
         LOG.log(System.Logger.Level.INFO, "Ingest: " + victim.job.kind().wire() + " job " + victim.job.id()
-                + " gives way to a new job; it runs again later");
+                + " gives way to a more urgent job; it runs again later");
         return true;
     }
 
@@ -326,8 +344,8 @@ public final class IngestQueue implements AutoCloseable {
                 job = null;
             }
             if (job != null) {
-                if (job.kind().replacesReadyFiles() && newItemJobWaiting()) {
-                    // Claimed a re-encode just as a new job came in: let the new job go first.
+                if (job.kind().replacesReadyFiles() && moreUrgentJobWaiting(job)) {
+                    // Claimed a re-encode just as a more urgent job came in: let that one go first.
                     try {
                         jobs.release(job.id(), job.log());
                     } catch (SQLException | RuntimeException e) {
@@ -358,10 +376,12 @@ public final class IngestQueue implements AutoCloseable {
         }
     }
 
-    /** Whether a new-item job is queued (a database error counts as no). */
-    private boolean newItemJobWaiting() {
+    /** Whether a queued job comes before {@code claimed} (a database error counts as no). */
+    private boolean moreUrgentJobWaiting(IngestJob claimed) {
         try {
-            return jobs.hasQueuedNewItemJob();
+            IngestJobs.Priority next = jobs.nextQueuedPriority().orElse(null);
+            IngestJobs.Priority own = jobs.priority(claimed).orElse(null);
+            return next != null && own != null && next.goesBefore(own);
         } catch (SQLException | RuntimeException e) {
             return false;
         }
@@ -404,7 +424,7 @@ public final class IngestQueue implements AutoCloseable {
                 log.append("[ingest] Stopped by a server shutdown after " + took + "; it runs again after the restart");
                 jobs.release(job.id(), log.tail());
             } else if (preempted && failure != null) {
-                log.append("[ingest] Stopped after " + took + " to make way for a new job; it runs again later");
+                log.append("[ingest] Stopped after " + took + " to make way for a more urgent job; it runs again later");
                 jobs.release(job.id(), log.tail());
             } else if (failure == null) {
                 log.append("[ingest] Done after " + took);

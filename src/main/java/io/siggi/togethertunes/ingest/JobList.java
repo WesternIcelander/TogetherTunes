@@ -23,7 +23,7 @@ import java.util.Optional;
  *
  * <ul>
  *   <li>{@link View#ACTIVE}: running jobs (longest running first), then the queue in the order
- *       workers take it ({@link IngestJobs#CLAIM_ORDER}), each queued job with its 1-based
+ *       workers take it ({@link IngestJobs#claimOrder}, from the rooms' state right now), each queued job with its 1-based
  *       position in the <em>whole</em> queue (also in a user's list, so "3rd in line" counts
  *       other people's jobs ahead of it without naming them).</li>
  *   <li>{@link View#FAILED}: failed jobs that are still their item's latest job (a failure that a
@@ -78,22 +78,28 @@ public final class JobList {
     public record Page(List<Row> rows, Integer nextOffset) {
     }
 
-    private static final String SELECT = "SELECT j.id, j.item_id, j.kind, j.state, j.attempts, j.progress,"
-            + " j.created_at, j.started_at, j.finished_at, j.tier, q.pos,"
-            + " i.kind AS item_kind, i.title, i.artist, i.source, i.status, i.error"
-            + " FROM ingest_jobs j JOIN items i ON i.id = j.item_id"
-            + " LEFT JOIN (SELECT id, ROW_NUMBER() OVER (ORDER BY " + IngestJobs.CLAIM_ORDER + ") AS pos"
-            + " FROM ingest_jobs WHERE state = 'queued') q ON q.id = j.id";
+    /** The select up to its WHERE; appends the claim order's parameters to {@code params}. */
+    private String select(List<Object> params) {
+        return "SELECT j.id, j.item_id, j.kind, j.state, j.attempts, j.progress,"
+                + " j.created_at, j.started_at, j.finished_at, j.tier, q.pos,"
+                + " i.kind AS item_kind, i.title, i.artist, i.source, i.status, i.error"
+                + " FROM ingest_jobs j JOIN items i ON i.id = j.item_id"
+                + " LEFT JOIN (SELECT id, ROW_NUMBER() OVER (ORDER BY " + jobs.claimOrder(params) + ") AS pos"
+                + " FROM ingest_jobs WHERE state = 'queued') q ON q.id = j.id";
+    }
 
     /** Only items in one user's library (one parameter: the user id). */
     private static final String IN_LIBRARY =
             " AND EXISTS (SELECT 1 FROM library_entries le WHERE le.item_id = j.item_id AND le.user_id = ?)";
 
     private final Database db;
+    private final IngestJobs jobs;
     private final Clock clock;
 
-    public JobList(Database db, Clock clock) {
+    /** @param jobs the queue whose claim order the active list follows */
+    public JobList(Database db, IngestJobs jobs, Clock clock) {
         this.db = Objects.requireNonNull(db);
+        this.jobs = Objects.requireNonNull(jobs);
         this.clock = Objects.requireNonNull(clock);
     }
 
@@ -106,8 +112,8 @@ public final class JobList {
         if (offset < 0 || limit < 1) {
             throw new IllegalArgumentException("offset " + offset + ", limit " + limit);
         }
-        StringBuilder sql = new StringBuilder(SELECT).append(" WHERE ");
         List<Object> params = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(select(params)).append(" WHERE ");
         switch (view) {
             case ACTIVE -> sql.append("j.state IN ('running', 'queued')");
             case FAILED -> sql.append("j.state = 'failed' AND i.status <> 'purged' AND NOT EXISTS (SELECT 1 FROM"
@@ -153,9 +159,14 @@ public final class JobList {
 
     /** One job (any state) with its item, or empty; without the log. */
     public Optional<Row> get(String jobId) throws SQLException {
+        List<Object> params = new ArrayList<>();
+        String sql = select(params) + " WHERE j.id = ?";
+        params.add(jobId);
         return db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE j.id = ?")) {
-                ps.setString(1, jobId);
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < params.size(); i++) {
+                    ps.setObject(i + 1, params.get(i));
+                }
                 try (ResultSet rs = ps.executeQuery()) {
                     return Optional.ofNullable(rs.next() ? row(rs) : null);
                 }

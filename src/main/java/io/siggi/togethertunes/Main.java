@@ -277,6 +277,8 @@ public final class Main {
         ingest.jobs().statusListener(roomRegistry);
         // Re-encodes swap an item's files only while it isn't current or next in any room.
         pipeline.inUse(roomRegistry.playingItems()::isCurrentOrNext);
+        // Jobs of items a room is waiting on go first; a change in the rooms re-checks the give-way rule.
+        ingest.jobs().wantedItems(roomRegistry.wantedItems(ingest::wake));
         items.statusListener(roomRegistry);
         try {
             int resumed = roomRegistry.resumePlaying();
@@ -324,7 +326,7 @@ public final class Main {
         outputControl.idleStop(rtmpIdleStop);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
         // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
-        new JobsApi(ingest.jobs(), new JobList(database, Clock.systemUTC()), permissions, ingest::paused,
+        new JobsApi(ingest.jobs(), new JobList(database, ingest.jobs(), Clock.systemUTC()), permissions, ingest::paused,
                 Clock.systemUTC()).register(appRouter);
         admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.

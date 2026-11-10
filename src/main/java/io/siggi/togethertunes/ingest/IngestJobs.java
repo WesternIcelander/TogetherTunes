@@ -17,6 +17,7 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
@@ -56,6 +57,7 @@ public final class IngestJobs {
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
     private volatile Runnable enqueueListener = () -> { };
     private volatile Supplier<X264Preset> qualityPreset;
+    private volatile WantedItems wanted = WantedItems.NONE;
 
     public IngestJobs(Database db) {
         this(db, Clock.systemUTC());
@@ -201,7 +203,8 @@ public final class IngestJobs {
 
     /**
      * Whether a job of a kind that owns its item's status (an upload, import or refetch: someone
-     * is waiting for it) is queued. Re-encodes give way to such a job ({@link IngestQueue}).
+     * is waiting for it) is queued. (The give-way rule compares priorities instead:
+     * {@link #nextQueuedPriority}, {@link Priority#goesBefore}.)
      */
     public boolean hasQueuedNewItemJob() throws SQLException {
         return db.read(c -> {
@@ -302,38 +305,165 @@ public final class IngestJobs {
         });
     }
 
-    /**
-     * The order in which workers take queued jobs ({@link #claimNext}), as an SQL {@code ORDER BY}
-     * list over {@code ingest_jobs} columns (unqualified): new-item jobs, then {@code reencode},
-     * then {@code quality}; oldest first within each. The jobs page lists the queue in this order
-     * ({@link JobList}), so whatever changes the claim order must change both.
-     */
-    static final String CLAIM_ORDER = "CASE WHEN kind = '" + Kind.QUALITY.wire() + "' THEN 2 WHEN kind = '"
-            + Kind.REENCODE.wire() + "' THEN 1 ELSE 0 END, created_at, id";
+    /** The {@code want} of a job whose item is in some room's queue in the database but not ranked live. */
+    static final long IN_A_QUEUE = 1_000_000;
+    /** The {@code want} of a job whose item no room wants. */
+    static final long NOT_WANTED = IN_A_QUEUE + 1;
+    /** At most this many live-ranked items go into the claim query; the rest count as {@link #IN_A_QUEUE}. */
+    static final int MAX_RANKED = 500;
+
+    /** The existing kind order: new-item jobs, then {@code reencode}, then {@code quality}. */
+    private static final String KIND_ORDER = "CASE WHEN kind = '" + Kind.QUALITY.wire() + "' THEN 2 WHEN kind = '"
+            + Kind.REENCODE.wire() + "' THEN 1 ELSE 0 END";
+
+    /** Whether the job's item is current, queued or suggested in any room (the database's view). */
+    private static final String IN_ANY_QUEUE = "EXISTS (SELECT 1 FROM queue_entries qe WHERE qe.item_id = ingest_jobs.item_id"
+            + " AND qe.state IN ('queued', 'suggested', 'playing'))";
 
     /**
-     * Takes the oldest queued job: sets it {@code running}, counts the attempt, resets its
-     * progress and marks its item {@code processing}. Returns null if nothing is queued. Safe
-     * to call from several workers (and processes): a job is handed to exactly one of them.
-     * {@code reencode} jobs come after every other kind, so that a library re-encode after an
-     * output profile change doesn't hold up new uploads and imports, and {@code quality} jobs come
+     * Sets where the rooms' wanted items come from ({@link WantedItems}; the server passes the rooms'
+     * live state). Until it is set, only the database's queues count ({@link #IN_A_QUEUE}).
+     */
+    public void wantedItems(WantedItems wanted) {
+        this.wanted = wanted == null ? WantedItems.NONE : wanted;
+    }
+
+    /**
+     * How urgent a job is, as the claim order sees it right now ({@code docs/library-and-ingest.md#priorities}).
+     * Smaller comes first.
+     *
+     * @param want   the item's live rank (0 = a room's current item, then by how soon it plays),
+     *               {@link #IN_A_QUEUE} if it is only in a queue in the database, else {@link #NOT_WANTED}
+     * @param newItem whether it is a new-item job (an upload, import or refetch; not a re-encode)
+     */
+    public record Priority(long want, boolean newItem) implements Comparable<Priority> {
+        /** Whether a room is waiting on the job's item. */
+        public boolean wanted() {
+            return want < NOT_WANTED;
+        }
+
+        @Override
+        public int compareTo(Priority o) {
+            int c = Long.compare(want, o.want);
+            return c != 0 ? c : Boolean.compare(o.newItem, newItem);
+        }
+
+        /**
+         * Whether a queued job of this priority may interrupt a running re-encode of priority
+         * {@code running} (the give-way rule): it must come strictly before it, ignoring age. So
+         * a job of an item a room waits on interrupts one of an item no room wants (never the
+         * reverse), a sooner-playing item's job one of a later item, and among equals a new-item
+         * job a re-encode (a {@code reencode} never interrupts a {@code quality} job).
+         */
+        public boolean goesBefore(Priority running) {
+            return compareTo(running) < 0;
+        }
+    }
+
+    /**
+     * The SQL expression for a job's {@code want} ({@link Priority#want}) over {@code ingest_jobs}
+     * (unaliased), from the rooms' state right now; appends its parameters to {@code params}.
+     */
+    String wantSql(List<Object> params) {
+        Map<String, Integer> ranks;
+        try {
+            ranks = wanted.ranks();
+        } catch (RuntimeException e) {
+            ranks = Map.of(); // the database's queues still count
+        }
+        List<Map.Entry<String, Integer>> top = new ArrayList<>(ranks.entrySet());
+        if (top.size() > MAX_RANKED) {
+            top.sort(Map.Entry.comparingByValue());
+            top = top.subList(0, MAX_RANKED);
+        }
+        StringBuilder sql = new StringBuilder("(CASE");
+        for (Map.Entry<String, Integer> e : top) {
+            sql.append(" WHEN ingest_jobs.item_id = ? THEN ").append(Math.max(0, Math.min(IN_A_QUEUE - 1, e.getValue())));
+            params.add(e.getKey());
+        }
+        sql.append(" WHEN ").append(IN_ANY_QUEUE).append(" THEN ").append(IN_A_QUEUE)
+                .append(" ELSE ").append(NOT_WANTED).append(" END)");
+        return sql.toString();
+    }
+
+    /**
+     * The order in which workers take queued jobs ({@link #claimNext}), as an SQL {@code ORDER BY}
+     * list over {@code ingest_jobs} (unaliased), decided now from the rooms' state; appends its
+     * parameters to {@code params}. Jobs of items a room is waiting on come first, by how soon the
+     * item plays; then the kind order (new-item jobs, then {@code reencode}, then {@code quality});
+     * then oldest first. The jobs page lists the queue in this order ({@link JobList}).
+     */
+    String claimOrder(List<Object> params) {
+        return wantSql(params) + ", " + KIND_ORDER + ", ingest_jobs.created_at, ingest_jobs.id";
+    }
+
+    private static void bind(PreparedStatement ps, List<Object> params) throws SQLException {
+        for (int i = 0; i < params.size(); i++) {
+            ps.setObject(i + 1, params.get(i));
+        }
+    }
+
+    /** The queued job workers take next and its priority, or null if nothing is queued. */
+    private Object[] nextQueued() throws SQLException {
+        // parameters in the order they appear: the select list's, the WHERE's, the ORDER BY's
+        List<Object> params = new ArrayList<>();
+        String want = wantSql(params);
+        params.add(State.QUEUED.wire());
+        String order = claimOrder(params);
+        String sql = "SELECT " + COLUMNS + ", " + want + " AS want FROM ingest_jobs WHERE state = ?"
+                + " ORDER BY " + order + " LIMIT 1";
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                bind(ps, params);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    IngestJob job = row(rs);
+                    return new Object[] {job, new Priority(rs.getLong("want"), job.kind().ownsItemStatus())};
+                }
+            }
+        });
+    }
+
+    /** The priority of the queued job workers take next, or empty if nothing is queued. */
+    public Optional<Priority> nextQueuedPriority() throws SQLException {
+        Object[] next = nextQueued();
+        return next == null ? Optional.empty() : Optional.of((Priority) next[1]);
+    }
+
+    /** A job's priority now (any state; it decides whether a running re-encode gives way). Empty if there is no such job. */
+    public Optional<Priority> priority(IngestJob job) throws SQLException {
+        List<Object> params = new ArrayList<>();
+        String sql = "SELECT " + wantSql(params) + " AS want FROM ingest_jobs WHERE id = ?";
+        params.add(job.id());
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                bind(ps, params);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? Optional.of(new Priority(rs.getLong("want"), job.kind().ownsItemStatus()))
+                            : Optional.<Priority>empty();
+                }
+            }
+        });
+    }
+
+    /**
+     * Takes the queued job that comes first in the claim order ({@link #claimOrder}): sets it
+     * {@code running}, counts the attempt, resets its progress and marks its item
+     * {@code processing}. Returns null if nothing is queued. Safe to call from several workers
+     * (and processes): a job is handed to exactly one of them. Jobs of items a room is waiting on
+     * come first, then new-item jobs, then {@code reencode} jobs (so that a library re-encode after
+     * an output profile change doesn't hold up new uploads and imports), and {@code quality} jobs
      * last of all.
      */
     public IngestJob claimNext() throws SQLException {
         while (true) {
-            IngestJob candidate = db.read(c -> {
-                try (PreparedStatement ps = c.prepareStatement("SELECT " + COLUMNS
-                        + " FROM ingest_jobs WHERE state = ?"
-                        + " ORDER BY " + CLAIM_ORDER + " LIMIT 1")) {
-                    ps.setString(1, State.QUEUED.wire());
-                    try (ResultSet rs = ps.executeQuery()) {
-                        return rs.next() ? row(rs) : null;
-                    }
-                }
-            });
-            if (candidate == null) {
+            Object[] next = nextQueued();
+            if (next == null) {
                 return null;
             }
+            IngestJob candidate = (IngestJob) next[0];
             long now = EpochMs.now(clock);
             IngestJob claimed = db.write(c -> {
                 try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs"
