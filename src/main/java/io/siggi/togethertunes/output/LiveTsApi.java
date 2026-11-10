@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
- * The direct MPEG-TS output, {@code GET}/{@code HEAD /live/{token}.ts}
+ * The direct MPEG-TS output, {@code GET}/{@code HEAD /live/{key}.ts}
  * ({@code docs/program-output.md#direct-mpeg-ts-ts}), copied from VRCDN's {@code .ts} output.
  *
  * <ul>
@@ -42,13 +42,17 @@ import java.util.regex.Pattern;
  *       limit ({@code 429 rate_limited}) before the token is looked up; a {@code GET} connection
  *       counts against the token's connection cap for as long as it lasts
  *       ({@code 429 too_many_connections}).</li>
- *   <li><b>Revocation:</b> {@link #revalidate} ends every open connection whose token no longer
- *       opens its room's {@code .ts} output (rotated, disabled, deleted, server switch off, room
- *       deleted); the outputs API calls it after each change, and periodically.</li>
- *   <li>Unknown, disabled or malformed tokens, a room without the {@code .ts} output, or the server
- *       switch {@code outputs.ts.enabled} off: {@code 404}. The token is a capability: it is never
- *       logged in full (invariant 6), so errors are handled here, not by the router (which logs
- *       the path).</li>
+ *   <li><b>Revocation:</b> {@link #revalidate} ends every open connection whose key no longer
+ *       opens its room's {@code .ts} output (token rotated, slug or visibility changed, disabled,
+ *       deleted, server switch off, room deleted); the outputs API and room edits call it after
+ *       each change, and it runs periodically.</li>
+ *   <li><b>Key:</b> the room's slug for a public or unlisted room, a random token for a private
+ *       one ({@link StreamOutputs#KEY_MATCH}). Unknown, disabled or malformed keys, a room without
+ *       the {@code .ts} output, or the server switch {@code outputs.ts.enabled} off: {@code 404}.
+ *       A token is a capability: keys are never logged in full (invariant 6), so errors are
+ *       handled here, not by the router (which logs the path).</li>
+ *   <li>Each {@code GET} connection counts as a listener for the auto turn-off while it is open
+ *       ({@link OutputListeners}).</li>
  * </ul>
  */
 public final class LiveTsApi {
@@ -57,8 +61,8 @@ public final class LiveTsApi {
     public static final String CONTENT_TYPE = "video/mp2t";
     /** Units a connection must have been sent before it counts as a viewer. */
     public static final int VIEWER_AFTER_UNITS = 2;
-    /** Stream tokens: 128 bits in base64url without padding (22 characters); a little slack. */
-    private static final Pattern TOKEN_SHAPE = Pattern.compile("[A-Za-z0-9_-]{16,64}");
+    /** Stream URL keys: slugs or tokens ({@link StreamOutputs#KEY_SHAPE}). */
+    private static final Pattern TOKEN_SHAPE = StreamOutputs.KEY_SHAPE;
 
     /** What a token opens: a room's {@code .ts} output and its join point. */
     public record Target(String roomId, boolean joinLatest) {
@@ -67,7 +71,7 @@ public final class LiveTsApi {
         }
     }
 
-    /** Resolves a token to an enabled {@code .ts} output, or null (unknown, disabled, server switch off). */
+    /** Resolves a URL key (slug or token) to an enabled {@code .ts} output, or null (unknown, disabled, server switch off). */
     @FunctionalInterface
     public interface Targets {
         Target lookup(String token) throws SQLException;
@@ -94,6 +98,7 @@ public final class LiveTsApi {
     /** {@code /live/{token}.mp3} shares the route ({@link LiveMp3Api}); null: not served. */
     private volatile io.siggi.togethertunes.http.Handler mp3;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
+    private volatile OutputListeners listeners = OutputListeners.NONE;
 
     /** Without a per-IP limit (tests); the per-token cap still applies. */
     public LiveTsApi(Targets targets, ProgramOutputs outputs) {
@@ -104,6 +109,11 @@ public final class LiveTsApi {
         this.targets = Objects.requireNonNull(targets, "targets");
         this.outputs = Objects.requireNonNull(outputs, "outputs");
         this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    /** Where open connections are counted ({@link OutputAutoOff}). */
+    public void listeners(OutputListeners listeners) {
+        this.listeners = Objects.requireNonNull(listeners);
     }
 
     /** Open {@code GET} connections (being streamed to). */
@@ -146,8 +156,9 @@ public final class LiveTsApi {
     }
 
     /**
-     * Targets from {@code stream_outputs} (kind {@code ts}, enabled) and the room's
-     * {@code outputs.ts.join} setting, behind the server switch {@code outputs.ts.enabled}.
+     * Targets from {@code stream_outputs} (kind {@code ts}, enabled; the key resolved by
+     * {@link StreamOutputs#KEY_MATCH}) and the room's {@code outputs.ts.join} setting, behind the
+     * server switch {@code outputs.ts.enabled}.
      */
     public static Targets targetsFrom(Database db, Settings settings) {
         return token -> {
@@ -157,8 +168,8 @@ public final class LiveTsApi {
             return db.read(c -> {
                 try (var ps = c.prepareStatement("SELECT so.room_id, so.enabled, r.settings_json"
                         + " FROM stream_outputs so JOIN rooms r ON r.id = so.room_id"
-                        + " WHERE so.token = ? AND so.kind = 'ts'")) {
-                    ps.setString(1, token);
+                        + " WHERE so.kind = 'ts' AND " + StreamOutputs.KEY_MATCH)) {
+                    StreamOutputs.bindKey(ps, 1, token);
                     try (var rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(2) == 0) {
                             return null;
@@ -234,9 +245,12 @@ public final class LiveTsApi {
                 response.error(503, "output_unavailable", "The program output is not available right now");
                 return;
             }
+            OutputListeners l = listeners;
+            l.opened(target.roomId(), StreamOutputs.Kind.TS);
             try {
                 stream(response, lease.packager(), token, target, abortFor(response));
             } finally {
+                l.closed(target.roomId(), StreamOutputs.Kind.TS);
                 lease.close();
             }
         }

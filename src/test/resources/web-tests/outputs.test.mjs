@@ -87,12 +87,16 @@ test("push line: live status first, failures and next try for retrying/error, of
   assert.equal(O.pushLine(undefined, row({ enabled: false, active: false }), 0), "Off");
   assert.equal(O.pushLine(undefined, row({ serverEnabled: false, active: false }), 0), "Off (disabled by the server admin)");
   assert.match(O.pushLine(undefined, row({ rtmpAvailable: false }), 0), /^Error: .*ffmpeg/);
-  // turned off by the server's idle stop: the owner is told why and what to do
+  // turned off by the server's auto turn-off: the owner is told why and what to do
   const idle = row({ enabled: false, active: false, stopped: { reason: "idle", at: 1, idleMinutes: 10 } });
-  assert.equal(O.pushLine(undefined, idle, 0), "Stopped after 10 minutes with an empty queue. Turn on to start again.");
-  assert.equal(O.idleStopLine(row({ enabled: false, active: false, stopped: { reason: "idle", at: 1, idleMinutes: 1 } })),
-    "Stopped after 1 minute with an empty queue. Turn on to start again.");
-  assert.equal(O.idleStopLine(row({ stopped: { reason: "idle", at: 1, idleMinutes: 10 } })), undefined); // on again
+  assert.equal(O.pushLine(undefined, idle, 0), "Off: queue empty for 10 minutes. Turn on to start again.");
+  assert.equal(O.autoOffLine(row({ enabled: false, active: false, stopped: { reason: "idle", at: 1, idleMinutes: 1 } })),
+    "Off: queue empty for 1 minute. Turn on to start again.");
+  assert.equal(O.autoOffLine(row({ kind: "ts", enabled: false, active: false,
+    stopped: { reason: "no_listeners", at: 1, idleMinutes: 10 } })), "Off: no listeners for 10 minutes. Turn on to start again.");
+  assert.equal(O.autoOffLine(row({ enabled: false, active: false, stopped: { reason: "later", at: 1, idleMinutes: 10 } })),
+    undefined);
+  assert.equal(O.autoOffLine(row({ stopped: { reason: "idle", at: 1, idleMinutes: 10 } })), undefined); // on again
   assert.equal(O.pushLine(undefined, row({ enabled: false, active: false, serverEnabled: false,
     stopped: { reason: "idle", at: 1, idleMinutes: 10 } }), 0), "Off (disabled by the server admin)");
   assert.equal(O.pushDetail({ kind: "rtmp", status: "retrying", detail: "live" }, failing), "live");
@@ -123,4 +127,15 @@ test("create only a kind the room doesn't have, with the server switch on; RTMP 
   assert.equal(O.statusLabel("ready"), "Ready");
   assert.equal(O.statusLabel(undefined), "Off");
   assert.equal(O.statusLabel("weird"), "weird");
+});
+
+test("stream URLs: only token URLs (private rooms) rotate; the URLs follow the room's slug and visibility", () => {
+  const url = (over) => ({ id: "o2", kind: "ts", enabled: true, serverEnabled: true, active: true, createdAt: 1, ...over });
+  assert.equal(O.canRotate(url({ urlKind: "token" })), true);
+  assert.equal(O.canRotate(url({ urlKind: "slug" })), false);
+  assert.equal(O.canRotate(url({})), false);
+  assert.equal(O.urlKey(undefined), "");
+  assert.equal(O.urlKey({ slug: "club", visibility: "public" }), "public/club");
+  assert.notEqual(O.urlKey({ slug: "club", visibility: "public" }), O.urlKey({ slug: "club", visibility: "private" }));
+  assert.notEqual(O.urlKey({ slug: "club", visibility: "public" }), O.urlKey({ slug: "disco", visibility: "public" }));
 });

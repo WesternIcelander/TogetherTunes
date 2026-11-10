@@ -153,11 +153,16 @@ public final class Settings {
     public static final SettingKey<Integer> OUTPUTS_MP3_BITRATE_KBPS = SettingKey.integer(
             "outputs.mp3.bitrateKbps", 128, 64, 320);
     /**
-     * The longest a room's RTMP push keeps running while the room is idle, in minutes: the room's
-     * {@code outputs.rtmp.idleStopMinutes} applies up to this ({@code docs/program-output.md#idle-stop}).
+     * Every room's outputs turn off automatically, whatever the room's {@code outputs.autoOff}
+     * says ({@code docs/program-output.md#auto-turn-off}).
      */
-    public static final SettingKey<Integer> OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES = SettingKey.integer(
-            "outputs.rtmp.maxIdleStopMinutes", 60, 1, 1440);
+    public static final SettingKey<Boolean> OUTPUTS_FORCE_AUTO_OFF = SettingKey.bool("outputs.forceAutoOff", false);
+    /**
+     * The longest an output keeps running with an empty queue or without listeners, in minutes: the
+     * room's {@code outputs.autoOffMinutes} applies up to this ({@code docs/program-output.md#auto-turn-off}).
+     */
+    public static final SettingKey<Integer> OUTPUTS_MAX_AUTO_OFF_MINUTES = SettingKey.integer(
+            "outputs.maxAutoOffMinutes", 60, 1, 1440);
 
     // Overlay
     public static final SettingKey<Boolean> OVERLAY_ENABLED = SettingKey.bool("overlay.enabled", false);
@@ -190,7 +195,8 @@ public final class Settings {
                 STORAGE_MIN_FREE_BYTES, MEDIA_UNDO_HOURS,
                 ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS, OUTPUT_AUDIO_ONLY_BITRATE_KBPS,
-                OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
+                OUTPUTS_FORCE_AUTO_OFF, OUTPUTS_MAX_AUTO_OFF_MINUTES,
+                OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OUTPUTS_MP3_ENABLED, OUTPUTS_MP3_BITRATE_KBPS,
                 OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES)) {
             if (keys.put(k.name(), k) != null) {
@@ -524,8 +530,12 @@ public final class Settings {
         return get(OUTPUTS_RTMP_ENABLED);
     }
 
-    public int outputsRtmpMaxIdleStopMinutes() throws SQLException {
-        return get(OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES);
+    public boolean outputsForceAutoOff() throws SQLException {
+        return get(OUTPUTS_FORCE_AUTO_OFF);
+    }
+
+    public int outputsMaxAutoOffMinutes() throws SQLException {
+        return get(OUTPUTS_MAX_AUTO_OFF_MINUTES);
     }
 
     public boolean outputsTsEnabled() throws SQLException {

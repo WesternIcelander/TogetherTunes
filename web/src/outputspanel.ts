@@ -9,7 +9,7 @@
 import { api } from "./api.js";
 import { button, h } from "./dom.js";
 import {
-  activeKey, canCreate, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
+  activeKey, autoOffLine, canCreate, canRotate, urlKey, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
   validRtmpUrl, type OutputKind, type OutputRow,
 } from "./outputs.js";
 import type { RoomState } from "./roomclient.js";
@@ -124,7 +124,7 @@ export class OutputsPanel {
     this.#renderPlayback(s);
     if (moderator) {
       // Another moderator (or the server) turned something on or off: load the URLs again.
-      const key = activeKey(s.outputs);
+      const key = activeKey(s.outputs) + "|" + urlKey(s.room);
       const playback = rtmpPlaybackUrl([{ kind: "rtmp" }], s.room.settings);
       if (this.#loadedKey !== key && !this.#loading) void this.reload();
       else if (rightsChanged || roomChanged || (playback !== this.#managePlayback && this.#rtmpForm === undefined)) {
@@ -141,7 +141,7 @@ export class OutputsPanel {
   /** Loads the outputs and server switches (owner and moderators), then draws them. */
   async reload(): Promise<void> {
     const roomId = this.#roomId;
-    const key = activeKey(this.#state?.outputs);
+    const key = activeKey(this.#state?.outputs) + "|" + urlKey(this.#state?.room);
     this.#loading = true;
     try {
       const path = "/api/rooms/" + encodeURIComponent(roomId);
@@ -161,7 +161,8 @@ export class OutputsPanel {
       this.#loading = false;
     }
     this.#renderManage();
-    if (this.#state !== undefined && activeKey(this.#state.outputs) !== this.#loadedKey) void this.reload();
+    if (this.#state !== undefined
+      && activeKey(this.#state.outputs) + "|" + urlKey(this.#state.room) !== this.#loadedKey) void this.reload();
   }
 
   #renderPlayback(s: RoomState): void {
@@ -240,10 +241,10 @@ export class OutputsPanel {
 
   #stateLine(row: OutputRow): string {
     if (row.active) return "On";
-    return row.serverEnabled ? "Off" : "Off (disabled by the server admin)";
+    return row.serverEnabled ? autoOffLine(row) ?? "Off" : "Off (disabled by the server admin)";
   }
 
-  /** `.ts`, HLS or MP3: the tokenised URL with Copy, Rotate URL, on/off, remove. */
+  /** `.ts`, HLS or MP3: the stream URL with Copy, Rotate URL (private rooms), on/off, remove. */
   #urlBlock(kind: OutputKind, row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
     const fail = (e: unknown): void => this.#fail(e);
     const title = h("h4", { text: OUTPUT_LABELS[kind] ?? kind });
@@ -262,7 +263,7 @@ export class OutputsPanel {
     if (description !== null) parts.push(description);
     if (row.url !== undefined) parts.push(copyField(row.url, (OUTPUT_LABELS[kind] ?? kind) + " URL"));
     const buttons: Node[] = [];
-    if (this.#owner) {
+    if (this.#owner && canRotate(row)) {
       buttons.push(button("Rotate URL", async () => {
         if (!confirm("Make a new URL? The current one stops working at once (open connections end); "
           + "viewers and players need the new one.")) return;

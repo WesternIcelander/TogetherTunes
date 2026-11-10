@@ -43,7 +43,8 @@ import java.util.function.Function;
  *   <tr><td>{@code overlay.heightPct}</td><td>22</td><td>{@value #MIN_OVERLAY_HEIGHT_PCT}..{@value #MAX_OVERLAY_HEIGHT_PCT}, % of the frame height</td></tr>
  *   <tr><td>{@code overlay.margin}</td><td>3</td><td>0..{@value #MAX_OVERLAY_MARGIN}, % of the frame height</td></tr>
  *   <tr><td>{@code outputs.rtmp.playbackUrl}</td><td>{@code ""} (none)</td><td>the viewer URL the RTMP service gives out; http(s), rtmp(s), rtsp(t), at most {@value #MAX_URL_LENGTH} characters</td></tr>
- *   <tr><td>{@code outputs.rtmp.idleStopMinutes}</td><td>10</td><td>1..{@value #MAX_IDLE_STOP_MINUTES}; the RTMP push is turned off after the room was idle this long, at most the server's {@code outputs.rtmp.maxIdleStopMinutes} (higher values act as that)</td></tr>
+ *   <tr><td>{@code outputs.autoOff}</td><td>true</td><td>turn every output off automatically after {@code outputs.autoOffMinutes} with an empty queue, or (.ts, HLS, MP3) without listeners; off = always on. The server's {@code outputs.forceAutoOff} makes it on regardless</td></tr>
+ *   <tr><td>{@code outputs.autoOffMinutes}</td><td>10</td><td>1..{@value #MAX_IDLE_STOP_MINUTES}; at most the server's {@code outputs.maxAutoOffMinutes} (higher values act as that)</td></tr>
  *   <tr><td>{@code outputs.ts.join}</td><td>{@code "next"}</td><td>{@code next} | {@code latest} (join point of {@code .ts} viewers)</td></tr>
  *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls} / {@code .mp3}</td><td>5000 / 2000 / 8000 / 3000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
  * </table>
@@ -109,7 +110,8 @@ public final class RoomSettings {
         def("overlay.heightPct", 22, whole(MIN_OVERLAY_HEIGHT_PCT, MAX_OVERLAY_HEIGHT_PCT));
         def("overlay.margin", 3, whole(0, MAX_OVERLAY_MARGIN));
         def("outputs.rtmp.playbackUrl", "", RoomSettings::playbackUrl);
-        def("outputs.rtmp.idleStopMinutes", DEFAULT_IDLE_STOP_MINUTES, whole(1, MAX_IDLE_STOP_MINUTES));
+        def("outputs.autoOff", true, RoomSettings::bool);
+        def("outputs.autoOffMinutes", DEFAULT_IDLE_STOP_MINUTES, whole(1, MAX_IDLE_STOP_MINUTES));
         def("outputs.ts.join", "next", choice("next", "latest"));
         def("estimatedDelayMs.rtmp", 5000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.ts", 2000, whole(0, MAX_DELAY_MS));
@@ -481,11 +483,19 @@ public final class RoomSettings {
     }
 
     /**
-     * Minutes of idleness after which the RTMP push is turned off (the room's half; the effective
-     * limit is at most the server's {@code outputs.rtmp.maxIdleStopMinutes}).
+     * {@code outputs.autoOff}: whether the room's outputs turn off automatically (the room's half;
+     * the server's {@code outputs.forceAutoOff} turns it on regardless).
      */
-    public int rtmpIdleStopMinutes() {
-        return (Integer) values.get("outputs.rtmp.idleStopMinutes");
+    public boolean autoOff() {
+        return (Boolean) values.get("outputs.autoOff");
+    }
+
+    /**
+     * Minutes with an empty queue or without listeners after which an output is turned off (the
+     * room's half; the effective limit is at most the server's {@code outputs.maxAutoOffMinutes}).
+     */
+    public int autoOffMinutes() {
+        return (Integer) values.get("outputs.autoOffMinutes");
     }
 
     /** Whether {@code .ts} viewers get the most recent unit at once ({@code join=latest}) instead of waiting for the next. */

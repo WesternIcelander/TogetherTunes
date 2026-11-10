@@ -67,7 +67,7 @@ class StreamOutputsApiTest {
     WebServer server;
     StreamOutputs rows;
     StreamOutputControl control;
-    RtmpIdleStop idleStop;
+    OutputAutoOff autoOff;
     Rooms rooms;
     Actor.User owner;
     final HttpClient http = HttpClient.newHttpClient();
@@ -140,10 +140,12 @@ class StreamOutputsApiTest {
                         ? new RtmpPusher.Status(RtmpPusher.State.RETRYING, DETAIL, 2, 5, 9) : null;
             }
         }, revalidations::incrementAndGet);
-        idleStop = new RtmpIdleStop(rows, id -> RtmpIdleStop.effectiveMinutes(
-                rooms.record(id).settings().rtmpIdleStopMinutes(), settings.outputsRtmpMaxIdleStopMinutes()),
-                clock::millis);
-        control.idleStop(idleStop);
+        autoOff = new OutputAutoOff(rows, id -> {
+            var rs = rooms.record(id).settings();
+            return OutputAutoOff.policy(rs.autoOff(), rs.autoOffMinutes(), settings.outputsForceAutoOff(),
+                    settings.outputsMaxAutoOffMinutes());
+        }, clock::millis);
+        control.autoOff(autoOff);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         new StreamOutputsApi(rooms, rows, control, config.publicBaseUrl()).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
@@ -225,8 +227,17 @@ class StreamOutputsApiTest {
         });
     }
 
+    /** Changes the room's visibility as {@code PATCH /api/rooms/{room}} does (with the outputs' follow-up). */
+    void visibility(Rooms.Visibility v) throws Exception {
+        boolean wasPrivate = rooms.record(roomId).visibility() == Rooms.Visibility.PRIVATE;
+        rooms.update(owner, roomId, new Rooms.Edit(null, null, v, null), null);
+        control.roomEdited(roomId, v == Rooms.Visibility.PRIVATE && !wasPrivate);
+        events.clear();
+    }
+
     @Test
     void tsAndHlsOutputsHaveTokenUrlsThatRotate() throws Exception {
+        visibility(Rooms.Visibility.PRIVATE);
         JsonObject ts = create("{\"kind\":\"ts\"}");
         String tsToken = token(TS_URL, ts);
         assertEquals(16, java.util.Base64.getUrlDecoder().decode(tsToken).length, "128 bits");
@@ -235,6 +246,7 @@ class StreamOutputsApiTest {
         assertTrue(ts.get("serverEnabled").getAsBoolean());
         assertTrue(ts.get("active").getAsBoolean());
         assertEquals(clock.millis(), ts.get("createdAt").getAsLong());
+        assertEquals("token", ts.get("urlKind").getAsString());
         assertFalse(ts.has("rtmpUrl"));
         assertEquals(List.of("start"), events, "enabling starts the program output");
         assertEquals(tsToken, column("SELECT token FROM stream_outputs WHERE kind = 'ts'"));
@@ -250,7 +262,7 @@ class StreamOutputsApiTest {
         assertEquals(2, items.size());
         assertEquals("ts", items.get(0).getAsJsonObject().get("kind").getAsString());
         assertEquals(ts, json(call(bob, "GET", "/api/rooms/" + roomId + "/outputs/" + ts.get("id").getAsString(), null)));
-        expectError(403, "forbidden", call(carol, "GET", "/api/rooms/club/outputs", null));
+        expectError(404, "room_not_found", call(carol, "GET", "/api/rooms/club/outputs", null)); // private
         expectError(401, "not_authenticated", call(null, "GET", "/api/rooms/club/outputs", null));
         expectError(404, "room_not_found", call(alice, "GET", "/api/rooms/nope/outputs", null));
         expectError(404, "output_not_found", call(alice, "GET", "/api/rooms/club/outputs/nope", null));
@@ -367,6 +379,7 @@ class StreamOutputsApiTest {
 
     @Test
     void serverSwitchesGateOutputs() throws Exception {
+        visibility(Rooms.Visibility.PRIVATE);
         JsonObject rtmp = create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\",\"rtmpKey\":\""
                 + KEY + "\"}");
         JsonObject ts = create("{\"kind\":\"ts\",\"enabled\":false}");
@@ -401,6 +414,7 @@ class StreamOutputsApiTest {
 
     @Test
     void mp3OutputHasATokenUrlAndItsOwnServerSwitch() throws Exception {
+        visibility(Rooms.Visibility.PRIVATE);
         JsonObject ts = create("{\"kind\":\"ts\"}");
         JsonObject mp3 = create("{\"kind\":\"mp3\"}");
         assertEquals("mp3", mp3.get("kind").getAsString());
@@ -451,9 +465,35 @@ class StreamOutputsApiTest {
         assertTrue(pushes.isEmpty());
     }
 
-    // ------------------------------------------------------------------ idle stop (RtmpIdleStop)
+    // ------------------------------------------------------------------ auto turn-off (OutputAutoOff)
 
     static final long MINUTE = 60_000;
+
+    /** Runs the auto turn-off check; the rooms of the outputs it turned off. */
+    List<String> stoppedRooms() {
+        return control.checkIdle().stream().map(OutputAutoOff.Stop::roomId).distinct().toList();
+    }
+
+    /** Runs the auto turn-off check; "kind:reason" of the outputs it turned off. */
+    List<String> stops() {
+        return control.checkIdle().stream().map(st -> st.kind().wire() + ":" + st.reason()).sorted().toList();
+    }
+
+    JsonObject output(String token, String kind) throws Exception {
+        HttpResponse<String> r = call(token, "GET", "/api/rooms/club/outputs", null);
+        assertEquals(200, r.statusCode(), r.body());
+        for (var e : json(r).getAsJsonArray("items")) {
+            if (e.getAsJsonObject().get("kind").getAsString().equals(kind)) {
+                return e.getAsJsonObject();
+            }
+        }
+        throw new AssertionError(r.body());
+    }
+
+    void patchSettings(String json) throws Exception {
+        rooms.update(owner, roomId, new Rooms.Edit(null, null, null, null,
+                JsonParser.parseString(json).getAsJsonObject()), null);
+    }
 
     JsonObject rtmpOutput(String token) throws Exception {
         HttpResponse<String> r = call(token, "GET", "/api/rooms/club/outputs", null);
@@ -472,13 +512,13 @@ class StreamOutputsApiTest {
                 + KEY + "\"}");
         create("{\"kind\":\"ts\",\"enabled\":false}");
         assertTrue(pushes.containsKey(roomId));
-        idleStop.idle(roomId, true);
+        autoOff.idle(roomId, true);
         clock.advance(10 * MINUTE - 1);
-        assertEquals(List.of(), control.checkIdle());
+        assertEquals(List.of(), stoppedRooms());
         assertTrue(pushes.containsKey(roomId));
         events.clear();
         clock.advance(1);
-        assertEquals(List.of(roomId), control.checkIdle());
+        assertEquals(List.of(roomId), stoppedRooms());
         // off like the owner's Turn off: push stopped, program output stopped (no active output left)
         assertFalse(pushes.containsKey(roomId));
         assertTrue(events.contains("unpush"), events.toString());
@@ -507,11 +547,11 @@ class StreamOutputsApiTest {
         assertFalse(audit.contains(KEY) || audit.contains("ingest.example"), audit);
 
         // activity (a request, a play) doesn't turn it back on
-        idleStop.idle(roomId, false);
+        autoOff.idle(roomId, false);
         control.reconcile();
-        assertEquals(List.of(), control.checkIdle());
+        assertEquals(List.of(), stoppedRooms());
         assertFalse(pushes.containsKey(roomId));
-        idleStop.idle(roomId, true);
+        autoOff.idle(roomId, true);
 
         // the owner turns it on: push again, reason gone, a fresh timer although the room is still idle
         HttpResponse<String> r = call(alice, "PATCH", "/api/rooms/club/outputs/" + rtmp.get("id").getAsString(),
@@ -520,61 +560,188 @@ class StreamOutputsApiTest {
         assertTrue(pushes.containsKey(roomId));
         assertFalse(rtmpOutput(alice).has("stopped"));
         clock.advance(10 * MINUTE - 1);
-        assertEquals(List.of(), control.checkIdle());
+        assertEquals(List.of(), stoppedRooms());
         clock.advance(1);
-        assertEquals(List.of(roomId), control.checkIdle());
+        assertEquals(List.of(roomId), stoppedRooms());
         assertFalse(pushes.containsKey(roomId));
     }
 
     @Test
     void activityResetsTheIdleTimer() throws Exception {
         create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
-        idleStop.idle(roomId, true);
+        autoOff.idle(roomId, true);
         clock.advance(9 * MINUTE);
-        idleStop.idle(roomId, true); // still idle: the timer goes on
+        autoOff.idle(roomId, true); // still idle: the timer goes on
         clock.advance(30_000);
-        idleStop.idle(roomId, false); // an item queued / playing
+        autoOff.idle(roomId, false); // an item queued / playing
         clock.advance(5 * MINUTE);
-        assertEquals(List.of(), control.checkIdle());
-        idleStop.idle(roomId, true); // the queue ran empty again
+        assertEquals(List.of(), stoppedRooms());
+        autoOff.idle(roomId, true); // the queue ran empty again
         clock.advance(10 * MINUTE - 1);
-        assertEquals(List.of(), control.checkIdle());
+        assertEquals(List.of(), stoppedRooms());
         assertTrue(pushes.containsKey(roomId));
         clock.advance(1);
-        assertEquals(List.of(roomId), control.checkIdle());
-        assertEquals(List.of(), control.checkIdle()); // once
+        assertEquals(List.of(roomId), stoppedRooms());
+        assertEquals(List.of(), stoppedRooms()); // once
     }
 
     @Test
     void theAdminMaximumCapsTheRoomSetting() throws Exception {
-        JsonObject patch = JsonParser.parseString("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":30}}}")
-                .getAsJsonObject();
-        rooms.update(owner, roomId, new Rooms.Edit(null, null, null, null, patch), null);
-        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 5);
+        patchSettings("{\"outputs\":{\"autoOffMinutes\":30}}");
+        settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 5);
         create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
-        idleStop.idle(roomId, true);
+        autoOff.idle(roomId, true);
         clock.advance(5 * MINUTE - 1);
-        assertEquals(List.of(), control.checkIdle());
+        assertEquals(List.of(), stoppedRooms());
         clock.advance(1);
-        assertEquals(List.of(roomId), control.checkIdle());
+        assertEquals(List.of(roomId), stoppedRooms());
         assertEquals(5, rtmpOutput(alice).getAsJsonObject("stopped").get("idleMinutes").getAsInt());
         // below the maximum, the room's setting applies
-        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 60);
-        assertEquals(30, RtmpIdleStop.effectiveMinutes(rooms.record(roomId).settings().rtmpIdleStopMinutes(),
-                settings.outputsRtmpMaxIdleStopMinutes()));
-        assertEquals(1, RtmpIdleStop.effectiveMinutes(1, 60));
+        settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 60);
+        assertEquals(30, OutputAutoOff.effectiveMinutes(rooms.record(roomId).settings().autoOffMinutes(),
+                settings.outputsMaxAutoOffMinutes()));
+        assertEquals(1, OutputAutoOff.effectiveMinutes(1, 60));
+        assertEquals(new OutputAutoOff.Policy(true, 5), OutputAutoOff.policy(false, 30, true, 5));
+        assertEquals(new OutputAutoOff.Policy(false, 10), OutputAutoOff.policy(false, 10, false, 60));
     }
 
     @Test
-    void idleStopLeavesTsAndHlsAlone() throws Exception {
+    void noListenersTurnsEachPullOutputOffSeparately() throws Exception {
         create("{\"kind\":\"ts\"}");
         create("{\"kind\":\"hls\"}");
-        idleStop.idle(roomId, true);
+        create("{\"kind\":\"mp3\"}");
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        autoOff.idle(roomId, false); // something is playing: only the listener clock runs
+        autoOff.opened(roomId, StreamOutputs.Kind.TS);
+        clock.advance(5 * MINUTE);
+        autoOff.touched(roomId, StreamOutputs.Kind.HLS);
+        clock.advance(5 * MINUTE - 1);
+        assertEquals(List.of(), stops());
+        clock.advance(1);
+        // MP3: nobody since it was turned on; .ts: a connection is open; HLS: fetched 5 min ago; RTMP has no listeners
+        assertEquals(List.of("mp3:no_listeners"), stops());
+        JsonObject mp3 = output(alice, "mp3");
+        assertFalse(mp3.get("enabled").getAsBoolean());
+        assertEquals("no_listeners", mp3.getAsJsonObject("stopped").get("reason").getAsString());
+        assertEquals(10, mp3.getAsJsonObject("stopped").get("idleMinutes").getAsInt());
+        assertFalse(output(bob, "mp3").has("stopped"), "the reason is the owner's");
+        clock.advance(5 * MINUTE);
+        assertEquals(List.of("hls:no_listeners"), stops());
+        autoOff.closed(roomId, StreamOutputs.Kind.TS);
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), stops());
+        clock.advance(1);
+        assertEquals(List.of("ts:no_listeners"), stops());
+        assertTrue(pushes.containsKey(roomId), "RTMP stays on while the room isn't idle");
         clock.advance(24 * 60 * MINUTE);
-        assertEquals(List.of(), control.checkIdle());
-        for (StreamOutputs.Output o : rows.list(roomId)) {
-            assertTrue(o.enabled(), o.toString());
-        }
+        assertEquals(List.of(), stops());
+
+        // turning one on again starts a fresh timer
+        String mp3Path = "/api/rooms/club/outputs/" + mp3.get("id").getAsString();
+        assertEquals(200, call(alice, "PATCH", mp3Path, "{\"enabled\":true}").statusCode());
+        assertFalse(output(alice, "mp3").has("stopped"));
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), stops());
+        clock.advance(1);
+        assertEquals(List.of("mp3:no_listeners"), stops());
+    }
+
+    @Test
+    void anEmptyQueueTurnsEveryOutputOffEvenWithListeners() throws Exception {
+        create("{\"kind\":\"ts\"}");
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        autoOff.opened(roomId, StreamOutputs.Kind.TS);
+        autoOff.idle(roomId, true);
+        clock.advance(10 * MINUTE - 1);
+        assertEquals(List.of(), stops());
+        events.clear();
+        int before = revalidations.get();
+        clock.advance(1);
+        assertEquals(List.of("rtmp:idle", "ts:idle"), stops());
+        assertFalse(pushes.containsKey(roomId));
+        assertTrue(revalidations.get() > before, "the open .ts connections are re-checked (and end)");
+        assertTrue(events.contains("stop"), "no active output left: the program output stops");
+        assertEquals("idle", output(alice, "ts").getAsJsonObject("stopped").get("reason").getAsString());
+        assertFalse(control.hasActiveOutput(roomId));
+    }
+
+    @Test
+    void alwaysOnNeverTurnsOffUnlessTheAdminForcesAutoOff() throws Exception {
+        patchSettings("{\"outputs\":{\"autoOff\":false,\"autoOffMinutes\":30}}");
+        create("{\"kind\":\"ts\"}");
+        create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
+        autoOff.idle(roomId, true);
+        clock.advance(24 * 60 * MINUTE);
+        assertEquals(List.of(), stops());
+        assertTrue(control.hasActiveOutput(roomId));
+        // the admin forces it: the room's minutes apply (capped by the server's maximum)
+        settings.set(Settings.OUTPUTS_FORCE_AUTO_OFF, true);
+        settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 20);
+        assertEquals(List.of("rtmp:idle", "ts:idle"), stops());
+        assertEquals(20, output(alice, "ts").getAsJsonObject("stopped").get("idleMinutes").getAsInt());
+    }
+
+    // ------------------------------------------------------------------ stream URLs by slug or token
+
+    @Test
+    void publicAndUnlistedRoomsUseTheSlugPrivateRoomsATokenThatRotates() throws Exception {
+        JsonObject ts = create("{\"kind\":\"ts\"}");
+        JsonObject hls = create("{\"kind\":\"hls\"}");
+        JsonObject mp3 = create("{\"kind\":\"mp3\"}");
+        assertEquals("https://tunes.example/live/club.ts", ts.get("url").getAsString());
+        assertEquals("https://tunes.example/live/club/index.m3u8", hls.get("url").getAsString());
+        assertEquals("https://tunes.example/live/club.mp3", mp3.get("url").getAsString());
+        assertEquals("slug", ts.get("urlKind").getAsString());
+        String tsPath = "/api/rooms/club/outputs/" + ts.get("id").getAsString();
+        expectError(409, "no_token", call(alice, "POST", tsPath + "/rotate", null));
+        expectError(404, "output_not_found", call(alice, "POST", "/api/rooms/club/outputs/nope/rotate", null));
+        LiveTsApi.Targets tsTargets = LiveTsApi.targetsFrom(db, settings);
+        LiveHlsApi.Targets hlsTargets = LiveHlsApi.targetsFrom(db, settings);
+        LiveMp3Api.Targets mp3Targets = LiveMp3Api.targetsFrom(db, settings);
+        String oldToken = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        assertEquals(roomId, tsTargets.lookup("club").roomId());
+        assertEquals(roomId, hlsTargets.lookup("club"));
+        assertEquals(roomId, mp3Targets.lookup("club").roomId());
+        assertNull(tsTargets.lookup(oldToken), "no token URLs for a public room");
+
+        visibility(Rooms.Visibility.UNLISTED);
+        assertEquals("https://tunes.example/live/club.ts", output(alice, "ts").get("url").getAsString());
+        assertEquals(roomId, tsTargets.lookup("club").roomId());
+
+        // private: slug URLs stop, open connections are re-checked, new tokens are issued
+        int before = revalidations.get();
+        visibility(Rooms.Visibility.PRIVATE);
+        assertTrue(revalidations.get() > before);
+        assertNull(tsTargets.lookup("club"));
+        assertNull(hlsTargets.lookup("club"));
+        assertNull(mp3Targets.lookup("club"));
+        String token = token(TS_URL, output(alice, "ts"));
+        assertNotEquals(oldToken, token, "a room that becomes private gets fresh tokens");
+        assertEquals("token", output(alice, "ts").get("urlKind").getAsString());
+        assertEquals(roomId, tsTargets.lookup(token).roomId());
+        assertEquals(roomId, hlsTargets.lookup(token(HLS_URL, output(alice, "hls"))));
+        assertEquals(200, call(alice, "POST", tsPath + "/rotate", null).statusCode());
+
+        // back to public: token URLs stop, the slug works again
+        String rotated = token(TS_URL, output(alice, "ts"));
+        visibility(Rooms.Visibility.PUBLIC);
+        assertNull(tsTargets.lookup(rotated));
+        assertEquals(roomId, tsTargets.lookup("club").roomId());
+    }
+
+    @Test
+    void aNewSlugEndsTheOldSlugsUrls() throws Exception {
+        create("{\"kind\":\"ts\"}");
+        LiveTsApi.Targets tsTargets = LiveTsApi.targetsFrom(db, settings);
+        rooms.update(owner, roomId, new Rooms.Edit(null, "disco", null, null), null);
+        int before = revalidations.get();
+        control.roomEdited(roomId, false);
+        assertTrue(revalidations.get() > before, "connections on the old slug are re-checked (and end)");
+        assertNull(tsTargets.lookup("club"));
+        assertEquals(roomId, tsTargets.lookup("disco").roomId());
+        HttpResponse<String> r = call(alice, "GET", "/api/rooms/disco/outputs", null);
+        assertEquals("https://tunes.example/live/disco.ts",
+                json(r).getAsJsonArray("items").get(0).getAsJsonObject().get("url").getAsString());
     }
 
     @Test
@@ -584,6 +751,7 @@ class StreamOutputsApiTest {
         for (int i = 0; i < 1000; i++) {
             String t = r.newToken();
             assertTrue(t.matches("[A-Za-z0-9_-]{22}"), t);
+            assertFalse(t.matches("[a-z0-9-]+"), "a token never looks like a slug: " + t);
             assertTrue(seen.add(t));
         }
     }

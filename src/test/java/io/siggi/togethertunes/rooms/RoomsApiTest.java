@@ -224,8 +224,9 @@ class RoomsApiTest {
         assertEquals(200, r.statusCode(), r.body());
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
         assertEquals(JsonParser.parseString("{\"guests\":{\"enabled\":true,\"canVote\":true,\"canRequestLibrary\":true,"
-                + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{\"rtmp\":"
-                + "{\"enabled\":true,\"maxIdleStopMinutes\":60},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true},"
+                + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{"
+                + "\"forceAutoOff\":false,\"maxAutoOffMinutes\":60,\"rtmp\":"
+                + "{\"enabled\":true},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true},"
                 + "\"mp3\":{\"enabled\":true}}}"),
                 JsonParser.parseString(r.body()));
         settings.set(Settings.GUESTS_ENABLED, false);
@@ -234,9 +235,11 @@ class RoomsApiTest {
         settings.set(Settings.YTDLP_ENABLED, false); // canYoutube needs yt-dlp too
         settings.set(Settings.OVERLAY_ENABLED, true);
         settings.set(Settings.OUTPUTS_TS_ENABLED, false);
-        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 15);
+        settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 15);
+        settings.set(Settings.OUTPUTS_FORCE_AUTO_OFF, true);
         JsonObject sw = json(call(alice, "GET", path, null));
-        assertEquals(15, sw.getAsJsonObject("outputs").getAsJsonObject("rtmp").get("maxIdleStopMinutes").getAsInt());
+        assertEquals(15, sw.getAsJsonObject("outputs").get("maxAutoOffMinutes").getAsInt());
+        assertTrue(sw.getAsJsonObject("outputs").get("forceAutoOff").getAsBoolean());
         assertFalse(sw.getAsJsonObject("guests").get("enabled").getAsBoolean());
         assertTrue(sw.getAsJsonObject("guests").get("canUpload").getAsBoolean());
         assertFalse(sw.getAsJsonObject("guests").get("canYoutube").getAsBoolean());

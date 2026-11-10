@@ -16,8 +16,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * {@link LiveTsApi#targetsFrom} (token → room and join point, only for enabled {@code .ts} outputs
- * behind the server switch) and {@link LiveHlsApi#targetsFrom} (the same for HLS).
+ * {@link LiveTsApi#targetsFrom} (URL key → room and join point, only for enabled {@code .ts}
+ * outputs behind the server switch) and {@link LiveHlsApi#targetsFrom} (the same for HLS): the key
+ * is a token in a private room, the slug in a public or unlisted one.
  */
 class LiveTsTargetsTest {
     static final String ROOM = "0190a000-0000-7000-8000-000000000001";
@@ -62,10 +63,15 @@ class LiveTsTargetsTest {
         });
     }
 
+    /** A private room (token URLs). */
     void room(String id, String slug, String settingsJson) throws Exception {
+        room(id, slug, settingsJson, "private");
+    }
+
+    void room(String id, String slug, String settingsJson, String visibility) throws Exception {
         exec("INSERT INTO rooms (id, slug, name, owner_id, created_at, visibility, control_mode, settings_json,"
-                + " playback_state) VALUES ('" + id + "', '" + slug + "', 'Room', 'u1', 1, 'public', 'owner', '"
-                + settingsJson + "', 'idle')");
+                + " playback_state) VALUES ('" + id + "', '" + slug + "', 'Room', 'u1', 1, '" + visibility
+                + "', 'owner', '" + settingsJson + "', 'idle')");
     }
 
     void output(String id, String roomId, String kind, String token, int enabled) throws Exception {
@@ -100,5 +106,36 @@ class LiveTsTargetsTest {
         assertNull(hls.lookup("tokenHlsOutput00000001"));
         assertEquals(new LiveTsApi.Target(ROOM, false), targets.lookup("tokenNextJoin000000001"),
                 "the HLS switch leaves .ts alone");
+    }
+
+    @Test
+    void publicAndUnlistedRoomsResolveBySlugOnly() throws Exception {
+        String pub = "0190a000-0000-7000-8000-000000000004";
+        String unlisted = "0190a000-0000-7000-8000-000000000005";
+        room(pub, "public-room", "{\"outputs\":{\"ts\":{\"join\":\"latest\"}}}", "public");
+        room(unlisted, "unlisted-room", "{}", "unlisted");
+        output("p1", pub, "ts", "tokenPublicRoom0000001", 1);
+        output("p2", pub, "hls", "tokenPublicHls00000001", 1);
+        output("u1", unlisted, "ts", "tokenUnlistedRoom00001", 1);
+        output("u2", unlisted, "hls", "tokenUnlistedHls000001", 0);
+        LiveHlsApi.Targets hls = LiveHlsApi.targetsFrom(db, settings);
+        assertEquals(new LiveTsApi.Target(pub, true), targets.lookup("public-room"));
+        assertEquals(new LiveTsApi.Target(unlisted, false), targets.lookup("unlisted-room"));
+        assertEquals(pub, hls.lookup("public-room"));
+        assertNull(hls.lookup("unlisted-room"), "its HLS output is off");
+        // their tokens open nothing; a private room's slug opens nothing
+        assertNull(targets.lookup("tokenPublicRoom0000001"));
+        assertNull(targets.lookup("tokenUnlistedRoom00001"));
+        assertNull(hls.lookup("tokenPublicHls00000001"));
+        assertNull(targets.lookup("room-a"));
+        assertNull(hls.lookup("room-a"));
+        // a room without the kind: nothing
+        assertNull(targets.lookup("room-c"));
+        // the visibility changes the scheme at once
+        exec("UPDATE rooms SET visibility = 'private' WHERE id = '" + pub + "'");
+        assertNull(targets.lookup("public-room"));
+        assertEquals(new LiveTsApi.Target(pub, true), targets.lookup("tokenPublicRoom0000001"));
+        settings.set(Settings.OUTPUTS_TS_ENABLED, false);
+        assertNull(targets.lookup("unlisted-room"));
     }
 }

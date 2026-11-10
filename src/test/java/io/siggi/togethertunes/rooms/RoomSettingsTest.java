@@ -46,7 +46,8 @@ class RoomSettingsTest {
         assertEquals(3, d.overlayMargin());
         assertNull(d.rtmpPlaybackUrl());
         assertFalse(d.tsJoinLatest());
-        assertEquals(10, d.rtmpIdleStopMinutes());
+        assertTrue(d.autoOff());
+        assertEquals(10, d.autoOffMinutes());
         assertEquals(5000, d.estimatedDelayMsRtmp());
         assertEquals(2000, d.estimatedDelayMsTs());
         assertEquals(8000, d.estimatedDelayMsHls());
@@ -79,24 +80,29 @@ class RoomSettingsTest {
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
                 + "\"audioOnly\":false,\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
-                + "\"outputs\":{\"rtmp\":{\"idleStopMinutes\":10,\"playbackUrl\":\"\"},\"ts\":{\"join\":\"next\"}},"
+                + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"\"},\"autoOff\":true,\"autoOffMinutes\":10,\"ts\":{\"join\":\"next\"}},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000,\"mp3\":3000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 24);
+        assertEquals(RoomSettings.keys().size(), 25);
     }
 
     @Test
-    void rtmpIdleStopMinutesIsAWholeNumberFrom1To1440() {
-        assertEquals(1, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":1}}}"))
-                .rtmpIdleStopMinutes());
-        assertEquals(1440, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":1440}}}"))
-                .rtmpIdleStopMinutes());
+    void autoOffIsABooleanAndItsMinutesAWholeNumberFrom1To1440() {
+        assertEquals(1, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"autoOffMinutes\":1}}")).autoOffMinutes());
+        assertEquals(1440, RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"autoOffMinutes\":1440}}"))
+                .autoOffMinutes());
         for (String bad : List.of("0", "1441", "2.5", "\"10\"", "true")) {
             HttpError e = assertThrows(HttpError.class, () -> RoomSettings.DEFAULTS.patch(
-                    obj("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":" + bad + "}}}")), bad);
+                    obj("{\"outputs\":{\"autoOffMinutes\":" + bad + "}}")), bad);
             assertEquals("invalid_setting", e.code(), bad);
         }
-        assertEquals(10, RoomSettings.parse("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":0}}}").rtmpIdleStopMinutes());
+        assertEquals(10, RoomSettings.parse("{\"outputs\":{\"autoOffMinutes\":0}}").autoOffMinutes());
+        RoomSettings alwaysOn = RoomSettings.DEFAULTS.patch(obj("{\"outputs\":{\"autoOff\":false}}"));
+        assertFalse(alwaysOn.autoOff());
+        assertEquals("{\"outputs\":{\"autoOff\":false}}", alwaysOn.toStoredJson());
+        assertEquals("invalid_setting", patchError("{\"outputs\":{\"autoOff\":1}}").code());
+        // the old RTMP-only name is gone (migration 0017 moved stored values)
+        assertEquals("unknown_setting", patchError("{\"outputs\":{\"rtmp\":{\"idleStopMinutes\":5}}}").code());
     }
 
     @Test

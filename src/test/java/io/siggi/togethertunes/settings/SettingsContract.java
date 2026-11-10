@@ -84,7 +84,8 @@ abstract class SettingsContract {
         assertEquals(90, settings.roomsRequestHistoryDays());
         assertEquals(5L * 1024 * 1024 * 1024, settings.storageMinFreeBytes());
         assertTrue(settings.outputsRtmpEnabled());
-        assertEquals(60, settings.outputsRtmpMaxIdleStopMinutes());
+        assertEquals(60, settings.outputsMaxAutoOffMinutes());
+        assertFalse(settings.outputsForceAutoOff());
         assertTrue(settings.outputsTsEnabled());
         assertTrue(settings.outputsHlsEnabled());
         assertFalse(settings.overlayEnabled());
@@ -101,7 +102,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(34, all.size());
+        assertEquals(35, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -115,10 +116,12 @@ abstract class SettingsContract {
         settings.set(Settings.YTDLP_COOKIES_FILE, "/srv/cookies.txt");
         settings.set(Settings.RETENTION_UNREFERENCED_DAYS, 0);
         settings.set(Settings.OUTPUTS_HLS_ENABLED, false);
-        settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 5);
-        assertEquals(5, settings.outputsRtmpMaxIdleStopMinutes());
-        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 0));
-        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 1441));
+        settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 5);
+        assertEquals(5, settings.outputsMaxAutoOffMinutes());
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 0));
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 1441));
+        settings.set(Settings.OUTPUTS_FORCE_AUTO_OFF, true);
+        assertTrue(settings.outputsForceAutoOff());
         assertTrue(settings.outputsMp3Enabled());
         assertEquals(128, settings.outputsMp3BitrateKbps());
         settings.set(Settings.OUTPUTS_MP3_ENABLED, false);
@@ -229,7 +232,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(34, settings.all().size());
+        assertEquals(35, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

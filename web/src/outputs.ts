@@ -35,8 +35,10 @@ export interface OutputRow {
   serverEnabled: boolean;
   active: boolean;
   createdAt: number;
-  /** `.ts` / HLS / MP3: the tokenised URL. */
+  /** `.ts` / HLS / MP3: the stream URL (by the room's slug, or by token in a private room). */
   url?: string;
+  /** `.ts` / HLS / MP3: `slug` (public and unlisted rooms) or `token` (private rooms: the URL can be rotated). */
+  urlKind?: "slug" | "token" | string;
   /** RTMP, the room's owner only: the ingest URL, whether there is a key, and the key. */
   rtmpUrl?: string;
   hasRtmpKey?: boolean;
@@ -44,15 +46,33 @@ export interface OutputRow {
   playbackUrl?: string;
   rtmpAvailable?: boolean;
   status?: PushStatus;
-  /** RTMP, the owner only: why the server turned it off (`idle`: the room was idle too long). */
+  /**
+   * The owner only: why the server's auto turn-off turned it off (`idle`: the queue was empty too
+   * long; `no_listeners`: nobody listened too long).
+   */
   stopped?: { reason: string; at: number; idleMinutes: number };
 }
 
-/** The RTMP line after the server's idle stop turned the output off, or undefined. */
-export function idleStopLine(row: OutputRow): string | undefined {
-  if (row.enabled || row.stopped === undefined || row.stopped.reason !== "idle") return undefined;
+/** The line for an output the server's auto turn-off turned off, or undefined. */
+export function autoOffLine(row: OutputRow): string | undefined {
+  if (row.enabled || row.stopped === undefined) return undefined;
   const n = row.stopped.idleMinutes;
-  return "Stopped after " + n + (n === 1 ? " minute" : " minutes") + " with an empty queue. Turn on to start again.";
+  const minutes = n + (n === 1 ? " minute" : " minutes");
+  switch (row.stopped.reason) {
+    case "idle": return "Off: queue empty for " + minutes + ". Turn on to start again.";
+    case "no_listeners": return "Off: no listeners for " + minutes + ". Turn on to start again.";
+    default: return undefined;
+  }
+}
+
+/** Whether the output's URL has a token the owner can rotate (only private rooms' URLs do). */
+export function canRotate(row: OutputRow): boolean {
+  return row.urlKind === "token";
+}
+
+/** The stream URLs depend on the room's slug and visibility: the panel reloads them when either changes. */
+export function urlKey(room: { slug?: string; visibility?: string } | undefined): string {
+  return room === undefined ? "" : (room.visibility ?? "") + "/" + (room.slug ?? "");
 }
 
 /**
@@ -112,7 +132,7 @@ export function statusLabel(status: string | undefined): string {
 export function pushLine(live: OutputView | undefined, row: OutputRow, nowMs: number): string {
   if (!row.active) {
     if (!row.serverEnabled) return "Off (disabled by the server admin)";
-    return idleStopLine(row) ?? "Off";
+    return autoOffLine(row) ?? "Off";
   }
   if (row.rtmpAvailable === false) return "Error: this server can't push RTMP (ffmpeg isn't configured)";
   const state = live?.status ?? row.status?.state ?? "connecting";

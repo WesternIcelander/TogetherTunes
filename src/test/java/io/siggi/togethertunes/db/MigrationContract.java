@@ -199,6 +199,59 @@ abstract class MigrationContract {
         assertEquals(files.size(), count(MigrationRunner.TABLE));
     }
 
+    /**
+     * 0017 moves the RTMP idle stop's stored values to the auto turn-off's names: the room setting
+     * {@code outputs.rtmp.idleStopMinutes} → {@code outputs.autoOffMinutes} (other settings kept,
+     * an emptied {@code outputs.rtmp} dropped, invalid JSON left alone) and the server setting
+     * {@code outputs.rtmp.maxIdleStopMinutes} → {@code outputs.maxAutoOffMinutes}.
+     */
+    @Test
+    void autoOffMigrationMovesTheIdleStopSettings() throws SQLException {
+        Migration autoOff = MigrationRunner.loadClasspath(getClass().getClassLoader(), MigrationRunner.CLASSPATH_ROOT,
+                db.dialect()).stream().filter(m -> m.name().contains("output_auto_off")).findFirst().orElseThrow();
+        Migration tables = Migration.of("0001_tables.sql", """
+                CREATE TABLE rooms (id TEXT PRIMARY KEY, settings_json TEXT NOT NULL);
+                CREATE TABLE settings (key TEXT NOT NULL PRIMARY KEY, value_json TEXT NOT NULL);
+                INSERT INTO rooms (id, settings_json) VALUES
+                    ('only', '{"outputs":{"rtmp":{"idleStopMinutes":25}}}'),
+                    ('mixed', '{"gapMs":5,"outputs":{"rtmp":{"idleStopMinutes":3,"playbackUrl":"https://x.example/v"},"ts":{"join":"latest"}}}'),
+                    ('none', '{"gapMs":5}'),
+                    ('broken', 'not json'),
+                    ('array', '[1]');
+                INSERT INTO settings (key, value_json) VALUES ('outputs.rtmp.maxIdleStopMinutes', '30'),
+                    ('outputs.ts.enabled', 'false');
+                """);
+        Migration moved = new Migration(2, autoOff.name(), autoOff.sql(), autoOff.checksum());
+        runner(tables, moved).migrate();
+        Map<String, String> rooms = new java.util.HashMap<>();
+        Map<String, String> settings = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement()) {
+                try (ResultSet rs = st.executeQuery("SELECT id, settings_json FROM rooms")) {
+                    while (rs.next()) {
+                        rooms.put(rs.getString(1), rs.getString(2));
+                    }
+                }
+                try (ResultSet rs = st.executeQuery("SELECT key, value_json FROM settings")) {
+                    while (rs.next()) {
+                        settings.put(rs.getString(1), rs.getString(2));
+                    }
+                }
+            }
+            return null;
+        });
+        assertEquals(com.google.gson.JsonParser.parseString("{\"outputs\":{\"autoOffMinutes\":25}}"),
+                com.google.gson.JsonParser.parseString(rooms.get("only")));
+        assertEquals(com.google.gson.JsonParser.parseString("{\"gapMs\":5,\"outputs\":{\"rtmp\":{\"playbackUrl\":"
+                        + "\"https://x.example/v\"},\"ts\":{\"join\":\"latest\"},\"autoOffMinutes\":3}}"),
+                com.google.gson.JsonParser.parseString(rooms.get("mixed")));
+        assertEquals(com.google.gson.JsonParser.parseString("{\"gapMs\":5}"),
+                com.google.gson.JsonParser.parseString(rooms.get("none")));
+        assertEquals("not json", rooms.get("broken"));
+        assertEquals("[1]", rooms.get("array"));
+        assertEquals(Map.of("outputs.maxAutoOffMinutes", "30", "outputs.ts.enabled", "false"), settings);
+    }
+
     /** Runs {@code sql} on the write connection. */
     protected void exec(String sql) throws SQLException {
         db.write((Connection c) -> {

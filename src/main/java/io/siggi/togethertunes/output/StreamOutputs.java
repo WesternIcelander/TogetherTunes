@@ -26,9 +26,15 @@ import java.util.Objects;
  * room's RTMP push, {@code .ts}, HLS and MP3 outputs, at most one of each kind per room.
  *
  * <ul>
- *   <li><b>Tokens</b> ({@code .ts}/HLS/MP3): 128 random bits, base64url without padding (22
- *       characters), stored in plaintext (they are shown to the owner again); {@link #rotate}
- *       replaces one. They are capabilities: never logged, never in an audit entry (invariant 6).</li>
+ *   <li><b>Stream URLs</b> ({@code .ts}/HLS/MP3, {@code docs/program-output.md#stream-urls}): a
+ *       public or unlisted room's outputs are reached by the room's slug ({@code /live/{slug}.ts}),
+ *       a private room's by a random token. The URL's key is resolved by {@link #KEY_MATCH}: a
+ *       token opens only a private room's output, a slug only a public or unlisted room's.</li>
+ *   <li><b>Tokens</b>: 128 random bits, base64url without padding (22 characters), stored in
+ *       plaintext (they are shown to the owner again); {@link #rotate} replaces one, and
+ *       {@link #reissueTokens} all of a room's (when it becomes private). A token never has the
+ *       shape of a slug ({@link #newToken}), so the two can't collide. Tokens are capabilities:
+ *       never logged, never in an audit entry (invariant 6). Slugs aren't secrets.</li>
  *   <li><b>RTMP stream keys</b> are stored in plain text ({@code rtmp_key}; RTMP sends them in
  *       plain text anyway). The API shows the key (and the ingest URL) to the room's owner only;
  *       moderators get nothing about either. Keys are never logged or audited (invariant 6).
@@ -51,6 +57,33 @@ public final class StreamOutputs {
     public static final int TOKEN_BYTES = 16;
 
     private static final Base64.Encoder TOKEN_ENCODER = Base64.getUrlEncoder().withoutPadding();
+    /** What a slug looks like ({@code Rooms#slug}): a token never does. */
+    private static final java.util.regex.Pattern SLUG_LIKE = java.util.regex.Pattern.compile("[a-z0-9-]+");
+
+    /**
+     * The shape of a stream URL's key (a slug or a token) on {@code /live/...}; anything else is
+     * {@code 404} without a lookup.
+     */
+    public static final java.util.regex.Pattern KEY_SHAPE = java.util.regex.Pattern.compile("[A-Za-z0-9_-]{3,64}");
+
+    /**
+     * The {@code WHERE} condition (with {@code so} = {@code stream_outputs}, {@code r} = {@code
+     * rooms}) that resolves a stream URL's key: the token of a private room's output, or the slug
+     * of a public or unlisted room. Bind the key to both parameters ({@link #bindKey}).
+     */
+    public static final String KEY_MATCH =
+            "((so.token = ? AND r.visibility = 'private') OR (r.slug = ? AND r.visibility <> 'private'))";
+
+    /** Binds {@code key} to {@link #KEY_MATCH}'s two parameters, starting at {@code index}. */
+    public static void bindKey(PreparedStatement ps, int index, String key) throws SQLException {
+        ps.setString(index, key);
+        ps.setString(index + 1, key);
+    }
+
+    /** Whether a room of this visibility ({@code rooms.visibility}) is reached by token URLs. */
+    public static boolean usesToken(String visibility) {
+        return "private".equals(visibility);
+    }
 
     /** An output kind, as on the wire and in {@code stream_outputs.kind}. */
     public enum Kind {
@@ -105,18 +138,20 @@ public final class StreamOutputs {
     }
 
     /**
-     * Why the server turned an output off ({@link #stopIdle}), kept until {@code enabled} changes
+     * Why the server turned an output off ({@link #stopAuto}), kept until {@code enabled} changes
      * again.
      *
-     * @param reason       {@value #STOPPED_IDLE}
+     * @param reason       {@value #STOPPED_IDLE} or {@value #STOPPED_NO_LISTENERS}
      * @param at           when, epoch ms
-     * @param idleMinutes  the idle limit that applied
+     * @param idleMinutes  the auto turn-off limit that applied
      */
     public record Stopped(String reason, long at, int idleMinutes) {
     }
 
-    /** {@link Stopped#reason()} of an RTMP output turned off after the room was idle too long. */
+    /** {@link Stopped#reason()} of an output turned off after the room was idle (queue empty) too long. */
     public static final String STOPPED_IDLE = "idle";
+    /** {@link Stopped#reason()} of a {@code .ts}/HLS/MP3 output turned off after nobody listened too long. */
+    public static final String STOPPED_NO_LISTENERS = "no_listeners";
 
     /**
      * A change: {@code null} fields stay as they are. {@code rtmpKey} is only applied when
@@ -136,11 +171,19 @@ public final class StreamOutputs {
         this.clock = Objects.requireNonNull(clock, "clock");
     }
 
-    /** A new stream token: 128 random bits, base64url without padding. */
+    /**
+     * A new stream token: 128 random bits, base64url without padding, never one that looks like a
+     * slug (only {@code a-z}, {@code 0-9}, {@code -}), so a slug URL and a token URL can't collide.
+     */
     public String newToken() {
         byte[] b = new byte[TOKEN_BYTES];
-        random.nextBytes(b);
-        return TOKEN_ENCODER.encodeToString(b);
+        while (true) {
+            random.nextBytes(b);
+            String t = TOKEN_ENCODER.encodeToString(b);
+            if (!SLUG_LIKE.matcher(t).matches()) {
+                return t;
+            }
+        }
     }
 
     /**
@@ -257,6 +300,23 @@ public final class StreamOutputs {
         });
     }
 
+    /** Every enabled output of every room (server switches not applied). */
+    public List<Output> enabled() throws SQLException {
+        return db.read(c -> {
+            List<Output> out = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE enabled = 1");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Output o = row(rs);
+                    if (o != null) {
+                        out.add(o);
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
     /**
      * Creates the room's output of this kind. {@code .ts}/HLS/MP3 get a new token; RTMP needs
      * {@code rtmpUrl} (already checked with {@link #rtmpUrl}) and may have a key.
@@ -360,18 +420,22 @@ public final class StreamOutputs {
     }
 
     /**
-     * The server turns the room's RTMP output off because the room was idle for
-     * {@code idleMinutes} ({@code docs/program-output.md#idle-stop}): {@code enabled = false} as if
-     * the owner had turned it off (URL and key stay), with the reason recorded and an audit entry
-     * by the system (no actor).
+     * The server turns the room's output of this kind off automatically
+     * ({@code docs/program-output.md#auto-turn-off}): {@code enabled = false} as if the owner had
+     * turned it off (URL, key and token stay), with the reason recorded and an audit entry by the
+     * system (no actor).
      *
-     * @return the output after the change, or null if the room has no RTMP output that is on
+     * @param reason  {@link #STOPPED_IDLE} or {@link #STOPPED_NO_LISTENERS}
+     * @param minutes the limit that applied
+     * @return the output after the change, or null if the room has no output of this kind that is on
      */
-    public Output stopIdle(String roomId, int idleMinutes) throws SQLException {
+    public Output stopAuto(String roomId, Kind kind, String reason, int minutes) throws SQLException {
+        Objects.requireNonNull(reason, "reason");
         return db.write(c -> {
             Output o = null;
-            try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE room_id = ? AND kind = 'rtmp'")) {
+            try (PreparedStatement ps = c.prepareStatement(SELECT + " WHERE room_id = ? AND kind = ?")) {
                 ps.setString(1, roomId);
+                ps.setString(2, kind.wire());
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         o = row(rs);
@@ -384,9 +448,9 @@ public final class StreamOutputs {
             long now = EpochMs.now(clock);
             try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET enabled = 0,"
                     + " stopped_reason = ?, stopped_at = ?, stopped_idle_minutes = ? WHERE id = ? AND enabled = 1")) {
-                ps.setString(1, STOPPED_IDLE);
+                ps.setString(1, reason);
                 ps.setLong(2, now);
-                ps.setInt(3, idleMinutes);
+                ps.setInt(3, minutes);
                 ps.setString(4, o.id());
                 if (ps.executeUpdate() == 0) {
                     return null;
@@ -395,11 +459,35 @@ public final class StreamOutputs {
             Map<String, Object> details = details(o.id(), o.kind());
             details.put("changed", List.of("enabled"));
             details.put("enabled", false);
-            details.put("reason", STOPPED_IDLE);
-            details.put("idleMinutes", idleMinutes);
+            details.put("reason", reason);
+            details.put("idleMinutes", minutes);
             AuditLog.write(c, now, null, null, null, AUDIT_UPDATED, roomId, details);
             return new Output(o.id(), roomId, o.kind(), o.token(), o.rtmpUrl(), o.rtmpKey(), false, o.createdAt(),
-                    new Stopped(STOPPED_IDLE, now, idleMinutes));
+                    new Stopped(reason, now, minutes));
+        });
+    }
+
+    /**
+     * Gives every {@code .ts}/HLS/MP3 output of the room a new token, e.g. because the room just
+     * became private: tokens from an earlier private phase never come back. Not audited (the
+     * visibility change is).
+     *
+     * @return how many outputs got a new token
+     */
+    public int reissueTokens(String roomId) throws SQLException {
+        List<Output> outs = list(roomId);
+        return db.write(c -> {
+            int n = 0;
+            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET token = ? WHERE id = ?")) {
+                for (Output o : outs) {
+                    if (o.kind().hasToken()) {
+                        ps.setString(1, newToken());
+                        ps.setString(2, o.id());
+                        n += ps.executeUpdate();
+                    }
+                }
+            }
+            return n;
         });
     }
 

@@ -79,10 +79,11 @@ import java.util.Set;
  *       then). {@code limit} 1..{@value RoomHistory#LIST_MAX}, default {@value RoomHistory#LIST_DEFAULT};
  *       {@code 400 invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/rooms/{room}/server-switches} → {@code {"guests": {"enabled", "canVote",
- *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled"}, "outputs": {"rtmp":
- *       {"enabled", "maxIdleStopMinutes"}, "ts": {"enabled"}, "hls": {"enabled"}}}}: the server
- *       switches behind the room settings, so the management view can grey out what the server
- *       turned off and show the server's cap on {@code outputs.rtmp.idleStopMinutes} (the guest
+ *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled"}, "outputs":
+ *       {"forceAutoOff", "maxAutoOffMinutes", "rtmp": {"enabled"}, "ts": {"enabled"}, "hls":
+ *       {"enabled"}, "mp3": {"enabled"}}}}: the server switches behind the room settings, so the
+ *       management view can grey out what the server turned off or forces, and show the server's
+ *       cap on {@code outputs.autoOffMinutes} (the guest
  *       capabilities are each the server's setting alone; {@code guests.enabled} off turns them
  *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}). Owner and moderators.</li>
  * </ul>
@@ -107,6 +108,22 @@ public final class RoomsApi {
     private final RoomGuests guests;
     private final RequestSearch search;
     private final RoomHistory history;
+    private volatile EditListener editListener = (before, after) -> {
+    };
+
+    /**
+     * Told after a room was changed through {@code PATCH /api/rooms/{room}} (before the response is
+     * sent), e.g. so the stream outputs follow a new slug or visibility. Must not block long.
+     */
+    @FunctionalInterface
+    public interface EditListener {
+        void edited(Rooms.Room before, Rooms.Room after) throws Exception;
+    }
+
+    /** Sets the {@link EditListener}. */
+    public void editListener(EditListener listener) {
+        this.editListener = Objects.requireNonNull(listener);
+    }
 
     public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
                     RequestSearch search, RoomHistory history) {
@@ -303,11 +320,22 @@ public final class RoomsApi {
                 controlMode(body.get("controlMode")), settings);
         String id = roomId(request);
         // Through the room's executor, so the live state changes in step with the row.
+        Rooms.Room[] records = new Rooms.Room[2];
         Rooms.Updated updated = registry.call(id, tx -> {
+            records[0] = rooms.record(id);
             Rooms.Updated v = rooms.updateAdjusting(user, id, edit, request.clientIp());
             syncRecord(tx);
+            records[1] = rooms.record(id);
             return v;
         });
+        if (records[0] != null && records[1] != null) {
+            try {
+                editListener.edited(records[0], records[1]);
+            } catch (Exception e) {
+                System.getLogger(RoomsApi.class.getName()).log(System.Logger.Level.WARNING,
+                        "A room edit listener failed for room " + id, e);
+            }
+        }
         response.header("Cache-Control", "no-store");
         // adjusted: settings changed on top of the patch (uploads need library requests)
         JsonObject out = io.siggi.togethertunes.http.Json.GSON.toJsonTree(updated.view()).getAsJsonObject();
@@ -398,7 +426,9 @@ public final class RoomsApi {
         g.put("canUpload", sw.guests().canUpload());
         g.put("canYoutube", sw.guests().canYoutube());
         Map<String, Object> outputs = new LinkedHashMap<>();
-        outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled(), "maxIdleStopMinutes", sw.rtmpMaxIdleStopMinutes()));
+        outputs.put("forceAutoOff", sw.forceAutoOff());
+        outputs.put("maxAutoOffMinutes", sw.maxAutoOffMinutes());
+        outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled()));
         outputs.put("ts", Map.of("enabled", sw.tsEnabled()));
         outputs.put("hls", Map.of("enabled", sw.hlsEnabled()));
         outputs.put("mp3", Map.of("enabled", sw.mp3Enabled()));

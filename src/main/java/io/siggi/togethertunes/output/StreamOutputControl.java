@@ -17,12 +17,13 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>RTMP:</b> {@link #reconcile} runs one push per room with an enabled RTMP row (and a
  *       URL) while {@code outputs.rtmp.enabled} is on, restarts it when the URL or key changed, and
  *       stops pushes whose row is gone or off (also after a room was deleted).</li>
- *   <li><b>Idle stop:</b> with an {@link RtmpIdleStop} ({@link #idleStop}), each timer run first
- *       turns off the RTMP output of rooms idle for their limit ({@link #checkIdle}), then
- *       reconciles, which stops those pushes.</li>
+ *   <li><b>Auto turn-off:</b> with an {@link OutputAutoOff} ({@link #autoOff}), each reconcile
+ *       tells it which outputs are active ({@link OutputAutoOff#sync}), and each timer run first
+ *       turns off the outputs whose room was idle, or that nobody listened to, for the limit
+ *       ({@link #checkIdle}), then reconciles, which stops those pushes and connections.</li>
  *   <li><b>{@code .ts} and MP3:</b> {@link #reconcile} ends {@code .ts} and MP3 connections whose
- *       token no longer opens the room (rotated, disabled, deleted, server switch off). HLS needs nothing: every
- *       request checks its token.</li>
+ *       URL no longer opens the room (token rotated, slug changed, visibility changed, disabled,
+ *       deleted, server switch off). HLS needs nothing: every request checks its URL.</li>
  *   <li><b>Program output:</b> enabling an output starts the room's output at once
  *       ({@link #roomChanged} with {@code started}); a room left with no active output has it
  *       stopped at once.</li>
@@ -77,7 +78,7 @@ public final class StreamOutputControl implements AutoCloseable {
     private final Runnable revalidateTs;
     private final Map<String, Running> running = new HashMap<>();
     private ScheduledExecutorService timer;
-    private volatile RtmpIdleStop idleStop;
+    private volatile OutputAutoOff autoOff;
     private volatile Runnable reconcileListener = () -> {
     };
 
@@ -119,24 +120,25 @@ public final class StreamOutputControl implements AutoCloseable {
         timer.scheduleWithFixedDelay(this::reconcileQuietly, PERIOD_MS, PERIOD_MS, TimeUnit.MILLISECONDS);
     }
 
-    /** Turns RTMP outputs off after the room was idle too long ({@link RtmpIdleStop}); set before {@link #start}. */
-    public void idleStop(RtmpIdleStop idleStop) {
-        this.idleStop = idleStop;
+    /** Turns outputs off automatically ({@link OutputAutoOff}); set before {@link #start}. */
+    public void autoOff(OutputAutoOff autoOff) {
+        this.autoOff = autoOff;
     }
 
     /**
-     * Turns off the RTMP output of every room that was idle for its limit and brings the pushes and
-     * program outputs in line ({@link #roomChanged}). Runs on the timer before each reconcile.
+     * Turns off every output whose room was idle, or that nobody listened to, for its limit and
+     * brings the pushes, connections and program outputs in line ({@link #roomChanged}). Runs on
+     * the timer before each reconcile.
      *
-     * @return the rooms whose RTMP output was turned off
+     * @return the outputs turned off
      */
-    public List<String> checkIdle() {
-        RtmpIdleStop s = idleStop;
-        if (s == null) {
+    public List<OutputAutoOff.Stop> checkIdle() {
+        OutputAutoOff a = autoOff;
+        if (a == null) {
             return List.of();
         }
-        List<String> stopped = s.check();
-        for (String roomId : stopped) {
+        List<OutputAutoOff.Stop> stopped = a.check();
+        for (String roomId : new java.util.LinkedHashSet<>(stopped.stream().map(OutputAutoOff.Stop::roomId).toList())) {
             roomChanged(roomId, false);
         }
         return stopped;
@@ -163,10 +165,31 @@ public final class StreamOutputControl implements AutoCloseable {
     public void reconcile() {
         try {
             reconcileRtmp();
+            syncAutoOff();
             revalidateTs.run();
         } finally {
             reconcileListener.run();
         }
+    }
+
+    /** Tells the auto turn-off which outputs are active now. */
+    private synchronized void syncAutoOff() {
+        OutputAutoOff a = autoOff;
+        if (a == null) {
+            return;
+        }
+        List<OutputAutoOff.Key> active = new java.util.ArrayList<>();
+        try {
+            for (StreamOutputs.Output o : rows.enabled()) {
+                if (serverEnabled(o.kind())) {
+                    active.add(new OutputAutoOff.Key(o.roomId(), o.kind()));
+                }
+            }
+        } catch (SQLException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not read the outputs for the auto turn-off", e);
+            return;
+        }
+        a.sync(active);
     }
 
     private synchronized void reconcileRtmp() {
@@ -190,10 +213,6 @@ public final class StreamOutputControl implements AutoCloseable {
             if (!desired.containsKey(roomId)) {
                 running.remove(roomId);
                 pushers.stop(roomId);
-                RtmpIdleStop s = idleStop;
-                if (s != null) {
-                    s.pushStopped(roomId);
-                }
                 LOG.log(System.Logger.Level.INFO, "RTMP push of room " + roomId + " stopped");
             }
         }
@@ -202,13 +221,7 @@ public final class StreamOutputControl implements AutoCloseable {
             if (want.equals(running.get(o.roomId()))) {
                 continue;
             }
-            boolean fresh = running.put(o.roomId(), want) == null;
-            if (fresh) {
-                RtmpIdleStop s = idleStop;
-                if (s != null) {
-                    s.pushStarted(o.roomId()); // a fresh idle timer (not when only the target changed)
-                }
-            }
+            running.put(o.roomId(), want);
             pushers.start(o.roomId(), o.rtmpUrl(), o.rtmpKey());
             LOG.log(System.Logger.Level.INFO, "RTMP push of room " + o.roomId() + " started");
         }
@@ -237,6 +250,23 @@ public final class StreamOutputControl implements AutoCloseable {
                 LOG.log(System.Logger.Level.WARNING, "The program output of room " + roomId + " could not start", e);
             }
         }
+    }
+
+    /**
+     * After the room's slug or visibility changed ({@code docs/program-output.md#stream-urls}): a
+     * room that became private gets fresh tokens ({@link StreamOutputs#reissueTokens}), then
+     * {@link #roomChanged} ends the connections whose URL stopped working (the old slug, slug URLs
+     * of a now private room, token URLs of a now public or unlisted one).
+     */
+    public void roomEdited(String roomId, boolean becamePrivate) {
+        if (becamePrivate) {
+            try {
+                rows.reissueTokens(roomId);
+            } catch (SQLException e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not issue new stream tokens for room " + roomId, e);
+            }
+        }
+        roomChanged(roomId, false);
     }
 
     /** Whether one of the room's outputs is on, server switch included. */

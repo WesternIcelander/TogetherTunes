@@ -59,9 +59,11 @@ export const SETTINGS: SettingDef[] = [
     min: 0, max: 20 },
   { key: "outputs.rtmp.playbackUrl", label: "RTMP playback URL for viewers", kind: "text", group: "outputs",
     default: "", max: 2048, help: "The URL your RTMP service gives viewers. Empty for none." },
-  { key: "outputs.rtmp.idleStopMinutes", label: "Stop the RTMP push after the queue was empty for (minutes)",
-    kind: "int", group: "outputs", default: 10, min: 1, max: 1440,
-    help: "The push turns off and stays off until you turn it on again on the room page." },
+  { key: "outputs.autoOff", label: "Turn outputs off automatically", kind: "bool", group: "outputs", default: true,
+    help: "On: an output turns off after the queue was empty, or (.ts, HLS, MP3) nobody listened, for the time"
+      + " below, and stays off until you turn it on again on the room page. Off: outputs stay on." },
+  { key: "outputs.autoOffMinutes", label: "Turn off after (minutes)", kind: "int", group: "outputs", default: 10,
+    min: 1, max: 1440 },
   { key: "outputs.ts.join", label: ".ts viewers join at", kind: "select", group: "outputs", default: "next",
     options: [["next", "the next unit (clean start)"], ["latest", "the latest unit (less delay)"]] },
   { key: "estimatedDelayMs.rtmp", label: "Estimated RTMP delay (ms)", kind: "int", group: "outputs", default: 5000,
@@ -127,24 +129,26 @@ export interface ServerSwitches {
   guests: { enabled: boolean; canVote: boolean; canRequestLibrary: boolean; canUpload: boolean; canYoutube: boolean };
   overlay: { enabled: boolean };
   outputs: {
-    rtmp: { enabled: boolean; maxIdleStopMinutes?: number }; ts: { enabled: boolean }; hls: { enabled: boolean };
+    forceAutoOff?: boolean; maxAutoOffMinutes?: number;
+    rtmp: { enabled: boolean }; ts: { enabled: boolean }; hls: { enabled: boolean };
     mp3?: { enabled: boolean };
   };
 }
 
 /**
- * A note on a setting the server caps: `outputs.rtmp.idleStopMinutes` applies up to the server's
- * `outputs.rtmp.maxIdleStopMinutes`; a higher value is saved but acts as the maximum (clamped).
+ * A note on a setting the server caps: `outputs.autoOffMinutes` applies up to the server's
+ * `outputs.maxAutoOffMinutes`; a higher value is saved but acts as the maximum (clamped).
  */
 export function serverCapNote(key: string, value: unknown, sw: ServerSwitches | undefined): string | null {
-  if (key !== "outputs.rtmp.idleStopMinutes" || sw === undefined) return null;
-  const max = sw.outputs.rtmp.maxIdleStopMinutes;
+  if (key !== "outputs.autoOffMinutes" || sw === undefined) return null;
+  const max = sw.outputs.maxAutoOffMinutes;
   if (typeof max !== "number") return null;
-  const note = "This server stops idle pushes after at most " + max + (max === 1 ? " minute" : " minutes");
+  const note = "This server turns unused outputs off after at most " + max + (max === 1 ? " minute" : " minutes");
   return typeof value === "number" && value > max ? note + ", so " + max + " applies." : note + ".";
 }
 
 export const SERVER_DISABLED = "disabled by the server admin";
+export const SERVER_REQUIRED = "Required by the server admin";
 
 /**
  * Why the server keeps this room setting from having any effect, or null if it doesn't: the
@@ -159,6 +163,9 @@ export function serverDisabledReason(key: string, sw: ServerSwitches | undefined
   }
   if (key.startsWith("overlay.")) {
     return sw.overlay.enabled ? null : "The overlay is " + SERVER_DISABLED;
+  }
+  if (key === "outputs.autoOff") {
+    return sw.outputs.forceAutoOff === true ? SERVER_REQUIRED + ": outputs always turn off automatically" : null;
   }
   for (const kind of ["rtmp", "ts", "hls", "mp3"] as const) {
     if (key === "estimatedDelayMs." + kind || key.startsWith("outputs." + kind + ".")) {

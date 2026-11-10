@@ -14,8 +14,9 @@ import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
 
 /**
- * The HLS output ({@code docs/program-output.md#hls}): {@code GET /live/{token}/index.m3u8} and
- * {@code GET /live/{token}/seg/{sequence}.ts} ({@code HEAD} answers like {@code GET}, without the
+ * The HLS output ({@code docs/program-output.md#hls}): {@code GET /live/{key}/index.m3u8} and
+ * {@code GET /live/{key}/seg/{sequence}.ts} (key: the room's slug, or a private room's token,
+ * {@link StreamOutputs#KEY_MATCH}; each request counts as listening, {@link OutputListeners}) ({@code HEAD} answers like {@code GET}, without the
  * body).
  *
  * <ul>
@@ -47,7 +48,7 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     /** How long a playlist request waits for a fresh output's first segment. */
     public static final long FIRST_SEGMENT_WAIT_MS = 5000;
 
-    private static final Pattern TOKEN_SHAPE = Pattern.compile("[A-Za-z0-9_-]{16,64}");
+    private static final Pattern TOKEN_SHAPE = StreamOutputs.KEY_SHAPE;
     private static final Pattern SEGMENT_FILE = Pattern.compile("(0|[1-9][0-9]{0,17})\\.ts");
 
     /** Resolves a token to the room of an enabled HLS output, or null (unknown, disabled, server switch off). */
@@ -61,6 +62,12 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     private final LongSupplier nowMs;
     private final LiveLimits limits;
     private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();
+    private volatile OutputListeners listeners = OutputListeners.NONE;
+
+    /** Where requests are counted as listening ({@link OutputAutoOff}). */
+    public void listeners(OutputListeners listeners) {
+        this.listeners = Objects.requireNonNull(listeners);
+    }
 
     private static final class Room {
         final HlsSegmenter segmenter = new HlsSegmenter();
@@ -96,9 +103,9 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
                 return null;
             }
             return db.read(c -> {
-                try (var ps = c.prepareStatement(
-                        "SELECT room_id, enabled FROM stream_outputs WHERE token = ? AND kind = 'hls'")) {
-                    ps.setString(1, token);
+                try (var ps = c.prepareStatement("SELECT so.room_id, so.enabled FROM stream_outputs so"
+                        + " JOIN rooms r ON r.id = so.room_id WHERE so.kind = 'hls' AND " + StreamOutputs.KEY_MATCH)) {
+                    StreamOutputs.bindKey(ps, 1, token);
                     try (var rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(2) == 0) {
                             return null;
@@ -150,6 +157,7 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
         }
         Room room = rooms.computeIfAbsent(roomId, k -> new Room());
         room.lastFetchMs = nowMs.getAsLong();
+        listeners.touched(roomId, StreamOutputs.Kind.HLS);
         Packager packager;
         try {
             packager = outputs.touch(roomId);

@@ -35,20 +35,24 @@ import java.util.Set;
  *       feature_disabled} (turning it off, or other changes, always work). {@code "rtmpKey": null}
  *       or {@code ""} removes the key.</li>
  *   <li>{@code DELETE …/outputs/{outputId}} → {@code 204}; the owner.</li>
- *   <li>{@code POST …/outputs/{outputId}/rotate} → the output with a new token (ts/HLS; RTMP
- *       {@code 409 no_token}); the owner. Open {@code .ts} connections with the old token end.</li>
+ *   <li>{@code POST …/outputs/{outputId}/rotate} → the output with a new token (ts/HLS/MP3 of a
+ *       private room; RTMP, or a public or unlisted room, whose URLs use the slug: {@code 409
+ *       no_token}); the owner. Open connections with the old token end.</li>
  * </ul>
  *
- * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt"}} plus,
- * for ts/HLS/MP3, {@code "url"} (the tokenised URL), and for RTMP, to the room's owner only, {@code
+ * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt",
+ * "stopped"?}} plus, for ts/HLS/MP3, {@code "url"} (the stream URL: by the room's slug for a public
+ * or unlisted room, by token for a private one) and {@code "urlKind": "slug"|"token"}, and for
+ * RTMP, to the room's owner only, {@code
  * "rtmpUrl"}, {@code "hasRtmpKey"} and {@code "rtmpKey"?} (the full key; moderators get nothing
  * about the key or the ingest URL, which can carry credentials too), then for everyone {@code
  * "playbackUrl"?} (the room
  * setting {@code outputs.rtmp.playbackUrl}), {@code "rtmpAvailable"} (false if the server has no
  * ffmpeg) and {@code "status"?: {"state": "connecting"|"connected"|"retrying"|"error", "detail"?,
- * "failures", "since", "retryAt"?}} while a push runs, to the owner only {@code "stopped"?: {"reason":
- * "idle", "at", "idleMinutes"}} while the server's idle stop keeps it off ({@link RtmpIdleStop}) (moderators get the detail without URLs or
- * key hints, {@link RoomOutputs#moderatorDetail}). {@code active} = enabled AND the server
+ * "failures", "since", "retryAt"?}} while a push runs (moderators get the detail without URLs or
+ * key hints, {@link RoomOutputs#moderatorDetail}). Every kind, to the owner only: {@code
+ * "stopped"?: {"reason": "idle"|"no_listeners", "at", "idleMinutes"}} while the server's auto
+ * turn-off keeps it off ({@link OutputAutoOff}). {@code active} = enabled AND the server
  * switch. Errors: {@code 401 not_authenticated} (not a user), {@code 403 forbidden}, {@code 404
  * room_not_found} / {@code output_not_found}, {@code 400 invalid_kind} / {@code invalid_enabled} /
  * {@code invalid_rtmp_url} / {@code invalid_rtmp_key} / {@code invalid_field} (RTMP fields on a
@@ -80,7 +84,7 @@ public final class StreamOutputsApi {
         router.post("/api/rooms/{room}/outputs/{outputId}/rotate", this::rotate);
     }
 
-    /** The tokenised URL of a ts/HLS/MP3 token. */
+    /** The stream URL of a ts/HLS/MP3 output whose URL key (slug or token) is {@code token}. */
     public String url(StreamOutputs.Kind kind, String token) {
         return switch (kind) {
             case TS -> publicBaseUrl + "/live/" + token + ".ts";
@@ -210,6 +214,11 @@ public final class StreamOutputsApi {
     private void rotate(Request request, Response response) throws Exception {
         Actor.User user = user(request);
         Rooms.Access a = owned(user, request);
+        if (a.room().visibility() != Rooms.Visibility.PRIVATE) {
+            output(a, request); // 404 first for an unknown output
+            throw new HttpError(409, "no_token", "This room's stream URLs use its link name, so there is no token to"
+                    + " rotate; only private rooms' stream URLs have tokens");
+        }
         StreamOutputs.Output o = outputs.rotate(a.room().id(), request.pathParam("outputId"), user.userId(),
                 request.clientIp());
         if (o == null) {
@@ -241,8 +250,18 @@ public final class StreamOutputsApi {
         m.put("serverEnabled", serverEnabled);
         m.put("active", o.enabled() && serverEnabled);
         m.put("createdAt", o.createdAt());
+        StreamOutputs.Stopped stopped = o.stopped();
+        if (owner && !o.enabled() && stopped != null) {
+            Map<String, Object> st = new LinkedHashMap<>();
+            st.put("reason", stopped.reason());
+            st.put("at", stopped.at());
+            st.put("idleMinutes", stopped.idleMinutes());
+            m.put("stopped", st);
+        }
         if (o.kind().hasToken()) {
-            m.put("url", url(o.kind(), o.token()));
+            boolean byToken = a.room().visibility() == Rooms.Visibility.PRIVATE;
+            m.put("url", url(o.kind(), byToken ? o.token() : a.room().slug()));
+            m.put("urlKind", byToken ? "token" : "slug");
         } else {
             // The target and key only for the owner: they open the owner's account at the RTMP service.
             if (owner) {
@@ -257,14 +276,6 @@ public final class StreamOutputsApi {
                 m.put("playbackUrl", playback);
             }
             m.put("rtmpAvailable", control.rtmpAvailable());
-            StreamOutputs.Stopped stopped = o.stopped();
-            if (owner && !o.enabled() && stopped != null) {
-                Map<String, Object> st = new LinkedHashMap<>();
-                st.put("reason", stopped.reason());
-                st.put("at", stopped.at());
-                st.put("idleMinutes", stopped.idleMinutes());
-                m.put("stopped", st);
-            }
             RtmpPusher.Status s = control.rtmpStatus(a.room().id());
             if (s != null && s.state() != RtmpPusher.State.STOPPED) {
                 Map<String, Object> st = new LinkedHashMap<>();

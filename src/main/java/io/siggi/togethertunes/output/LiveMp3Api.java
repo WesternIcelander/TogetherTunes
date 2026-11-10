@@ -21,7 +21,8 @@ import java.util.function.IntSupplier;
 import java.util.regex.Pattern;
 
 /**
- * The MP3 output, {@code GET}/{@code HEAD /live/{token}.mp3}
+ * The MP3 output, {@code GET}/{@code HEAD /live/{key}.mp3} (key: the room's slug, or a private
+ * room's token, {@link StreamOutputs#KEY_MATCH})
  * ({@code docs/program-output.md#mp3-output}): a Shoutcast/Icecast-style MP3 stream of the room's
  * program audio for internet-radio players.
  *
@@ -47,7 +48,7 @@ public final class LiveMp3Api {
     private static final System.Logger LOG = System.getLogger(LiveMp3Api.class.getName());
 
     public static final String CONTENT_TYPE = "audio/mpeg";
-    private static final Pattern TOKEN_SHAPE = Pattern.compile("[A-Za-z0-9_-]{16,64}");
+    private static final Pattern TOKEN_SHAPE = StreamOutputs.KEY_SHAPE;
 
     /** What a token opens: a room's MP3 output. */
     public record Target(String roomId, String roomName) {
@@ -74,6 +75,7 @@ public final class LiveMp3Api {
     private final IntSupplier bitrateKbps;
     private final LiveLimits limits;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
+    private volatile OutputListeners listeners = OutputListeners.NONE;
 
     /**
      * @param encoders    the rooms' encoders, or null if the server has no ffmpeg
@@ -95,8 +97,8 @@ public final class LiveMp3Api {
             return db.read(c -> {
                 try (var ps = c.prepareStatement("SELECT so.room_id, so.enabled, r.name"
                         + " FROM stream_outputs so JOIN rooms r ON r.id = so.room_id"
-                        + " WHERE so.token = ? AND so.kind = 'mp3'")) {
-                    ps.setString(1, token);
+                        + " WHERE so.kind = 'mp3' AND " + StreamOutputs.KEY_MATCH)) {
+                    StreamOutputs.bindKey(ps, 1, token);
                     try (var rs = ps.executeQuery()) {
                         if (!rs.next() || rs.getInt(2) == 0) {
                             return null;
@@ -106,6 +108,11 @@ public final class LiveMp3Api {
                 }
             });
         };
+    }
+
+    /** Where open connections are counted ({@link OutputAutoOff}). */
+    public void listeners(OutputListeners listeners) {
+        this.listeners = Objects.requireNonNull(listeners);
     }
 
     /** Open {@code GET} connections. */
@@ -205,7 +212,13 @@ public final class LiveMp3Api {
                 response.error(503, "output_unavailable", "The program output is not available right now");
                 return;
             }
-            stream(response, listener, token, target, metadata, response.raw()::abort);
+            OutputListeners l = listeners;
+            l.opened(target.roomId(), StreamOutputs.Kind.MP3);
+            try {
+                stream(response, listener, token, target, metadata, response.raw()::abort);
+            } finally {
+                l.closed(target.roomId(), StreamOutputs.Kind.MP3);
+            }
         }
     }
 

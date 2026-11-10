@@ -57,7 +57,7 @@ import io.siggi.togethertunes.output.LiveMp3Api;
 import io.siggi.togethertunes.output.Mp3Encoders;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
-import io.siggi.togethertunes.output.RtmpIdleStop;
+import io.siggi.togethertunes.output.OutputAutoOff;
 import io.siggi.togethertunes.output.RtmpPushers;
 import io.siggi.togethertunes.output.StreamOutputControl;
 import io.siggi.togethertunes.output.StreamOutputs;
@@ -344,36 +344,53 @@ public final class Main {
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
-        // /live/...: per-IP rate limit and per-token connection cap (docs/auth.md#stream-urls).
+        // The rooms' outputs (/api/rooms/{room}/outputs...).
+        StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
+        // Outputs turn off after the queue was empty, or (.ts/HLS/MP3) nobody listened, for the
+        // room's limit (docs/program-output.md#auto-turn-off).
+        OutputAutoOff autoOff = new OutputAutoOff(streamOutputs, roomId -> {
+            Rooms.Room room = rooms.record(roomId);
+            RoomSettings rs = room == null ? RoomSettings.DEFAULTS : room.settings();
+            return OutputAutoOff.policy(rs.autoOff(), rs.autoOffMinutes(), settings.outputsForceAutoOff(),
+                    settings.outputsMaxAutoOffMinutes());
+        }, System::currentTimeMillis);
+        programOutputs.idleListener(autoOff::idle);
+        // /live/...: per-IP rate limit and per-URL connection cap (docs/auth.md#stream-urls).
         LiveLimits liveLimits = LiveLimits.defaults(Clock.systemUTC());
-        // The direct MPEG-TS output: GET/HEAD /live/{token}.ts (docs/program-output.md#direct-mpeg-ts-ts).
+        // The direct MPEG-TS output: GET/HEAD /live/{key}.ts (docs/program-output.md#direct-mpeg-ts-ts).
         LiveTsApi liveTs = new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs, liveLimits);
+        liveTs.listeners(autoOff);
         liveTs.register(appRouter);
-        // The MP3 output: GET/HEAD /live/{token}.mp3 (docs/program-output.md#mp3-output), one
+        // The MP3 output: GET/HEAD /live/{key}.mp3 (docs/program-output.md#mp3-output), one
         // supervised ffmpeg encode per room with listeners. Null encoders without ffmpeg.
         Mp3Encoders mp3Encoders = config.ffmpeg() == null ? null : new Mp3Encoders(programOutputs, config.ffmpeg(),
                 () -> mp3Bitrate(settings), Mp3Encoders.titlesFrom(database));
         LiveMp3Api liveMp3 = new LiveMp3Api(LiveMp3Api.targetsFrom(database, settings), mp3Encoders,
                 () -> mp3Bitrate(settings), liveLimits);
+        liveMp3.listeners(autoOff);
         liveMp3.register(liveTs);
-        // HLS: GET /live/{token}/index.m3u8 and /live/{token}/seg/{seq}.ts (docs/program-output.md#hls).
-        new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis,
-                liveLimits).register(appRouter);
-        // The rooms' outputs (/api/rooms/{room}/outputs...) and what keeps pushes and .ts viewers in line with them.
-        StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
+        // HLS: GET /live/{key}/index.m3u8 and /live/{key}/seg/{seq}.ts (docs/program-output.md#hls).
+        LiveHlsApi liveHls = new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs,
+                System::currentTimeMillis, liveLimits);
+        liveHls.listeners(autoOff);
+        liveHls.register(appRouter);
+        // What keeps pushes and .ts/MP3 listeners in line with the outputs.
         StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
                 () -> {
                     liveTs.revalidate();
                     liveMp3.revalidate();
                 });
-        // RTMP pushes are turned off after the room was idle for its limit (docs/program-output.md#idle-stop).
-        RtmpIdleStop rtmpIdleStop = new RtmpIdleStop(streamOutputs, roomId -> {
-            Rooms.Room room = rooms.record(roomId);
-            int roomMinutes = room == null ? RoomSettings.DEFAULT_IDLE_STOP_MINUTES : room.settings().rtmpIdleStopMinutes();
-            return RtmpIdleStop.effectiveMinutes(roomMinutes, settings.outputsRtmpMaxIdleStopMinutes());
-        }, System::currentTimeMillis);
-        programOutputs.idleListener(rtmpIdleStop::idle);
-        outputControl.idleStop(rtmpIdleStop);
+        outputControl.autoOff(autoOff);
+        // A new slug or visibility changes the stream URLs at once (docs/program-output.md#stream-urls):
+        // a room that becomes private gets fresh tokens; connections on URLs that stopped working end.
+        roomsApi.editListener((before, after) -> {
+            if (before.visibility() == after.visibility() && before.slug().equals(after.slug())) {
+                return;
+            }
+            boolean becamePrivate = after.visibility() == Rooms.Visibility.PRIVATE
+                    && before.visibility() != Rooms.Visibility.PRIVATE;
+            outputControl.roomEdited(after.id(), becamePrivate);
+        });
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
         // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
