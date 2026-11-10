@@ -56,7 +56,7 @@
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     overlay.json          overlay.png's spec, position in the frame and overlayHash
-    cards/<key>.mp4       per-room cards: idle (room name), filler cards and item cards with the overlay
+    cards/<key>.mp4       per-room cards with the overlay: filler-<id>-…mp4 and item-<itemId>-v<N>-…mp4 (+ .key fingerprints; overlay.md#cards-cheap-path)
     ov/<itemId>/          overlay re-encode of a music video: gops.h264 + gops.idx (see overlay.md)
   tmp/                    in-progress uploads and ingest scratch
 ```

@@ -44,6 +44,13 @@ Cards are still images, so adding the overlay just means compositing `overlay.pn
 
 The card cache is evicted by LRU, together with the music-video overlay cache.
 
+As implemented (`overlay/OverlayCards`, used by `output/ProgramMedia`):
+
+- The card image (`CardRenderer`: the server filler render, or the item card rendered from the item's title, artist, album and `cover.jpg` of its current media version) gets the overlay panel drawn at its `overlay.json` position, and is encoded with `CardEncoder.encode` (a skip-frame card, avcC checked against the reference). Files: `rooms/<roomId>/cards/filler-<id>-<overlayHash>-<encoding>-c<cardVersion>.mp4` and `item-<itemId>-v<mediaVersion>-<overlayHash>-<encoding>-c<cardVersion>.mp4` (the encoding id names the profile and bitrate). A `.key` fingerprint next to each (card format, encoder arguments, reference avcC, composited pixels) re-encodes a card whose picture changed under the same name (an edited title or cover) and reuses an unchanged one across restarts.
+- **Filler cards** follow the room as it is now (server and room `overlay.enabled`); the output looks them up when the cue changes (at most once a second) and every 5 s while a filler plays. **Item cards** follow the entry's recorded decision (`cards` or `video`), asked as the entry becomes current or next (or when it starts playing).
+- Everything is made in the background. The packager never waits for an overlaid card: a source shows the plain card until the overlaid one is loaded and switches at the next 2 s GOP boundary (`CardGop.repeat(Supplier)`; same avcC, closed GOPs), so the overlay can appear up to 2 s into an item or filler. A failed card is logged, the plain card plays, and it is retried after 5 s.
+- Old cards (another overlayHash or media version) stay on disk until the LRU cache step's clean-up.
+
 ## Music videos (re-encode path)
 
 A music video's frames are different from each other, so the overlay can only be added by decoding, compositing and re-encoding the video track. Audio is never re-encoded; the packager keeps taking it from the item's original samples.
