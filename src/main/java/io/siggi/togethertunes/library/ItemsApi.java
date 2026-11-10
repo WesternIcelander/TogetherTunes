@@ -29,8 +29,9 @@ import java.util.Set;
  *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
- *       "addedAt", "error"?, "you": {"inLibrary", "canEdit", "canPurge", "canRetry"}}}. {@code error} only for
- *       a failed item. Nothing about who added the item or whose libraries it is in.
+ *       "addedAt", "error"?, "mediaVersion", "you": {"inLibrary", "canEdit", "canPurge", "canRetry"},
+ *       "undo"?: {"changedAt"}}}. {@code error} only for a failed item; {@code undo} only for callers
+ *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
  *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "presentAsAudio"?}} →
  *       the item page. The adder while it is in their library, or {@code library.editAny}
@@ -42,6 +43,11 @@ import java.util.Set;
  *       {@code invalid_album}, {@code invalid_present_as_audio}, {@code metadata_too_long} (over
  *       {@value UploadMetadata#MAX_CHARS} characters), {@code unknown_field}, {@code not_a_video}
  *       ({@code presentAsAudio: true} on an audio item).</li>
+ *   <li>{@code POST /api/items/{id}/undo} (no body) → the item page: go back to the previous media
+ *       version ({@code docs/library-and-ingest.md#undo}, {@link Items#undo}). Users who may edit
+ *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
+ *       forbidden} for other users); {@code 404 item_not_found}, {@code 409 nothing_to_undo},
+ *       {@code 409 item_busy}.</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
  *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",
@@ -82,6 +88,7 @@ public final class ItemsApi {
         router.patch("/api/items/{id}", this::update);
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
         router.get("/api/items/{id}/job", this::job);
+        router.post("/api/items/{id}/undo", this::undo);
         if (youtube != null) {
             router.post("/api/items/{id}/retry", this::retry);
         }
@@ -161,6 +168,16 @@ public final class ItemsApi {
         }
         Items.Edit edit = parse(request.readJson(JsonObject.class));
         Items.ItemPage page = items.update(user, request.pathParam("id"), edit, rights(user), request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private void undo(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        if (!(actor instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        Items.ItemPage page = items.undo(user, request.pathParam("id"), rights(user), request.clientIp());
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

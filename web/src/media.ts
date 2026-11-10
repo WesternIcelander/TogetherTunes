@@ -30,6 +30,8 @@ export interface ItemPage extends ItemSummary {
   mediaVersion: number;
   /** `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`). */
   you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
+  /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */
+  undo?: { changedAt: number };
 }
 
 export interface LibraryEntry {

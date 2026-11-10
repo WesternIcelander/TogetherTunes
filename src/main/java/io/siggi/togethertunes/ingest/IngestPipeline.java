@@ -542,12 +542,17 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Double lufs = fromPrevious ? item.loudnessLufs() : loudness.usable() ? round2(loudness.inputI()) : null;
         Originals.Original kept = original;
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
+        // A re-encode made by the system keeps the previous version for the undo window too, but
+        // without Undo (docs/library-and-ingest.md#undo); it is made with the current edit settings.
+        // TODO(trim steps): an edit job publishes with undoable = true and its new edit settings.
+        IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null,
+                false, items.editJson(item.id(), item.mediaVersion()), System.currentTimeMillis());
         // an audio item has no video, so its files are as good as they get with any preset
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
-                        lufs, kept, v));
+                        lufs, kept, v, change));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
-                + " is kept until nobody can still be playing it" : ""));
+                + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, original, durationUs / 1000);
         if (!reencode) {
             deleteQuietly(staging);
@@ -1031,7 +1036,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         });
     }
 
-    private static void deleteQuietly(Path path) {
+    static void deleteQuietly(Path path) {
         try {
             deleteTree(path);
         } catch (IOException e) {

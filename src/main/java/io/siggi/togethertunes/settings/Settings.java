@@ -106,6 +106,14 @@ public final class Settings {
     public static final SettingKey<Long> STORAGE_MIN_FREE_BYTES = SettingKey.bytes(
             "storage.minFreeBytes", 5 * GIB, 0, MAX_BYTES);
 
+    // Media
+    /**
+     * Hours the previous media version of an item is kept after an edit or re-encode, so a person
+     * who may edit the item can undo the change ({@code docs/library-and-ingest.md#undo}); 0 turns
+     * undo off. At most a year.
+     */
+    public static final SettingKey<Integer> MEDIA_UNDO_HOURS = SettingKey.integer("media.undoHours", 48, 0, 8760);
+
     // Rooms
     /**
      * Days a room's history (entries that played) is kept; 0 means never trim. The key keeps its
@@ -174,7 +182,7 @@ public final class Settings {
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,
-                STORAGE_MIN_FREE_BYTES,
+                STORAGE_MIN_FREE_BYTES, MEDIA_UNDO_HOURS,
                 ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS, OUTPUT_AUDIO_ONLY_BITRATE_KBPS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
@@ -499,6 +507,11 @@ public final class Settings {
     /** The minimum free space on the data volume in bytes; 0 means no minimum. */
     public long storageMinFreeBytes() throws SQLException {
         return get(STORAGE_MIN_FREE_BYTES);
+    }
+
+    /** Hours a previous media version is kept for undo ({@link #MEDIA_UNDO_HOURS}); 0 = no undo. */
+    public int mediaUndoHours() throws SQLException {
+        return get(MEDIA_UNDO_HOURS);
     }
 
     public boolean outputsRtmpEnabled() throws SQLException {

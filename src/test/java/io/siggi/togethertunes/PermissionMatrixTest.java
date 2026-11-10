@@ -241,6 +241,10 @@ class PermissionMatrixTest {
                     401, 401, 403, 200),
             row("DELETE /api/items/{id}", c -> Call.delete("/api/items/" + c.itemId()), 401, 401, 403, 204),
             row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
+            // Undo of a media change: those who may edit; the admin finds nothing to undo (MediaVersionsTest,
+            // ItemsContract and ItemsApiTest cover the switch).
+            row("POST /api/items/{id}/undo", c -> Call.post("/api/items/" + c.itemId() + "/undo", null),
+                    401, 401, 403, 409),
             // Media files: users always; guests only with guests.download (off) or a playing item (no rooms yet).
             row("GET /media/{id}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/audio.m4a"), 403, 403, 200, 200),
             row("GET /media/{id}/v/{version}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/v/0/audio.m4a"),

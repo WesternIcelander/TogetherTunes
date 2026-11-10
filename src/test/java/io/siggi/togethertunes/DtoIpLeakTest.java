@@ -129,6 +129,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.http.EchoEndpoint$Closed",
             "io.siggi.togethertunes.library.Items$ItemPage",
             "io.siggi.togethertunes.library.Items$JobView",
+            "io.siggi.togethertunes.library.Items$UndoView",
             "io.siggi.togethertunes.library.Items$You",
             "io.siggi.togethertunes.library.Library$Entry",
             "io.siggi.togethertunes.library.Library$ItemView",
@@ -161,6 +162,12 @@ class DtoIpLeakTest {
 
     /** Records that never reach a client, and why. */
     private static final Map<String, String> INTERNAL = Map.ofEntries(
+            Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Kept", "what the database says about an"
+                    + " item's kept undo version, for the undo checks; never sent"),
+            Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Undone", "an undo's outcome; the API answers"
+                    + " with the item page, the audit row with plain numbers"),
+            Map.entry("io.siggi.togethertunes.ingest.IngestItems$VersionChange", "what a publish keeps for undo;"
+                    + " server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Retired", "an old media version waiting for its"
                     + " clean-up (item id, version, times); never sent"),
             Map.entry("io.siggi.togethertunes.library.MediaApi$Located", "a media file's name and the item's"
@@ -433,6 +440,11 @@ class DtoIpLeakTest {
         guests = new Guests(database, settings, config.secureCookies());
         library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
+        io.siggi.togethertunes.ingest.MediaVersions versions = new io.siggi.togethertunes.ingest.MediaVersions(
+                DataDir.create(dir.resolve("data")), database, clock::millis,
+                io.siggi.togethertunes.ingest.MediaVersions.GRACE);
+        versions.undoWindow(() -> 48 * 3_600_000L);
+        items.mediaVersions(versions);
         playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         rooms = new io.siggi.togethertunes.rooms.Rooms(database, permissions, clock);
         roomRegistry = new io.siggi.togethertunes.rooms.RoomRegistry(database, clock,
@@ -993,6 +1005,19 @@ class DtoIpLeakTest {
         expect(200, alice, "GET", "/media/" + itemId + "/audio.m4a", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
+        // undo of a media change: alice's own item, edited (version 2, version 1 kept for undo), undone
+        String undoItem = insertItem(aliceId);
+        expect(201, alice, "PUT", "/api/library/" + undoItem, null);
+        for (int v = 1; v <= 2; v++) {
+            Path f = dir.resolve("data").resolve("media").resolve(undoItem).resolve("v" + v).resolve("mezz.mp4");
+            Files.createDirectories(f.getParent());
+            Files.write(f, new byte[16]);
+            new io.siggi.togethertunes.ingest.IngestItems(database).published(undoItem, true, 1000,
+                    io.siggi.togethertunes.config.OutputEncoding.DEFAULT, io.siggi.togethertunes.config.X264Preset.VERYFAST,
+                    true, null, null, v, new io.siggi.togethertunes.ingest.IngestItems.VersionChange(v == 1 ? null : 1,
+                            true, null, clock.millis()));
+        }
+        expect(200, alice, "POST", "/api/items/" + undoItem + "/undo", null);
 
         // alice's playlists: one created, renamed, filled (the same item twice), an entry moved and
         // one removed; another created and deleted

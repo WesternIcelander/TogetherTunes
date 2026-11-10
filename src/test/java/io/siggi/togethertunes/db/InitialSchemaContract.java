@@ -70,6 +70,9 @@ abstract class InitialSchemaContract {
         t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
                 "item_id", "deduplicated");
         t("guest_upload_starts", "id", "guest_id", "ip_key_hash", "created_at");
+        t("media_versions", "item_id", "version", "published_at", "kind", "duration_ms", "output_profile",
+                "loudness_lufs", "encode_preset", "encode_quality", "edit_json");
+        t("media_undo", "item_id", "version", "switched_at", "undoable");
     }
 
     private static void t(String table, String... columns) {

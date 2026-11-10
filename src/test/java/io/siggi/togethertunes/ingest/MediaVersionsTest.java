@@ -2,19 +2,26 @@ package io.siggi.togethertunes.ingest;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.DataDir;
+import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.db.UuidV7;
+import io.siggi.togethertunes.storage.DiskSpace;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.time.Duration;
 import java.util.List;
 import java.util.OptionalInt;
+import java.util.OptionalLong;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -24,7 +31,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** {@link MediaVersions}: layout, the clean-up of old versions after a switch, and at startup. */
+/**
+ * {@link MediaVersions}: layout, the clean-up of old versions after a switch, and at startup; undo
+ * (the previous version kept for the window, restored with its settings, redo by undo, expiry,
+ * early deletion under the free-space minimum).
+ */
 class MediaVersionsTest {
     @TempDir
     Path dir;
@@ -168,5 +179,231 @@ class MediaVersionsTest {
         assertEquals(List.of("v3/audio.m4a"), files(unknown));
         assertEquals(0, MediaVersions.cleanUpAtStartup(db, data), "nothing left to do");
         assertFalse(Files.exists(IngestPipeline.itemDir(data, switched).resolve("v1")));
+    }
+
+    // ------------------------------------------------------------------ undo
+
+    private static final long HOUR = 3_600_000L;
+    private static final long WINDOW = 48 * HOUR;
+
+    /** Writes version {@code v}'s audio.m4a (its content names the version) and publishes it. */
+    private void publish(String item, int v, Integer kept, boolean undoable, String edit, long durationMs,
+                         OutputEncoding encoding, long at) throws Exception {
+        Path f = MediaVersions.versionDir(data, item, v).resolve(IngestPipeline.AUDIO);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f, "audio of v" + v);
+        new IngestItems(db).published(item, false, durationMs, encoding, X264Preset.VERYFAST, true, null, null, v,
+                new IngestItems.VersionChange(kept, undoable, edit, at));
+    }
+
+    private String currentAudio(String item) throws Exception {
+        return Files.readString(MediaVersions.currentDir(db, data, item).resolve(IngestPipeline.AUDIO));
+    }
+
+    private long duration(String item) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT duration_ms FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    private OptionalLong undoable(MediaVersions versions, String item) throws Exception {
+        return db.read(c -> versions.undoableSince(c, item));
+    }
+
+    private String refusal(MediaVersions versions, String item) {
+        return assertThrows(MediaVersions.UndoRefused.class, () -> versions.undo(item, (c, u) -> { })).code();
+    }
+
+    /** An item with v1 (edit settings A, 10 s) and then an edit to v2 (settings B, 8 s), v1 kept for undo. */
+    private String edited(MediaVersions versions, AtomicLong now) throws Exception {
+        String item = fixtures.item("ready");
+        publish(item, 1, null, false, "{\"videoStartMs\":0}", 10_000, OutputEncoding.DEFAULT, now.get());
+        publish(item, 2, 1, true, "{\"videoStartMs\":4000}", 8_000, OutputEncoding.DEFAULT, now.get());
+        versions.retired(item, 1, 8_000);
+        return item;
+    }
+
+    private MediaVersions undoVersions(AtomicLong now) {
+        MediaVersions versions = new MediaVersions(data, db, now::get, Duration.ofMinutes(5));
+        versions.undoWindow(() -> WINDOW);
+        return versions;
+    }
+
+    /**
+     * Undo goes back to the previous version's files (linked into a new version directory, so the
+     * numbers keep growing) with its items columns and edit settings; the version undone becomes
+     * the kept one, so undoing the undo goes forward again.
+     */
+    @Test
+    void undoRestoresTheOldVersionAndItsSettingsAndCanBeUndone() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        MediaVersions versions = undoVersions(now);
+        List<String> told = new java.util.concurrent.CopyOnWriteArrayList<>();
+        versions.statusListener(told::add);
+        String item = edited(versions, now);
+        assertEquals(OptionalLong.of(now.get()), undoable(versions, item));
+
+        now.addAndGet(HOUR);
+        MediaVersions.Undone undone = versions.undo(item, (c, u) -> { });
+        assertEquals(new MediaVersions.Undone(2, 1, 3, "{\"videoStartMs\":0}"), undone);
+        assertEquals(OptionalInt.of(3), MediaVersions.current(db, item));
+        assertEquals("audio of v1", currentAudio(item));
+        assertEquals(10_000, duration(item), "the items columns of v1 are back");
+        assertEquals("{\"videoStartMs\":0}", MediaVersions.currentEditJson(db, item), "the trim settings of v1");
+        assertEquals(List.of(item), told);
+        assertTrue(Files.exists(MediaVersions.versionDir(data, item, 2)), "the version undone is kept");
+        assertEquals(OptionalLong.of(now.get()), undoable(versions, item), "the undo can be undone");
+
+        // redo by undo
+        now.addAndGet(HOUR);
+        assertEquals(new MediaVersions.Undone(3, 2, 4, "{\"videoStartMs\":4000}"), versions.undo(item, (c, u) -> { }));
+        assertEquals("audio of v2", currentAudio(item));
+        assertEquals(8_000, duration(item));
+        assertEquals("{\"videoStartMs\":4000}", MediaVersions.currentEditJson(db, item));
+
+        // only one step back: v1 and v2 only wait for their plays, v3 is the kept one
+        now.addAndGet(Duration.ofMinutes(5).toMillis() + 10_000);
+        assertEquals(2, versions.sweep());
+        assertEquals(List.of("v3/audio.m4a", "v4/audio.m4a"), files(item));
+        assertEquals(1, versions.pending().size());
+        assertTrue(versions.pending().get(0).undo());
+        assertEquals("audio of v1", Files.readString(MediaVersions.versionDir(data, item, 3).resolve(IngestPipeline.AUDIO)),
+                "linked files outlive the directory they came from");
+    }
+
+    /** After the window the kept version goes, and Undo with it; a window of 0 turns undo off. */
+    @Test
+    void theKeptVersionExpiresAfterTheWindow() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        MediaVersions versions = undoVersions(now);
+        String item = edited(versions, now);
+        now.addAndGet(HOUR);
+        assertEquals(0, versions.sweep(), "the play is over, but the window isn't");
+        assertTrue(undoable(versions, item).isPresent());
+
+        now.addAndGet(WINDOW - HOUR - 1);
+        assertTrue(undoable(versions, item).isPresent(), "the last millisecond of the window");
+        now.addAndGet(1);
+        assertFalse(undoable(versions, item).isPresent());
+        assertEquals("nothing_to_undo", refusal(versions, item));
+        assertEquals(1, versions.sweep());
+        assertEquals(List.of("v2/audio.m4a"), files(item));
+        assertEquals(0, count("SELECT COUNT(*) FROM media_undo WHERE item_id = ?", item), "forgotten");
+        assertEquals(1, count("SELECT COUNT(*) FROM media_versions WHERE item_id = ?", item), "only the current one");
+
+        String off = edited(versions, now);
+        versions.undoWindow(() -> 0);
+        assertFalse(undoable(versions, off).isPresent());
+        assertEquals("nothing_to_undo", refusal(versions, off));
+        now.addAndGet(Duration.ofMinutes(5).toMillis() + 8_000);
+        assertEquals(1, versions.sweep(), "without undo only the plays keep it");
+    }
+
+    private int count(String sql, String item) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        });
+    }
+
+    /**
+     * A re-encode made by the system keeps the previous version for the window without Undo; a kept
+     * version made for another output encoding can't come back; nor while a job runs.
+     */
+    @Test
+    void onlyAPersonsChangeCanBeUndone() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        MediaVersions versions = undoVersions(now);
+        String item = fixtures.item("ready");
+        publish(item, 1, null, false, null, 10_000, OutputEncoding.DEFAULT, now.get());
+        publish(item, 2, 1, false, null, 10_000, OutputEncoding.DEFAULT, now.get()); // a quality re-encode
+        versions.retired(item, 1, 10_000);
+        assertFalse(undoable(versions, item).isPresent());
+        assertEquals("nothing_to_undo", refusal(versions, item));
+        now.addAndGet(HOUR);
+        assertEquals(0, versions.sweep(), "kept for the window all the same");
+
+        String profile = fixtures.item("ready");
+        publish(profile, 1, null, false, null, 10_000, OutputEncoding.defaultFor(OutputProfile.P1080_30), now.get());
+        publish(profile, 2, 1, true, null, 10_000, OutputEncoding.DEFAULT, now.get());
+        assertFalse(undoable(versions, profile).isPresent());
+        assertEquals("nothing_to_undo", refusal(versions, profile));
+
+        String busy = edited(versions, now);
+        new IngestJobs(db).enqueue(busy, IngestJob.Kind.REENCODE);
+        assertTrue(undoable(versions, busy).isPresent(), "shown; the undo itself says to wait");
+        assertEquals("item_busy", refusal(versions, busy));
+        assertEquals(OptionalInt.of(2), MediaVersions.current(db, busy));
+        assertEquals(List.of("v1/audio.m4a", "v2/audio.m4a"), files(busy), "nothing left behind");
+    }
+
+    /**
+     * While the free space is below the minimum, kept undo versions whose plays are over are
+     * deleted early, oldest first, until enough is freed.
+     */
+    @Test
+    void keptVersionsGoEarlyWhileTheFreeSpaceIsLow() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        AtomicLong free = new AtomicLong(100);
+        MediaVersions versions = undoVersions(now);
+        versions.diskSpace(new DiskSpace(() -> new DiskSpace.Usage(free.get(), 1000), () -> 100, Duration.ZERO,
+                System::nanoTime));
+        String older = edited(versions, now);
+        now.addAndGet(1000);
+        String newer = edited(versions, now);
+        now.addAndGet(HOUR);
+        assertEquals(0, versions.sweep(), "enough space");
+
+        free.set(99); // one byte short: the oldest kept version is enough
+        assertEquals(1, versions.sweep());
+        assertEquals(List.of("v2/audio.m4a"), files(older));
+        assertEquals(List.of("v1/audio.m4a", "v2/audio.m4a"), files(newer));
+        assertFalse(undoable(versions, older).isPresent());
+        assertTrue(undoable(versions, newer).isPresent());
+
+        free.set(0);
+        assertEquals(1, versions.sweep());
+        assertEquals(List.of("v2/audio.m4a"), files(newer));
+        assertEquals(List.of(), versions.pending());
+    }
+
+    /** At startup the kept version stays while it is within the window and is swept after it. */
+    @Test
+    void startupKeepsTheUndoVersionWithinTheWindow() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        String item;
+        String expired;
+        {
+            MediaVersions before = undoVersions(now);
+            expired = edited(before, now);
+            now.addAndGet(2 * HOUR);
+            item = edited(before, now);
+            write(item, "v3/audio.m4a"); // a crash before its switch
+        }
+        now.addAndGet(WINDOW - HOUR); // the first edit is past the window, the second within it
+        MediaVersions after = undoVersions(now);
+        assertEquals(2, after.cleanUpAtStartup());
+        assertEquals(List.of("v1/audio.m4a", "v2/audio.m4a"), files(item));
+        assertEquals(List.of("v2/audio.m4a"), files(expired));
+        assertEquals(0, count("SELECT COUNT(*) FROM media_undo WHERE item_id = ?", expired));
+        assertTrue(undoable(after, item).isPresent());
+        assertEquals("audio of v1", Files.readString(MediaVersions.versionDir(data, item, 1).resolve(IngestPipeline.AUDIO)));
+
+        assertEquals(0, after.sweep());
+        now.addAndGet(HOUR);
+        assertEquals(1, after.sweep());
+        assertEquals(List.of("v2/audio.m4a"), files(item));
+        assertNull(MediaVersions.currentEditJson(db, UuidV7.newId()));
     }
 }

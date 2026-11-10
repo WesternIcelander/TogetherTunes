@@ -19,7 +19,11 @@ import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestJobs;
+import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.MediaVersions;
+import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -432,5 +436,79 @@ abstract class ItemsContract {
         assertTrue(Files.exists(itemDir.resolve("audio.m4a")));
         assertTrue(Files.exists(staging.resolve("source.mp3")));
         assertNoLeftovers();
+    }
+
+    // ------------------------------------------------------------------ undo
+
+    /** Publishes version {@code v} of an audio item (its audio.m4a names the version), {@code kept} kept for undo. */
+    private void publishVersion(String item, int v, Integer kept, String edit, long durationMs) throws Exception {
+        Path f = MediaVersions.versionDir(data, item, v).resolve(IngestPipeline.AUDIO);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f, "v" + v);
+        new IngestItems(db).published(item, false, durationMs, OutputEncoding.DEFAULT, X264Preset.VERYFAST, true, null,
+                null, v, new IngestItems.VersionChange(kept, kept != null, edit, clock.millis()));
+    }
+
+    private String currentAudio(String item) throws Exception {
+        return Files.readString(MediaVersions.currentDir(db, data, item).resolve(IngestPipeline.AUDIO));
+    }
+
+    /**
+     * Undo of a media change: only for those who may edit the item (the page shows it to them
+     * alone), audited, restores the old files and settings; redo by undo; nothing after a purge.
+     */
+    @Test
+    void undoIsForThoseWhoMayEdit() throws Exception {
+        MediaVersions versions = new MediaVersions(data, db, clock::millis, java.time.Duration.ofMinutes(5));
+        versions.undoWindow(() -> 48 * 3_600_000L);
+        items.mediaVersions(versions);
+        String item = aliceItem("audio");
+        publishVersion(item, 1, null, "{\"audioStartMs\":0}", 5000);
+        assertNull(items.get(alice, item, NONE).undo(), "a first ingest has nothing to undo");
+        assertEquals("nothing_to_undo", code(() -> items.undo(alice, item, NONE, "203.0.113.5")));
+        clock.advance(60_000);
+        long changedAt = clock.millis();
+        publishVersion(item, 2, 1, "{\"audioStartMs\":1500}", 3500);
+        versions.retired(item, 1, 3500);
+
+        assertEquals(new Items.UndoView(changedAt), items.get(alice, item, NONE).undo());
+        assertNull(items.get(bob, item, NONE).undo(), "not for someone who can't edit");
+        assertNull(items.get(guest, item, NONE).undo());
+        assertEquals("forbidden", code(() -> items.undo(bob, item, NONE, null)));
+        assertEquals("item_not_found", code(() -> items.undo(alice, UuidV7.newId(), NONE, null)));
+        assertEquals("v2", currentAudio(item));
+
+        clock.advance(60_000);
+        Items.ItemPage page = items.undo(alice, item, NONE, "203.0.113.5");
+        assertEquals(3, page.mediaVersion());
+        assertEquals(5000L, page.durationMs());
+        assertEquals("v1", currentAudio(item));
+        assertEquals("{\"audioStartMs\":0}", MediaVersions.currentEditJson(db, item));
+        assertEquals(new Items.UndoView(clock.millis()), page.undo(), "the undo can be undone");
+        assertEquals(List.of(alice.userId() + " " + item
+                + " {\"undoneVersion\":2,\"restoredVersion\":1,\"newVersion\":3} 203.0.113.5"),
+                audit(Items.AUDIT_MEDIA_UNDONE));
+
+        // library.editAny may undo too: the undo of the undo
+        page = items.undo(bob, item, EDIT_ANY, null);
+        assertEquals(4, page.mediaVersion());
+        assertEquals(3500L, page.durationMs());
+        assertEquals("v2", currentAudio(item));
+        assertEquals("{\"audioStartMs\":1500}", MediaVersions.currentEditJson(db, item));
+
+        items.purge(item, (c, id, status) -> { });
+        assertNull(items.get(alice, item, NONE).undo());
+        assertEquals("nothing_to_undo", code(() -> items.undo(alice, item, NONE, null)));
+        assertEquals(0, (int) db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT (SELECT COUNT(*) FROM media_undo WHERE item_id = ?)"
+                    + " + (SELECT COUNT(*) FROM media_versions WHERE item_id = ?)")) {
+                ps.setString(1, item);
+                ps.setString(2, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }));
     }
 }

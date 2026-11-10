@@ -71,6 +71,11 @@ public final class IngestItems {
         });
     }
 
+    /** The edit settings (JSON) {@code version} of the item was made with, or null (none, or no row). */
+    public String editJson(String id, int version) throws SQLException {
+        return db.read(c -> MediaVersions.editJson(c, id, version));
+    }
+
     /**
      * Whether a room wants the item now: it is queued, suggested or playing in some room
      * ({@code queue_entries}). Such an item is encoded with the quick preset.
@@ -138,7 +143,36 @@ public final class IngestItems {
     public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
                           boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion)
             throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, mediaVersion, null);
+    }
+
+    /**
+     * What a switch to a new media version keeps for undo ({@code docs/library-and-ingest.md#undo},
+     * {@link MediaVersions}).
+     *
+     * @param keptVersion the version the item switches away from, kept for undo; null if there is
+     *                    none (a first ingest, or its files are gone)
+     * @param undoable    whether the switch is a person's change (an edit): only those show Undo;
+     *                    a re-encode made by the system keeps the previous version without it
+     * @param editJson    the edit settings the new version was made with (e.g. trims), as JSON, or null
+     * @param atMs        when the switch happens (epoch ms)
+     */
+    public record VersionChange(Integer keptVersion, boolean undoable, String editJson, long atMs) {
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, X264Preset, boolean, Double, Originals.Original, int)};
+     * with a non-negative {@code mediaVersion}, also records the new version's settings
+     * ({@code media_versions}) and the kept previous one ({@code media_undo}, from {@code change};
+     * null: nothing kept), in the same transaction.
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
+                          VersionChange change) throws SQLException {
         db.write(c -> {
+            if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
+                MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
+            }
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?,"
@@ -158,6 +192,12 @@ public final class IngestItems {
                 if (ps.executeUpdate() != 1) {
                     throw new SQLException("item " + id + " no longer exists");
                 }
+            }
+            if (mediaVersion >= 0) {
+                long at = change != null ? change.atMs() : System.currentTimeMillis();
+                MediaVersions.recordVersion(c, id, mediaVersion, at, change == null ? null : change.editJson());
+                MediaVersions.recordKept(c, id, mediaVersion, change == null ? null : change.keptVersion(),
+                        change != null && change.undoable(), at);
             }
             return null;
         });

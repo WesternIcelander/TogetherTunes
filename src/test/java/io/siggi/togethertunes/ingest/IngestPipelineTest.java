@@ -615,6 +615,19 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertEquals(State.DONE, done.state(), done.log());
         assertFalse(done.log().contains("publishing once it has finished"), done.log());
         assertEquals(reference.encoding().id(), itemProfile(item), "published for the current encoding");
+        // the previous version is kept for undo, but a system re-encode offers no Undo
+        assertEquals(List.of("1 0"), db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT version, undoable FROM media_undo WHERE item_id = ?")) {
+                ps.setString(1, item);
+                List<String> rows = new java.util.ArrayList<>();
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        rows.add(rs.getInt(1) + " " + rs.getInt(2));
+                    }
+                }
+                return rows;
+            }
+        }));
         assertNoLeftovers();
     }
 

@@ -202,12 +202,17 @@ public final class Main {
         pipeline.reference(outputAssets::reference);
         pipeline.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
         // Old media versions are deleted once nobody can still be playing them (rooms set inUse below).
-        MediaVersions mediaVersions = new MediaVersions(dataDir);
+        // The previous version is also kept for media.undoHours (undo; docs/library-and-ingest.md#undo).
+        MediaVersions mediaVersions = new MediaVersions(dataDir, database);
+        mediaVersions.undoWindow(() -> setting(settings::mediaUndoHours, Settings.MEDIA_UNDO_HOURS.defaultValue())
+                * 3_600_000L);
         pipeline.mediaVersions(mediaVersions);
         // Adding media pauses (and queued ingest jobs wait) while the data volume is below storage.minFreeBytes.
         DiskSpace diskSpace = DiskSpace.of(dataDir.root(), settings::storageMinFreeBytes);
+        // Kept undo versions are deleted early while the data volume is below the minimum.
+        mediaVersions.diskSpace(diskSpace);
         IngestQueue ingest = startIngest(setting(settings::ingestWorkers, config.ingestWorkers()), dataDir, database,
-                outputAssets, pipeline, diskSpace, System.err);
+                outputAssets, pipeline, mediaVersions, diskSpace, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -292,6 +297,7 @@ public final class Main {
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
         Items items = new Items(database, dataDir, Clock.systemUTC());
         items.jobSteps(ingest::liveStep);
+        items.mediaVersions(mediaVersions);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
@@ -310,6 +316,7 @@ public final class Main {
         // Jobs of items a room is waiting on go first; a change in the rooms re-checks the give-way rule.
         ingest.jobs().wantedItems(roomRegistry.wantedItems(ingest::wake));
         items.statusListener(roomRegistry);
+        mediaVersions.statusListener(roomRegistry);
         try {
             int resumed = roomRegistry.resumePlaying();
             if (resumed > 0) {
@@ -441,7 +448,8 @@ public final class Main {
     }
 
     static IngestQueue startIngest(int workers, DataDir dataDir, Database database, OutputAssets outputAssets,
-                                   IngestPipeline handler, DiskSpace diskSpace, PrintStream err) {
+                                   IngestPipeline handler, MediaVersions mediaVersions, DiskSpace diskSpace,
+                                   PrintStream err) {
         ReferenceCard referenceCard = outputAssets.reference();
         try {
             int cleaned = IngestPipeline.recoverDirectories(dataDir);
@@ -452,8 +460,9 @@ public final class Main {
             err.println("WARNING: could not clean up after interrupted ingest jobs: " + e.getMessage());
         }
         try {
-            // No player survives a restart: only the current version of each item's files is kept.
-            int versions = MediaVersions.cleanUpAtStartup(database, dataDir);
+            // No player survives a restart: only the current version of each item's files is kept,
+            // and the previous one while it is within the undo window.
+            int versions = mediaVersions.cleanUpAtStartup();
             if (versions > 0) {
                 err.println("Deleted " + versions + " old media versions");
             }

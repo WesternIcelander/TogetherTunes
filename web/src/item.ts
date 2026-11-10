@@ -41,6 +41,15 @@ function idFromLocation(): string {
   return new URLSearchParams(location.search).get("id") ?? "";
 }
 
+/** "14:32" today, else the date and time: when a change that can be undone was made. */
+function changeTime(ms: number, now: Date = new Date()): string {
+  const d = new Date(ms);
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString()
+    ? time
+    : d.toLocaleDateString([], { month: "short", day: "numeric" }) + " " + time;
+}
+
 /** The given nodes without the nulls. */
 function nodes(...list: (Node | null)[]): Node[] {
   return list.filter((n): n is Node => n !== null);
@@ -191,6 +200,15 @@ function render(item: ItemPage, job: JobView | undefined): void {
     actions.append(button("Retry", async () => {
       await api("POST", "/api/items/" + encodeURIComponent(item.id) + "/retry");
       showNotice("Fetching it again.");
+      await refresh();
+    }, showError));
+  }
+  if (item.undo !== undefined) {
+    // Goes back to the previous version of the media (kept for a while after a change); the change
+    // undone is kept in turn, so the undo can itself be undone.
+    actions.append(button("Undo the change from " + changeTime(item.undo.changedAt), async () => {
+      await api("POST", "/api/items/" + encodeURIComponent(item.id) + "/undo");
+      showNotice("Undone.");
       await refresh();
     }, showError));
   }

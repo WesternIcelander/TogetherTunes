@@ -20,6 +20,9 @@ import io.siggi.togethertunes.config.ConfigLoader;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
 import io.siggi.togethertunes.db.UuidV7;
+import io.siggi.togethertunes.ingest.IngestItems;
+import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebServer;
@@ -52,6 +55,7 @@ class ItemsApiTest {
     private String bob;
     private Settings settings;
     private io.siggi.togethertunes.ingest.IngestJobs jobs;
+    private io.siggi.togethertunes.DataDir data;
     private final java.util.concurrent.atomic.AtomicLong free = new java.util.concurrent.atomic.AtomicLong(50L << 30);
 
     @BeforeEach
@@ -69,8 +73,12 @@ class ItemsApiTest {
         youtube.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
                 () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(free.get(), 100L << 30), () -> 5L << 30,
                 java.time.Duration.ZERO, System::nanoTime));
-        new ItemsApi(new Items(db, io.siggi.togethertunes.DataDir.create(dir.resolve("data")), clock),
-                new Permissions(db, settings), youtube).register(router);
+        data = io.siggi.togethertunes.DataDir.create(dir.resolve("data"));
+        Items items = new Items(db, data, clock);
+        MediaVersions versions = new MediaVersions(data, db, clock::millis, java.time.Duration.ofMinutes(5));
+        versions.undoWindow(() -> 48 * 3_600_000L);
+        items.mediaVersions(versions);
+        new ItemsApi(items, new Permissions(db, settings), youtube).register(router);
         new LibraryApi(new Library(db, youtube, clock), TestUploads.policy(new Permissions(db, settings), settings))
                 .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
@@ -430,5 +438,42 @@ class ItemsApiTest {
         HttpResponse<String> missing = call("POST", "/api/items/" + UuidV7.newId() + "/retry", admin, null);
         assertEquals(404, missing.statusCode());
         assertEquals("item_not_found", code(missing));
+    }
+
+    /** {@code POST /api/items/{id}/undo}: who may, the page's {@code undo}, and the switch back. */
+    @Test
+    void undoGoesBackToThePreviousVersion() throws Exception {
+        String id = item("audio");
+        IngestItems ingestItems = new IngestItems(db);
+        for (int v = 1; v <= 2; v++) {
+            Path f = MediaVersions.versionDir(data, id, v).resolve(IngestPipeline.AUDIO);
+            Files.createDirectories(f.getParent());
+            Files.writeString(f, "v" + v);
+            ingestItems.published(id, false, 1000L * v, io.siggi.togethertunes.config.OutputEncoding.DEFAULT,
+                    io.siggi.togethertunes.config.X264Preset.VERYFAST, true, null, null, v,
+                    new IngestItems.VersionChange(v == 1 ? null : 1, true, null, clock.millis()));
+        }
+        String path = "/api/items/" + id + "/undo";
+        JsonObject page = json(call("GET", "/api/items/" + id, alice, null));
+        assertEquals(clock.millis(), page.getAsJsonObject("undo").get("changedAt").getAsLong());
+        assertFalse(json(call("GET", "/api/items/" + id, bob, null)).has("undo"));
+        assertFalse(json(call("GET", "/api/items/" + id, null, null)).has("undo"));
+
+        assertEquals(401, call("POST", path, null, null).statusCode());
+        assertEquals(403, call("POST", path, bob, null).statusCode());
+        HttpResponse<String> missing = call("POST", "/api/items/" + UuidV7.newId() + "/undo", alice, null);
+        assertEquals("item_not_found", code(missing));
+        HttpResponse<String> r = call("POST", path, alice, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        assertEquals(3, json(r).get("mediaVersion").getAsInt());
+        assertEquals(1000, json(r).get("durationMs").getAsLong());
+        assertTrue(json(r).has("undo"), "the undo can be undone");
+        assertEquals(200, call("POST", path, admin, null).statusCode(), "library.editAny");
+
+        String fresh = item("audio");
+        HttpResponse<String> nothing = call("POST", "/api/items/" + fresh + "/undo", alice, null);
+        assertEquals(409, nothing.statusCode());
+        assertEquals("nothing_to_undo", code(nothing));
     }
 }

@@ -11,6 +11,7 @@ import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.JobList;
+import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.ingest.ItemStatusListener;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -47,6 +48,8 @@ import java.util.Objects;
 public final class Items {
     /** {@code audit_log} action of a metadata edit. */
     public static final String AUDIT_UPDATED = "item.updated";
+    /** {@code audit_log} action of an undo of a media change ({@code docs/library-and-ingest.md#undo}). */
+    public static final String AUDIT_MEDIA_UNDONE = "item.media_undone";
     /** {@code audit_log} action of a purge by a person ({@code library.purge}). */
     public static final String AUDIT_PURGED = "item.purged";
 
@@ -57,6 +60,7 @@ public final class Items {
     private final Clock clock;
     private volatile JobList.Steps steps = JobList.Steps.NONE;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
+    private volatile MediaVersions versions;
 
     public Items(Database db, DataDir dataDir, Clock clock) {
         this.db = Objects.requireNonNull(db);
@@ -77,10 +81,25 @@ public final class Items {
      * @param mediaVersion the current version of its files ({@code media_version}): the page plays
      *                     {@code /media/{id}/v/{mediaVersion}/…}
      * @param you     the caller's relation to the item
+     * @param undo    the change the caller can undo now ({@code POST /api/items/{id}/undo}), else null
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
-                           String error, int mediaVersion, You you) {
+                           String error, int mediaVersion, You you, UndoView undo) {
+        public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
+                        String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
+                        String error, int mediaVersion, You you) {
+            this(id, kind, title, artist, album, durationMs, source, youtubeId, status, presentAsAudio, addedAt, error,
+                    mediaVersion, you, null);
+        }
+    }
+
+    /**
+     * A media change that can be undone ({@code docs/library-and-ingest.md#undo}).
+     *
+     * @param changedAt when the change was made (epoch ms): "Undo the change from 14:32"
+     */
+    public record UndoView(long changedAt) {
     }
 
     /**
@@ -194,10 +213,62 @@ public final class Items {
                 retryable && rights.youtube() && (canEdit || user && rights.retryAny()));
     }
 
-    private static ItemPage page(Row r, You you) {
+    private ItemPage page(Connection c, Row r, You you) throws SQLException {
+        UndoView undo = null;
+        MediaVersions v = versions;
+        if (you.canEdit() && v != null) {
+            java.util.OptionalLong since = v.undoableSince(c, r.id());
+            if (since.isPresent()) {
+                undo = new UndoView(since.getAsLong());
+            }
+        }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
-                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you);
+                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo);
+    }
+
+    /** The media versions, for undo ({@code docs/library-and-ingest.md#undo}); no undo until set. */
+    public void mediaVersions(MediaVersions versions) {
+        this.versions = versions;
+    }
+
+    /**
+     * Goes back to the item's previous media version ({@link MediaVersions#undo}), for a user who
+     * may edit the item, and returns the item page. Audited ({@value #AUDIT_MEDIA_UNDONE}).
+     *
+     * @throws HttpError {@code 404 item_not_found}, {@code 403 forbidden}, {@code 409 nothing_to_undo},
+     *                   {@code 409 item_busy}
+     */
+    public ItemPage undo(Actor.User actor, String itemId, Rights rights, String clientIp)
+            throws SQLException, IOException {
+        MediaVersions v = versions;
+        db.read(c -> {
+            Row row = row(c, itemId, false);
+            if (row == null) {
+                throw notFound();
+            }
+            if (!you(c, actor, row, rights).canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can undo its changes");
+            }
+            return null;
+        });
+        if (v == null) {
+            throw new HttpError(409, "nothing_to_undo", "Undo isn't available on this server");
+        }
+        long now = EpochMs.now(clock);
+        try {
+            v.undo(itemId, (c, undone) -> {
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("undoneVersion", undone.undoneVersion());
+                details.put("restoredVersion", undone.restoredVersion());
+                details.put("newVersion", undone.newVersion());
+                AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_MEDIA_UNDONE, itemId, details);
+            });
+        } catch (MediaVersions.UndoRefused e) {
+            throw new HttpError(409, e.code(), e.getMessage());
+        }
+        return get(actor, itemId, rights);
     }
 
     /**
@@ -227,7 +298,7 @@ public final class Items {
             if (row == null) {
                 throw notFound();
             }
-            return page(row, you(c, actor, row, rights));
+            return page(c, row, you(c, actor, row, rights));
         });
     }
 
@@ -311,7 +382,7 @@ public final class Items {
                 changed.put("presentAsAudio", presentAsAudio);
             }
             if (changed.isEmpty()) {
-                return page(row, you);
+                return page(c, row, you);
             }
             // TODO(M4): the item's card.mp4 still shows the old title/artist/album; re-render it
             // (and its index for audio items) before the packager shows cards.
@@ -328,7 +399,7 @@ public final class Items {
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),
                     row.youtubeId(), row.status(), presentAsAudio, row.addedAt(), row.error(), row.addedByUserId(),
                     row.mediaVersion());
-            return page(after, you);
+            return page(c, after, you);
         });
     }
 
@@ -388,6 +459,8 @@ public final class Items {
                         }
                     }
                 }
+                // Nothing is kept for undo once the files are gone.
+                MediaVersions.forgetAll(c, itemId);
                 // An item that already was purged keeps its purge time.
                 try (PreparedStatement ps = c.prepareStatement("UPDATE items SET purged_at = CASE WHEN status = 'purged'"
                         + " THEN COALESCE(purged_at, ?) ELSE ? END, status = 'purged' WHERE id = ?")) {

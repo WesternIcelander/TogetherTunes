@@ -94,7 +94,14 @@ public final class TestUploads {
     /** The items API with data in {@code <dir>/data}. */
     public static ItemsApi itemsApi(Database db, Path dir, Permissions permissions, Clock clock) {
         try {
-            return new ItemsApi(new Items(db, DataDir.create(dir.resolve("data")), clock), permissions);
+            DataDir data = DataDir.create(dir.resolve("data"));
+            Items items = new Items(db, data, clock);
+            // undo with the default window (media.undoHours 48)
+            io.siggi.togethertunes.ingest.MediaVersions versions = new io.siggi.togethertunes.ingest.MediaVersions(
+                    data, db, clock::millis, io.siggi.togethertunes.ingest.MediaVersions.GRACE);
+            versions.undoWindow(() -> 48 * 3_600_000L);
+            items.mediaVersions(versions);
+            return new ItemsApi(items, permissions);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
