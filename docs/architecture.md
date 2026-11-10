@@ -63,7 +63,7 @@ Everything under `media/<itemId>/` is immutable once the item is `ready`. A re-i
 
 ## Configuration
 
-A single JSON config file, with environment-variable overrides. Keys:
+A single JSON config file, with environment-variable overrides. Keys marked *admin* are also [server settings](auth.md#server-settings): the config (or env var) gives the default, a value saved in the admin UI overrides it and takes effect without a restart. The rest are config-only, because they're needed before the database is open or decide where things are: `http.*`, `data.dir`, `db.url`, `tools.*`.
 
 | Key | Default | Notes |
 |---|---|---|
@@ -72,18 +72,18 @@ A single JSON config file, with environment-variable overrides. Keys:
 | `data.dir` | `./data` | |
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
 | `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
-| `output.profile` | `720p30` | `720p30` \| `1080p30`. Changing it marks every item for re-ingest |
-| `output.videoBitrateKbps` | 3000 (720p30), 6000 (1080p30) | Constant video bitrate of every encode (mezzanines and cards), 500–25000. Part of the SPS, so changing it re-encodes every item like a profile change ([library-and-ingest.md](library-and-ingest.md#the-mezzanine-profile)) |
-| `ingest.workers` | cores/2 | |
-| `ingest.maxUploadBytes` | 4 GiB | |
-| `ingest.maxDurationSeconds` | 1800 | Applies to both uploads and yt-dlp |
-| `ingest.quickPreset` | veryfast | x264 preset for items a room wants now; default of the admin setting of the same name ([library-and-ingest.md](library-and-ingest.md#presets)) |
-| `ingest.qualityPreset` | slow | x264 preset for library items (quality re-encodes); default of the admin setting |
-| `overlay.workers` | 1 | Concurrent overlay re-encodes |
-| `overlay.cacheMaxBytes` | 20 GiB | Least-recently-used eviction of `rooms/*/ov/` |
+| `output.profile` | `720p30` | *admin*. `720p30` \| `1080p30`. Changing it re-encodes every item ([library-and-ingest.md](library-and-ingest.md#re-encodes)) |
+| `output.videoBitrateKbps` | 3000 (720p30), 6000 (1080p30) | *admin* (unset = the profile's default). Constant video bitrate of every encode (mezzanines and cards), 500–25000. Part of the SPS, so changing it re-encodes every item like a profile change ([library-and-ingest.md](library-and-ingest.md#the-mezzanine-profile)) |
+| `ingest.workers` | cores/2 | *admin*. 1..256 |
+| `ingest.maxUploadBytes` | 4 GiB | *admin* |
+| `ingest.maxDurationSeconds` | 1800 | *admin*. Applies to both uploads and yt-dlp |
+| `ingest.quickPreset` | veryfast | *admin*. x264 preset for items a room wants now; default of the admin setting of the same name ([library-and-ingest.md](library-and-ingest.md#presets)) |
+| `ingest.qualityPreset` | slow | *admin*. x264 preset for library items (quality re-encodes) |
+| `overlay.workers` | 1 | *admin*. Concurrent overlay re-encodes |
+| `overlay.cacheMaxBytes` | 20 GiB | *admin*. Least-recently-used eviction of `rooms/*/ov/` |
 | `http.trustedProxies` | none | CIDRs whose `X-Forwarded-For` is trusted. Required for correct guest IPs behind a reverse proxy |
 
-Runtime settings live in the DB and are edited in the admin UI: registration mode, OIDC providers, roles, guest policy, the outputs and overlay features, retention days, and whether guests may download media. They are listed in [auth.md](auth.md#server-settings).
+Runtime settings live in the DB and are edited in the admin UI: registration mode, OIDC providers, roles, guest policy, the outputs and overlay features, retention days, whether guests may download media, and the *admin* config keys above. They are listed in [auth.md](auth.md#server-settings).
 
 ## Deployment
 

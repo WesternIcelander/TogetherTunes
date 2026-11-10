@@ -74,7 +74,7 @@ All resolved on 2026-11-08; kept here for reference.
 
 1. Build tool: **Maven**.
 2. HTTP stack: **SiggiHTTP** (`io.siggi:SiggiHTTP:1.10`), with **SimpleWebsocket** (`io.siggi:SimpleWebsocket`) for WebSocket. Range and streaming responses are confirmed by tests in milestone 0.
-3. Default output resolution: **720p30**, configurable per server (`output.profile`, `720p30` | `1080p30`). Changing it requires re-transcoding the library.
+3. Default output resolution: **720p30**, configurable per server (`output.profile`, `720p30` | `1080p30`; an admin setting whose default comes from the config). Changing it re-encodes the library, without a restart.
 4. Third-party libraries: use Bouncy Castle (Argon2id), Nimbus JOSE+JWT and ZXing core.
 5. Originals: **every item keeps its source file** (uploads and YouTube downloads), so re-encodes start from it without generational loss or another download ([library-and-ingest.md](library-and-ingest.md#originals)). Only an audio upload's original is played (by the web player); video and YouTube originals only feed re-encodes, which roughly doubles the storage of video items.
 6. `.ts` framing: copy VRCDN — a close-delimited body ([program-output.md](program-output.md#direct-mpeg-ts-ts)).

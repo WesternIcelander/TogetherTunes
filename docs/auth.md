@@ -126,17 +126,18 @@ IP addresses are **never** exposed to an actor that lacks `ip.view`. This holds 
 
 ## Server settings
 
-These are all stored in the `settings` table and edited in the admin UI.
+These are all stored in the `settings` table and edited in the admin UI. Some are also config keys ([architecture.md](architecture.md#configuration)): there the config file (or its env var) only gives the default, and a value saved in the admin UI overrides it; resetting the setting goes back to the config's value.
 
 | Group | Settings |
 |---|---|
 | Accounts | `registration.mode`, default roles |
 | Guests | see the table above |
-| Library | `ytdlp.enabled`, `ytdlp.cookiesFile`, `retention.unreferencedDays` (default 14; 0 = never delete), `ingest.maxDurationSeconds`, `ingest.quickPreset` / `ingest.qualityPreset` (x264 presets, defaults from the config; a preset that doesn't give the reference avcC is refused, [library-and-ingest.md](library-and-ingest.md#presets)) |
+| Library | `ytdlp.enabled`, `ytdlp.cookiesFile`, `retention.unreferencedDays` (default 14; 0 = never delete), `ingest.maxDurationSeconds`, `ingest.quickPreset` / `ingest.qualityPreset` (x264 presets, defaults from the config; a preset that doesn't give the reference avcC is refused, [library-and-ingest.md](library-and-ingest.md#presets)), `ingest.workers` (1..256, default from the config; resizes the ingest pool live: growing starts workers at once, shrinking lets running jobs finish), `ingest.maxUploadBytes` (bytes, shown in GiB; default from the config; applies to new uploads) |
 | Storage | `storage.minFreeBytes` (bytes; the admin page shows and takes GiB; default 5 GiB, 0 = no check): adding media (uploads, YouTube fetches) is refused with `507 insufficient_storage` and queued ingest jobs wait while the data volume has less free space ([library-and-ingest.md](library-and-ingest.md#free-disk-space)) |
+| Output encoding | `output.profile` (`720p30` \| `1080p30`) and `output.videoBitrateKbps` (500..25000, or unset = the profile's default: 3000 at 720p30, 6000 at 1080p30), defaults from the config (a configured bitrate equal to its profile's default counts as unset, so switching the profile alone gives that profile's default). Changing either one **re-encodes every item**: the admin page first asks, saying how many items will re-encode (`GET /api/admin/encoding`), and the change then applies without a restart ([library-and-ingest.md](library-and-ingest.md#changing-the-encoding-at-runtime)) |
 | Rooms | `rooms.requestHistoryDays` (default 90; 0 = never trim): how long rooms keep their request history |
 | Outputs | `outputs.rtmp.enabled`, `outputs.ts.enabled`, `outputs.hls.enabled` (all default true); `outputs.rtmp.maxIdleStopMinutes` (default 60, 1..1440): the longest a room's RTMP push keeps running while the room is idle; the room setting `outputs.rtmp.idleStopMinutes` applies up to it ([program-output.md](program-output.md#idle-stop)) |
-| Overlay | `overlay.enabled` (default false). Re-encoding music videos also needs the room owner to hold `output.overlayVideo` |
+| Overlay | `overlay.enabled` (default false). Re-encoding music videos also needs the room owner to hold `output.overlayVideo`. `overlay.workers` (1..256) and `overlay.cacheMaxBytes` (bytes, shown in GiB; 0 keeps nothing), defaults from the config; stored and validated now, read by the overlay encoder (M5) |
 
 ## Stream URL tokens
 
