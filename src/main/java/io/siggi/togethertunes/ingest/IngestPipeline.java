@@ -126,6 +126,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
     static final double DOWNLOAD_SHARE = 0.35;
     static final double MEASURE_SHARE = 0.15;
     static final double ENCODE_SHARE = 0.75;
+    /** The steps a job reports for people ({@link IngestQueue.Context#stage}). */
+    public static final String STEP_DOWNLOAD = "download";
+    public static final String STEP_ENCODE = "encode";
+    public static final String STEP_FINISH = "finish";
 
     private static final Pattern YTDLP_PERCENT = Pattern.compile("^\\[download\\]\\s+(\\d+(?:\\.\\d+)?)%");
 
@@ -386,6 +390,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         switch (sourceKind) {
             case DOWNLOAD -> {
                 step(log, "download");
+                ctx.stage(STEP_DOWNLOAD, 0, base);
                 try {
                     source = download(item, scratch, log, range(ctx, 0, base));
                 } catch (IngestFailure | ToolException | IOException e) {
@@ -408,6 +413,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
             }
         }
         boolean fromPrevious = sourceKind == SourceKind.PREVIOUS;
+        // probe, loudness measurement and encode read as one "encode" step for people
+        ctx.stage(STEP_ENCODE, base, base + rest * (MEASURE_SHARE + ENCODE_SHARE));
         // the item's own cover for a re-encode; the downloaded thumbnail for a YouTube item
         Path stagedCover = reencode ? existingFile(currentDir.resolve(COVER)) : null;
         if (stagedCover == null) {
@@ -465,6 +472,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(expectedUs))).run();
         double after = encodeTo;
         double stepShare = (1 - encodeTo) / 5;
+        ctx.stage(STEP_FINISH, encodeTo, 1);
 
         // extract audio.m4a
         if (video) {
@@ -712,7 +720,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
      * as pasted), with the cookies file if there is one.
      */
     public static List<String> metadataArgs(String youtubeId, Path cookies) {
-        List<String> args = new ArrayList<>(List.of("-J", "--no-playlist", "--no-warnings"));
+        // --verbose: -J is quiet otherwise; verbose mode prints the progress lines ("[youtube] …:
+        // Downloading webpage") to stderr, which the lookup's live feedback follows (stdout stays the JSON)
+        List<String> args = new ArrayList<>(List.of("-J", "--no-playlist", "--no-warnings", "--verbose"));
         args.addAll(cookiesArgs(cookies));
         args.add("--");
         args.add(canonicalUrl(youtubeId));

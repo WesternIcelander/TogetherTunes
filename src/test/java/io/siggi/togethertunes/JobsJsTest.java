@@ -47,6 +47,23 @@ class JobsJsTest {
         }
         assertFalse(jobs.contains("innerHTML"), "text only, never parsed as HTML");
 
+        // the room page and the Library page use the same words for ingest progress and the lookup
+        String room = read("web/js/room.js");
+        for (String s : List.of("from \"./jobtext.js\"", "lookupText(stageText, Date.now() - started)", "showIngest()",
+                "data-ingest-item", "ingestText(", "window.clearInterval(ticker)")) {
+            assertTrue(room.contains(s) || (s.equals("data-ingest-item") && room.contains("dataset[\"ingestItem\"]")), s);
+        }
+        String roomclient = read("web/js/roomclient.js");
+        for (String s : List.of("case \"request.progress\"", "case \"ingest\"", "p.progress(")) {
+            assertTrue(roomclient.contains(s), s);
+        }
+        String addmedia = read("web/js/addmedia.js");
+        for (String s : List.of("application/x-ndjson", "lookupText(", "new JsonLines()", "ingestText(")) {
+            assertTrue(addmedia.contains(s), s);
+        }
+        assertTrue(read("web/js/library.js").contains("ingestBadge("));
+        assertTrue(read("web/js/media.js").contains("ingestText("));
+
         String session = read("web/js/session.js");
         assertTrue(session.contains("\"/encodes/\"") && session.contains("\"Encodes\""), session);
         assertTrue(read("web/library/index.html").contains("href=\"/encodes/\""));

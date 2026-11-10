@@ -4,6 +4,7 @@
 import { api } from "./api.js";
 import type { ActorRef } from "./actor.js";
 import { h } from "./dom.js";
+import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
 
 export type ItemStatus = "pending" | "processing" | "ready" | "failed" | "purged";
 
@@ -50,6 +51,9 @@ export interface JobView {
   startedAt?: number;
   finishedAt?: number;
   log?: string;
+  /** A running job's step now (live), with that step's own progress. */
+  step?: IngestStep;
+  stepProgress?: number;
 }
 
 export interface Playlist {
@@ -100,6 +104,19 @@ export function statusBadge(status: ItemStatus, progress?: number): HTMLElement 
     text += " " + Math.floor(progress * 100) + "%";
   }
   return h("span", { class: "badge badge-status badge-" + status, text });
+}
+
+/**
+ * The status badge with what ingest is doing, in the room page's words ("Downloading 45 %",
+ * "Encoding 30 %", "Finishing…"; jobtext.ts `ingestText`) once the item's job is known; the plain
+ * status badge otherwise. Nothing for a ready item.
+ */
+export function ingestBadge(status: ItemStatus, job: JobView | undefined): HTMLElement | null {
+  if (inProgress(status) && job !== undefined) {
+    const s = jobIngestStatus(job);
+    if (s !== undefined) return h("span", { class: "badge badge-status badge-" + status, text: ingestText(s) });
+  }
+  return statusBadge(status);
 }
 
 /** The item title as a link to its page, with artist and album below it. */

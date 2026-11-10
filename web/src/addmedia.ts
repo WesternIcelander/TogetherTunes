@@ -1,8 +1,9 @@
 // The "Add media" panel of the library page: file uploads (chunked, resumable; see uploads.ts)
 // and YouTube imports, each followed by its ingest job's status until the item is ready.
-import { api } from "./api.js";
+import { ApiError } from "./api.js";
 import { button, formatBytes, h } from "./dom.js";
-import { inProgress, itemPath, jobSummary, statusBadge, watchItem, type ItemStatus } from "./media.js";
+import { ingestText, jobIngestStatus, JsonLines, lookupText } from "./jobtext.js";
+import { inProgress, itemPath, statusBadge, watchItem, type ItemStatus } from "./media.js";
 import { message } from "./session.js";
 import { rememberedUploads, Upload, type UploadProgress } from "./uploads.js";
 
@@ -28,11 +29,13 @@ function trackItem(list: HTMLElement, row: HTMLElement, label: string, itemId: s
   watchItem(itemId, ({ item, job }) => {
     link.textContent = item.title;
     const parts: (Node | string)[] = [];
-    const badge = statusBadge(item.status, job?.progress);
-    if (badge !== null) parts.push(badge, " ");
     if (item.status === "ready") parts.push("Ready");
-    else if (job !== undefined && inProgress(item.status)) parts.push(jobSummary(job));
-    if (item.status === "failed" && item.error !== undefined) parts.push(item.error);
+    else if (inProgress(item.status)) parts.push(ingestText(job === undefined ? undefined : jobIngestStatus(job)));
+    else if (item.status === "failed") parts.push(ingestText({ state: "failed", error: item.error }));
+    else {
+      const badge = statusBadge(item.status);
+      if (badge !== null) parts.push(badge);
+    }
     status.replaceChildren(...parts);
     const now = inProgress(item.status);
     if (wasInProgress && !now) onChanged();
@@ -141,7 +144,17 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
       const url = String(data.get("url") ?? "").trim();
       const submit = form.querySelector("button");
       if (submit !== null) submit.disabled = true;
-      api<YoutubeResult>("POST", "/api/imports/youtube", { url, presentAsAudio: data.get("presentAsAudio") !== null })
+      // The lookup can take a while (docs/api.md#adding-media): show its stages and the seconds so far.
+      const started = Date.now();
+      let stageText: string | undefined;
+      const showLookup = (): void => { lookup.textContent = lookupText(stageText, Date.now() - started); };
+      showLookup();
+      lookup.hidden = false;
+      const ticker = window.setInterval(showLookup, 1000);
+      importWithStages({ url, presentAsAudio: data.get("presentAsAudio") !== null }, (text) => {
+        stageText = text;
+        showLookup();
+      })
         .then((r) => {
           form.reset();
           const row = h("li", { class: "activity-row" });
@@ -149,13 +162,81 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
           options.onItemChanged();
         })
         .catch((e: unknown) => { error.textContent = message(e); })
-        .finally(() => { if (submit !== null) submit.disabled = false; });
+        .finally(() => {
+          window.clearInterval(ticker);
+          lookup.hidden = true;
+          if (submit !== null) submit.disabled = false;
+        });
     });
-    parts.push(h("div", {}, h("h3", { text: "Import from YouTube" }), form, error));
+    const lookup = h("p", { class: "muted small", role: "status" });
+    lookup.hidden = true;
+    parts.push(h("div", {}, h("h3", { text: "Import from YouTube" }), form, lookup, error));
   }
 
   if (parts.length === 0) {
     parts.push(h("p", { class: "muted", text: "You don't have permission to add media." }));
   }
   container.replaceChildren(...parts, activity);
+}
+
+/**
+ * `POST /api/imports/youtube` asking for the lookup's stages (`Accept: application/x-ndjson`):
+ * calls `onStage` with each stage's text while yt-dlp runs, resolves with the result. A known
+ * item (no lookup) answers with plain JSON at once, which is handled the same way.
+ */
+async function importWithStages(body: { url: string; presentAsAudio: boolean },
+  onStage: (text: string) => void): Promise<YoutubeResult> {
+  let response: Response;
+  try {
+    response = await fetch("/api/imports/youtube", {
+      method: "POST", credentials: "same-origin", body: JSON.stringify(body),
+      headers: { Accept: "application/x-ndjson, application/json", "Content-Type": "application/json" },
+    });
+  } catch {
+    throw new ApiError(0, "network_error", "Could not reach the server");
+  }
+  const type = response.headers.get("Content-Type") ?? "";
+  if (!type.startsWith("application/x-ndjson")) {
+    const text = await response.text();
+    let json: unknown;
+    try {
+      json = text === "" ? undefined : JSON.parse(text);
+    } catch {
+      json = undefined;
+    }
+    if (!response.ok) {
+      const error = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
+      throw new ApiError(response.status, error?.code ?? "http_" + response.status, error?.message ?? response.statusText);
+    }
+    return json as YoutubeResult;
+  }
+  const lines = new JsonLines();
+  let result: YoutubeResult | undefined;
+  let failure: ApiError | undefined;
+  const handle = (values: unknown[]): void => {
+    for (const v of values) {
+      const line = v as { type?: string; text?: string; status?: number; error?: { code?: string; message?: string } };
+      if (line.type === "progress" && typeof line.text === "string") onStage(line.text);
+      else if (line.type === "result") result = v as YoutubeResult;
+      else if (line.type === "error") {
+        failure = new ApiError(Number(line.status ?? 0), line.error?.code ?? "error", line.error?.message ?? "Import failed");
+      }
+    }
+  };
+  const decoder = new TextDecoder();
+  const reader = response.body?.getReader();
+  if (reader === undefined) {
+    handle(lines.push(await response.text()));
+  } else {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      handle(lines.push(decoder.decode(value, { stream: true })));
+    }
+    handle(lines.push(decoder.decode()));
+  }
+  handle(lines.end());
+  if (failure !== undefined) throw failure;
+  if (result === undefined) throw new ApiError(0, "network_error", "The import ended without an answer");
+  return result;
 }

@@ -12,6 +12,7 @@
 import { api, ApiError } from "./api.js";
 import type { ActorRef } from "./actor.js";
 import { clientNow } from "./clocksync.js";
+import type { IngestStatus } from "./jobtext.js";
 import { applyOutputStatus } from "./outputs.js";
 
 export type { RoomMode } from "./remote.js";
@@ -144,6 +145,8 @@ export interface RoomEvents {
   chooseGuestName(generated: string): Promise<string>;
   /** A `time` reply (clock sync, docs/rooms.md#clock-sync-web-and-app). */
   time?(t0: number, ts: number, t1: number): void;
+  /** An `ingest` message: what the ingest of the entries' items that aren't ready is doing. */
+  ingest?(items: Record<string, IngestStatus>): void;
 }
 
 /** Where a timeline is at `serverNowMs` (docs/rooms.md#room-state). */
@@ -157,6 +160,8 @@ const RECONNECT_DELAYS_MS = [500, 1000, 2000, 5000, 10000];
 interface Pending {
   resolve(value: Record<string, unknown>): void;
   reject(e: unknown): void;
+  /** `request.progress` for this request (a YouTube lookup's stages). */
+  progress?(stage: string, text: string): void;
 }
 
 interface GuestCreated extends ActorRef { identityTicket: string; nameChosen: boolean; customNames: boolean }
@@ -165,6 +170,8 @@ export class RoomConnection {
   readonly room: string;
   mode: RoomMode;
   state: RoomState | undefined;
+  /** The last `ingest` message's items, by item id (docs/api.md#websocket). */
+  ingest: Record<string, IngestStatus> = {};
   /** The socket's actor: the user, or the guest once identified; undefined while anonymous. */
   actor: ActorRef | undefined;
   #events: RoomEvents;
@@ -271,29 +278,32 @@ export class RoomConnection {
     return this.send({ type: "time", t0 });
   }
 
-  #request(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
+  #request(msg: Record<string, unknown>, progress?: (stage: string, text: string) => void):
+    Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const rid = this.#nextRid++;
       if (!this.send({ ...msg, rid })) {
         reject(new ApiError(0, "network_error", "Not connected to the room"));
         return;
       }
-      this.#pending.set(rid, { resolve, reject });
+      this.#pending.set(rid, { resolve, reject, progress });
     });
   }
 
   /**
    * Sends a room action and resolves with its `ack` (or rejects with an ApiError). An
-   * `identity_required` refusal creates the guest identity and retries once.
+   * `identity_required` refusal creates the guest identity and retries once. `progress` gets the
+   * request's `request.progress` messages (a `queue.add` YouTube lookup's stages).
    */
-  async request(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
+  async request(msg: Record<string, unknown>, progress?: (stage: string, text: string) => void):
+    Promise<Record<string, unknown>> {
     try {
-      return await this.#request(msg);
+      return await this.#request(msg, progress);
     } catch (e) {
       if (!(e instanceof ApiError) || e.code !== "identity_required") throw e;
     }
     await this.ensureIdentity();
-    return await this.#request(msg);
+    return await this.#request(msg, progress);
   }
 
   /**
@@ -343,6 +353,19 @@ export class RoomConnection {
           p.reject(new ApiError(Number(msg["status"] ?? 0), String(msg["code"] ?? "error"),
             String(msg["message"] ?? "Request failed")));
         }
+        return;
+      }
+      case "request.progress": {
+        const rid = msg["rid"];
+        const p = typeof rid === "number" ? this.#pending.get(rid) : undefined;
+        if (p?.progress !== undefined) p.progress(String(msg["stage"] ?? ""), String(msg["text"] ?? ""));
+        return;
+      }
+      case "ingest": {
+        // Not a room change (no version): kept beside the state until the next one.
+        const items = msg["items"];
+        this.ingest = items !== null && typeof items === "object" ? items as Record<string, IngestStatus> : {};
+        if (this.#events.ingest !== undefined) this.#events.ingest(this.ingest);
         return;
       }
       case "time": {

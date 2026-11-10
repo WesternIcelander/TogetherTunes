@@ -35,6 +35,7 @@ import {
 } from "./remote.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
+import { ingestText, lookupText } from "./jobtext.js";
 import {
   positionAt, RoomConnection, type CurrentEntry, type HistoryEntry, type NewRequest, type RoomItem, type RoomState,
   type Timeline, type WaitingEntry,
@@ -233,11 +234,39 @@ function cover(item: RoomItem, className: string): HTMLElement {
   return h("img", { class: className, src: item.coverUrl, alt: "", loading: "lazy" });
 }
 
-function entryStatusBadge(status: string): HTMLElement | null {
+/**
+ * An entry's status badge. While its item is being fetched or encoded (or failed) the badge says
+ * what ingest is doing, from the room's `ingest` messages ("Downloading 45 %", "Failed: …"), and is
+ * marked with the item id so later `ingest` messages update it in place ({@link showIngest}).
+ */
+function entryStatusBadge(status: string, itemId: string): HTMLElement | null {
   if (status === "ready") return null;
-  if (status === "processing") return statusBadge("processing");
-  if (status === "failed" || status === "purged") return statusBadge(status);
+  if (status === "processing" || status === "failed") {
+    const badge = h("span", { class: "badge badge-status badge-" + (status === "failed" ? "failed" : "processing") });
+    badge.dataset["ingestItem"] = itemId;
+    badge.dataset["entryStatus"] = status;
+    badge.textContent = ingestBadgeText(status, itemId);
+    return badge;
+  }
+  if (status === "purged") return statusBadge(status);
   return h("span", { class: "badge badge-status", text: status });
+}
+
+function ingestBadgeText(status: string, itemId: string): string {
+  const known = conn.ingest[itemId];
+  if (status === "failed") {
+    return ingestText({ state: "failed", error: known?.state === "failed" ? known.error : undefined });
+  }
+  return ingestText(known);
+}
+
+/** An `ingest` message arrived: the badges of entries that wait for ingest show the news. */
+function showIngest(): void {
+  document.querySelectorAll<HTMLElement>("[data-ingest-item]").forEach((badge) => {
+    const itemId = badge.dataset["ingestItem"] ?? "";
+    const text = ingestBadgeText(badge.dataset["entryStatus"] ?? "processing", itemId);
+    if (badge.textContent !== text) badge.textContent = text;
+  });
 }
 
 function addedByLine(addedBy: ActorRef | undefined, prefix = "Added by "): HTMLElement | null {
@@ -420,7 +449,7 @@ function renderNowPlaying(s: RoomState): void {
       cover(item, "cover now-cover"),
       h("div", { class: "now-info" },
         itemTitle(item),
-        h("div", { class: "row" }, h("span", { class: "badge", text: stateText }), entryStatusBadge(c.status),
+        h("div", { class: "row" }, h("span", { class: "badge", text: stateText }), entryStatusBadge(c.status, c.item.id),
           addedByLine(c.addedBy)),
         h("div", { class: "row" }, bar, positionText),
         controls)));
@@ -519,7 +548,7 @@ function queueRow(s: RoomState, e: WaitingEntry, i: number, list: WaitingEntry[]
       itemTitle(e.item),
       h("div", { class: "row" },
         e.pinned ? h("span", { class: "badge badge-current", text: "Pinned" }) : null,
-        entryStatusBadge(e.status),
+        entryStatusBadge(e.status, e.item.id),
         h("span", { class: "muted small num", text: formatDuration(e.item.durationMs) }),
         addedByLine(e.addedBy))),
     actions);
@@ -563,7 +592,7 @@ function renderSuggestions(s: RoomState): void {
       cover(e.item, "cover entry-cover"),
       h("div", { class: "grow" },
         itemTitle(e.item),
-        h("div", { class: "row" }, entryStatusBadge(e.status),
+        h("div", { class: "row" }, entryStatusBadge(e.status, e.item.id),
           h("span", { class: "muted small num", text: formatDuration(e.item.durationMs) }),
           addedByLine(e.addedBy, "Suggested by "))),
       actions));
@@ -778,14 +807,27 @@ function youtubePanel(): HTMLElement {
     if (link === "") return;
     submit.disabled = true;
     status.className = "muted small";
-    status.textContent = "Looking up the video…";
-    conn.request({ type: "queue.add", youtubeUrl: link }).then((ack) => {
+    // The lookup can take a while: show yt-dlp's stages (request.progress) and the seconds so far.
+    const started = Date.now();
+    let stageText: string | undefined;
+    const showLookup = (): void => { status.textContent = lookupText(stageText, Date.now() - started); };
+    showLookup();
+    const ticker = window.setInterval(showLookup, 1000);
+    conn.request({ type: "queue.add", youtubeUrl: link }, (_stage, text) => {
+      stageText = text;
+      showLookup();
+    }).then((ack) => {
+      window.clearInterval(ticker);
       form.reset();
       status.textContent = addedMessage(ack) + " New videos play once they have been downloaded.";
     }).catch((e: unknown) => {
+      window.clearInterval(ticker);
       status.className = "error small";
       status.textContent = e === CANCELLED ? "" : message(e);
-    }).finally(() => { submit.disabled = false; });
+    }).finally(() => {
+      window.clearInterval(ticker);
+      submit.disabled = false;
+    });
   });
   return h("div", {}, h("h3", { text: "YouTube link" }), form, status);
 }
@@ -1114,6 +1156,7 @@ async function start(): Promise<void> {
     identity: () => renderIdentity(),
     chooseGuestName: (generated) => askGuestName(generated),
     time: (t0, ts, t1) => clock?.reply(t0, ts, t1),
+    ingest: () => showIngest(),
   });
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;

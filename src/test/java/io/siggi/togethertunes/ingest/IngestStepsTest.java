@@ -307,9 +307,9 @@ class IngestStepsTest {
 
     @Test
     void metadataUsesTheCanonicalUrl() {
-        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--", "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
                 IngestPipeline.metadataArgs("dQw4w9WgXcQ", null));
-        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--cookies", "/c.txt", "--",
+        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--cookies", "/c.txt", "--",
                 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"), IngestPipeline.metadataArgs("dQw4w9WgXcQ", Path.of("/c.txt")));
         assertThrows(IllegalArgumentException.class, () -> IngestPipeline.metadataArgs("https://youtu.be/dQw4w9WgXcQ", null));
     }

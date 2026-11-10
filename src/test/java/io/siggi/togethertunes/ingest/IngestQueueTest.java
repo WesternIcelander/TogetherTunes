@@ -494,4 +494,32 @@ class IngestQueueTest {
         q.close();
         q.close(); // idempotent
     }
+
+    /** The step a running job names, with that step's own progress; live only, gone once the job ends. */
+    @Test
+    void aRunningJobsStepIsLive() throws Exception {
+        CountDownLatch named = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        IngestQueue q = queue(1, job -> {
+            job.progress(0.1);
+            job.stage(IngestPipeline.STEP_ENCODE, 0.2, 0.6);
+            job.progress(0.3);
+            named.countDown();
+            release.await(20, TimeUnit.SECONDS);
+        }, LONG_POLL);
+        q.start();
+        IngestJob job = q.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertTrue(named.await(20, TimeUnit.SECONDS));
+        IngestQueue.LiveStep step = q.liveStep(job.id()).orElseThrow();
+        assertEquals("encode", step.step());
+        assertEquals(0.25, step.progress(), 1e-9);
+        assertTrue(q.liveStep("no-such-job").isEmpty());
+        release.countDown();
+        awaitState(job.id(), State.DONE);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (q.liveStep(job.id()).isPresent() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(q.liveStep(job.id()).isEmpty());
+    }
 }

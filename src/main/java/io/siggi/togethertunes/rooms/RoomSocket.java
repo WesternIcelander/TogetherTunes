@@ -22,6 +22,8 @@ import io.siggi.togethertunes.http.Json;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebSockets;
+import io.siggi.togethertunes.ingest.IngestProgress;
+import io.siggi.togethertunes.library.YoutubeLookupStage;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.time.Clock;
@@ -93,6 +95,8 @@ public final class RoomSocket {
     private final Clock clock;
     private final Map<RoomExecutor, RoomBroadcaster> broadcasters = new ConcurrentHashMap<>();
     private volatile RoomOutputs outputs = RoomOutputs.NONE;
+    private volatile IngestProgress ingestProgress = IngestProgress.NONE;
+    private volatile long ingestIntervalMs = RoomBroadcaster.INGEST_INTERVAL_MS;
 
     public RoomSocket(ActorResolver actors, IdentityTickets tickets, Guests guests, Settings settings, Rooms rooms,
                       RoomGuests roomGuests, RoomRegistry registry, RoomQueue queue, Database db, Clock clock) {
@@ -130,7 +134,7 @@ public final class RoomSocket {
     private RoomBroadcaster broadcaster(RoomExecutor ex) {
         RoomBroadcaster b = broadcasters.computeIfAbsent(ex, e -> {
             RoomBroadcaster nb = new RoomBroadcaster(e, views, roomGuests::roomActor, () -> broadcasters.remove(e),
-                    roomId -> outputs.active(roomId));
+                    roomId -> outputs.active(roomId), ids -> ingestProgress.of(ids), ingestIntervalMs);
             e.addListener(nb);
             return nb;
         });
@@ -140,6 +144,15 @@ public final class RoomSocket {
             throw new RoomClosedException(ex.roomId());
         }
         return b;
+    }
+
+    /**
+     * What the ingest of not-ready items is doing (the {@code ingest} messages), looked up at most
+     * every {@code intervalMs} per room while a room has such an entry.
+     */
+    public void ingestProgress(IngestProgress progress, long intervalMs) {
+        this.ingestProgress = Objects.requireNonNull(progress);
+        this.ingestIntervalMs = intervalMs;
     }
 
     /** Where the rooms' program outputs come from (the {@code outputs} of {@code state}). */
@@ -324,6 +337,7 @@ public final class RoomSocket {
                 return;
             }
             String type = typeEl.getAsString();
+            JsonElement ridFinal = rid;
             switch (type) {
                 case "time" -> time(rid, msg);
                 case "auth" -> handle(rid, () -> auth(msg));
@@ -332,7 +346,7 @@ public final class RoomSocket {
                 case "leave" -> handle(rid, this::leave);
                 case "mode" -> handle(rid, () -> mode(msg));
                 case "sync" -> handle(rid, this::sync);
-                case "queue.add" -> slow(rid, () -> add(msg));
+                case "queue.add" -> slow(rid, () -> add(ridFinal, msg));
                 case "queue.addPlaylist" -> slow(rid, () -> addPlaylist(msg));
                 case "queue.remove" -> handle(rid, () -> room((j, a) -> {
                     queue.remove(j.roomId(), a, string(msg, "entryId"));
@@ -571,13 +585,29 @@ public final class RoomSocket {
             return null;
         }
 
-        private JsonObject add(JsonObject msg) throws Exception {
+        /**
+         * {@code request.progress}: a stage of the YouTube lookup of this socket's {@code queue.add}
+         * with request id {@code rid}, to this socket only (nothing without a {@code rid}).
+         */
+        private void lookupStage(JsonElement rid, YoutubeLookupStage stage) {
+            if (rid == null) {
+                return;
+            }
+            JsonObject o = new JsonObject();
+            o.addProperty("type", "request.progress");
+            o.add("rid", rid);
+            o.addProperty("stage", stage.wire());
+            o.addProperty("text", stage.text());
+            send(o);
+        }
+
+        private JsonObject add(JsonElement rid, JsonObject msg) throws Exception {
             String itemId = optionalString(msg, "itemId");
             String uploadId = optionalString(msg, "uploadId");
             String youtubeUrl = optionalString(msg, "youtubeUrl");
             return room((j, a) -> {
                 QueueOps.Added added = queue.add(j.roomId(), actor, a,
-                        new RoomQueue.Source(itemId, uploadId, youtubeUrl));
+                        new RoomQueue.Source(itemId, uploadId, youtubeUrl), stage -> lookupStage(rid, stage));
                 JsonObject o = new JsonObject();
                 o.addProperty("entryId", added.entryId());
                 o.addProperty("itemId", added.itemId());

@@ -88,8 +88,25 @@ class RoomSocketTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", ORIGIN), 4, dir)
-                .load(null).config();
+        // A slow fake yt-dlp: -J prints yt-dlp's progress lines (and others to ignore) to stderr, then the JSON.
+        Path ytdlp = dir.resolve("fake-yt-dlp");
+        java.nio.file.Files.writeString(ytdlp, "#!/bin/sh\n"
+                + "echo '[debug] Command-line config: [\"-J\"]' >&2\n"
+                + "echo '[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw' >&2\n"
+                + "sleep 0.2\n"
+                + "echo '[youtube] jNQXAC9IVRw: Downloading webpage' >&2\n"
+                + "echo 'Something yt-dlp has never printed before' >&2\n"
+                + "sleep 0.2\n"
+                + "echo '[youtube] jNQXAC9IVRw: Downloading android vr player API JSON' >&2\n"
+                + "echo '[youtube] jNQXAC9IVRw: Downloading webpage' >&2\n"
+                + "sleep 0.2\n"
+                + "echo '[info] jNQXAC9IVRw: Downloading 1 format(s): 18' >&2\n"
+                + "echo '{\"id\":\"jNQXAC9IVRw\",\"title\":\"Me at the zoo\",\"uploader\":\"jawed\","
+                + "\"duration\":19,\"live_status\":\"not_live\",\"is_live\":false}'\n",
+                java.nio.charset.StandardCharsets.UTF_8);
+        java.nio.file.Files.setPosixFilePermissions(ytdlp, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", ORIGIN,
+                "TOGETHERTUNES_TOOLS_YTDLP", ytdlp.toString()), 4, dir).load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
@@ -1055,5 +1072,142 @@ class RoomSocketTest {
             out.add(e.getAsString());
         }
         return out;
+    }
+
+    @Test
+    void aYoutubeLookupSendsItsStagesToTheRequestingSocketOnly() throws Exception {
+        room("tube", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"tube\",\"mode\":\"listen\"}");
+        owner.await("state");
+        Client other = connect(bob, null);
+        other.ok("{\"type\":\"join\",\"room\":\"tube\",\"mode\":\"listen\"}");
+        other.await("state");
+
+        JsonObject ack = owner.ok("{\"type\":\"queue.add\",\"youtubeUrl\":\"https://youtu.be/jNQXAC9IVRw\"}");
+        int rid = ack.get("rid").getAsInt();
+        // every stage once, in order, before the ack; unknown and debug lines left out
+        List<String> stages = new ArrayList<>();
+        for (JsonObject m : owner.seen) {
+            if (m.get("type").getAsString().equals("request.progress")) {
+                assertEquals(rid, m.get("rid").getAsInt(), m.toString());
+                stages.add(m.get("stage").getAsString() + "|" + m.get("text").getAsString());
+            }
+        }
+        assertEquals(List.of("contacting|Contacting YouTube…", "page|Reading the video page…",
+                "details|Getting the video details…", "formats|Checking formats…"), stages);
+        // nobody else gets them
+        other.await("state");
+        other.quiet("request.progress");
+        for (JsonObject m : other.seen) {
+            assertFalse(m.get("type").getAsString().equals("request.progress"), m.toString());
+        }
+
+        // the same video again: no lookup, so no stages
+        owner.seen.clear();
+        owner.ok("{\"type\":\"queue.add\",\"youtubeUrl\":\"https://www.youtube.com/watch?v=jNQXAC9IVRw\"}");
+        for (JsonObject m : owner.seen) {
+            assertFalse(m.get("type").getAsString().equals("request.progress"), m.toString());
+        }
+    }
+
+    @Test
+    void entriesWhoseItemIsNotReadyCarryTheirIngestProgress() throws Exception {
+        java.util.Map<String, io.siggi.togethertunes.ingest.IngestQueue.LiveStep> live =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        io.siggi.togethertunes.ingest.JobList list = new io.siggi.togethertunes.ingest.JobList(db, jobs, clock);
+        list.steps(jobId -> java.util.Optional.ofNullable(live.get(jobId)));
+        wiring.socket().ingestProgress(io.siggi.togethertunes.ingest.IngestProgress.from(list), 200);
+
+        room("busy", "public", "owner");
+        String song = item("Playing Song");
+        String[] running = ingesting("Encoding Upload");
+        String waitingId = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES (?, 'audio', 'Waiting Upload', 'upload', ?, 1, 'pending', '720p30', 1)",
+                waitingId, aliceId);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", aliceId, waitingId);
+        jobs.enqueue(waitingId, IngestJob.Kind.UPLOAD);
+
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"busy\",\"mode\":\"listen\"}");
+        owner.await("state");
+        Client other = connect(bob, null);
+        other.ok("{\"type\":\"join\",\"room\":\"busy\",\"mode\":\"listen\"}");
+        other.await("state");
+        // a room whose entries are all ready gets no ingest messages
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}");
+        owner.quiet("ingest");
+
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + running[0] + "\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + waitingId + "\"}");
+        JsonObject items = owner.await(m -> m.get("type").getAsString().equals("ingest")
+                && m.getAsJsonObject("items").size() == 2).getAsJsonObject("items");
+        assertEquals("{\"state\":\"running\",\"kind\":\"upload\"}", items.get(running[0]).toString());
+        assertEquals("{\"state\":\"queued\",\"kind\":\"upload\",\"position\":1}", items.get(waitingId).toString());
+        // everyone in the room gets it
+        other.await(m -> m.get("type").getAsString().equals("ingest") && m.getAsJsonObject("items").size() == 2);
+
+        // the step and its progress, rounded to whole percent
+        live.put(running[1], new io.siggi.togethertunes.ingest.IngestQueue.LiveStep("encode", 0.3049));
+        items = owner.await(m -> m.get("type").getAsString().equals("ingest")
+                && m.getAsJsonObject("items").getAsJsonObject(running[0]).has("step")).getAsJsonObject("items");
+        assertEquals("{\"state\":\"running\",\"kind\":\"upload\",\"step\":\"encode\",\"progress\":0.3}",
+                items.get(running[0]).toString());
+
+        // throttled: progress changing every 5 ms for 1 s gives at most one message per 200 ms
+        owner.quiet("none");
+        int before = count(owner, "ingest");
+        long end = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        for (int i = 0; System.nanoTime() < end; i++) {
+            live.put(running[1], new io.siggi.togethertunes.ingest.IngestQueue.LiveStep("encode", (i % 100) / 100.0));
+            Thread.sleep(5);
+        }
+        owner.quiet("none");
+        int sent = count(owner, "ingest") - before;
+        assertTrue(sent >= 2 && sent <= 7, sent + " ingest messages in 1 s");
+
+        // nothing changes: nothing sent
+        owner.quiet("ingest");
+
+        // failed: a short reason
+        assertTrue(jobs.fail(running[1], "ffmpeg could not read the file\nmore detail", "log"));
+        items = owner.await(m -> m.get("type").getAsString().equals("ingest") && m.getAsJsonObject("items")
+                .getAsJsonObject(running[0]).get("state").getAsString().equals("failed")).getAsJsonObject("items");
+        assertEquals("ffmpeg could not read the file", items.getAsJsonObject(running[0]).get("error").getAsString());
+        assertFalse(items.toString().contains("log"), items.toString());
+
+        // once every waiting item is ready (or failed for good and removed), one last empty ingest
+        String[] failedEntry = new String[1];
+        owner.await(m -> {
+            if (!m.get("type").getAsString().equals("state")) {
+                return false;
+            }
+            for (JsonElement e : m.getAsJsonArray("queue")) {
+                JsonObject o = e.getAsJsonObject();
+                if (o.getAsJsonObject("item").get("id").getAsString().equals(running[0])
+                        && o.get("status").getAsString().equals("failed")) {
+                    failedEntry[0] = o.get("entryId").getAsString();
+                    return true;
+                }
+            }
+            return false;
+        });
+        owner.ok("{\"type\":\"queue.remove\",\"entryId\":\"" + failedEntry[0] + "\"}");
+        IngestJob claimed = jobs.claimNext();
+        assertEquals(waitingId, claimed.itemId());
+        finishIngest(new String[] {waitingId, claimed.id()});
+        owner.await(m -> m.get("type").getAsString().equals("ingest") && m.getAsJsonObject("items").size() == 0);
+        owner.quiet("ingest");
+    }
+
+    private static int count(Client c, String type) {
+        int n = 0;
+        for (JsonObject m : c.seen) {
+            if (m.get("type").getAsString().equals(type)) {
+                n++;
+            }
+        }
+        return n;
     }
 }

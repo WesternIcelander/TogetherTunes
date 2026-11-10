@@ -67,6 +67,7 @@ public final class ToolCall {
     private Path stdoutFile;
     private Consumer<String> stdoutConsumer;
     private Consumer<FfmpegProgress> progressConsumer;
+    private Consumer<String> stderrConsumer;
     private boolean used;
 
     /**
@@ -166,6 +167,16 @@ public final class ToolCall {
         return this;
     }
 
+    /**
+     * Also hands every stderr line (redacted, as logged) to {@code consumer}, on the stderr reader
+     * thread, e.g. to follow a tool's progress messages. Whatever it throws is ignored: watching
+     * the output never fails the run.
+     */
+    public ToolCall stderrLines(Consumer<String> consumer) {
+        this.stderrConsumer = Objects.requireNonNull(consumer);
+        return this;
+    }
+
     private void setStdoutMode(StdoutMode mode) {
         if (stdoutMode != StdoutMode.DISCARD) {
             throw new IllegalStateException("stdout is already used for " + stdoutMode);
@@ -248,6 +259,13 @@ public final class ToolCall {
                         }
                     }
                     logLine(l);
+                    if (stderrConsumer != null) {
+                        try {
+                            stderrConsumer.accept(l);
+                        } catch (RuntimeException ignored) {
+                            // informational only
+                        }
+                    }
                 });
             } catch (IOException | RuntimeException e) {
                 // the process was killed, or its stderr broke; the exit status says what happened

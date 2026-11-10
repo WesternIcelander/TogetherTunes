@@ -20,6 +20,9 @@ export interface JobRow {
   finishedAt?: number;
   /** 1-based place in the whole queue (queued jobs only). */
   position?: number;
+  /** A running job's step now (live), with that step's own progress. */
+  step?: IngestStep;
+  stepProgress?: number;
   item: {
     id: string;
     kind: "audio" | "video";
@@ -73,8 +76,12 @@ export function ordinal(n: number): string {
 export function stateText(row: JobRow): string {
   switch (row.state) {
     case "running": {
+      const attempt = row.attempts > 1 ? " (attempt " + row.attempts + ")" : "";
+      if (row.step !== undefined) {
+        return ingestText({ state: "running", kind: row.kind, step: row.step, progress: row.stepProgress }) + attempt;
+      }
       const pct = Math.floor(Math.max(0, Math.min(1, row.progress)) * 100);
-      return "Running " + pct + "%" + (row.attempts > 1 ? " (attempt " + row.attempts + ")" : "");
+      return "Running " + pct + "%" + attempt;
     }
     case "queued":
       return row.position === undefined ? "Queued" : "Queued, " + ordinal(row.position) + " in line";
@@ -110,5 +117,122 @@ export function emptyText(state: JobListState, admin: boolean): string {
     case "active": return "Nothing is encoding or queued" + whose + ".";
     case "failed": return "No failed jobs" + whose + ".";
     case "done": return "No jobs finished in the last 24 hours" + whose + ".";
+  }
+}
+
+// ------------------------------------------------------------------ ingest progress in words
+
+/** The step a running ingest job is in (docs/library-and-ingest.md#encode-jobs-page). */
+export type IngestStep = "download" | "encode" | "finish";
+
+/**
+ * What the ingest of an item that isn't ready is doing: an entry of the room's `ingest` message
+ * (docs/api.md#websocket), or made from an item's latest job ({@link jobIngestStatus}).
+ */
+export interface IngestStatus {
+  state: "queued" | "running" | "failed";
+  kind?: string;
+  /** 1-based place in the whole ingest queue (queued only). */
+  position?: number;
+  step?: IngestStep;
+  /** The step's own progress, 0..1. */
+  progress?: number;
+  /** A short reason (failed only). */
+  error?: string;
+}
+
+function percent(p: number | undefined): string {
+  const v = p === undefined || !isFinite(p) ? 0 : Math.max(0, Math.min(1, p));
+  return Math.floor(v * 100) + " %";
+}
+
+/**
+ * The words for an item's ingest, the same on the room page, the Library page and the item page:
+ * "Waiting to download (3rd in line)", "Downloading 45 %", "Encoding 30 %", "Finishing…",
+ * "Failed: <short reason>". Nothing known yet reads as waiting.
+ */
+export function ingestText(s: IngestStatus | undefined): string {
+  if (s === undefined) return "Waiting to download";
+  switch (s.state) {
+    case "running":
+      switch (s.step) {
+        case "download": return "Downloading " + percent(s.progress);
+        case "encode": return "Encoding " + percent(s.progress);
+        case "finish": return "Finishing…";
+        default: return "Starting…";
+      }
+    case "failed":
+      return s.error !== undefined && s.error !== "" ? "Failed: " + s.error : "Failed";
+    default: {
+      const download = s.kind === undefined || s.kind === "youtube" || s.kind === "refetch";
+      return (download ? "Waiting to download" : "Waiting to encode")
+        + (s.position !== undefined ? " (" + ordinal(s.position) + " in line)" : "");
+    }
+  }
+}
+
+/** An item's latest job (`GET /api/items/{id}/job`) as an {@link IngestStatus}; undefined once it is done. */
+export function jobIngestStatus(job: { kind: string; state: string; step?: IngestStep; stepProgress?: number },
+  itemError?: string): IngestStatus | undefined {
+  switch (job.state) {
+    case "queued": return { state: "queued", kind: job.kind };
+    case "running": return { state: "running", kind: job.kind, step: job.step, progress: job.stepProgress };
+    case "failed": return { state: "failed", kind: job.kind, error: itemError };
+    default: return undefined;
+  }
+}
+
+// ------------------------------------------------------------------ YouTube lookups
+
+/** What the page says before yt-dlp has named a stage. */
+export const LOOKUP_TEXT = "Looking up the video…";
+
+/**
+ * The line shown while a YouTube link is looked up: the latest stage's text (or
+ * {@link LOOKUP_TEXT}) and the whole seconds since it started, so it visibly moves even when
+ * yt-dlp is quiet for a while: "Reading the video page… 6 s".
+ */
+export function lookupText(stageText: string | undefined, elapsedMs: number): string {
+  const s = Math.max(0, Math.floor(elapsedMs / 1000));
+  return (stageText !== undefined && stageText !== "" ? stageText : LOOKUP_TEXT) + " " + s + " s";
+}
+
+/**
+ * Splits a streamed body into JSON lines (`application/x-ndjson`): feed it text chunks as they
+ * arrive, get each complete line's parsed value; `end()` returns a last line without a newline.
+ * Lines that aren't JSON are skipped.
+ */
+export class JsonLines {
+  #buf = "";
+
+  push(chunk: string): unknown[] {
+    this.#buf += chunk;
+    const out: unknown[] = [];
+    let nl = this.#buf.indexOf("\n");
+    while (nl >= 0) {
+      const line = this.#buf.slice(0, nl);
+      this.#buf = this.#buf.slice(nl + 1);
+      const v = parseLine(line);
+      if (v !== undefined) out.push(v);
+      nl = this.#buf.indexOf("\n");
+    }
+    return out;
+  }
+
+  end(): unknown[] {
+    const line = this.#buf;
+    this.#buf = "";
+    const v = parseLine(line);
+    return v === undefined ? [] : [v];
+  }
+}
+
+function parseLine(line: string): unknown {
+  const t = line.trim();
+  if (t === "") return undefined;
+  try {
+    return JSON.parse(t) as unknown;
+  } catch {
+    return undefined;
   }
 }

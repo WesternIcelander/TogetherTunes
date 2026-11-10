@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Condition;
@@ -77,6 +78,10 @@ public final class IngestQueue implements AutoCloseable {
         private long lastSaveNanos;
         private boolean saved;
         private double progress;
+        /** The step for people ({@link #stage}); null until the handler names one. */
+        private String stage;
+        private double stageFrom;
+        private double stageTo = 1;
 
         private Context(IngestJob job, JobLog log) {
             this.job = job;
@@ -116,6 +121,28 @@ public final class IngestQueue implements AutoCloseable {
             return progress;
         }
 
+        /**
+         * Names the step the job is in now, for people ({@link LiveStep}: {@code download},
+         * {@code encode} or {@code finish}), and the part [from, to] of the whole job's progress
+         * it covers, so the step's own progress can be shown ("Encoding 30 %"). Kept in memory
+         * only; never fails.
+         */
+        public synchronized void stage(String step, double from, double to) {
+            this.stage = Objects.requireNonNull(step);
+            this.stageFrom = from;
+            this.stageTo = to;
+        }
+
+        /** The step now with its own progress (0..1); empty until {@link #stage} was called. */
+        synchronized Optional<LiveStep> liveStep() {
+            if (stage == null) {
+                return Optional.empty();
+            }
+            double span = stageTo - stageFrom;
+            double f = span <= 0 ? 0 : (progress - stageFrom) / span;
+            return Optional.of(new LiveStep(stage, Double.isNaN(f) ? 0 : Math.max(0, Math.min(1, f))));
+        }
+
         /** Stores the current progress and log tail now. */
         public void flush() {
             double p;
@@ -128,6 +155,13 @@ public final class IngestQueue implements AutoCloseable {
                 LOG.log(System.Logger.Level.WARNING, "Could not store the progress of ingest job " + job.id(), e);
             }
         }
+    }
+
+    /**
+     * The step a running job is in ({@code download}, {@code encode}, {@code finish}) and how far
+     * along that step is (0..1). Live only: never stored ({@code docs/library-and-ingest.md}).
+     */
+    public record LiveStep(String step, double progress) {
     }
 
     private final IngestJobs jobs;
@@ -155,6 +189,7 @@ public final class IngestQueue implements AutoCloseable {
         final IngestJob job;
         final Thread thread;
         final long startedNanos = System.nanoTime();
+        volatile Context context;
         boolean finished;
         volatile boolean preempted;
 
@@ -179,6 +214,13 @@ public final class IngestQueue implements AutoCloseable {
         this.clock = Objects.requireNonNull(clock);
         this.pollInterval = Objects.requireNonNull(pollInterval);
         this.progressInterval = Objects.requireNonNull(progressInterval);
+    }
+
+    /** The step of a running job and its own progress; empty if it isn't running here or named none yet. */
+    public Optional<LiveStep> liveStep(String jobId) {
+        Running r = running.get(jobId);
+        Context c = r == null ? null : r.context;
+        return c == null ? Optional.empty() : c.liveStep();
     }
 
     /**
@@ -465,6 +507,7 @@ public final class IngestQueue implements AutoCloseable {
         log.append("[ingest] " + job.kind().wire() + " job started (attempt " + job.attempts() + ") at "
                 + EpochMs.format(EpochMs.now(clock)));
         Context context = new Context(job, log);
+        r.context = context;
         Throwable failure = null;
         try {
             handler.run(context);

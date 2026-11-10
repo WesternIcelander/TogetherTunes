@@ -11,6 +11,10 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -70,8 +74,21 @@ public final class JobList {
      *
      * @param job      the job, without its log
      * @param position 1-based place in the queue for a queued job, else null
+     * @param step     the step a running job is in now and that step's progress (live, from the
+     *                 ingest queue), else null
      */
-    public record Row(IngestJob job, Integer position, ItemRef item) {
+    public record Row(IngestJob job, Integer position, ItemRef item, IngestQueue.LiveStep step) {
+        public Row(IngestJob job, Integer position, ItemRef item) {
+            this(job, position, item, null);
+        }
+    }
+
+    /** Where the live step of a running job comes from ({@link IngestQueue#liveStep}). */
+    @FunctionalInterface
+    public interface Steps {
+        Steps NONE = jobId -> Optional.empty();
+
+        Optional<IngestQueue.LiveStep> of(String jobId);
     }
 
     /** A page of rows; {@code nextOffset} is null on the last page. */
@@ -95,6 +112,7 @@ public final class JobList {
     private final Database db;
     private final IngestJobs jobs;
     private final Clock clock;
+    private volatile Steps steps = Steps.NONE;
 
     /** @param jobs the queue whose claim order the active list follows */
     public JobList(Database db, IngestJobs jobs, Clock clock) {
@@ -102,6 +120,52 @@ public final class JobList {
         this.jobs = Objects.requireNonNull(jobs);
         this.clock = Objects.requireNonNull(clock);
     }
+
+    /** Where running jobs' live steps come from (the ingest queue); none until set. */
+    public void steps(Steps steps) {
+        this.steps = Objects.requireNonNull(steps);
+    }
+
+    /**
+     * The latest job of each of {@code itemIds} that has one, by item id, with its place in the
+     * queue and live step as in the lists. For the rooms' ingest progress
+     * ({@link IngestProgress}); at most {@value #LATEST_MAX} ids are looked at.
+     */
+    public Map<String, Row> latest(Collection<String> itemIds) throws SQLException {
+        List<String> ids = new ArrayList<>(new LinkedHashSet<>(itemIds));
+        if (ids.size() > LATEST_MAX) {
+            ids = ids.subList(0, LATEST_MAX);
+        }
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        List<Object> params = new ArrayList<>();
+        StringBuilder sql = new StringBuilder(select(params)).append(" WHERE j.item_id IN (");
+        for (int i = 0; i < ids.size(); i++) {
+            sql.append(i == 0 ? "?" : ", ?");
+            params.add(ids.get(i));
+        }
+        sql.append(") AND NOT EXISTS (SELECT 1 FROM ingest_jobs k WHERE k.item_id = j.item_id"
+                + " AND (k.created_at > j.created_at OR (k.created_at = j.created_at AND k.id > j.id)))");
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                for (int i = 0; i < params.size(); i++) {
+                    ps.setObject(i + 1, params.get(i));
+                }
+                Map<String, Row> out = new HashMap<>();
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Row r = row(rs);
+                        out.put(r.item().id(), r);
+                    }
+                }
+                return out;
+            }
+        });
+    }
+
+    /** The most item ids {@link #latest} looks at. */
+    static final int LATEST_MAX = 500;
 
     /**
      * A page of {@code view}, starting at row {@code offset}.
@@ -174,7 +238,7 @@ public final class JobList {
         });
     }
 
-    private static Row row(ResultSet rs) throws SQLException {
+    private Row row(ResultSet rs) throws SQLException {
         IngestJob job = new IngestJob(rs.getString("id"), rs.getString("item_id"), Kind.fromWire(rs.getString("kind")),
                 State.fromWire(rs.getString("state")), rs.getInt("attempts"), rs.getDouble("progress"),
                 rs.getLong("created_at"), EpochMs.get(rs, "started_at"), EpochMs.get(rs, "finished_at"), null,
@@ -185,6 +249,14 @@ public final class JobList {
         ItemRef item = new ItemRef(rs.getString("item_id"), rs.getString("item_kind"), rs.getString("title"),
                 rs.getString("artist"), rs.getString("source"), status,
                 "failed".equals(status) ? rs.getString("error") : null);
-        return new Row(job, position, item);
+        IngestQueue.LiveStep step = null;
+        if (job.state() == State.RUNNING) {
+            try {
+                step = steps.of(job.id()).orElse(null);
+            } catch (RuntimeException e) {
+                step = null; // informational only
+            }
+        }
+        return new Row(job, position, item, step);
     }
 }

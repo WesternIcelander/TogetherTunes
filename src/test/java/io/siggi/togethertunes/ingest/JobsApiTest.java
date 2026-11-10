@@ -64,6 +64,7 @@ class JobsApiTest {
     private String bobId;
     private String bob;
     private String guestCookie;
+    private final java.util.Map<String, IngestQueue.LiveStep> liveSteps = new java.util.concurrent.ConcurrentHashMap<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -75,7 +76,9 @@ class JobsApiTest {
         Settings settings = new Settings(db, config);
         jobs = new IngestJobs(db, clock);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        new JobsApi(jobs, new JobList(db, jobs, clock), new Permissions(db, settings), paused::get, clock).register(router);
+        JobList list = new JobList(db, jobs, clock);
+        list.steps(jobId -> java.util.Optional.ofNullable(liveSteps.get(jobId)));
+        new JobsApi(jobs, list, new Permissions(db, settings), paused::get, clock).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(db, clock);
@@ -188,6 +191,12 @@ class JobsApiTest {
         assertEquals(1, running.get("attempts").getAsInt());
         assertFalse(running.has("position"));
         assertFalse(running.has("log"));
+        assertFalse(running.has("step"));
+        // a running job's live step, once it has named one
+        liveSteps.put(running.get("id").getAsString(), new IngestQueue.LiveStep("download", 0.5));
+        JsonObject stepped = ok(200, call("GET", "/api/admin/jobs", admin)).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals("download", stepped.get("step").getAsString());
+        assertEquals(0.5, stepped.get("stepProgress").getAsDouble());
         JsonObject runningItem = running.getAsJsonObject("item");
         assertEquals(a, runningItem.get("id").getAsString());
         assertEquals("video", runningItem.get("kind").getAsString());

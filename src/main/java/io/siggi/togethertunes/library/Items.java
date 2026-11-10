@@ -9,6 +9,8 @@ import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.IngestQueue;
+import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.ItemStatusListener;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -53,6 +55,7 @@ public final class Items {
     private final Database db;
     private final DataDir dataDir;
     private final Clock clock;
+    private volatile JobList.Steps steps = JobList.Steps.NONE;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
 
     public Items(Database db, DataDir dataDir, Clock clock) {
@@ -90,9 +93,12 @@ public final class Items {
      *
      * @param progress 0..1
      * @param log      the job log's tail; only for callers who may edit the item, else null
+     * @param step     a running job's step now ({@code download}, {@code encode}, {@code finish}),
+     *                 live from the ingest queue; else null
+     * @param stepProgress that step's own progress, 0..1, with {@code step}
      */
     public record JobView(String id, String kind, String state, double progress, int attempts, long createdAt,
-                          Long startedAt, Long finishedAt, String log) {
+                          Long startedAt, Long finishedAt, String log, String step, Double stepProgress) {
     }
 
     /**
@@ -187,6 +193,11 @@ public final class Items {
      * The item's most recent ingest job; the log only if {@code actor} may edit the item.
      * {@code 404 item_not_found}, {@code 404 job_not_found} (the item never had one).
      */
+    /** Where running jobs' live steps come from (the ingest queue); none until set. */
+    public void jobSteps(JobList.Steps steps) {
+        this.steps = Objects.requireNonNull(steps);
+    }
+
     public JobView job(Actor actor, String itemId, Rights rights) throws SQLException {
         return db.read(c -> {
             Row row = row(c, itemId, false);
@@ -206,8 +217,11 @@ public final class Items {
                     Long startedAt = rs.wasNull() ? null : started;
                     long finished = rs.getLong(8);
                     Long finishedAt = rs.wasNull() ? null : finished;
+                    IngestQueue.LiveStep step = "running".equals(rs.getString(3))
+                            ? steps.of(rs.getString(1)).orElse(null) : null;
                     return new JobView(rs.getString(1), rs.getString(2), rs.getString(3), rs.getDouble(4), rs.getInt(5),
-                            rs.getLong(6), startedAt, finishedAt, showLog ? rs.getString(9) : null);
+                            rs.getLong(6), startedAt, finishedAt, showLog ? rs.getString(9) : null,
+                            step == null ? null : step.step(), step == null ? null : step.progress());
                 }
             }
         });

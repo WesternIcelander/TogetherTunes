@@ -5,7 +5,7 @@
 import { api, ApiError } from "./api.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
-  jobSummary, kindLabel, mediaPath, playlistPicker, statusBadge, watchItem, type ItemPage, type JobView,
+  ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, watchItem, type ItemPage, type JobView,
 } from "./media.js";
 import { checkPasswordChange, element, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 
@@ -150,7 +150,7 @@ function render(item: ItemPage, job: JobView | undefined): void {
   const body = element("item-body");
   const cover = h("img", { class: "cover", alt: "", src: mediaPath(item.id, "cover.jpg", item.mediaVersion) });
   cover.addEventListener("error", () => { cover.hidden = true; });
-  const badge = statusBadge(item.status, job?.progress);
+  const badge = ingestBadge(item.status, job);
   const source = item.source === "youtube" && item.youtubeId !== undefined
     ? h("a", { href: "https://www.youtube.com/watch?v=" + encodeURIComponent(item.youtubeId), rel: "noopener noreferrer",
       target: "_blank", text: "YouTube" })

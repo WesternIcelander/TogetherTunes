@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.IngestProgress;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
@@ -15,6 +16,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -54,6 +56,8 @@ final class RoomBroadcaster implements RoomListener {
 
     /** Up to this many waiting entries (queue + suggestions), every change sends the full state. */
     static final int FULL_STATE_MAX = 200;
+    /** The most often {@code ingest} goes out, and how often it is looked up while needed. */
+    static final long INGEST_INTERVAL_MS = 1000;
 
     /** A socket as the broadcaster sees it. */
     interface Conn {
@@ -122,12 +126,35 @@ final class RoomBroadcaster implements RoomListener {
     private final AtomicBoolean closing = new AtomicBoolean();
     /** By connection id. Only touched on the broadcaster thread. */
     private final Map<String, Member> members = new LinkedHashMap<>();
+    private final IngestProgress ingest;
+    private final long ingestIntervalMs;
+    /** The newest snapshot sent (any message). Only touched on the broadcaster thread. */
+    private RoomSnapshot latest;
+    /** The {@code items} of the last {@code ingest} sent; empty when none is needed. Broadcaster thread only. */
+    private JsonObject lastIngest = new JsonObject();
+    /** When the next ingest look-up is due ({@code System.nanoTime()}). Broadcaster thread only. */
+    private long nextIngestNanos;
 
     RoomBroadcaster(RoomExecutor executor, RoomViews views, Access access, Runnable onStopped) {
         this(executor, views, access, onStopped, RoomOutputs.NONE);
     }
 
     RoomBroadcaster(RoomExecutor executor, RoomViews views, Access access, Runnable onStopped, RoomOutputs outputs) {
+        this(executor, views, access, onStopped, outputs, IngestProgress.NONE, INGEST_INTERVAL_MS);
+    }
+
+    /**
+     * @param ingest           what the ingest of items that aren't ready is doing ({@code ingest} messages)
+     * @param ingestIntervalMs the least time between two {@code ingest} messages (and look-ups)
+     */
+    RoomBroadcaster(RoomExecutor executor, RoomViews views, Access access, Runnable onStopped, RoomOutputs outputs,
+                    IngestProgress ingest, long ingestIntervalMs) {
+        this.ingest = Objects.requireNonNull(ingest);
+        if (ingestIntervalMs < 1) {
+            throw new IllegalArgumentException("ingestIntervalMs");
+        }
+        this.ingestIntervalMs = ingestIntervalMs;
+        this.nextIngestNanos = System.nanoTime();
         this.outputs = Objects.requireNonNull(outputs);
         this.executor = Objects.requireNonNull(executor);
         this.roomId = executor.roomId();
@@ -194,9 +221,22 @@ final class RoomBroadcaster implements RoomListener {
             while (true) {
                 Task task;
                 try {
-                    task = tasks.take();
+                    if (ingestNeeded()) {
+                        long waitNanos = nextIngestNanos - System.nanoTime();
+                        task = waitNanos > 0 ? tasks.poll(waitNanos, TimeUnit.NANOSECONDS) : tasks.poll();
+                    } else {
+                        task = tasks.take();
+                    }
                 } catch (InterruptedException e) {
                     return;
+                }
+                if (task == null) {
+                    try {
+                        ingestTick();
+                    } catch (Throwable t) {
+                        LOG.log(System.Logger.Level.WARNING, "Ingest progress in room " + roomId + " failed", t);
+                    }
+                    continue;
                 }
                 try {
                     switch (task) {
@@ -229,6 +269,74 @@ final class RoomBroadcaster implements RoomListener {
             interest.decrementAndGet(); // joined again: one member
         }
         sendState(List.of(m), j.snapshot());
+        sendLastIngest(m);
+    }
+
+    // ------------------------------------------------------------------ ingest progress
+
+    /** Whether some entry (current, queued or suggested) has an item that isn't ready, or the last {@code ingest} still says so. */
+    private boolean ingestNeeded() {
+        if (members.isEmpty() || latest == null) {
+            return false;
+        }
+        return !lastIngest.isEmpty() || !notReady(latest).isEmpty();
+    }
+
+    /** The items of {@code s}'s entries that aren't ready and may still become ready (or failed), in order. */
+    static List<String> notReady(RoomSnapshot s) {
+        Set<String> ids = new java.util.LinkedHashSet<>();
+        if (s.current() != null && waitsForIngest(s.current())) {
+            ids.add(s.current().itemId());
+        }
+        for (QueueEntry e : s.waiting()) {
+            if (waitsForIngest(e)) {
+                ids.add(e.itemId());
+            }
+        }
+        return new ArrayList<>(ids);
+    }
+
+    private static boolean waitsForIngest(QueueEntry e) {
+        return !"ready".equals(e.itemStatus()) && !"purged".equals(e.itemStatus());
+    }
+
+    /**
+     * Looks up the ingest of the room's items that aren't ready and sends {@code ingest} to every
+     * socket if it changed; once every item is ready, one last {@code ingest} with no items.
+     */
+    private void ingestTick() throws Exception {
+        nextIngestNanos = System.nanoTime() + ingestIntervalMs * 1_000_000L;
+        if (members.isEmpty() || latest == null) {
+            return;
+        }
+        List<String> ids = notReady(latest);
+        JsonObject items = new JsonObject();
+        if (!ids.isEmpty()) {
+            for (Map.Entry<String, IngestProgress.Status> e : ingest.of(ids).entrySet()) {
+                items.add(e.getKey(), e.getValue().toJson());
+            }
+        }
+        if (items.equals(lastIngest)) {
+            return;
+        }
+        lastIngest = items;
+        for (Member m : members.values()) {
+            m.conn.send(ingestMessage(items));
+        }
+    }
+
+    /** The last {@code ingest} to a socket that just got the full state, if there is one to send. */
+    private void sendLastIngest(Member m) {
+        if (!lastIngest.isEmpty()) {
+            m.conn.send(ingestMessage(lastIngest));
+        }
+    }
+
+    private static JsonObject ingestMessage(JsonObject items) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "ingest");
+        msg.add("items", items.deepCopy());
+        return msg;
     }
 
     private void resent(Resend r) throws Exception {
@@ -240,6 +348,7 @@ final class RoomBroadcaster implements RoomListener {
             m.actor = r.actor();
         }
         sendState(List.of(m), r.snapshot());
+        sendLastIngest(m);
     }
 
     private void closed(boolean deleted) {
@@ -252,6 +361,7 @@ final class RoomBroadcaster implements RoomListener {
     }
 
     private void changed(RoomSnapshot s, RoomChange change) throws Exception {
+        noteSnapshot(s);
         List<RoomEvent> events = change.events();
         // Banned guests first: their sockets are already out of the presence.
         for (RoomEvent e : events) {
@@ -356,8 +466,16 @@ final class RoomBroadcaster implements RoomListener {
         return Objects.equals(x, y);
     }
 
+    /** Keeps the newest snapshot for the ingest look-ups. */
+    private void noteSnapshot(RoomSnapshot s) {
+        if (latest == null || s.version() >= latest.version()) {
+            latest = s;
+        }
+    }
+
     /** The full {@code state} of {@code s} to each of {@code to}. */
     private void sendState(List<Member> to, RoomSnapshot s) throws Exception {
+        noteSnapshot(s);
         List<RoomViews.HistoryRow> history = views.history(roomId);
         List<QueueEntry> entries = new ArrayList<>(s.waiting());
         if (s.current() != null) {

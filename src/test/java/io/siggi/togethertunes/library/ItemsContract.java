@@ -285,7 +285,15 @@ abstract class ItemsContract {
         jobs.saveProgress(first.id(), 0.25, "line 1");
         Items.JobView view = items.job(alice, id, NONE);
         assertEquals(new Items.JobView(first.id(), "upload", "running", 0.25, 1, clock.millis(), clock.millis(), null,
-                "line 1"), view);
+                "line 1", null, null), view);
+        // a running job's live step comes from the ingest queue
+        items.jobSteps(jobId -> jobId.equals(first.id())
+                ? java.util.Optional.of(new io.siggi.togethertunes.ingest.IngestQueue.LiveStep("encode", 0.5))
+                : java.util.Optional.empty());
+        Items.JobView stepped = items.job(alice, id, NONE);
+        assertEquals("encode", stepped.step());
+        assertEquals(0.5, stepped.stepProgress());
+        items.jobSteps(io.siggi.togethertunes.ingest.JobList.Steps.NONE);
         assertNull(items.job(bob, id, NONE).log());
         assertNull(items.job(guest, id, NONE).log());
         assertEquals("line 1", items.job(bob, id, EDIT_ANY).log());

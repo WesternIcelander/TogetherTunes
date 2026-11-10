@@ -28,7 +28,7 @@ import java.util.function.BooleanSupplier;
  *       items in the caller's library) → {@code {"items": [job], "nextCursor"?, "paused"?}}, the
  *       {@link JobList} views ({@code active} is the default). A job is {@code {"id", "kind",
  *       "tier"?, "state", "progress", "attempts", "createdAt", "startedAt"?, "finishedAt"?,
- *       "position"?, "item": {"id", "kind", "title", "artist"?, "source", "status", "error"?}}}.
+ *       "position"?, "step"?, "stepProgress"?, "item": {"id", "kind", "title", "artist"?, "source", "status", "error"?}}}.
  *       {@code paused} (active view only): workers hold back queued jobs because disk space is low.
  *       {@code limit} 1–200, default 50. {@code 400 invalid_state}, {@code invalid_cursor},
  *       {@code invalid_limit}.</li>
@@ -183,6 +183,10 @@ public final class JobsApi {
         m.put("startedAt", job.startedAt());
         m.put("finishedAt", job.finishedAt());
         m.put("position", row.position());
+        if (row.step() != null) {
+            m.put("step", row.step().step());
+            m.put("stepProgress", row.step().progress());
+        }
         JobList.ItemRef item = row.item();
         Map<String, Object> i = new LinkedHashMap<>();
         i.put("id", item.id());

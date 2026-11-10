@@ -162,6 +162,17 @@ public final class YoutubeImports {
      */
     public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary)
             throws SQLException, InterruptedException {
+        return importUrl(actor, url, presentAsAudio, addToLibrary, YoutubeLookupStage.Listener.NONE);
+    }
+
+    /**
+     * Like {@link #importUrl(Actor, String, Boolean, Boolean)}, telling {@code progress} the
+     * stages of the {@code yt-dlp -J} lookup while it runs ({@link YoutubeLookupStage}). Nothing is
+     * reported when there is no lookup (an item that is already known answers at once).
+     */
+    public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary,
+                              YoutubeLookupStage.Listener progress) throws SQLException, InterruptedException {
+        Objects.requireNonNull(progress);
         String userId = actor instanceof Actor.User u ? u.userId() : null;
         String guestId = actor instanceof Actor.Guest g ? g.guestId() : null;
         if (userId == null && guestId == null) {
@@ -178,7 +189,7 @@ public final class YoutubeImports {
                 return existing(existing, userId, presentAsAudio, library, VIA_IMPORT);
             }
             diskSpace.requireRoomFor(0);
-            YoutubeMetadata meta = fetchMetadata(videoId);
+            YoutubeMetadata meta = fetchMetadata(videoId, progress);
             String itemId = UuidV7.newId();
             long now = EpochMs.now(clock);
             db.write(c -> {
@@ -306,15 +317,32 @@ public final class YoutubeImports {
      * {@code ingest.maxDurationSeconds}.
      */
     YoutubeMetadata fetchMetadata(String videoId) throws InterruptedException {
+        return fetchMetadata(videoId, YoutubeLookupStage.Listener.NONE);
+    }
+
+    /**
+     * Like {@link #fetchMetadata(String)}, reporting the lookup's stages from yt-dlp's stderr
+     * ({@code --verbose} makes {@code -J} print its progress lines there; {@link YoutubeLookupStage}).
+     */
+    YoutubeMetadata fetchMetadata(String videoId, YoutubeLookupStage.Listener progress) throws InterruptedException {
         if (!tools.hasYtdlp()) {
             throw unavailable();
         }
         JobLog log = new JobLog();
         Path cookies = IngestPipeline.cookiesFile(cookiesFile.get(), w -> LOG.log(System.Logger.Level.WARNING, w));
+        YoutubeLookupStage.Tracker stages = new YoutubeLookupStage.Tracker(progress);
+        // --verbose prints a traceback after an ERROR line, which can push it out of the stderr tail
+        java.util.concurrent.atomic.AtomicReference<String> lastError = new java.util.concurrent.atomic.AtomicReference<>();
         ToolResult result;
         try {
             result = tools.ytdlp(IngestPipeline.metadataArgs(videoId, cookies)).timeout(METADATA_TIMEOUT)
-                    .idleTimeout(METADATA_IDLE_TIMEOUT).log(log).stdoutToString(METADATA_MAX_BYTES).run();
+                    .idleTimeout(METADATA_IDLE_TIMEOUT).log(log).stdoutToString(METADATA_MAX_BYTES)
+                    .stderrLines(line -> {
+                        if (line.strip().startsWith("ERROR:")) {
+                            lastError.set(line);
+                        }
+                        stages.line(line);
+                    }).run();
         } catch (ToolException e) {
             switch (e.kind()) {
                 case NOT_AVAILABLE, START_FAILED -> throw unavailable();
@@ -322,7 +350,8 @@ public final class YoutubeImports {
                         "YouTube didn't answer in time; try again later");
                 default -> {
                     LOG.log(System.Logger.Level.INFO, "yt-dlp -J failed for " + videoId + ":\n" + log.tail());
-                    throw new HttpError(422, "youtube_unavailable", errorMessage(e.stderrTail()));
+                    throw new HttpError(422, "youtube_unavailable",
+                            errorMessage(lastError.get() != null ? lastError.get() : e.stderrTail()));
                 }
             }
         }

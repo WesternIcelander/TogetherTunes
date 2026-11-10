@@ -6,8 +6,8 @@ import { actorLabel } from "./actor.js";
 import { renderAddMedia } from "./addmedia.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
-  inProgress, itemTitleCell, kindLabel, playlistPicker, statusBadge, watchItem, type LibraryEntry, type Page,
-  type ItemSummary,
+  ingestBadge, inProgress, itemTitleCell, kindLabel, playlistPicker, watchItem, type JobView, type LibraryEntry,
+  type Page, type ItemSummary,
 } from "./media.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 
@@ -44,13 +44,13 @@ const VIA: Record<string, string> = { upload: "Uploaded", youtube: "YouTube", sh
 function entryRow(entry: LibraryEntry): HTMLTableRowElement {
   const item = entry.item;
   const statusCell = h("td");
-  const setStatus = (status: ItemSummary["status"], progress?: number): void => {
-    statusCell.replaceChildren(statusBadge(status, progress) ?? "");
+  const setStatus = (status: ItemSummary["status"], job?: JobView): void => {
+    statusCell.replaceChildren(ingestBadge(status, job) ?? "");
   };
   setStatus(item.status);
   if (inProgress(item.status)) {
     stopWatchers.push(watchItem(item.id, ({ item: now, job }) => {
-      setStatus(now.status, job?.progress);
+      setStatus(now.status, job);
     }));
   }
   const via = h("td", { class: "muted small" }, VIA[entry.via] ?? entry.via);

@@ -9,6 +9,7 @@ import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.YoutubeImports;
+import io.siggi.togethertunes.library.YoutubeLookupStage;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.ArrayList;
@@ -89,6 +90,15 @@ public final class RoomQueue {
      *                   YouTube item) the import's errors and {@link AddMediaPolicy#requireYoutube}
      */
     public QueueOps.Added add(String roomId, Actor actor, RoomActor a, Source source) throws Exception {
+        return add(roomId, actor, a, source, YoutubeLookupStage.Listener.NONE);
+    }
+
+    /**
+     * Like {@link #add(String, Actor, RoomActor, Source)}, telling {@code lookup} the stages of a
+     * YouTube link's {@code yt-dlp -J} lookup while it runs (only when there is one).
+     */
+    public QueueOps.Added add(String roomId, Actor actor, RoomActor a, Source source,
+                              YoutubeLookupStage.Listener lookup) throws Exception {
         int given = (source.itemId() != null ? 1 : 0) + (source.uploadId() != null ? 1 : 0)
                 + (source.youtubeUrl() != null ? 1 : 0);
         if (given != 1) {
@@ -112,7 +122,7 @@ public final class RoomQueue {
             itemId = upload.itemId();
         } else {
             addMedia.requireYoutube(actor, roomId);
-            itemId = youtube.importUrl(actor, source.youtubeUrl(), null, false).itemId();
+            itemId = youtube.importUrl(actor, source.youtubeUrl(), null, false, lookup).itemId();
         }
         return registry.call(roomId, tx -> QueueOps.add(tx, a, itemId, source.via()));
     }

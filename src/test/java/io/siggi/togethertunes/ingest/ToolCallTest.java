@@ -276,4 +276,17 @@ class ToolCallTest {
                 ToolCall.quote(List.of("ffmpeg", "-i", "in.mkv", "-vf", "scale=1280:720,format=yuv420p",
                         "-metadata", "title=a b", "it's.mp4", "")));
     }
+
+    @Test
+    void stderrLinesAreHandedOverRedactedAndAThrowingConsumerIsIgnored() throws Exception {
+        List<String> seen = new java.util.concurrent.CopyOnWriteArrayList<>();
+        ToolResult r = call("echo 'one secret-key-123' >&2; echo two >&2; echo out", "x")
+                .secret("secret-key-123").stdoutToString(1024).stderrLines(line -> {
+                    seen.add(line);
+                    throw new IllegalStateException("ignored");
+                }).run();
+        assertEquals(0, r.exitCode());
+        assertEquals("out\n", r.stdoutString());
+        assertEquals(List.of("one <redacted>", "two"), seen);
+    }
 }

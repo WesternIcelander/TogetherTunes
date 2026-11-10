@@ -34,6 +34,7 @@ import io.siggi.togethertunes.ingest.EncodePresets;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
+import io.siggi.togethertunes.ingest.IngestProgress;
 import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.JobsApi;
 import io.siggi.togethertunes.ingest.MediaVersions;
@@ -281,6 +282,7 @@ public final class Main {
         library.libraryAddListener(qualityOnLibraryAdd);
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
         Items items = new Items(database, dataDir, Clock.systemUTC());
+        items.jobSteps(ingest::liveStep);
         ItemsApi itemsApi = new ItemsApi(items, permissions);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
@@ -345,8 +347,11 @@ public final class Main {
         outputControl.idleStop(rtmpIdleStop);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
         // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
-        new JobsApi(ingest.jobs(), new JobList(database, ingest.jobs(), Clock.systemUTC()), permissions, ingest::paused,
-                Clock.systemUTC()).register(appRouter);
+        JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
+        jobList.steps(ingest::liveStep);
+        new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
+        // Queue entries whose item isn't ready show what its ingest is doing (the rooms' ingest messages).
+        roomSocket.ingestProgress(IngestProgress.from(jobList), 1000);
         // How many items a new output encoding would re-encode (the admin page asks before saving).
         admin.encodingInfo(new AdminApi.EncodingInfo() {
             @Override

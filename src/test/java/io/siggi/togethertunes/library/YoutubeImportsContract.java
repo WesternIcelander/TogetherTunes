@@ -63,6 +63,8 @@ abstract class YoutubeImportsContract {
     private Path metaFile;
     private Path errorFile;
     private Path callsFile;
+    /** A script whose output the fake prints to stderr before answering (yt-dlp's progress lines). */
+    private Path stagesFile;
     private Actor.User alice;
     private Actor.User bob;
     private Actor.Guest guest;
@@ -79,10 +81,12 @@ abstract class YoutubeImportsContract {
         metaFile = dir.resolve("meta.json");
         errorFile = dir.resolve("error.txt");
         callsFile = dir.resolve("calls.txt");
+        stagesFile = dir.resolve("stages.sh");
         Path script = dir.resolve("fake-yt-dlp");
         Files.writeString(script, "#!/bin/sh\n"
                 + "printf '%s\\n' \"$@\" >> '" + callsFile + "'\n"
                 + "echo '----' >> '" + callsFile + "'\n"
+                + "if [ -f '" + stagesFile + "' ]; then sh '" + stagesFile + "' >&2; fi\n"
                 + "if [ -f '" + errorFile + "' ]; then cat '" + errorFile + "' >&2; exit 1; fi\n"
                 + "cat '" + metaFile + "'\n", StandardCharsets.UTF_8);
         Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
@@ -225,7 +229,7 @@ abstract class YoutubeImportsContract {
 
         List<List<String>> calls = calls();
         assertEquals(1, calls.size());
-        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--", "https://www.youtube.com/watch?v=" + ID),
+        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--", "https://www.youtube.com/watch?v=" + ID),
                 calls.get(0), "metadata from the canonical URL, never the pasted one");
 
         Map<String, Object> item = item(r.itemId());
@@ -548,5 +552,52 @@ abstract class YoutubeImportsContract {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void theLookupReportsItsStagesInOrder() throws Exception {
+        Files.writeString(stagesFile, "echo '[debug] Encodings: locale UTF-8'\n"
+                + "echo '[youtube] Extracting URL: https://www.youtube.com/watch?v=" + ID + "'\n"
+                + "sleep 0.1\n"
+                + "echo '[youtube] " + ID + ": Downloading webpage'\n"
+                + "echo 'a line nobody knows'\n"
+                + "echo '[youtube] " + ID + ": Downloading tv client config'\n"
+                + "sleep 0.1\n"
+                + "echo '[youtube] " + ID + ": Downloading webpage'\n"
+                + "echo '[youtube] " + ID + ": Downloading m3u8 information'\n"
+                + "echo '[info] " + ID + ": Downloading 1 format(s): 18'\n");
+        List<String> stages = new java.util.concurrent.CopyOnWriteArrayList<>();
+        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null,
+                s -> stages.add(s.wire()));
+        assertEquals("pending", r.status());
+        assertEquals(List.of("contacting", "page", "details", "formats"), stages);
+
+        // known now: no lookup, no stages
+        stages.clear();
+        imports.importUrl(bob, "https://youtu.be/" + ID, null, null, s -> stages.add(s.wire()));
+        assertEquals(List.of(), stages);
+    }
+
+    @Test
+    void unknownOutputAndAThrowingListenerNeverFailTheLookup() throws Exception {
+        Files.writeString(stagesFile, "echo 'Totally new wording: fetching things'\n"
+                + "echo '[youtube] " + ID + ": Downloading webpage'\n");
+        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, s -> {
+            throw new IllegalStateException("the socket is gone");
+        });
+        assertEquals("pending", r.status());
+    }
+
+    @Test
+    void anErrorFollowedByATracebackStillGivesTheErrorMessage() throws Exception {
+        StringBuilder traceback = new StringBuilder("ERROR: [youtube] " + ID + ": Video unavailable\n"
+                + "Traceback (most recent call last):\n");
+        for (int i = 0; i < 40; i++) {
+            traceback.append("  File \"/x/yt_dlp/y.py\", line ").append(i).append(", in f\n");
+        }
+        Files.writeString(errorFile, traceback.toString());
+        HttpError e = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, s -> { }));
+        assertEquals("youtube_unavailable", e.code());
+        assertEquals("YouTube didn't return this video: Video unavailable", e.getMessage());
     }
 }
