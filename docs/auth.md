@@ -55,6 +55,7 @@ Admins can create more roles (e.g. "trusted", "moderator") and assign several to
 | Permission | Meaning |
 |---|---|
 | `admin.settings`, `admin.users`, `admin.roles`, `admin.providers` | Administration |
+| `admin.jobs` | See every encode job with its log on the admin page's Jobs tab; retry failed jobs and cancel queued ones ([library-and-ingest.md](library-and-ingest.md#encode-jobs-page)). Any user sees the jobs of their own library's items without it |
 | `ip.view` | See IP addresses anywhere: guests, sessions, audit log, room member lists |
 | `library.upload` | Upload files |
 | `library.youtube` | Import from YouTube |
