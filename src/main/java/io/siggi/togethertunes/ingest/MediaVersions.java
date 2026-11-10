@@ -530,7 +530,7 @@ public final class MediaVersions implements AutoCloseable {
     // ------------------------------------------------------------------ undo bookkeeping (database)
 
     private static final String VERSION_COLUMNS = "kind, duration_ms, output_profile, loudness_lufs, encode_preset,"
-            + " encode_quality, audio_only_ms, original_web, original_gain_db";
+            + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version";
 
     /**
      * Records the item's current {@code items} columns as what {@code version} (its current one)

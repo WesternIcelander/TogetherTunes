@@ -328,6 +328,41 @@ public final class IngestJobs {
     }
 
     /**
+     * Queues a {@code reencode} job for every {@code ready} item encoded for {@code encoding} whose
+     * card is in an older card format ({@code card_version} below {@link CardEncoder#CARD_VERSION}),
+     * unless the item already has an unfinished job. Such a job makes only the card again (and the
+     * indexes that use it), not the video ({@code docs/library-and-ingest.md#cards}). Items encoded
+     * for another encoding get a full re-encode from {@link #enqueueReencodes} instead, which makes
+     * a new card too. Run at startup, after {@link #enqueueReencodes}.
+     *
+     * @return the number of jobs queued
+     */
+    public int enqueueCardRemakes(OutputEncoding encoding) throws SQLException {
+        Objects.requireNonNull(encoding);
+        return db.write(c -> {
+            List<String> stale = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE status = 'ready'"
+                    + " AND output_profile = ? AND card_version < ?"
+                    + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
+                    + " ORDER BY added_at, id")) {
+                ps.setString(1, encoding.id());
+                ps.setInt(2, CardEncoder.CARD_VERSION);
+                ps.setString(3, State.QUEUED.wire());
+                ps.setString(4, State.RUNNING.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        stale.add(rs.getString(1));
+                    }
+                }
+            }
+            for (String itemId : stale) {
+                enqueue(itemId, Kind.REENCODE);
+            }
+            return stale.size();
+        });
+    }
+
+    /**
      * With {@link #currentEncoding} set: queues a {@code reencode} job for {@code itemId} if it is
      * {@code ready} but encoded for another output encoding, and has no unfinished job.
      */

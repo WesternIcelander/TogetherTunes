@@ -554,6 +554,72 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertNoLeftovers();
     }
 
+    /**
+     * Items whose card is in an older card format (before skip-frame cards) get a card-only
+     * re-encode: a new version with a new skip-frame card and the indexes that use it, every other
+     * file taken over unchanged (hard links), and the new card format recorded.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void cardOnlyReencodeForAnOldCardFormat() throws Exception {
+        String audio = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=330:r=44100", "-t", "3", "-c:a", "aac",
+                stage(audio, "source.m4a").toString());
+        assertEquals(State.DONE, run(Kind.UPLOAD, audio).state());
+        String video = fixtures.item("pending");
+        stageVideo(video);
+        assertEquals(State.DONE, run(Kind.UPLOAD, video).state());
+        for (IngestQueue q : queues) {
+            q.close();
+        }
+        IngestItems items = new IngestItems(db);
+        assertEquals(CardEncoder.CARD_VERSION, items.cardVersion(audio), "a new item has a current card");
+        // as items made before skip-frame cards
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET card_version = 1 WHERE id IN (?, ?)")) {
+                ps.setString(1, audio);
+                ps.setString(2, video);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        Path oldAudio = cur(audio);
+        Path oldVideo = cur(video);
+        assertEquals(2, jobs.enqueueCardRemakes(reference.encoding()));
+        IngestQueue q = queue(tools, reference, 1800);
+        for (String item : List.of(audio, video)) {
+            IngestJob job = run(q, Kind.REENCODE, item);
+            assertEquals(State.DONE, job.state(), job.log());
+            assertTrue(job.log().contains("[ingest] card only"), job.log());
+            assertEquals(CardEncoder.CARD_VERSION, items.cardVersion(item));
+            assertEquals("720p30-3000k-v3", itemRow(item)[3]);
+            CardEncoderTest.checkSkipFrameCard(tools, cur(item).resolve("card.mp4"), reference.encoding());
+            assertSameAvcC("card only", item, item.equals(video));
+        }
+        Path newAudio = cur(audio);
+        Path newVideo = cur(video);
+        assertFalse(newAudio.equals(oldAudio));
+        assertFalse(newVideo.equals(oldVideo));
+        // the audio and video files are the same files; the audio item's index is new and uses the new card
+        assertTrue(Files.isSameFile(oldAudio.resolve("audio.m4a"), newAudio.resolve("audio.m4a")));
+        assertFalse(Files.isSameFile(oldAudio.resolve("index.bin"), newAudio.resolve("index.bin")));
+        SampleIndex index = SampleIndex.read(newAudio.resolve("index.bin"));
+        assertEquals(SampleIndex.read(oldAudio.resolve("index.bin")).track(SampleIndex.Kind.AUDIO).endPts(),
+                index.track(SampleIndex.Kind.AUDIO).endPts());
+        SampleIndex.Track card = index.track(SampleIndex.Kind.VIDEO);
+        assertEquals(EncodeProfile.GOP_FRAMES, card.sampleCount());
+        assertTrue(card.size(1) < SkipFrameCardTest.MAX_SKIP_FRAME_BYTES, "the index points at the skip-frame card");
+        for (String f : List.of("mezz.mp4", "audio.m4a", "index.bin")) {
+            assertTrue(Files.isSameFile(oldVideo.resolve(f), newVideo.resolve(f)), f);
+        }
+        assertEquals(0, jobs.enqueueCardRemakes(reference.encoding()));
+        // a re-encode job of an item with a current card does nothing
+        IngestJob again = run(q, Kind.REENCODE, audio);
+        assertTrue(again.log().contains("already encoded for"), again.log());
+        assertEquals(newAudio, cur(audio));
+        assertNoLeftovers();
+    }
+
     /** With equal quick and quality presets, a quick encode is the quality encode: no second job. */
     @Test
     @Execution(ExecutionMode.CONCURRENT)

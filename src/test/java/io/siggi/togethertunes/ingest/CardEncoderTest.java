@@ -100,6 +100,30 @@ class CardEncoderTest {
         }
     }
 
+    /**
+     * Checks that a card is a skip-frame card ({@link CardEncoder#CARD_VERSION} 2): every frame
+     * decodes to the IDR's picture, and the 59 P-frames are written skip frames of a few bytes.
+     */
+    static void checkSkipFrameCard(Tools tools, Path card, OutputEncoding encoding) throws Exception {
+        CardEncoder.check(tools, card, encoding, null);
+        io.siggi.togethertunes.media.SampleIndex.Track track = IndexBuilder.probeTrack(tools, card,
+                io.siggi.togethertunes.media.SampleIndex.Kind.VIDEO, 0, null);
+        for (int i = 1; i < track.sampleCount(); i++) {
+            assertTrue(track.size(i) < SkipFrameCardTest.MAX_SKIP_FRAME_BYTES,
+                    card.getFileName() + " frame " + i + " has " + track.size(i) + " bytes: not a skip frame");
+        }
+    }
+
+    @Test
+    void idrCommandEncodesOneFrameAsRawH264() {
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        String joined = String.join(" ", CardEncoder.idrCommand(Path.of("card.png"), Path.of("idr.h264"), profile));
+        assertTrue(joined.startsWith("-y -loop 1 -framerate 30 -i card.png -frames:v 1 -vf "
+                + EncodeProfile.scaleFilter(profile) + " "), joined);
+        assertTrue(joined.contains(String.join(" ", EncodeProfile.videoArgs(profile))), joined);
+        assertTrue(joined.endsWith(" -an -f h264 idr.h264"), joined);
+    }
+
     @Test
     void commandIsTheDocumentedCardCommand() {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
@@ -130,6 +154,7 @@ class CardEncoderTest {
         assertTrue(Files.isRegularFile(out));
         assertArrayEquals(ref.avcC(), ReferenceCard.readAvcC(out));
         checkCard(tools, out, profile);
+        checkSkipFrameCard(tools, out, profile);
         long size = Files.size(out);
         // capped, not padded: a still 2 s card is far below R × 2 s / 8 bytes, and holds no filler
         // NAL units (the packager pads the stream while sending)

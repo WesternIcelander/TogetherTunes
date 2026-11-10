@@ -49,6 +49,7 @@ class FillerCardsTest {
             assertEquals(card, FillerCards.cardFile(cards, profile, filler));
             assertArrayEquals(ref.avcC(), ReferenceCard.readAvcC(card), filler + " avcC");
             CardEncoderTest.checkCard(tools, card, profile);
+            CardEncoderTest.checkSkipFrameCard(tools, card, profile);
             assertTrue(Files.isRegularFile(profileDir.resolve(filler.id() + FillerCards.KEY_SUFFIX)));
             contents.add(new String(Files.readAllBytes(card), java.nio.charset.StandardCharsets.ISO_8859_1));
         }
@@ -64,6 +65,31 @@ class FillerCardsTest {
         FillerCards again = FillerCards.ensure(tools, cards, ref, null);
         assertEquals(0, again.encoded());
         assertEquals(before, Files.getLastModifiedTime(again.card(Filler.PAUSED)));
+    }
+
+    @Test
+    @Timeout(180)
+    void cardsOfAnOlderCardFormatAreRebuilt() throws Exception {
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        Tools tools = CardEncoderTest.tools();
+        Path cards = dir.resolve("cards");
+        ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
+        FillerCards.ensure(tools, cards, ref, null);
+        // as a server before skip-frame cards left them: a full x264 card under the old fingerprint
+        BufferedImage image = new CardRenderer(profile.profile()).renderFiller(Filler.PAUSED);
+        Path paused = FillerCards.cardFile(cards, profile, Filler.PAUSED);
+        Path png = dir.resolve("paused.png");
+        CardRenderer.writePng(image, png);
+        CardEncoder.encodePng(tools, png, paused, profile, null);
+        String v2 = FillerCards.fingerprint(image, ref);
+        Files.writeString(paused.resolveSibling("paused" + FillerCards.KEY_SUFFIX),
+                FillerCards.fingerprint("card v1", image, ref) + "\n");
+        assertTrue(!v2.equals(FillerCards.fingerprint("card v1", image, ref)));
+
+        FillerCards again = FillerCards.ensure(tools, cards, ref, null);
+        assertEquals(1, again.encoded(), "only the old-format card is made again");
+        CardEncoderTest.checkSkipFrameCard(tools, paused, profile);
+        assertEquals(v2, Files.readString(paused.resolveSibling("paused" + FillerCards.KEY_SUFFIX)).strip());
     }
 
     @Test

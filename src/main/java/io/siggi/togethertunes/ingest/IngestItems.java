@@ -181,6 +181,19 @@ public final class IngestItems {
     public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
                           boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
                           VersionChange change, Long audioOnlyMs) throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, mediaVersion, change,
+                audioOnlyMs, null);
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, X264Preset, boolean, Double, Originals.Original, int, VersionChange, Long)};
+     * also records the card format of the new version's {@code card.mp4} ({@code card_version},
+     * {@link CardEncoder#CARD_VERSION}) when it made a new card; null keeps the stored value (the
+     * card was taken over from the previous version).
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
+                          VersionChange change, Long audioOnlyMs, Integer cardVersion) throws SQLException {
         db.write(c -> {
             if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
                 MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
@@ -189,6 +202,7 @@ public final class IngestItems {
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?, audio_only_ms = ?,"
                     + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")
+                    + (cardVersion != null ? " card_version = " + cardVersion.intValue() + "," : "")
                     + " purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
                 ps.setLong(2, durationMs);
@@ -216,6 +230,52 @@ public final class IngestItems {
                 MediaVersions.recordKept(c, id, mediaVersion, change == null ? null : change.keptVersion(),
                         change != null && change.undoable(), at);
             }
+            return null;
+        });
+    }
+
+    /**
+     * The card format of the item's current {@code card.mp4} ({@code card_version},
+     * {@link CardEncoder#CARD_VERSION}), or 0 if the item doesn't exist.
+     */
+    public int cardVersion(String id) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT card_version FROM items WHERE id = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getInt(1) : 0;
+                }
+            }
+        });
+    }
+
+    /**
+     * Switches the item from version {@code from} to {@code mediaVersion}, which differs from it
+     * only in its card (a card-only re-encode, {@code docs/library-and-ingest.md#cards}): records the
+     * new card format and the new version like {@link #published} does, keeping {@code from} for the
+     * undo window without Undo (a change made by the system).
+     *
+     * @throws SQLException if the item is gone or no longer at version {@code from}
+     */
+    public void cardRemade(String id, int from, int mediaVersion, int cardVersion, boolean keepFrom, long atMs)
+            throws SQLException {
+        db.write(c -> {
+            if (keepFrom) {
+                MediaVersions.snapshotIfMissing(c, id, from, atMs);
+            }
+            String editJson = MediaVersions.editJson(c, id, from);
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE items SET media_version = ?, card_version = ? WHERE id = ? AND media_version = ?")) {
+                ps.setInt(1, mediaVersion);
+                ps.setInt(2, cardVersion);
+                ps.setString(3, id);
+                ps.setInt(4, from);
+                if (ps.executeUpdate() != 1) {
+                    throw new SQLException("item " + id + " no longer exists or is no longer at version " + from);
+                }
+            }
+            MediaVersions.recordVersion(c, id, mediaVersion, atMs, editJson);
+            MediaVersions.recordKept(c, id, mediaVersion, keepFrom ? from : null, false, atMs);
             return null;
         });
     }

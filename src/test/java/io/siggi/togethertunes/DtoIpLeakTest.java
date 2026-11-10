@@ -276,6 +276,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestItems$Item", "item columns an ingest job reads, server-side only"),
+            Map.entry("io.siggi.togethertunes.media.SkipFrames$Sps", "SPS fields the skip-frame writer needs; never serialised"),
+            Map.entry("io.siggi.togethertunes.media.SkipFrames$Pps", "PPS fields the skip-frame writer needs; never serialised"),
             Map.entry("io.siggi.togethertunes.ingest.Originals$Original", "what ingest records about a kept original, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.Loudness$Measurement", "loudnorm pass-1 result, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.MediaProbe", "ffprobe result of a source file, server-side only"),

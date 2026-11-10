@@ -587,6 +587,48 @@ abstract class IngestJobsContract {
     }
 
     /**
+     * Items of the current encoding whose card is in an older card format get a (card-only)
+     * re-encode, once; items of another encoding are left to {@code enqueueReencodes}, and items
+     * that aren't ready, already have a current card or have an unfinished job are skipped.
+     */
+    @Test
+    void enqueueCardRemakesQueuesItemsWithOldCards() throws SQLException {
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        String oldCard = fixtures.item("ready");
+        String newCard = fixtures.item("ready");
+        String otherEncoding = fixtures.item("ready");
+        String failed = fixtures.item("failed");
+        String busy = fixtures.item("ready");
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET output_profile = ?, card_version = ? WHERE id = ?")) {
+                for (String id : List.of(oldCard, newCard, otherEncoding, failed, busy)) {
+                    ps.setString(1, id.equals(otherEncoding) ? "1080p30-6000k-v3" : encoding.id());
+                    ps.setInt(2, id.equals(newCard) ? CardEncoder.CARD_VERSION : 1);
+                    ps.setString(3, id);
+                    ps.executeUpdate();
+                }
+            }
+            return null;
+        });
+        jobs.enqueue(busy, Kind.UPLOAD);
+        assertEquals(1, jobs.enqueueCardRemakes(encoding));
+        List<IngestJob> queued = jobs.list(State.QUEUED, 10);
+        assertEquals(2, queued.size());
+        IngestJob remake = queued.stream().filter(j -> j.kind() == Kind.REENCODE).findFirst().orElseThrow();
+        assertEquals(oldCard, remake.itemId());
+        assertEquals(0, jobs.enqueueCardRemakes(encoding), "it has an unfinished job now");
+        assertEquals(1, new IngestItems(db).cardVersion(oldCard), "existing items are in card format 1");
+        assertEquals(0, new IngestItems(db).cardVersion("nope"));
+        // a publish that made a new card records its format; one that took the card over keeps it
+        new IngestItems(db).published(newCard, false, 1, encoding, X264Preset.VERYFAST, true, null, null, -1, null,
+                null);
+        assertEquals(CardEncoder.CARD_VERSION, new IngestItems(db).cardVersion(newCard));
+        new IngestItems(db).published(oldCard, false, 1, encoding, X264Preset.VERYFAST, true, null, null, -1, null,
+                null, CardEncoder.CARD_VERSION);
+        assertEquals(CardEncoder.CARD_VERSION, new IngestItems(db).cardVersion(oldCard));
+    }
+
+    /**
      * The encoding changed while a job ran (an admin changed output.profile or the bitrate): the
      * job finishes for the old encoding, so its item gets a {@code reencode} at once; an item that
      * finished for the current encoding doesn't. {@link IngestJobs#countStale} counts the ready

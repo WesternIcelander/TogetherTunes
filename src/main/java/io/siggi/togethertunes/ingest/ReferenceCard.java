@@ -93,7 +93,8 @@ public final class ReferenceCard {
                 } catch (IOException e) {
                     throw new IOException(avcFile + ": " + e.getMessage(), e);
                 }
-                if (!Files.exists(card) && Arrays.equals(stored, fresh)) {
+                if (Arrays.equals(stored, fresh)) {
+                    // a fresh card in the current card format (CardEncoder.CARD_VERSION) replaces the stored one
                     CardEncoder.move(mp4, card);
                 }
                 return new ReferenceCard(encoding, card, stored, fresh, false);
@@ -136,10 +137,13 @@ public final class ReferenceCard {
         }
     }
 
-    /** The card command ({@link CardEncoder#encodePng}); no avcC check, this card defines it. */
+    /**
+     * The card encode ({@link CardEncoder#encodeCard}: a skip-frame card, or the full x264 encode if
+     * that fails); no avcC check, this card defines it.
+     */
     static void encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
-            throws ToolException, InterruptedException {
-        CardEncoder.encodePng(tools, png, out, encoding, log);
+            throws ToolException, IOException, InterruptedException {
+        CardEncoder.encodeCard(tools, png, out, encoding, log);
     }
 
     /**

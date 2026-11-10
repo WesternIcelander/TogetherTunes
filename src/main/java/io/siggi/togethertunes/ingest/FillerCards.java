@@ -28,8 +28,8 @@ import java.util.Objects;
  * <p>{@link #ensure} runs at startup. Each card is rendered (cheap) and fingerprinted together with
  * the encoder arguments and the reference avcC; the fingerprint is stored next to the card in
  * {@code <id>.key}. A card whose fingerprint still matches and whose avcC matches the reference is
- * kept; otherwise (first start, new renderer or fonts, new encoder arguments or bitrate, missing or damaged
- * file) it is re-encoded with {@link CardEncoder#encode}, which checks the avcC before publishing.
+ * kept; otherwise (first start, new renderer or fonts, new card format, new encoder arguments or bitrate,
+ * missing or damaged file) it is re-encoded with {@link CardEncoder#encode}, which checks the avcC before publishing.
  */
 public final class FillerCards {
     /** Suffix of the fingerprint file stored next to each card. */
@@ -103,10 +103,16 @@ public final class FillerCards {
     }
 
     /**
-     * SHA-256 over everything a card's bytes depend on: the encoding, the encoder arguments (incl. the bitrate) and
-     * filter, the reference avcC, and the rendered pixels.
+     * SHA-256 over everything a card's bytes depend on: the card format ({@link CardEncoder#CARD_VERSION}),
+     * the encoding, the encoder arguments (incl. the bitrate) and filter, the reference avcC, and the
+     * rendered pixels.
      */
     static String fingerprint(BufferedImage image, ReferenceCard reference) {
+        return fingerprint("card v" + CardEncoder.CARD_VERSION, image, reference);
+    }
+
+    /** {@link #fingerprint(BufferedImage, ReferenceCard)} for the card format named {@code format} ({@code card v<n>}). */
+    static String fingerprint(String format, BufferedImage image, ReferenceCard reference) {
         MessageDigest sha;
         try {
             sha = MessageDigest.getInstance("SHA-256");
@@ -114,7 +120,7 @@ public final class FillerCards {
             throw new IllegalStateException(e);
         }
         OutputEncoding encoding = reference.encoding();
-        sha.update(("card v1\n" + encoding.id() + "\n" + EncodeProfile.scaleFilter(encoding) + "\n"
+        sha.update((format + "\n" + encoding.id() + "\n" + EncodeProfile.scaleFilter(encoding) + "\n"
                 + String.join(" ", EncodeProfile.videoArgs(encoding)) + "\n").getBytes(StandardCharsets.UTF_8));
         sha.update(reference.avcC());
         ByteBuffer header = ByteBuffer.allocate(8).putInt(image.getWidth()).putInt(image.getHeight());

@@ -7,13 +7,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.ingest.CardEncoder;
+import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.JobLog;
+import io.siggi.togethertunes.ingest.ReferenceCard;
+import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.ProgramCue.Entry;
+import java.awt.image.BufferedImage;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
@@ -99,6 +107,84 @@ class AudioOnlyRoomOutputTest {
         // the whole session, cards and fillers alike, on the audio-only rate
         CbrPaddingTest.checkConstantRate(CbrPaddingTest.videoPackets(tools, ts), AUDIO_ONLY_RATE, 90_000, 0.02, 2_000,
                 frameBytes(AUDIO_ONLY_RATE), CbrPaddingTest.parameterSetBytes(m.avcC()));
+    }
+
+    /**
+     * The audio-only media with every card made the way ingest makes it now (skip-frame cards,
+     * {@code docs/library-and-ingest.md#cards}) from a detailed, photo-like cover: the item cards
+     * of {@code audio1} and {@code video1} (and the indexes that use them) and the filler cards.
+     * A full x264 encode of such a still took 800+ kb/s of video, more than the whole audio-only
+     * rate.
+     */
+    private HarnessFixture.Media detailedCoverMedia(Tools tools) throws Exception {
+        HarnessFixture.Media m = media(tools);
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        JobLog log = new JobLog();
+        ReferenceCard ref = ReferenceCard.ensure(tools, dir.resolve("cards"), profile, log);
+        Path coverPng = dir.resolve("cover.png");
+        tools.ffmpeg("-v", "error", "-y", "-f", "lavfi", "-i", "mandelbrot=s=1000x1000", "-vf",
+                "noise=alls=12:allf=u,format=rgb24", "-frames:v", "1", "-update", "1", coverPng.toString()).run();
+        BufferedImage cover = CardRenderer.readImage(coverPng);
+        CardRenderer renderer = new CardRenderer(profile.profile());
+        Path audio = m.media().resolve("audio1");
+        Path video = m.media().resolve("video1");
+        CardEncoder.encode(tools, renderer.renderItem(new CardRenderer.ItemCard("Audio", "Artist", "Album", cover)),
+                audio.resolve(IngestPipeline.CARD), ref, log);
+        CardEncoder.encode(tools, renderer.renderItem(new CardRenderer.ItemCard("Video", "Artist", "Album", cover)),
+                video.resolve(IngestPipeline.CARD), ref, log);
+        Files.delete(audio.resolve(SampleIndex.FILE_NAME));
+        IndexBuilder.build(tools, profile, audio.resolve(IngestPipeline.CARD), audio.resolve(IngestPipeline.AUDIO),
+                audio.resolve(SampleIndex.FILE_NAME), log);
+        Files.delete(video.resolve(IngestPipeline.AUDIO_ONLY_INDEX));
+        IndexBuilder.build(tools, profile, video.resolve(IngestPipeline.CARD), video.resolve(IngestPipeline.AUDIO_ONLY),
+                video.resolve(IngestPipeline.AUDIO_ONLY_INDEX), log);
+        Map<FillerSource.Filler, CardGop> fillers = new EnumMap<>(FillerSource.Filler.class);
+        for (FillerSource.Filler f : FillerSource.Filler.values()) {
+            // a detailed picture on every filler too (the real ones are mostly flat)
+            String name = f.name().toLowerCase(java.util.Locale.ROOT);
+            Path card = dir.resolve("detailed-" + name + ".mp4");
+            CardEncoder.encode(tools, renderer.renderItem(new CardRenderer.ItemCard(name, "", "", cover)), card,
+                    ref, log);
+            fillers.put(f, CardGop.load(tools, profile, card, log));
+        }
+        assertFalse(log.tail().contains("skip-frame card failed"), log.tail());
+        return new HarnessFixture.Media(m.media(), m.avcC(), fillers, m.silence());
+    }
+
+    @Test
+    @Timeout(300)
+    void detailedCoverCardsStayWithinTheAudioOnlyRate() throws Exception {
+        Tools tools = HarnessFixture.tools();
+        HarnessFixture.Media m = detailedCoverMedia(tools);
+        ScriptedTimeline script = new ScriptedTimeline(HarnessFixture.SCRIPT_START_MS)
+                .at(0).audioOnly(true).add(variant("f"), videoAsAudio("n"), audio("a"))
+                .at(6_000).pause().at(8_000).play();
+        long normal = OutputEncoding.defaultFor(OutputProfile.P720_30).videoBitrateBps();
+        Path ts = dir.resolve("detailed.ts");
+        OfflineHarness.Result r = HarnessFixture.run(tools, m, script, 36_000, normal, AUDIO_ONLY_RATE, ts);
+        List<String> kinds = HarnessFixture.kinds(r);
+        assertTrue(kinds.containsAll(List.of("as-audio", "audio", "paused", "idle")), kinds.toString());
+        HarnessFixture.assertPackets(tools, ts, r);
+        // constant at the audio-only rate: the cards never push the stream above it
+        CbrPaddingTest.checkConstantRate(CbrPaddingTest.videoPackets(tools, ts), AUDIO_ONLY_RATE, 90_000, 0.02, 2_000,
+                frameBytes(AUDIO_ONLY_RATE), CbrPaddingTest.parameterSetBytes(m.avcC()));
+    }
+
+    /**
+     * Skip-frame cards spliced between video items in a normal room (the one-minute harness
+     * cycle: videos, an audio item, a video as audio, fillers) decode cleanly.
+     */
+    @Test
+    @Timeout(300)
+    void skipFrameCardsSpliceBetweenVideos() throws Exception {
+        Tools tools = HarnessFixture.tools();
+        HarnessFixture.Media m = detailedCoverMedia(tools);
+        Path ts = dir.resolve("normal.ts");
+        OfflineHarness.Result r = HarnessFixture.run(tools, m, 1, ts);
+        List<String> kinds = HarnessFixture.kinds(r);
+        assertTrue(kinds.containsAll(List.of("video", "audio", "as-audio", "idle")), kinds.toString());
+        HarnessFixture.assertPackets(tools, ts, r);
+        HarnessFixture.assertDecodesClean(tools, ts);
     }
 
     @Test

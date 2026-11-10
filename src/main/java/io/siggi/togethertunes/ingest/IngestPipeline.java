@@ -255,14 +255,18 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         IngestItems.Item item = items.get(job.itemId())
                 .orElseThrow(() -> new IngestFailure("The item no longer exists"));
+        boolean cardOnly = false;
         if (job.kind() == Kind.REENCODE) {
             if (!"ready".equals(item.status())) {
                 log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
                 return;
             }
             if (reference.encoding().id().equals(item.outputProfile())) {
-                log.append("[ingest] the item is already encoded for " + reference.encoding().id());
-                return;
+                if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION) {
+                    log.append("[ingest] the item is already encoded for " + reference.encoding().id());
+                    return;
+                }
+                cardOnly = true;
             }
         }
         if (job.kind() == Kind.QUALITY) {
@@ -330,7 +334,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     }
                 }
                 run(ctx, item, scratch, work, reference, targetJson, true);
-            } else {
+            } else if (!cardOnly || !remakeCard(ctx, item, work, reference)) {
                 run(ctx, item, scratch, work, reference, currentJson, false);
             }
         } finally {
@@ -650,7 +654,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
-                        lufs, kept, v, change, variantMs));
+                        lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, original, durationUs / 1000);
@@ -1007,6 +1011,100 @@ public final class IngestPipeline implements IngestQueue.Handler {
         retire(item, itemDir, hadOld, kept, durationMs);
         ctx.progress(1);
         return true;
+    }
+
+    /**
+     * A card-only re-encode ({@code docs/library-and-ingest.md#cards}): a {@code reencode} job of an
+     * item that is encoded for the current encoding but whose card is in an older card format
+     * ({@link CardEncoder#CARD_VERSION}). Every file of the current version is linked into the new
+     * one except the card, which is rendered again (from {@code cover.jpg} and the item's metadata)
+     * and encoded, and the indexes that use it (an audio item's {@code index.bin}, a video's
+     * {@link #AUDIO_ONLY_INDEX}), which are built again; the video is untouched. Published as a
+     * system change (the previous version is kept for the undo window, without Undo). Returns
+     * false (nothing done) when the current version can't be reused (files missing): then a full
+     * re-encode.
+     */
+    private boolean remakeCard(IngestQueue.Context ctx, IngestItems.Item item, Path work, ReferenceCard reference)
+            throws Exception {
+        JobLog log = ctx.log();
+        OutputEncoding profile = reference.encoding();
+        Path itemDir = itemDir(dataDir, item.id());
+        Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
+        boolean video = Files.isRegularFile(currentDir.resolve(MEZZ));
+        boolean audioOnly = video && Files.isRegularFile(currentDir.resolve(AUDIO_ONLY));
+        List<String> needed = new ArrayList<>(List.of(AUDIO, CARD, SampleIndex.FILE_NAME));
+        if (audioOnly) {
+            needed.add(AUDIO_ONLY_INDEX);
+        }
+        if ("video".equals(item.kind()) != video) {
+            log.append("[ingest] full re-encode: the current version's files don't match the item kind");
+            return false;
+        }
+        for (String f : needed) {
+            if (!Files.isRegularFile(currentDir.resolve(f))) {
+                log.append("[ingest] full re-encode: the current version's " + f + " is missing");
+                return false;
+            }
+        }
+        log.append("[ingest] card only: the card is in an older format; the rest of version " + item.mediaVersion()
+                + " is kept");
+        ctx.stage(STEP_FINISH, 0, 1);
+        for (String f : List.of(MEZZ, AUDIO, COVER, AUDIO_ONLY, SampleIndex.FILE_NAME)) {
+            if (Files.isRegularFile(currentDir.resolve(f))) {
+                linkOrCopy(currentDir.resolve(f), work.resolve(f));
+            }
+        }
+
+        step(log, "card");
+        BufferedImage artwork = null;
+        if (Files.isRegularFile(work.resolve(COVER))) {
+            try {
+                artwork = CardRenderer.readImage(work.resolve(COVER));
+            } catch (IOException e) {
+                log.append("[ingest] the cover image could not be read: " + e.getMessage());
+            }
+        }
+        BufferedImage card = new CardRenderer(profile.profile()).renderItem(
+                new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
+        CardEncoder.encode(tools, card, work.resolve(CARD), reference, log);
+        ctx.progress(0.5);
+
+        step(log, "index");
+        SampleIndex old = SampleIndex.read(currentDir.resolve(SampleIndex.FILE_NAME));
+        long durationUs = IngestVerifier.audioDurationUs(old);
+        if (!video) {
+            Files.delete(work.resolve(SampleIndex.FILE_NAME));
+            SampleIndex index = IndexBuilder.build(tools, profile, work.resolve(CARD), work.resolve(AUDIO),
+                    work.resolve(SampleIndex.FILE_NAME), log);
+            checkCardIndex(index, reference, durationUs);
+        }
+        if (audioOnly) {
+            long audioOnlyUs = IngestVerifier.audioDurationUs(SampleIndex.read(currentDir.resolve(AUDIO_ONLY_INDEX)));
+            SampleIndex index = IndexBuilder.build(tools, profile, work.resolve(CARD), work.resolve(AUDIO_ONLY),
+                    work.resolve(AUDIO_ONLY_INDEX), log);
+            checkCardIndex(index, reference, audioOnlyUs);
+        }
+        ctx.progress(0.8);
+
+        step(log, "publish");
+        boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
+        int version = publish(work, itemDir, item.mediaVersion(), null,
+                v -> items.cardRemade(item.id(), item.mediaVersion(), v, CardEncoder.CARD_VERSION, hadOld,
+                        System.currentTimeMillis()));
+        log.append("[ingest] published the new card as version " + version + (hadOld ? "; version "
+                + item.mediaVersion() + " is kept until nobody can still be playing it" : ""));
+        MediaVersions v = versions;
+        if (hadOld && v != null) {
+            v.retired(item.id(), item.mediaVersion(), durationUs / 1000);
+        }
+        ctx.progress(1);
+        return true;
+    }
+
+    /** Checks an index rebuilt around a new card: the reference avcC, the GOP grid, the same audio length. */
+    private static void checkCardIndex(SampleIndex index, ReferenceCard reference, long audioUs)
+            throws IngestFailure, ReferenceCard.AvcCMismatchException {
+        IngestVerifier.verify(index, reference, audioUs, -1, CARD);
     }
 
     /**

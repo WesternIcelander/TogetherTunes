@@ -18,8 +18,9 @@ import java.util.List;
 /**
  * A card held in memory: one closed 2 s GOP of {@value EncodeProfile#GOP_FRAMES} AVCC samples, the
  * first an IDR and the rest P-frames ({@code docs/library-and-ingest.md#cards}). Sources repeat it
- * for audio items, {@code presentAsAudio} video items and fillers. A card is 40–100 KB, so it is
- * kept in memory rather than read per repeat. Immutable; {@link #frame} hands out the shared array.
+ * for audio items, {@code presentAsAudio} video items and fillers. A card is small (a skip-frame
+ * card is its IDR, tens of KB, plus 59 skip frames of a few bytes each), so it is kept in memory
+ * rather than read per repeat. Immutable; {@link #frame} hands out the shared array.
  */
 public final class CardGop {
     private final byte[] avcC;

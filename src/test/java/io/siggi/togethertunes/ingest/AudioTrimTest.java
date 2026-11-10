@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -210,6 +211,49 @@ class AudioTrimTest extends IngestPipelineTestBase {
         versions.undo(item, (c, u) -> { });
         assertAudioOnly("after undo", item, 13_000);
         assertEquals(0L, EditSettings.parse(MediaVersions.currentEditJson(db, item)).audioStartMs());
+        assertNoLeftovers();
+    }
+
+    /**
+     * A card-only re-encode (a card in an older card format) of a video with an audio trim makes
+     * the audio-only index again around the new card; the audio-only file, the video and the edit
+     * settings stay as they are.
+     */
+    @Test
+    void aCardOnlyReencodeRebuildsTheAudioOnlyIndex() throws Exception {
+        IngestQueue q = queue(tools, reference, 1800);
+        String item = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100",
+                "-t", "8", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                stage(item, "source.mp4").toString());
+        assertEquals(State.DONE, run(q, Kind.UPLOAD, item).state());
+        trim(q, item, audioJob(2000L, 6000L));
+        assertAudioOnly("audio trim", item, 4000);
+        String edit = MediaVersions.currentEditJson(db, item);
+        Path before = cur(item);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET card_version = 1 WHERE id = ?")) {
+                ps.setString(1, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        IngestJob j = run(q, Kind.REENCODE, item);
+        assertEquals(State.DONE, j.state(), j.log());
+        assertTrue(j.log().contains("[ingest] card only"), j.log());
+        Path after = cur(item);
+        assertFalse(after.equals(before));
+        assertAudioOnly("after the card-only re-encode", item, 4000);
+        for (String f : List.of(IngestPipeline.MEZZ, IngestPipeline.AUDIO, IngestPipeline.AUDIO_ONLY,
+                SampleIndex.FILE_NAME)) {
+            assertTrue(Files.isSameFile(before.resolve(f), after.resolve(f)), f);
+        }
+        SampleIndex index = SampleIndex.read(after.resolve(IngestPipeline.AUDIO_ONLY_INDEX));
+        assertTrue(index.track(SampleIndex.Kind.VIDEO).size(1) < SkipFrameCardTest.MAX_SKIP_FRAME_BYTES,
+                "the audio-only index uses the new card");
+        CardEncoderTest.checkSkipFrameCard(tools, after.resolve(IngestPipeline.CARD), reference.encoding());
+        assertEquals(edit, MediaVersions.currentEditJson(db, item), "the edit settings are kept");
+        assertEquals(CardEncoder.CARD_VERSION, new IngestItems(db).cardVersion(item));
         assertNoLeftovers();
     }
 }

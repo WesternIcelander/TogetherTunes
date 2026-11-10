@@ -519,6 +519,14 @@ public final class Main {
                 err.println("WARNING: could not queue re-encode jobs for the output profile: " + e.getMessage());
             }
             try {
+                int cards = jobs.enqueueCardRemakes(referenceCard.encoding());
+                if (cards > 0) {
+                    err.println("Queued " + cards + " card-only re-encode jobs (items with cards in an older card format)");
+                }
+            } catch (SQLException e) {
+                err.println("WARNING: could not queue card-only re-encode jobs: " + e.getMessage());
+            }
+            try {
                 int quality = jobs.enqueueQualityReencodes();
                 if (quality > 0) {
                     err.println("Queued " + quality + " quality re-encode jobs (library items made with the quick preset)");
