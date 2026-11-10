@@ -225,4 +225,129 @@ class WebBuildTest {
         assertFalse(found.size() > 0,
                 "compiled JS uses features newer than Safari 15.0:\n  " + String.join("\n  ", found));
     }
+
+    /**
+     * CSS features newer than the browser baseline (Safari 15.0). An unsupported declaration or
+     * rule is silently dropped (a whole rule for an unknown selector), so these would only show up
+     * as wrong styling on the iOS 15 devices. Matched on the CSS with its comments removed.
+     */
+    private static final Map<String, Pattern> UNSUPPORTED_CSS = Map.ofEntries(
+            Map.entry("color-mix() (Safari 16.2)", Pattern.compile("\\bcolor-mix\\s*\\(", Pattern.CASE_INSENSITIVE)),
+            Map.entry("light-dark() (Safari 17.5)", Pattern.compile("\\blight-dark\\s*\\(", Pattern.CASE_INSENSITIVE)),
+            Map.entry("@layer (Safari 15.4)", Pattern.compile("@layer\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("@container (Safari 16)", Pattern.compile("@container\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("@property (Safari 16.4)", Pattern.compile("@property\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("@scope (Safari 17.4)", Pattern.compile("@scope\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("@starting-style (Safari 17.5)", Pattern.compile("@starting-style\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("nesting & (Safari 16.5)", Pattern.compile("&")),
+            Map.entry(":has() (Safari 15.4)", Pattern.compile(":has\\s*\\(", Pattern.CASE_INSENSITIVE)),
+            Map.entry(":focus-visible (Safari 15.4)", Pattern.compile(":focus-visible\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry(":user-valid/:user-invalid (Safari 16.5)", Pattern.compile(":user-(in)?valid\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("overflow-wrap: anywhere (Safari 15.4)", Pattern.compile("overflow-wrap\\s*:\\s*anywhere", Pattern.CASE_INSENSITIVE)),
+            Map.entry("accent-color (Safari 15.4)", Pattern.compile("(?<![-\\w])accent-color\\s*:", Pattern.CASE_INSENSITIVE)),
+            Map.entry("text-wrap (Safari 17.4)", Pattern.compile("(?<![-\\w])text-wrap\\s*:", Pattern.CASE_INSENSITIVE)),
+            Map.entry("subgrid (Safari 16)", Pattern.compile("\\bsubgrid\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("dynamic viewport units dvh/svh/lvh (Safari 15.4)",
+                    Pattern.compile("\\d[dsl]v(h|w|i|b|min|max)\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("container query units cqw/cqh (Safari 16)",
+                    Pattern.compile("\\dcq(w|h|i|b|min|max)\\b", Pattern.CASE_INSENSITIVE)),
+            Map.entry("media query range syntax (Safari 16.4)",
+                    Pattern.compile("@media[^{]*\\([^)]*[<>]", Pattern.CASE_INSENSITIVE)),
+            Map.entry("CSS math functions round()/mod()/rem()/trig/pow() (Safari 15.4)", Pattern.compile(
+                    "(?<![-\\w])(round|mod|rem|sin|cos|tan|asin|acos|atan|atan2|pow|sqrt|hypot|log|exp|abs|sign)\\s*\\(",
+                    Pattern.CASE_INSENSITIVE)),
+            Map.entry("LinkText/VisitedText/ActiveText system colours (unreliable in Safari 15)",
+                    Pattern.compile("\\b(LinkText|VisitedText|ActiveText)\\b", Pattern.CASE_INSENSITIVE)));
+
+    /** Returns one line per use of an {@link #UNSUPPORTED_CSS} feature in {@code css}, ignoring comments. */
+    static List<String> unsupportedCssFeatures(String name, String css) {
+        // Blank out comments but keep their newlines, so the line numbers stay right.
+        Matcher comments = Pattern.compile("/\\*.*?\\*/", Pattern.DOTALL).matcher(css);
+        StringBuilder sb = new StringBuilder();
+        while (comments.find()) {
+            comments.appendReplacement(sb, Matcher.quoteReplacement(comments.group().replaceAll("[^\\n]", " ")));
+        }
+        comments.appendTail(sb);
+        String code = sb.toString();
+        List<String> found = new ArrayList<>();
+        for (Map.Entry<String, Pattern> e : UNSUPPORTED_CSS.entrySet()) {
+            Matcher m = e.getValue().matcher(code);
+            while (m.find()) {
+                int line = 1;
+                for (int i = 0; i < m.start(); i++) {
+                    if (code.charAt(i) == '\n') line++;
+                }
+                found.add(name + ":" + line + ": " + e.getKey());
+            }
+        }
+        return found;
+    }
+
+    @Test
+    void unsupportedCssCheckDetectsEachFeature() {
+        for (String css : List.of(
+                "a { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); }",
+                "a { color: light-dark(#000, #fff); }",
+                "@layer base { a { color: red; } }",
+                "@container (min-width: 30rem) { a { color: red; } }",
+                "@property --x { syntax: '<length>'; inherits: false; initial-value: 0px; }",
+                "@scope (.card) { a { color: red; } }",
+                "@starting-style { a { opacity: 0; } }",
+                ".a { .b & { color: red; } }",
+                "li:has(> a) { color: red; }",
+                "a:focus-visible { outline: 1px solid; }",
+                "input:user-invalid { color: red; }",
+                "p { overflow-wrap: anywhere; }",
+                "input { accent-color: red; }",
+                "h1 { text-wrap: balance; }",
+                ".g { grid-template-columns: subgrid; }",
+                ".o { height: 100dvh; }",
+                ".o { width: 50cqw; }",
+                "@media (width >= 40rem) { a { color: red; } }",
+                "a { width: round(nearest, 10.5px, 1px); }",
+                "button.link { color: LinkText; }")) {
+            assertEquals(1, unsupportedCssFeatures("a.css", css).size(), css);
+        }
+        assertEquals(List.of("a.css:3: :has() (Safari 15.4)"),
+                unsupportedCssFeatures("a.css", "/* :has( and\n color-mix( in a comment */\nli:has(a) {}"));
+        // Fine in Safari 15.0: custom properties, prefers-color-scheme, aspect-ratio, inset, gap,
+        // :is()/:where(), word-break, max-width media queries, rgba(), calc(), min()/max()/clamp().
+        assertTrue(unsupportedCssFeatures("a.css", """
+                :root { color-scheme: light dark; --link: #0b57d0; }
+                @media (prefers-color-scheme: dark) { :root { --link: #8ab4f8; } }
+                @media (max-width: 40rem) { .x { display: none; } }
+                a:link, :is(a, b):where(.c) { color: var(--link); word-break: break-word; }
+                .o { inset: 0; gap: 0.5rem; aspect-ratio: 1 / 1; border: 1px solid rgba(128, 128, 128, 0.4); }
+                .w { width: calc(100% - 1rem); max-width: min(40rem, 90vw); font-size: clamp(1rem, 2vw, 2rem); }
+                .r { border-radius: 0.5rem; text-decoration: underline; }
+                """).isEmpty());
+    }
+
+    @Test
+    void shippedCssStaysWithinBrowserBaseline() throws IOException, URISyntaxException {
+        URL dir = WebBuildTest.class.getClassLoader().getResource("web/css");
+        assertNotNull(dir, "web/css is missing from the classpath");
+        Path root = Path.of(dir.toURI());
+        List<String> found = new ArrayList<>();
+        int files = 0;
+        try (Stream<Path> paths = Files.walk(root)) {
+            for (Path p : paths.filter(f -> f.toString().endsWith(".css")).sorted().toList()) {
+                files++;
+                String name = root.relativize(p).toString().replace('\\', '/');
+                found.addAll(unsupportedCssFeatures(name, Files.readString(p, StandardCharsets.UTF_8)));
+            }
+        }
+        assertTrue(files >= 2, "expected main.css and test.css under " + root + ", found " + files + " .css files");
+        assertFalse(found.size() > 0,
+                "shipped CSS uses features newer than Safari 15.0:\n  " + String.join("\n  ", found));
+    }
+
+    @Test
+    void linksHaveTheirOwnColoursInLightAndDarkMode() throws IOException {
+        String css = read("web/css/main.css");
+        for (String s : List.of("--link:", "--link-visited:", "--link-current:", "@media (prefers-color-scheme: dark)",
+                "a:visited", "color: var(--link)", "nav a[aria-current=\"page\"]")) {
+            assertTrue(css.contains(s), s);
+        }
+    }
 }

@@ -304,7 +304,11 @@ test("simulation, seek mode (Safari-like 400 ms seeks): lands within 60 ms after
 test("simulation, WebKit (clock still ~300 ms after seeked, as in the iPad/iPhone reports): converges in ≤ 2 seeks", () => {
   // The iPad report: drift −319, correction seeks of 73–103 ms, then ~300 ms frozen; the iPhone:
   // −174, seeks ~60–90 ms, 280–320 ms frozen.
-  for (const [start, seekMs, freezeMs] of [[-319, 90, 310], [-174, 75, 300], [-104, 75, 280], [210, 90, 330], [-500, 100, 300]]) {
+  // The iPod touch 7 (f552z8): seeks landed at `seeked` within ~25 ms after 75–80 ms, then ~375 ms
+  // frozen (seeked +359, settled −16); the old code then parked it at +374 for over 20 s and
+  // started a new entry at −434.
+  for (const [start, seekMs, freezeMs] of [[-319, 90, 310], [-174, 75, 300], [-104, 75, 280], [210, 90, 330],
+      [-500, 100, 300], [374, 75, 375], [-434, 80, 370]]) {
     const r = simulate("seek", { startDriftMs: start, seekMs, freezeMs, freezeJitterMs: 17, seconds: 180 });
     const tag = `start ${start}: ` + JSON.stringify({ seeks: r.seekTimes, lead: r.lead, landings: r.landings });
     assert.deepEqual([...r.rates], [1], tag);
@@ -395,6 +399,28 @@ test("simulation, rate mode with Safari-like seeks: the lead keeps a hard seek f
   // with it the second one lands on time.
   const after = r.drifts.filter((d) => d.now >= 3000);
   assert.ok(after.every((d) => Math.abs(d.drift) <= 60), JSON.stringify(after.slice(0, 4)));
+});
+
+test("end guard: no seek aimed into the last second of an item; unknown end never guards", () => {
+  assert.equal(L.END_GUARD_MS, 1000);
+  const end = 237_331;
+  // f552z8: stuck re-seeks to 231167 and 236179 ms of a 237331 ms item (lead 0): 1.15 s before
+  // the end is still a seek; with the ~370 ms lead WebKit learns it would be inside the guard.
+  assert.equal(L.inEndGuard(231_167, 0, end), false);
+  assert.equal(L.inEndGuard(236_179, 0, end), false);
+  assert.equal(L.inEndGuard(236_179, 370, end), true);
+  // The lead counts: a seek aimed past end − 1 s would be clamped to the last frames and end at once.
+  assert.equal(L.inEndGuard(235_900, 300, end), false);
+  assert.equal(L.inEndGuard(236_100, 300, end), true);
+  assert.equal(L.inEndGuard(end - 1000, 0, end), true);
+  assert.equal(L.inEndGuard(end - 1001, 0, end), false);
+  assert.equal(L.inEndGuard(end + 500, 0, end), true);
+  // A negative lead doesn't move the guard later; a bad lead counts as 0.
+  assert.equal(L.inEndGuard(end - 900, -200, end), true);
+  assert.equal(L.inEndGuard(end - 1500, NaN, end), false);
+  for (const unknown of [undefined, NaN, Infinity, 0]) {
+    assert.equal(L.inEndGuard(10_000_000, 500, unknown), false, String(unknown));
+  }
 });
 
 test("dB to linear gain", () => {

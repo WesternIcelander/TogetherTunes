@@ -35,7 +35,7 @@
 // rejects, is played from `audio.m4a` instead for the rest of the session.
 import { recordDecision, recordError, recordEvent } from "./diagnostics.js";
 import {
-  chooseSource, CROSSFADE_MS, dbToGain, DriftController, HARD_SEEK_MS, nextToPreload, SEEK_MODE_MS, SeekGuard,
+  chooseSource, CROSSFADE_MS, dbToGain, DriftController, HARD_SEEK_MS, inEndGuard, nextToPreload, SEEK_MODE_MS, SeekGuard,
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
@@ -44,7 +44,13 @@ const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
 /** A paused element further than this (ms) from the timeline is moved there, so resuming starts in sync. */
 const PAUSED_SEEK_MS = 100;
-/** A seek still pending after this long (ms) is made again (seen on iOS when a seek races play()). */
+/**
+ * A seek still pending after this long (ms) reloads the element (a fresh media pipeline; the loop
+ * then starts it again at the timeline's position). Making the seek again didn't help: in the iPod
+ * touch 7 report (f552z8, iOS 15.1) an element whose first two seeks were made before it had loaded
+ * any data never finished a seek again, and three re-seeks 5 s apart each stayed pending until the
+ * next item started on the other element.
+ */
 const SEEK_STUCK_MS = 5000;
 /** While autoplay is blocked, a paused element is moved and `play()` retried at most this often (ms). */
 const BLOCKED_RETRY_MS = 2000;
@@ -62,9 +68,10 @@ interface Deck {
   landing: SeekLanding | undefined;
   /** When the last seek was made (performance.now()). */
   seekAt: number;
-  /** Seeks made / seeks that didn't land (dropped or far off), for debug(). */
+  /** Seeks made / seeks that didn't land (dropped or far off) / reloads after a stuck seek, for debug(). */
   seeks: number;
   lostSeeks: number;
+  reloads: number;
   /** The position (ms) at the last tick, to see whether the element advances. */
   lastPosMs: number;
   /** When `play()` was last tried while autoplay was blocked. */
@@ -216,7 +223,7 @@ export class ListenPlayer {
       }
     }
     const deck: Deck = { el, video, name, ctl: new DriftController(this.#mode), lead: new SeekLead(), landing: undefined,
-      seekAt: 0, seeks: 0, lostSeeks: 0, lastPosMs: -1, lastBlockedTry: Number.NEGATIVE_INFINITY,
+      seekAt: 0, seeks: 0, lostSeeks: 0, reloads: 0, lastPosMs: -1, lastBlockedTry: Number.NEGATIVE_INFINITY,
       gain, entryId: undefined, itemId: undefined, src: undefined, started: false,
       playPending: false, guard: new SeekGuard(), anchorKey: "", level: gain !== undefined ? 0 : el.volume,
       volumeTimer: undefined };
@@ -284,6 +291,7 @@ export class ListenPlayer {
         leadSamples: d.lead.samples,
         seeks: d.seeks,
         lostSeeks: d.lostSeeks,
+        reloads: d.reloads,
         seekCooldownMs: d.ctl.cooldownMs,
         seekBandMs: d.ctl.seekBandMs,
         settling: d.landing !== undefined,
@@ -340,9 +348,13 @@ export class ListenPlayer {
       // Inside the gesture: move it to the timeline first (iOS has loaded nothing before this click,
       // and may drop a seek made before playback starts; the loop sees that and seeks again), then
       // call play() even if one is pending, since only a play() in the gesture unlocks the element.
+      // Not while the start seek is still pending: a second seek on top of one that hasn't finished
+      // before any data was loaded left the iPod touch 7's element unable to finish a seek again
+      // (f552z8); the loop corrects the drift once it plays.
       try {
         const target = positionAt(t, this.#serverNow());
-        if (a.el.readyState >= HAVE_METADATA && Math.abs(a.el.currentTime * 1000 - target) > PAUSED_SEEK_MS) {
+        if (a.el.readyState >= HAVE_METADATA && !a.el.seeking
+            && Math.abs(a.el.currentTime * 1000 - target) > PAUSED_SEEK_MS) {
           this.#seekTo(a, target + a.lead.ms, true, "unlock");
         }
         a.started = a.el.readyState >= HAVE_METADATA;
@@ -352,7 +364,7 @@ export class ListenPlayer {
       a.playPending = false;
       this.#play(a);
     }
-    recordEvent("unlock", { context: this.#ctx?.state ?? "none", readyState: a?.el.readyState });
+    recordEvent("unlock", { context: this.#ctx?.state ?? "none", readyState: a?.el.readyState, seeking: a?.el.seeking });
     this.#updateOverlay();
     this.tick();
   }
@@ -516,6 +528,25 @@ export class ListenPlayer {
     recordEvent("load", { el: deck.name, url: src.url });
   }
 
+  /**
+   * Loads the deck's file again (a seek never finished): a fresh media pipeline at position 0; the
+   * loop's start step moves it to the timeline and plays it once the metadata is there. The element
+   * keeps its user-gesture unlock (iOS grants it per element, not per source).
+   */
+  #reload(deck: Deck): void {
+    if (deck.src === undefined) return;
+    deck.el.pause();
+    deck.el.load(); // the src attribute is still set: resource selection starts over
+    deck.started = false;
+    deck.playPending = false; // the pending play() is rejected with an AbortError
+    deck.landing = undefined;
+    deck.lastPosMs = -1;
+    deck.guard.reset();
+    deck.ctl.reset();
+    deck.reloads++;
+    recordEvent("reload", { el: deck.name, url: deck.src.url });
+  }
+
   #clear(deck: Deck): void {
     if (deck.src === undefined) return;
     this.#setGain(deck, 0);
@@ -618,6 +649,12 @@ export class ListenPlayer {
     if (src === undefined) return "empty";
     const now = performance.now();
     if (el.readyState < HAVE_METADATA) return "loading"; // still loading (iOS loads nothing before a play())
+    // The last second of the item (END_GUARD_MS): no seeks and no new start; whatever plays plays
+    // out (an element that ended early just waits), and the next entry starts on time.
+    if (playing && inEndGuard(target, deck.lead.ms, el.duration * 1000)) {
+      deck.landing = undefined;
+      return "ending";
+    }
     if (!deck.started) {
       deck.started = true;
       this.#setRate(deck, 1);
@@ -637,8 +674,6 @@ export class ListenPlayer {
       }
       return "paused";
     }
-    // Past the file's end (the server is about to advance): let it end by itself.
-    if (Number.isFinite(el.duration) && target >= el.duration * 1000 - 50) return "ending";
     if (el.paused) {
       // Not playing yet (or the browser refused): its position says nothing about the file, so
       // move it to the timeline without counting that as a hard seek, then start it.
@@ -657,8 +692,8 @@ export class ListenPlayer {
     if (el.seeking) {
       if (now - deck.seekAt > SEEK_STUCK_MS) {
         recordEvent("seek-stuck", { el: deck.name, forMs: round(now - deck.seekAt) });
-        this.#seekTo(deck, target + deck.lead.ms, true, "stuck");
-        return "seek";
+        this.#reload(deck);
+        return "reload";
       }
       return "seeking";
     }

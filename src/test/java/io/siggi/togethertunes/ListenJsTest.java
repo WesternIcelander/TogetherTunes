@@ -56,6 +56,12 @@ class ListenJsTest {
                 "linearRampToValueAtTime(", "SwitchGate(", "CROSSFADE_MS", "removeAttribute(\"src\")")) {
             assertTrue(player.contains(s), s);
         }
+        // The end of an item: no seeks in the last second (inEndGuard); a seek that never finishes
+        // reloads the element instead of seeking again (the iPod touch 7 report f552z8).
+        for (String s : List.of("inEndGuard(", "\"ending\"", "\"seek-stuck\"", "\"reload\"")) {
+            assertTrue(player.contains(s), s);
+        }
+        assertTrue(!player.contains("\"stuck\""), "a stuck seek is no longer redone as a seek");
         String room = read("web/js/room.js");
         assertTrue(room.contains("from \"./listen.js\""), room);
         assertTrue(room.contains("new ListenPlayer("), room);

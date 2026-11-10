@@ -1,6 +1,48 @@
 :root {
   color-scheme: light dark;
   font-family: system-ui, sans-serif;
+  /*
+   * Link colours of our own, the same in every browser. Without them each engine uses its own
+   * defaults, and iOS 15 WebKit's (blue/purple meant for a light page) are hard to read on the dark
+   * background `color-scheme` gives in dark mode; `LinkText` isn't something Safari 15 can be
+   * relied on for either. Baseline: Safari 15.0 (custom properties and prefers-color-scheme are
+   * fine; no light-dark(), color-mix() or nesting).
+   */
+  --link: #0b57d0;
+  --link-visited: #6b3fa0;
+  --link-hover: #0842a0;
+  --link-current: #1f1f1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --link: #8ab4f8;
+    --link-visited: #c9a7f5;
+    --link-hover: #b3cefb;
+    --link-current: #e8e8e8;
+  }
+}
+
+a:link,
+button.link {
+  color: var(--link);
+}
+
+a:visited {
+  color: var(--link-visited);
+}
+
+a:hover,
+a:focus,
+button.link:hover,
+button.link:focus {
+  color: var(--link-hover);
+}
+
+/* The navigation's link to the page being shown: plain text colour, not a visited purple. */
+nav a[aria-current="page"],
+.tabs a[aria-current="page"] {
+  color: var(--link-current);
 }
 
 body {
@@ -152,7 +194,6 @@ button.link {
   border: none;
   padding: 0;
   font: inherit;
-  color: LinkText;
   text-decoration: underline;
   cursor: pointer;
 }

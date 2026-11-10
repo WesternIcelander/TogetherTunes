@@ -344,6 +344,24 @@ export class SeekLead {
   }
 }
 
+/**
+ * The end of an item (ms): within this long of the end the loop makes no seeks (correction, hard,
+ * resume) and starts nothing, and lets the element play out, so the next entry starts on time. A
+ * seek there can't settle (WebKit: ~1.4 s) before the end anyway, and one aimed past the end
+ * (target + lead) was clamped to the file's last 50 ms, ended the element at once, and the paused
+ * element was then sought back and played again on every tick until the timeline passed the end.
+ */
+export const END_GUARD_MS = 1000;
+
+/**
+ * Whether the element is in the end guard: a seek aimed at `targetMs + leadMs` (a negative lead
+ * counts as 0) would land within END_GUARD_MS of `endMs`. False when the end isn't known.
+ */
+export function inEndGuard(targetMs: number, leadMs: number, endMs: number | undefined): boolean {
+  if (endMs === undefined || !Number.isFinite(endMs) || endMs <= 0) return false;
+  return targetMs + Math.max(0, Number.isFinite(leadMs) ? leadMs : 0) >= endMs - END_GUARD_MS;
+}
+
 /** The next entry is preloaded this long (ms) before the current one ends. */
 export const PRELOAD_BEFORE_END_MS = 10_000;
 /** An original that needs a third hard seek within FALLBACK_WINDOW_MS of two others is given up. */
