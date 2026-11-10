@@ -59,6 +59,7 @@ Details (as implemented):
 | `voteSkipThreshold` | 0.5 | Fraction of present identified members (listen + remote), or `off` |
 | `noRepeatWindow` | 10 | Refuse an item that was played in the last N entries |
 | `transitionCard`, `gapMs` | off, 0 | |
+| `audioOnly` | off | [Audio-only room](#audio-only-rooms): only audio plays, for listeners and in the stream outputs (cards at a lower constant rate). A change applies from the next item |
 | `guests.*` | see below | |
 | `outputs.rtmp`, `outputs.ts`, `outputs.hls` | off | Each one available only if the server enables it |
 | `overlay.*` | off | See [overlay.md](overlay.md) |
@@ -76,6 +77,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | `noRepeatWindow` | 10 | 0 (off)–1000 |
 | `transitionCard` | false | |
 | `gapMs` | 0 | 0–10000 |
+| `audioOnly` | false | Manage room → Settings → Playback ("Audio-only room") |
 | `guests.canVote`, `guests.canRequestLibrary` | true | |
 | `guests.canUpload`, `guests.canYoutube` | false | |
 | `overlay.enabled` | false | |
@@ -183,6 +185,7 @@ The client plays the media itself, in sync with the timeline. There is a **video
 - Audio items: the **original** file (`originalUrl`) in an `<audio>` element (not while the item has an [audio trim](library-and-ingest.md#audio-trim): then `original_web` is 0 and `audio.m4a`, encoded for the range, plays), with `originalGainDb` applied (as the element's `volume` on the direct path, through its `GainNode` with Web Audio; see "Direct path or Web Audio" below), when the item has a web-playable original and `canPlayType` agrees, and, on the direct path, the gain isn't positive. Otherwise `audio.m4a`. The cover art is shown.
 - Video items with `presentAsAudio`: `audio.m4a` in an `<audio>` element, with the cover art shown.
 - Video items in video mode: `mezz.mp4` in a `<video>` element.
+- Every item in an [audio-only room](#audio-only-rooms): its audio-only file; the toggle is hidden.
 - Video items in audio-only mode: `audio.m4a` only. The video is never requested, so it uses no bandwidth. This stays `audio.m4a` (the video trim's audio, in sync with the room) even when the video has an [audio trim](library-and-ingest.md#audio-trim): its separate `audio-only.m4a` is only for audio-only rooms, whose timeline uses that file's length (`items.audio_only_ms`).
 
 Sync loop (every 250 ms, on every state message, and on the elements' `playing` / `seeked` events):
@@ -252,6 +255,17 @@ As implemented (web, `web/src/remote.ts` + `room.ts`): the mode is a link-style 
 ### Playback across pages (web)
 
 Navigating to another page of the site doesn't interrupt listen-mode playback, unless it goes to another room. As implemented (`web/src/shell.ts`, rules in `router.ts`, hooks in `nav.ts`): every page is still its own HTML document with one module, so deep links and reloads work as before. While the room page plays in listen mode, it handles same-site navigations itself: links (and pages' own `navigate()` / `reloadPage()` calls, and plain GET form submits) to the front page, `/rooms/`, `/library/`, `/playlists/`, `/account/`, `/admin/`, `/items/{id}` and `/rooms/{ref}/manage` fetch the page's HTML, put its body (minus the nav and scripts) into `#shell-page`, hide the room view (`#room-body`; media elements, WebSocket and clock sync keep running), take over the title, `history.pushState` the URL and import the page's module again under a fresh `?mount=N` (a new module instance starts like on a page load; the previous page's `pageSignal()` is aborted, which ends its `window` listeners and silences its late failures). A link to the playing room shows its view again. Back/forward are handled for the entries the page pushed (scroll positions in `history.state`, focus to the new page's `h1`). A **mini player** at the bottom of the other pages shows the room (link back), the item, play state, "Audio only" and Leave (stops and loads the shown page normally). The browser handles: another room (leaves this one), login/register/password/setup, logout, the API and media, downloads, other sites, modified clicks and `target`s; in remote mode the shell stands aside. After a full load that stopped playback (a reload while another page was shown) the page says so in a bar with a link back to the room (`sessionStorage`, shown once). The room page closes its socket on `pagehide` and reloads if restored from the back/forward cache: Chrome otherwise kept the cached page's socket open, so the room still counted the user as listening after they went to another room.
+
+## Audio-only rooms
+
+Added 2026-11-10 (Siggi: "a new room setting to make it audio-only, where only audio tracks play. It should still be able to make a video stream though, so I can put it in a VRChat video player, just without video. Still needs to be constant bitrate however, we may be able to use a lower bitrate for audio-only streams since video won't matter as much."). The room setting `audioOnly` (default off; the owner, Manage room → Settings → Playback).
+
+- **Each entry plays in one mode, decided when it starts playing.** Waiting entries follow the setting; an entry that becomes current takes the room's mode at that moment and **keeps it until it ends**, so switching the setting takes effect **from the next item**: the current entry keeps its variant and length (no jump), and everything after it (the preloaded next entry included, and the program output's next-item preload) uses the new mode. The current entry's mode is stored with the timeline (`rooms.current_audio_only`), so it survives a restart even if the setting changed meanwhile.
+- **Length:** in audio-only mode a video plays its **audio-only file**: `audio-only.m4a` when it has an [audio trim](library-and-ingest.md#audio-trim) (its length `items.audio_only_ms` is the entry's length on the timeline), else `audio.m4a` (the item's `duration_ms`). Audio items are unchanged.
+- **Listeners** (web): an audio-only entry's `item` has no `videoUrl` (so `mezz.mp4` is never requested), its `audioUrl` is the audio-only file and `durationMs` its length; the entry carries `audioOnly: true`. The video / audio-only toggle is hidden while the room is audio-only (the line "Audio-only room" stands in for it; the mini player hides its toggle too).
+- **Program output:** see [program-output.md](program-output.md#audio-only-rooms): every audio-only entry plays as its card with its audio-only file, padded to `output.audioOnlyBitrateKbps`. Remote mode's delays (`estimatedDelayMs.*`) are unaffected.
+
+As implemented: `RoomSettings.audioOnly()`; `QueueEntry.audioOnly` (the mode) and `audioOnlyMs` (`items.audio_only_ms`, videos only), `lengthMs()` (the timeline's length) and `playsAudioOnlyFile()`. `RoomState` sets waiting entries' mode from the setting (on load, on add, on a settings change) and an entry's mode when it becomes current; `RoomStore` writes `current_audio_only` with every timeline save. `RoomViews.item(…, audioOnly)` gives the audio-only item view.
 
 ## Program output and the timeline
 

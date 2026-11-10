@@ -116,7 +116,9 @@ rooms(id PK, slug UNIQUE, name, owner_id FK, created_at,
       settings_json,                        -- see rooms.md (incl. guest toggles, overlay settings)
       playback_state TEXT,                  -- 'idle' | 'playing' | 'paused' (extensible; see rooms.md)
       current_entry_id NULL, anchor_server_ms, anchor_position_ms,
-      version BIGINT)
+      version BIGINT,
+      current_audio_only INTEGER)           -- 0|1: the current entry plays audio-only (the mode it
+                                            -- started with; rooms.md#audio-only-rooms), migration 0016
 
 room_members(room_id FK, user_id FK, role TEXT,   -- 'owner' | 'moderator' | 'member' | 'banned'
       joined_at, PRIMARY KEY(room_id, user_id))
