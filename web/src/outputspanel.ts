@@ -285,9 +285,9 @@ export class OutputsPanel {
 
   /** The RTMP target form: ingest URL and stream key (blank keeps the key when editing). */
   #rtmpTargetForm(row: OutputRow | undefined): HTMLElement {
-    const url = h("input", { type: "url", class: "grow", placeholder: "rtmp://ingest.example/live",
+    const url = h("input", { type: "url", placeholder: "rtmp://ingest.example/live",
       value: row?.rtmpUrl ?? "", autocomplete: "off", "aria-label": "RTMP ingest URL" });
-    const key = h("input", { type: "password", class: "grow", autocomplete: "new-password",
+    const key = h("input", { type: "password", autocomplete: "new-password",
       placeholder: row === undefined ? "Stream key (optional)" : (row.hasRtmpKey === true ? "Leave empty to keep the key" : "Stream key (optional)"),
       "aria-label": "Stream key" });
     const removeKey = h("input", { type: "checkbox" });
