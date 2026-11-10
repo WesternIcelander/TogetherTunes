@@ -24,9 +24,9 @@ import java.util.Set;
  * {@code {room}} is the room's id or slug. Responses are {@code Cache-Control: no-store}.
  *
  * <ul>
- *   <li>{@code GET /api/rooms/{room}/outputs} → {@code {"items": [output]}} (rtmp, ts, hls order);
+ *   <li>{@code GET /api/rooms/{room}/outputs} → {@code {"items": [output]}} (rtmp, ts, hls, mp3 order);
  *       {@code GET …/outputs/{outputId}} → the output. Owner and moderators.</li>
- *   <li>{@code POST …/outputs} {@code {"kind": "rtmp"|"ts"|"hls", "enabled"?: true, "rtmpUrl"?,
+ *   <li>{@code POST …/outputs} {@code {"kind": "rtmp"|"ts"|"hls"|"mp3", "enabled"?: true, "rtmpUrl"?,
  *       "rtmpKey"?}} → {@code 201 output}. The owner only. One output per kind and room
  *       ({@code 409 output_exists}); refused while the server switch {@code outputs.<kind>.enabled}
  *       is off ({@code 403 feature_disabled}). RTMP needs {@code rtmpUrl}.</li>
@@ -40,7 +40,7 @@ import java.util.Set;
  * </ul>
  *
  * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt"}} plus,
- * for ts/HLS, {@code "url"} (the tokenised URL), and for RTMP, to the room's owner only, {@code
+ * for ts/HLS/MP3, {@code "url"} (the tokenised URL), and for RTMP, to the room's owner only, {@code
  * "rtmpUrl"}, {@code "hasRtmpKey"} and {@code "rtmpKey"?} (the full key; moderators get nothing
  * about the key or the ingest URL, which can carry credentials too), then for everyone {@code
  * "playbackUrl"?} (the room
@@ -80,11 +80,12 @@ public final class StreamOutputsApi {
         router.post("/api/rooms/{room}/outputs/{outputId}/rotate", this::rotate);
     }
 
-    /** The tokenised URL of a ts/HLS token. */
+    /** The tokenised URL of a ts/HLS/MP3 token. */
     public String url(StreamOutputs.Kind kind, String token) {
         return switch (kind) {
             case TS -> publicBaseUrl + "/live/" + token + ".ts";
             case HLS -> publicBaseUrl + "/live/" + token + "/index.m3u8";
+            case MP3 -> publicBaseUrl + "/live/" + token + ".mp3";
             case RTMP -> null;
         };
     }
@@ -143,7 +144,7 @@ public final class StreamOutputsApi {
         fields(body, CREATE_FIELDS);
         StreamOutputs.Kind kind = StreamOutputs.Kind.parse(string(body.get("kind"), "invalid_kind"));
         if (kind == null) {
-            throw new HttpError(400, "invalid_kind", "kind must be rtmp, ts or hls");
+            throw new HttpError(400, "invalid_kind", "kind must be rtmp, ts, hls or mp3");
         }
         Boolean enabledField = bool(body.get("enabled"));
         boolean enabled = enabledField == null || enabledField;
@@ -225,6 +226,7 @@ public final class StreamOutputsApi {
                         case RTMP -> "RTMP push";
                         case TS -> "the .ts output";
                         case HLS -> "the HLS output";
+                        case MP3 -> "the MP3 output";
                     });
         }
     }

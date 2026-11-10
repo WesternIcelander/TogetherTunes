@@ -13,9 +13,9 @@ public interface RoomOutputs {
     /**
      * One output as the room page sees it.
      *
-     * @param kind   {@code rtmp}, {@code ts} or {@code hls}
+     * @param kind   {@code rtmp}, {@code ts}, {@code hls} or {@code mp3}
      * @param status RTMP: {@code connecting}, {@code connected}, {@code retrying} or {@code error};
-     *               {@code .ts}/HLS: {@code ready}; {@code off} (only in {@code output.status}) when
+     *               {@code .ts}/HLS: {@code ready}; MP3: {@code ready}, or {@code error} without ffmpeg; {@code off} (only in {@code output.status}) when
      *               the output is no longer active
      * @param detail RTMP: the push's last ffmpeg message or why it can't run (stream key masked to
      *               {@code …} + last 4, URL credentials masked); sent as is to the owner, to
@@ -42,7 +42,7 @@ public interface RoomOutputs {
         return s.replaceAll("…[^\\s…]{1,4}", "…");
     }
 
-    /** The room's active outputs (row enabled AND server switch), in the order rtmp, ts, hls. */
+    /** The room's active outputs (row enabled AND server switch), in the order rtmp, ts, hls, mp3. */
     List<Status> active(String roomId) throws Exception;
 
     /** No outputs (tests, a server without the output side). */

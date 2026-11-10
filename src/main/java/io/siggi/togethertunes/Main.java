@@ -53,6 +53,8 @@ import io.siggi.togethertunes.output.OutputStatusFeed;
 import io.siggi.togethertunes.output.LiveLimits;
 import io.siggi.togethertunes.output.LegacyRtmpKeys;
 import io.siggi.togethertunes.output.LiveTsApi;
+import io.siggi.togethertunes.output.LiveMp3Api;
+import io.siggi.togethertunes.output.Mp3Encoders;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
 import io.siggi.togethertunes.output.RtmpIdleStop;
@@ -347,13 +349,23 @@ public final class Main {
         // The direct MPEG-TS output: GET/HEAD /live/{token}.ts (docs/program-output.md#direct-mpeg-ts-ts).
         LiveTsApi liveTs = new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs, liveLimits);
         liveTs.register(appRouter);
+        // The MP3 output: GET/HEAD /live/{token}.mp3 (docs/program-output.md#mp3-output), one
+        // supervised ffmpeg encode per room with listeners. Null encoders without ffmpeg.
+        Mp3Encoders mp3Encoders = config.ffmpeg() == null ? null : new Mp3Encoders(programOutputs, config.ffmpeg(),
+                () -> mp3Bitrate(settings), Mp3Encoders.titlesFrom(database));
+        LiveMp3Api liveMp3 = new LiveMp3Api(LiveMp3Api.targetsFrom(database, settings), mp3Encoders,
+                () -> mp3Bitrate(settings), liveLimits);
+        liveMp3.register(liveTs);
         // HLS: GET /live/{token}/index.m3u8 and /live/{token}/seg/{seq}.ts (docs/program-output.md#hls).
         new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis,
                 liveLimits).register(appRouter);
         // The rooms' outputs (/api/rooms/{room}/outputs...) and what keeps pushes and .ts viewers in line with them.
         StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
         StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
-                liveTs);
+                () -> {
+                    liveTs.revalidate();
+                    liveMp3.revalidate();
+                });
         // RTMP pushes are turned off after the room was idle for its limit (docs/program-output.md#idle-stop).
         RtmpIdleStop rtmpIdleStop = new RtmpIdleStop(streamOutputs, roomId -> {
             Rooms.Room room = rooms.record(roomId);
@@ -417,6 +429,9 @@ public final class Main {
             outputStatus.close();
             if (rtmpPushers != null) {
                 rtmpPushers.close();
+            }
+            if (mp3Encoders != null) {
+                mp3Encoders.close();
             }
             programOutputs.close();
             // After the web server (no new requests), before the database (rooms persist on the way out).
@@ -788,10 +803,10 @@ public final class Main {
     /**
      * The stream outputs' control ({@link StreamOutputControl}): the server switches from the
      * settings, the program outputs, the RTMP pushes (none without ffmpeg) and the {@code .ts}
-     * connections' revalidation.
+     * and MP3 connections' revalidation.
      */
     static StreamOutputControl streamOutputControl(StreamOutputs rows, Settings settings, ProgramOutputs outputs,
-                                                   RtmpPushers pushers, LiveTsApi liveTs) {
+                                                   RtmpPushers pushers, Runnable revalidate) {
         StreamOutputControl.Switches switches = new StreamOutputControl.Switches() {
             @Override
             public boolean rtmp() throws SQLException {
@@ -807,6 +822,11 @@ public final class Main {
             public boolean hls() throws SQLException {
                 return settings.outputsHlsEnabled();
             }
+
+            @Override
+            public boolean mp3() throws SQLException {
+                return settings.outputsMp3Enabled();
+            }
         };
         StreamOutputControl.Outputs programs = new StreamOutputControl.Outputs() {
             @Override
@@ -819,7 +839,16 @@ public final class Main {
                 outputs.stop(roomId);
             }
         };
-        return new StreamOutputControl(rows, switches, programs, pushers, liveTs::revalidate);
+        return new StreamOutputControl(rows, switches, programs, pushers, revalidate);
+    }
+
+    /** {@code outputs.mp3.bitrateKbps}, or its default if the setting can't be read. */
+    static int mp3Bitrate(Settings settings) {
+        try {
+            return settings.outputsMp3BitrateKbps();
+        } catch (SQLException e) {
+            return Settings.OUTPUTS_MP3_BITRATE_KBPS.defaultValue();
+        }
     }
 
     /**

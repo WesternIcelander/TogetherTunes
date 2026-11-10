@@ -23,6 +23,10 @@ test("delay: defaults per output kind, RTMP when no output is listed", () => {
   assert.deepEqual(R.outputDelay([], {}), { kind: "rtmp", delayMs: 5000 });
   assert.deepEqual(R.outputDelay([{ kind: "ts", status: "running" }], {}), { kind: "ts", delayMs: 2000 });
   assert.deepEqual(R.outputDelay([{ kind: "hls" }], {}), { kind: "hls", delayMs: 8000 });
+  assert.deepEqual(R.outputDelay([{ kind: "mp3", status: "ready" }], {}), { kind: "mp3", delayMs: 3000 });
+  // MP3 is the last choice when the room has a video output too
+  assert.equal(R.outputDelay([{ kind: "mp3", status: "ready" }, { kind: "hls", status: "ready" }], {}).kind, "hls");
+  assert.deepEqual(R.outputDelay([{ kind: "mp3" }], { estimatedDelayMs: { mp3: 4500 } }), { kind: "mp3", delayMs: 4500 });
 });
 
 test("delay: room settings override defaults, the output's own value overrides settings", () => {

@@ -25,6 +25,21 @@ test("output.status: replaces, adds in order, removes on off, ignores malformed 
   assert.deepEqual(O.applyOutputStatus(list, { kind: 3, status: "ready" }), list);
   assert.deepEqual(O.applyOutputStatus(list, { kind: "ts" }), list);
   assert.deepEqual(O.applyOutputStatus(undefined, { kind: "hls", status: "ready" }), [{ kind: "hls", status: "ready" }]);
+  // MP3 goes last
+  list = O.applyOutputStatus([{ kind: "hls", status: "ready" }], { kind: "mp3", status: "ready" });
+  list = O.applyOutputStatus(list, { kind: "rtmp", status: "connecting" });
+  assert.deepEqual(list.map((o) => o.kind), ["rtmp", "hls", "mp3"]);
+});
+
+test("the MP3 output: a generic label and description, no allowlist note of its own", () => {
+  assert.deepEqual(O.OUTPUT_KINDS, ["rtmp", "ts", "hls", "mp3"]);
+  assert.equal(O.OUTPUT_LABELS.mp3, "MP3 audio");
+  assert.match(O.OUTPUT_DESCRIPTIONS.mp3, /internet-radio players/);
+  const mp3Row = { id: "o", kind: "mp3", enabled: true, serverEnabled: true, active: true, createdAt: 1 };
+  assert.deepEqual(O.outputNotes([mp3Row]), []);
+  assert.equal(O.canCreate("mp3", [mp3Row], true), false);
+  assert.equal(O.canCreate("mp3", [], true), true);
+  assert.equal(O.canCreate("mp3", [], false), false);
 });
 
 test("output.status feeds the remote delay: the active output and its estimatedDelayMs", () => {

@@ -147,6 +147,11 @@ public final class Settings {
     public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
     public static final SettingKey<Boolean> OUTPUTS_TS_ENABLED = SettingKey.bool("outputs.ts.enabled", true);
     public static final SettingKey<Boolean> OUTPUTS_HLS_ENABLED = SettingKey.bool("outputs.hls.enabled", true);
+    /** The MP3 output for internet-radio players ({@code docs/program-output.md#mp3-output}). */
+    public static final SettingKey<Boolean> OUTPUTS_MP3_ENABLED = SettingKey.bool("outputs.mp3.enabled", true);
+    /** The MP3 output's bitrate in kb/s (CBR, 44.1 kHz stereo); applies to encodes started after a change. */
+    public static final SettingKey<Integer> OUTPUTS_MP3_BITRATE_KBPS = SettingKey.integer(
+            "outputs.mp3.bitrateKbps", 128, 64, 320);
     /**
      * The longest a room's RTMP push keeps running while the room is idle, in minutes: the room's
      * {@code outputs.rtmp.idleStopMinutes} applies up to this ({@code docs/program-output.md#idle-stop}).
@@ -186,6 +191,7 @@ public final class Settings {
                 ROOMS_REQUEST_HISTORY_DAYS,
                 OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS, OUTPUT_AUDIO_ONLY_BITRATE_KBPS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
+                OUTPUTS_MP3_ENABLED, OUTPUTS_MP3_BITRATE_KBPS,
                 OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES)) {
             if (keys.put(k.name(), k) != null) {
                 throw new ExceptionInInitializerError("duplicate setting " + k.name());
@@ -528,6 +534,14 @@ public final class Settings {
 
     public boolean outputsHlsEnabled() throws SQLException {
         return get(OUTPUTS_HLS_ENABLED);
+    }
+
+    public boolean outputsMp3Enabled() throws SQLException {
+        return get(OUTPUTS_MP3_ENABLED);
+    }
+
+    public int outputsMp3BitrateKbps() throws SQLException {
+        return get(OUTPUTS_MP3_BITRATE_KBPS);
     }
 
     public boolean overlayEnabled() throws SQLException {

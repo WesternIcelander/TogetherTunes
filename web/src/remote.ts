@@ -14,8 +14,8 @@ export type RoomMode = "listen" | "remote";
  * `output.status` (outputs.ts `applyOutputStatus`).
  */
 export interface OutputView {
-  kind: "rtmp" | "ts" | "hls" | string;
-  /** RTMP: connecting | connected | retrying | error; `.ts`/HLS: ready. */
+  kind: "rtmp" | "ts" | "hls" | "mp3" | string;
+  /** RTMP: connecting | connected | retrying | error; `.ts`/HLS/MP3: ready (MP3 without ffmpeg: error). */
   status?: string;
   estimatedDelayMs?: number;
   /** RTMP, owner and moderators only: the push's last ffmpeg message. */
@@ -23,10 +23,10 @@ export interface OutputView {
 }
 
 /** The output kinds, most preferred first, when the room has more than one. */
-export const OUTPUT_PREFERENCE = ["rtmp", "ts", "hls"];
+export const OUTPUT_PREFERENCE = ["rtmp", "ts", "hls", "mp3"];
 
 /** The defaults of `estimatedDelayMs.*` (docs/rooms.md#room-settings-settings_json). */
-export const DEFAULT_DELAYS_MS: Record<string, number> = { rtmp: 5000, ts: 2000, hls: 8000 };
+export const DEFAULT_DELAYS_MS: Record<string, number> = { rtmp: 5000, ts: 2000, hls: 8000, mp3: 3000 };
 
 /** The settings' upper bound for a delay, also the bound of delay + nudge. */
 export const MAX_DELAY_MS = 120000;
@@ -63,7 +63,7 @@ function validDelay(v: unknown): v is number {
 
 /**
  * The active output and its estimated delay. The active output is the most preferred one
- * (RTMP, `.ts`, HLS) that isn't in an error or off state; its delay is the one the server sent with
+ * (RTMP, `.ts`, HLS, MP3) that isn't in an error or off state; its delay is the one the server sent with
  * it, else the room setting `estimatedDelayMs.<kind>`, else the default. A room without any
  * active output is treated as RTMP, the primary output.
  */

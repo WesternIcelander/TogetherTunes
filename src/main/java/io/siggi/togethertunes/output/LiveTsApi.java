@@ -91,6 +91,8 @@ public final class LiveTsApi {
     private final ProgramOutputs outputs;
     private final LiveLimits limits;
     private final ConcurrentHashMap<String, AtomicInteger> viewers = new ConcurrentHashMap<>();
+    /** {@code /live/{token}.mp3} shares the route ({@link LiveMp3Api}); null: not served. */
+    private volatile io.siggi.togethertunes.http.Handler mp3;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
 
     /** Without a per-IP limit (tests); the per-token cap still applies. */
@@ -168,6 +170,11 @@ public final class LiveTsApi {
         };
     }
 
+    /** Serves {@code /live/{token}.mp3} through this route ({@link LiveMp3Api#register}). */
+    public void mp3(io.siggi.togethertunes.http.Handler handler) {
+        this.mp3 = handler;
+    }
+
     public void register(Router router) {
         // GET routes answer HEAD too; /live/{token}/… (HLS) has more segments and doesn't match.
         router.get("/live/{file}", this::handle);
@@ -185,8 +192,13 @@ public final class LiveTsApi {
     }
 
     void handle(Request request, Response response) throws Exception {
-        limits.checkIp(request.clientIp());
         String file = request.pathParam("file");
+        io.siggi.togethertunes.http.Handler mp3Handler = mp3;
+        if (mp3Handler != null && file != null && file.endsWith(".mp3")) {
+            mp3Handler.handle(request, response); // checks the IP limit itself
+            return;
+        }
+        limits.checkIp(request.clientIp());
         if (file == null || !file.endsWith(".ts")) {
             throw HttpError.notFound();
         }

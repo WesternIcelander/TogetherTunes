@@ -45,7 +45,7 @@ import java.util.function.Function;
  *   <tr><td>{@code outputs.rtmp.playbackUrl}</td><td>{@code ""} (none)</td><td>the viewer URL the RTMP service gives out; http(s), rtmp(s), rtsp(t), at most {@value #MAX_URL_LENGTH} characters</td></tr>
  *   <tr><td>{@code outputs.rtmp.idleStopMinutes}</td><td>10</td><td>1..{@value #MAX_IDLE_STOP_MINUTES}; the RTMP push is turned off after the room was idle this long, at most the server's {@code outputs.rtmp.maxIdleStopMinutes} (higher values act as that)</td></tr>
  *   <tr><td>{@code outputs.ts.join}</td><td>{@code "next"}</td><td>{@code next} | {@code latest} (join point of {@code .ts} viewers)</td></tr>
- *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls}</td><td>5000 / 2000 / 8000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
+ *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls} / {@code .mp3}</td><td>5000 / 2000 / 8000 / 3000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
  * </table>
  *
  * <p>Whether an output exists and is on is not a setting: that is the {@code stream_outputs} row
@@ -114,6 +114,7 @@ public final class RoomSettings {
         def("estimatedDelayMs.rtmp", 5000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.ts", 2000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.hls", 8000, whole(0, MAX_DELAY_MS));
+        def("estimatedDelayMs.mp3", 3000, whole(0, MAX_DELAY_MS));
         Set<String> groups = new java.util.HashSet<>();
         for (String key : DEFS.keySet()) {
             for (int i = key.indexOf('.'); i > 0; i = key.indexOf('.', i + 1)) {
@@ -502,6 +503,10 @@ public final class RoomSettings {
 
     public int estimatedDelayMsHls() {
         return (Integer) values.get("estimatedDelayMs.hls");
+    }
+
+    public int estimatedDelayMsMp3() {
+        return (Integer) values.get("estimatedDelayMs.mp3");
     }
 
     @Override

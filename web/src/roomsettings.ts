@@ -70,6 +70,8 @@ export const SETTINGS: SettingDef[] = [
     min: 0, max: 120000 },
   { key: "estimatedDelayMs.hls", label: "Estimated HLS delay (ms)", kind: "int", group: "outputs", default: 8000,
     min: 0, max: 120000 },
+  { key: "estimatedDelayMs.mp3", label: "Estimated MP3 delay (ms)", kind: "int", group: "outputs", default: 3000,
+    min: 0, max: 120000 },
 ];
 
 /**
@@ -124,7 +126,10 @@ function settingLabel(key: string): string {
 export interface ServerSwitches {
   guests: { enabled: boolean; canVote: boolean; canRequestLibrary: boolean; canUpload: boolean; canYoutube: boolean };
   overlay: { enabled: boolean };
-  outputs: { rtmp: { enabled: boolean; maxIdleStopMinutes?: number }; ts: { enabled: boolean }; hls: { enabled: boolean } };
+  outputs: {
+    rtmp: { enabled: boolean; maxIdleStopMinutes?: number }; ts: { enabled: boolean }; hls: { enabled: boolean };
+    mp3?: { enabled: boolean };
+  };
 }
 
 /**
@@ -155,15 +160,15 @@ export function serverDisabledReason(key: string, sw: ServerSwitches | undefined
   if (key.startsWith("overlay.")) {
     return sw.overlay.enabled ? null : "The overlay is " + SERVER_DISABLED;
   }
-  for (const kind of ["rtmp", "ts", "hls"] as const) {
+  for (const kind of ["rtmp", "ts", "hls", "mp3"] as const) {
     if (key === "estimatedDelayMs." + kind || key.startsWith("outputs." + kind + ".")) {
-      return sw.outputs[kind].enabled ? null : OUTPUT_NAMES[kind] + " output is " + SERVER_DISABLED;
+      return sw.outputs[kind]?.enabled !== false ? null : OUTPUT_NAMES[kind] + " output is " + SERVER_DISABLED;
     }
   }
   return null;
 }
 
-const OUTPUT_NAMES = { rtmp: "The RTMP", ts: "The .ts", hls: "The HLS" };
+const OUTPUT_NAMES = { rtmp: "The RTMP", ts: "The .ts", hls: "The HLS", mp3: "The MP3" };
 
 function capitalise(s: string): string {
   return s.charAt(0).toUpperCase() + s.substring(1);

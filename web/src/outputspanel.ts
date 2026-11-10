@@ -1,7 +1,7 @@
 // The room page's outputs panel (docs/rooms.md#outputs). Everyone sees the RTMP playback URL
 // (the room setting `outputs.rtmp.playbackUrl`) while the RTMP output is active, with a copy
 // button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
-// the `.ts` and HLS URLs with copy buttons, the RTMP push status and, for the owner only, the RTMP
+// the `.ts`, HLS and MP3 URLs with copy buttons, the RTMP push status and, for the owner only, the RTMP
 // target and key (in a password field with Reveal and Copy), live push status
 // (from the room state, which `output.status` keeps current), the player allowlist note and, with
 // HLS on, the HLS desync note. The owner turns outputs on and off, rotates the URLs' tokens, sets
@@ -9,7 +9,7 @@
 import { api } from "./api.js";
 import { button, h } from "./dom.js";
 import {
-  activeKey, canCreate, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
+  activeKey, canCreate, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
   validRtmpUrl, type OutputKind, type OutputRow,
 } from "./outputs.js";
 import type { RoomState } from "./roomclient.js";
@@ -217,7 +217,7 @@ export class OutputsPanel {
   }
 
   #serverOn(kind: OutputKind): boolean {
-    return this.#switches?.outputs[kind].enabled !== false;
+    return this.#switches?.outputs[kind]?.enabled !== false;
   }
 
   /** On/off and remove buttons for an existing output (owner only). */
@@ -243,25 +243,29 @@ export class OutputsPanel {
     return row.serverEnabled ? "Off" : "Off (disabled by the server admin)";
   }
 
-  /** `.ts` or HLS: the tokenised URL with Copy, Rotate URL, on/off, remove. */
+  /** `.ts`, HLS or MP3: the tokenised URL with Copy, Rotate URL, on/off, remove. */
   #urlBlock(kind: OutputKind, row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
     const fail = (e: unknown): void => this.#fail(e);
     const title = h("h4", { text: OUTPUT_LABELS[kind] ?? kind });
+    const about = OUTPUT_DESCRIPTIONS[kind];
+    const description = about !== undefined ? h("p", { class: "muted small", text: about }) : null;
     if (row === undefined) {
       const serverOn = this.#serverOn(kind);
       const parts: Node[] = [title, h("p", { class: "muted small", text: serverOn ? "Off" : "Disabled by the server admin" })];
+      if (description !== null) parts.push(description);
       if (this.#owner && canCreate(kind, rows, serverOn)) {
         parts.push(button("Turn on", () => this.#act("POST", "", { kind }), fail));
       }
       return h("div", { class: "output-block" }, ...parts);
     }
     const parts: Node[] = [title, h("p", { class: "small", text: this.#stateLine(row) })];
+    if (description !== null) parts.push(description);
     if (row.url !== undefined) parts.push(copyField(row.url, (OUTPUT_LABELS[kind] ?? kind) + " URL"));
     const buttons: Node[] = [];
     if (this.#owner) {
       buttons.push(button("Rotate URL", async () => {
-        if (!confirm("Make a new URL? The current one stops working at once (open .ts connections end); "
-          + "viewers and worlds need the new one.")) return;
+        if (!confirm("Make a new URL? The current one stops working at once (open connections end); "
+          + "viewers and players need the new one.")) return;
         await this.#act("POST", "/" + encodeURIComponent(row.id) + "/rotate");
       }, fail));
     }

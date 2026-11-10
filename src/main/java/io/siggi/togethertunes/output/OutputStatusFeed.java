@@ -25,7 +25,7 @@ import java.util.concurrent.TimeUnit;
  * state ({@code connecting}, {@code connected}, {@code retrying}, {@code error}) with the last
  * ffmpeg message as {@code detail} (the key is already masked by {@link RtmpPusher}); a push that
  * isn't running yet is {@code connecting}, and one that can't run (no ffmpeg) is {@code error}.
- * {@code .ts} and HLS are {@code ready}. An output that stops being active is sent once as
+ * {@code .ts}, HLS and MP3 are {@code ready} (MP3 without ffmpeg: {@code error}). An output that stops being active is sent once as
  * {@code off}.
  *
  * <p>Checks run on one worker thread, in order: a room's after its push changed status
@@ -42,6 +42,7 @@ public final class OutputStatusFeed implements RoomOutputs, AutoCloseable {
     }
 
     static final String NO_FFMPEG = "This server can't push RTMP: ffmpeg isn't configured";
+    static final String NO_FFMPEG_MP3 = "This server can't encode MP3: ffmpeg isn't configured";
 
     private final StreamOutputs rows;
     private final StreamOutputControl control;
@@ -70,6 +71,9 @@ public final class OutputStatusFeed implements RoomOutputs, AutoCloseable {
 
     private RoomOutputs.Status status(StreamOutputs.Output o) {
         String kind = o.kind().wire();
+        if (o.kind() == StreamOutputs.Kind.MP3 && !control.mp3Available()) {
+            return new RoomOutputs.Status(kind, "error", NO_FFMPEG_MP3);
+        }
         if (o.kind().hasToken()) {
             return new RoomOutputs.Status(kind, "ready", null);
         }

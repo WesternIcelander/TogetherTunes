@@ -42,7 +42,7 @@ class OutputStatusFeedTest {
     StreamOutputControl control;
     OutputStatusFeed feed;
     final TestClock clock = new TestClock(1_800_000_000_000L);
-    final Map<String, Boolean> switches = new ConcurrentHashMap<>(Map.of("rtmp", true, "ts", true, "hls", true));
+    final Map<String, Boolean> switches = new ConcurrentHashMap<>(Map.of("rtmp", true, "ts", true, "hls", true, "mp3", true));
     final Map<String, RtmpPusher.Status> pushes = new ConcurrentHashMap<>();
     final List<String> sent = Collections.synchronizedList(new ArrayList<>());
     String userId;
@@ -104,6 +104,11 @@ class OutputStatusFeedTest {
             @Override
             public boolean hls() {
                 return switches.get("hls");
+            }
+
+            @Override
+            public boolean mp3() {
+                return switches.get("mp3");
             }
         }, new StreamOutputControl.Outputs() {
             @Override
@@ -171,6 +176,23 @@ class OutputStatusFeedTest {
             create(roomId, StreamOutputs.Kind.RTMP, true);
             assertEquals(List.of(new RoomOutputs.Status("rtmp", "error", OutputStatusFeed.NO_FFMPEG)),
                     f.active(roomId));
+        } finally {
+            noFfmpeg.close();
+        }
+    }
+
+    @Test
+    void mp3IsReadyWithFfmpegAnErrorWithoutAndHasItsOwnSwitch() throws Exception {
+        create(roomId, StreamOutputs.Kind.MP3, true);
+        create(roomId, StreamOutputs.Kind.HLS, true);
+        assertEquals(List.of(new RoomOutputs.Status("hls", "ready", null), new RoomOutputs.Status("mp3", "ready", null)),
+                feed.active(roomId));
+        switches.put("mp3", false);
+        assertEquals(List.of(new RoomOutputs.Status("hls", "ready", null)), feed.active(roomId));
+        switches.put("mp3", true);
+        StreamOutputControl noFfmpeg = control(false);
+        try (OutputStatusFeed f = feed(noFfmpeg)) {
+            assertEquals(new RoomOutputs.Status("mp3", "error", OutputStatusFeed.NO_FFMPEG_MP3), f.active(roomId).get(1));
         } finally {
             noFfmpeg.close();
         }

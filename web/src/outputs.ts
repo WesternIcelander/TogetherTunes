@@ -7,11 +7,16 @@
 // (owner and moderators: the stream URLs, the RTMP target and the key's last 4 characters).
 import type { OutputView } from "./remote.js";
 
-export type OutputKind = "rtmp" | "ts" | "hls";
+export type OutputKind = "rtmp" | "ts" | "hls" | "mp3";
 
-export const OUTPUT_KINDS: OutputKind[] = ["rtmp", "ts", "hls"];
+export const OUTPUT_KINDS: OutputKind[] = ["rtmp", "ts", "hls", "mp3"];
 
-export const OUTPUT_LABELS: Record<string, string> = { rtmp: "RTMP push", ts: "MPEG-TS (.ts)", hls: "HLS" };
+export const OUTPUT_LABELS: Record<string, string> = { rtmp: "RTMP push", ts: "MPEG-TS (.ts)", hls: "HLS", mp3: "MP3 audio" };
+
+/** What an output kind is for, shown under its title (none for kinds that need no explanation). */
+export const OUTPUT_DESCRIPTIONS: Record<string, string> = {
+  mp3: "MP3 audio stream for internet-radio players. Audio only; the station title shows what is playing.",
+};
 
 /** A push's status as `GET …/outputs` has it (RTMP, while a push runs). */
 export interface PushStatus {
@@ -30,7 +35,7 @@ export interface OutputRow {
   serverEnabled: boolean;
   active: boolean;
   createdAt: number;
-  /** `.ts` / HLS: the tokenised URL. */
+  /** `.ts` / HLS / MP3: the tokenised URL. */
   url?: string;
   /** RTMP, the room's owner only: the ingest URL, whether there is a key, and the key. */
   rtmpUrl?: string;
@@ -53,7 +58,7 @@ export function idleStopLine(row: OutputRow): string | undefined {
 /**
  * The state's outputs after an `output.status` message: the output of that kind is replaced
  * (keeping its `estimatedDelayMs` if the message has none), added, or removed when it is `off`.
- * The result keeps the order RTMP, `.ts`, HLS. Malformed messages change nothing.
+ * The result keeps the order RTMP, `.ts`, HLS, MP3. Malformed messages change nothing.
  */
 export function applyOutputStatus(outputs: OutputView[] | undefined, msg: Record<string, unknown>): OutputView[] {
   const list = (outputs ?? []).slice();

@@ -21,6 +21,8 @@ public enum Feature {
     OUTPUT_TS(Settings.OUTPUTS_TS_ENABLED, "MPEG-TS outputs are disabled on this server"),
     /** {@code outputs.hls.enabled}: HLS outputs. */
     OUTPUT_HLS(Settings.OUTPUTS_HLS_ENABLED, "HLS outputs are disabled on this server"),
+    /** {@code outputs.mp3.enabled}: MP3 outputs. */
+    OUTPUT_MP3(Settings.OUTPUTS_MP3_ENABLED, "MP3 outputs are disabled on this server"),
     /** {@code overlay.enabled}: the QR overlay ({@link Permission#OUTPUT_OVERLAY_VIDEO}). */
     OVERLAY(Settings.OVERLAY_ENABLED, "The QR overlay is disabled on this server");
 

@@ -101,7 +101,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(32, all.size());
+        assertEquals(34, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -119,6 +119,14 @@ abstract class SettingsContract {
         assertEquals(5, settings.outputsRtmpMaxIdleStopMinutes());
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 0));
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, 1441));
+        assertTrue(settings.outputsMp3Enabled());
+        assertEquals(128, settings.outputsMp3BitrateKbps());
+        settings.set(Settings.OUTPUTS_MP3_ENABLED, false);
+        settings.set(Settings.OUTPUTS_MP3_BITRATE_KBPS, 320);
+        assertFalse(settings.outputsMp3Enabled());
+        assertEquals(320, settings.outputsMp3BitrateKbps());
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_MP3_BITRATE_KBPS, 63));
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_MP3_BITRATE_KBPS, 321));
 
         assertEquals(RegistrationMode.INVITE, settings.registrationMode());
         assertEquals(GuestIdentity.IP, settings.guestsIdentifyBy());
@@ -221,7 +229,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(32, settings.all().size());
+        assertEquals(34, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

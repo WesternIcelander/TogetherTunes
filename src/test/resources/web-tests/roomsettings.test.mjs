@@ -9,7 +9,7 @@ const S = await import(pathToFileURL(process.env.ROOMSETTINGS_JS).href);
 const ALL_ON = {
   guests: { enabled: true, canVote: true, canRequestLibrary: true, canUpload: true, canYoutube: true },
   overlay: { enabled: true },
-  outputs: { rtmp: { enabled: true }, ts: { enabled: true }, hls: { enabled: true } },
+  outputs: { rtmp: { enabled: true }, ts: { enabled: true }, hls: { enabled: true }, mp3: { enabled: true } },
 };
 
 function clone(o) {
@@ -19,7 +19,7 @@ function clone(o) {
 test("every room setting of docs/rooms.md is defined once, with its default", () => {
   const keys = S.SETTINGS.map((d) => d.key);
   assert.equal(new Set(keys).size, keys.length);
-  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
+  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.mp3", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
     "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard", "uploadRequests",
@@ -55,6 +55,14 @@ test("server switches grey out exactly what they turn off", () => {
   assert.match(S.serverDisabledReason("estimatedDelayMs.ts", noTs), /\.ts output/);
   assert.equal(S.serverDisabledReason("estimatedDelayMs.rtmp", noTs), null);
   assert.equal(S.serverDisabledReason("estimatedDelayMs.hls", noTs), null);
+  assert.equal(S.serverDisabledReason("estimatedDelayMs.mp3", noTs), null);
+  const noMp3 = clone(ALL_ON);
+  noMp3.outputs.mp3.enabled = false;
+  assert.match(S.serverDisabledReason("estimatedDelayMs.mp3", noMp3), /MP3 output/);
+  // an older server without the mp3 switch: not greyed out
+  const old = clone(ALL_ON);
+  delete old.outputs.mp3;
+  assert.equal(S.serverDisabledReason("estimatedDelayMs.mp3", old), null);
   const noRtmp = clone(ALL_ON);
   noRtmp.outputs.rtmp.enabled = false;
   assert.match(S.serverDisabledReason("outputs.rtmp.playbackUrl", noRtmp), /RTMP/);

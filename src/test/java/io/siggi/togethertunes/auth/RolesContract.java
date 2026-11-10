@@ -367,7 +367,7 @@ abstract class RolesContract {
         permissions.require(u, Permission.LIBRARY_YOUTUBE);
 
         // Output switches have no permission of their own.
-        for (Feature f : List.of(Feature.OUTPUT_RTMP, Feature.OUTPUT_TS, Feature.OUTPUT_HLS)) {
+        for (Feature f : List.of(Feature.OUTPUT_RTMP, Feature.OUTPUT_TS, Feature.OUTPUT_HLS, Feature.OUTPUT_MP3)) {
             assertTrue(permissions.enabled(f));
             permissions.requireFeature(f);
             settings.set(f.setting(), false);

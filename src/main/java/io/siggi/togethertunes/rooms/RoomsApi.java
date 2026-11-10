@@ -401,6 +401,7 @@ public final class RoomsApi {
         outputs.put("rtmp", Map.of("enabled", sw.rtmpEnabled(), "maxIdleStopMinutes", sw.rtmpMaxIdleStopMinutes()));
         outputs.put("ts", Map.of("enabled", sw.tsEnabled()));
         outputs.put("hls", Map.of("enabled", sw.hlsEnabled()));
+        outputs.put("mp3", Map.of("enabled", sw.mp3Enabled()));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("guests", g);
         body.put("overlay", Map.of("enabled", sw.overlayEnabled()));

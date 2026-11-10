@@ -225,7 +225,8 @@ class RoomsApiTest {
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
         assertEquals(JsonParser.parseString("{\"guests\":{\"enabled\":true,\"canVote\":true,\"canRequestLibrary\":true,"
                 + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{\"rtmp\":"
-                + "{\"enabled\":true,\"maxIdleStopMinutes\":60},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true}}}"),
+                + "{\"enabled\":true,\"maxIdleStopMinutes\":60},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true},"
+                + "\"mp3\":{\"enabled\":true}}}"),
                 JsonParser.parseString(r.body()));
         settings.set(Settings.GUESTS_ENABLED, false);
         settings.set(Settings.GUESTS_CAN_UPLOAD, true);

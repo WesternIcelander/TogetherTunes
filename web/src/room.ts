@@ -1027,7 +1027,7 @@ function render(s: RoomState): void {
 function renderRemoteDelay(): void {
   const d = remoteDelays(shown);
   element("room-delay-total").textContent = formatSeconds(d.totalMs);
-  const kind = { rtmp: "RTMP", ts: ".ts", hls: "HLS" }[d.kind] ?? d.kind;
+  const kind = ({ rtmp: "RTMP", ts: ".ts", hls: "HLS", mp3: "MP3" } as Record<string, string>)[d.kind] ?? d.kind;
   element("room-delay-detail").textContent = "(" + kind + " " + formatSeconds(d.outputMs)
     + (nudge !== 0 ? ", your nudge " + formatSeconds(nudge, true) : "") + ")";
   (element("room-delay-reset") as HTMLButtonElement).hidden = nudge === 0;

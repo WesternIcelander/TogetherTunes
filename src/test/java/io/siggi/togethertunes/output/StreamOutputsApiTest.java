@@ -106,6 +106,11 @@ class StreamOutputsApiTest {
             public boolean hls() throws SQLException {
                 return settings.outputsHlsEnabled();
             }
+
+            @Override
+            public boolean mp3() throws SQLException {
+                return settings.outputsMp3Enabled();
+            }
         }, new StreamOutputControl.Outputs() {
             @Override
             public void start(String id) {
@@ -392,6 +397,40 @@ class StreamOutputsApiTest {
         int before = revalidations.get();
         control.reconcile();
         assertTrue(revalidations.get() > before, "reconcile re-checks the .ts connections");
+    }
+
+    @Test
+    void mp3OutputHasATokenUrlAndItsOwnServerSwitch() throws Exception {
+        JsonObject ts = create("{\"kind\":\"ts\"}");
+        JsonObject mp3 = create("{\"kind\":\"mp3\"}");
+        assertEquals("mp3", mp3.get("kind").getAsString());
+        Matcher m = Pattern.compile("https://tunes\\.example/live/([A-Za-z0-9_-]{22})\\.mp3").matcher(
+                mp3.get("url").getAsString());
+        assertTrue(m.matches(), mp3.toString());
+        assertEquals(m.group(1), column("SELECT token FROM stream_outputs WHERE kind = 'mp3'"));
+        assertNotEquals(token(TS_URL, ts), m.group(1));
+        assertTrue(mp3.get("active").getAsBoolean());
+        expectError(409, "output_exists", call(alice, "POST", "/api/rooms/club/outputs", "{\"kind\":\"mp3\"}"));
+        expectError(400, "invalid_field", call(alice, "POST", "/api/rooms/club/outputs",
+                "{\"kind\":\"mp3\",\"rtmpUrl\":\"rtmp://x/y\"}"));
+        // listed after rtmp, ts, hls
+        JsonArray items = json(call(bob, "GET", "/api/rooms/club/outputs", null)).getAsJsonArray("items");
+        assertEquals(List.of("ts", "mp3"), List.of(items.get(0).getAsJsonObject().get("kind").getAsString(),
+                items.get(1).getAsJsonObject().get("kind").getAsString()));
+        // rotate gives a new token
+        String path = "/api/rooms/club/outputs/" + mp3.get("id").getAsString();
+        JsonObject rotated = json(call(alice, "POST", path + "/rotate", null));
+        assertNotEquals(mp3.get("url").getAsString(), rotated.get("url").getAsString());
+        // the server switch outputs.mp3.enabled gates it like the others
+        settings.set(Settings.OUTPUTS_MP3_ENABLED, false);
+        JsonObject off = json(call(alice, "GET", path, null));
+        assertFalse(off.get("serverEnabled").getAsBoolean());
+        assertFalse(off.get("active").getAsBoolean());
+        assertEquals(200, call(alice, "PATCH", path, "{\"enabled\":false}").statusCode());
+        expectError(403, "feature_disabled", call(alice, "PATCH", path, "{\"enabled\":true}"));
+        assertEquals(204, call(alice, "DELETE", path, null).statusCode());
+        expectError(403, "feature_disabled", call(alice, "POST", "/api/rooms/club/outputs", "{\"kind\":\"mp3\"}"));
+        assertTrue(control.hasActiveOutput(roomId), "the .ts output is still on");
     }
 
     @Test

@@ -23,10 +23,10 @@ import java.util.Objects;
 
 /**
  * The {@code stream_outputs} rows ({@code docs/data-model.md}, {@code docs/rooms.md#outputs}): a
- * room's RTMP push, {@code .ts} and HLS outputs, at most one of each kind per room.
+ * room's RTMP push, {@code .ts}, HLS and MP3 outputs, at most one of each kind per room.
  *
  * <ul>
- *   <li><b>Tokens</b> ({@code .ts}/HLS): 128 random bits, base64url without padding (22
+ *   <li><b>Tokens</b> ({@code .ts}/HLS/MP3): 128 random bits, base64url without padding (22
  *       characters), stored in plaintext (they are shown to the owner again); {@link #rotate}
  *       replaces one. They are capabilities: never logged, never in an audit entry (invariant 6).</li>
  *   <li><b>RTMP stream keys</b> are stored in plain text ({@code rtmp_key}; RTMP sends them in
@@ -54,7 +54,7 @@ public final class StreamOutputs {
 
     /** An output kind, as on the wire and in {@code stream_outputs.kind}. */
     public enum Kind {
-        RTMP, TS, HLS;
+        RTMP, TS, HLS, MP3;
 
         public String wire() {
             return name().toLowerCase(Locale.ROOT);
@@ -73,7 +73,7 @@ public final class StreamOutputs {
             return null;
         }
 
-        /** Whether this kind is reached by a token URL ({@code .ts}, HLS). */
+        /** Whether this kind is reached by a token URL ({@code .ts}, HLS, MP3). */
         public boolean hasToken() {
             return this != RTMP;
         }
@@ -200,7 +200,7 @@ public final class StreamOutputs {
         return raw;
     }
 
-    /** The room's outputs, in the order rtmp, ts, hls. */
+    /** The room's outputs, in the order rtmp, ts, hls, mp3. */
     public List<Output> list(String roomId) throws SQLException {
         return db.read(c -> {
             List<Output> out = new ArrayList<>();
@@ -258,7 +258,7 @@ public final class StreamOutputs {
     }
 
     /**
-     * Creates the room's output of this kind. {@code .ts}/HLS get a new token; RTMP needs
+     * Creates the room's output of this kind. {@code .ts}/HLS/MP3 get a new token; RTMP needs
      * {@code rtmpUrl} (already checked with {@link #rtmpUrl}) and may have a key.
      *
      * @throws HttpError {@code 409 output_exists} if the room already has one of this kind
@@ -421,7 +421,7 @@ public final class StreamOutputs {
     }
 
     /**
-     * Gives a {@code .ts}/HLS output a new token; the old one stops working at once.
+     * Gives a {@code .ts}/HLS/MP3 output a new token; the old one stops working at once.
      *
      * @return the output with its new token, or null if there is no such output in the room
      * @throws HttpError {@code 409 no_token} for an RTMP output
@@ -489,6 +489,7 @@ public final class StreamOutputs {
             case RTMP -> "an RTMP output";
             case TS -> "a .ts output";
             case HLS -> "an HLS output";
+            case MP3 -> "an MP3 output";
         });
     }
 

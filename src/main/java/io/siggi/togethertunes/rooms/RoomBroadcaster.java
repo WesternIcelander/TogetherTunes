@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * The room's active program outputs ({@link RoomOutputs}) go into every {@code state}; a change of
  * one of them ({@link #outputStatus}) is sent as {@code output.status}, without a version, in order
  * with the other messages. Each output carries {@code estimatedDelayMs} (the room setting
- * {@code estimatedDelayMs.<kind>}, whose defaults are 5000 / 2000 / 8000 ms); the RTMP
+ * {@code estimatedDelayMs.<kind>}, whose defaults are 5000 / 2000 / 8000 / 3000 ms for RTMP, .ts, HLS, MP3); the RTMP
  * {@code detail} goes to the owner and moderators only.
  * A banned guest's sockets ({@link RoomEvent.GuestBanned}), and sockets whose actor may no longer
  * see the room after a room, settings or member change, get {@code kicked} and leave the room.

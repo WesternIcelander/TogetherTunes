@@ -20,8 +20,8 @@ import java.util.concurrent.TimeUnit;
  *   <li><b>Idle stop:</b> with an {@link RtmpIdleStop} ({@link #idleStop}), each timer run first
  *       turns off the RTMP output of rooms idle for their limit ({@link #checkIdle}), then
  *       reconciles, which stops those pushes.</li>
- *   <li><b>{@code .ts}:</b> {@link #reconcile} ends {@code .ts} connections whose token no longer
- *       opens the room (rotated, disabled, deleted, server switch off). HLS needs nothing: every
+ *   <li><b>{@code .ts} and MP3:</b> {@link #reconcile} ends {@code .ts} and MP3 connections whose
+ *       token no longer opens the room (rotated, disabled, deleted, server switch off). HLS needs nothing: every
  *       request checks its token.</li>
  *   <li><b>Program output:</b> enabling an output starts the room's output at once
  *       ({@link #roomChanged} with {@code started}); a room left with no active output has it
@@ -62,6 +62,8 @@ public final class StreamOutputControl implements AutoCloseable {
         boolean ts() throws SQLException;
 
         boolean hls() throws SQLException;
+
+        boolean mp3() throws SQLException;
     }
 
     /** What a running push was started with: restarted when either changes. */
@@ -90,6 +92,11 @@ public final class StreamOutputControl implements AutoCloseable {
 
     /** Whether RTMP pushes can run at all (ffmpeg configured). */
     public boolean rtmpAvailable() {
+        return pushers != null;
+    }
+
+    /** Whether MP3 outputs can be encoded (ffmpeg configured, as for RTMP). */
+    public boolean mp3Available() {
         return pushers != null;
     }
 
@@ -248,6 +255,7 @@ public final class StreamOutputControl implements AutoCloseable {
             case RTMP -> switches.rtmp();
             case TS -> switches.ts();
             case HLS -> switches.hls();
+            case MP3 -> switches.mp3();
         };
     }
 

@@ -46,6 +46,7 @@ class PermissionTest {
         assertEquals(Settings.OUTPUTS_RTMP_ENABLED, Feature.OUTPUT_RTMP.setting());
         assertEquals(Settings.OUTPUTS_TS_ENABLED, Feature.OUTPUT_TS.setting());
         assertEquals(Settings.OUTPUTS_HLS_ENABLED, Feature.OUTPUT_HLS.setting());
+        assertEquals(Settings.OUTPUTS_MP3_ENABLED, Feature.OUTPUT_MP3.setting());
         assertEquals(Settings.OVERLAY_ENABLED, Feature.OVERLAY.setting());
         for (Feature f : Feature.values()) {
             assertEquals(f.setting(), Settings.KEYS.get(f.setting().name()));

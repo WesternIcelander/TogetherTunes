@@ -9,6 +9,12 @@ package io.siggi.togethertunes.output;
  * @param boundaryPts see {@link Unit#boundaryPts()}
  * @param audioEndPts see {@link Unit#audioEndPts()}
  * @param ts          the unit's MPEG-TS bytes, shared by every consumer: never modify them
+ * @param itemId      the library item the unit plays ({@link ItemSource#itemId()}), or null for a
+ *                    filler (Paused, Idle, Loading); the MP3 output's stream title follows it
  */
-public record TsUnit(long sequence, long startPts, long boundaryPts, long audioEndPts, byte[] ts) {
+public record TsUnit(long sequence, long startPts, long boundaryPts, long audioEndPts, byte[] ts, String itemId) {
+    /** A unit without an item (fillers, tests). */
+    public TsUnit(long sequence, long startPts, long boundaryPts, long audioEndPts, byte[] ts) {
+        this(sequence, startPts, boundaryPts, audioEndPts, ts, null);
+    }
 }

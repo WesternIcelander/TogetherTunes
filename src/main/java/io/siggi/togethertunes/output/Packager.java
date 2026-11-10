@@ -212,7 +212,8 @@ public final class Packager implements AutoCloseable {
     private void publish(Unit u, byte[] ts) {
         TsUnit unit;
         synchronized (lock) {
-            unit = new TsUnit(sequence++, u.startPts(), u.boundaryPts(), u.audioEndPts(), ts);
+            unit = new TsUnit(sequence++, u.startPts(), u.boundaryPts(), u.audioEndPts(), ts,
+                    u.source() instanceof ItemSource is ? is.itemId() : null);
             latest = unit;
         }
         // a sink added after the snapshot already got this unit as "latest" (or wanted the next one)
