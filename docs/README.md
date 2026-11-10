@@ -8,7 +8,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 
 - **Libraries and playlists.** Media items are stored once on the server. Each user has a private library of references to them, and can make playlists and share items with other accounts. Nobody can browse another user's library without a role permission, but anyone with a direct link to an item can open it.
 - **Adding media.** Upload a file, or paste a YouTube URL (fetched with yt-dlp and cached by video ID). Admins decide who may do each, including logged-out users.
-- **Rooms.** A user creates a room and others join it. The owner controls the queue, or lets listeners vote on songs or edit the queue directly. Every request ends up in the owner's request history, where the owner can add it to their library.
+- **Rooms.** A user creates a room and others join it. The owner controls the queue, or lets listeners vote on songs or edit the queue directly. Each room keeps one history of what played; anyone in the room can add an item from it to their own library or (by the room's request rules) to the queue again.
 - **Guests.** Logged-out users can vote and request (from a library, by upload or by YouTube URL) where the admin and the room owner allow it. They get a generated name (adjective + noun) or, if the admin allows, a name of their choice. They are identified by a persistent cookie or by IP address (admin setting).
 - **Synchronised web/app playback.** Web and app listeners play the files locally, kept in sync with the room's server timeline. They can switch between video and audio-only without a break in the audio, or use **remote mode**, which plays nothing locally (for people who hear the room in VRChat).
 - **Program output for VRChat.** The server generates a continuous H.264/AAC stream of the room. It can be delivered by **RTMP push** (e.g. to VRCDN), as a **direct MPEG-TS URL**, or as **HLS**. The three are equal features: the admin enables or disables each one server-wide, and room owners switch on whichever are allowed.
@@ -49,7 +49,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [auth.md](auth.md) | Accounts, OIDC, sessions, roles and permissions, guests, IP policy, tokens on stream URLs |
 | [libraries.md](libraries.md) | Items vs. libraries, playlists, sharing, visibility, media access rules, retention |
 | [library-and-ingest.md](library-and-ingest.md) | Upload and yt-dlp import, YouTube caching, the mezzanine encoding profile, cards, sample index |
-| [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, request history, clock sync, web playback modes |
+| [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, the room's history, clock sync, web playback modes |
 | [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS outputs |
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
 | [api.md](api.md) | REST endpoints and WebSocket messages |

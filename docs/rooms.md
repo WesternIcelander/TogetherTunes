@@ -8,7 +8,7 @@ Each room has authoritative state that lives in memory, inside the room's single
 Room {
   id, slug, name, ownerId, visibility, controlMode, settings
   queue: List<QueueEntry>        // upcoming entries, in play order (plus suggestions in owner mode)
-  history: last N played entries
+  history: last N played entries (the full history is read from the database)
   timeline: { state, entryId | null, anchorServerMs, anchorPositionMs }
   members: online connections (actor: user|guest|anonymous, mode: listen|remote)
   version: long
@@ -104,7 +104,7 @@ Guests can join `public` and `unlisted` rooms. Just listening needs no identity.
 
 In the room settings UI, options the server has disabled are shown greyed out, with "disabled by the server admin".
 
-As implemented (web, `web/src/roommanage.ts` + `roomsettings.ts`): the **management view** is its own page, `/rooms/{idOrSlug}/manage`, linked as "Manage room" from the room page for the owner and moderators. Tabs: **Settings** (name, link name, visibility, control mode and every room setting, grouped; the owner saves only what changed, as one `PATCH`; moderators see them read-only; a setting whose server switch is off (`GET /api/rooms/{id}/server-switches`) is greyed out and disabled with "… disabled by the server admin" and is left out of the patch: the guest capabilities by `guests.enabled` / `guests.*`, every `overlay.*` setting by `overlay.enabled`, `outputs.<kind>.*` and `estimatedDelayMs.<kind>` by `outputs.<kind>.enabled`; vote-skip is a percentage, empty = off; "Delete room" for the owner or `rooms.moderateAny`), **Members** (role select as the viewer may give roles, "Make owner" for the owner, Remove / Lift ban, Leave for oneself, add by username with `POST /api/rooms/{id}/members`), **Guest bans** (list with the IP-mode note, and the address for `ip.view` only; Unban) and **Request history** (filter by source and, via "Only theirs", by requester; "Add to my library" per row or for a selection, owner only; "Ban guest" on a guest's request, after `GET …/guest-bans/{guestId}` and a confirmation that repeats the IP-mode warning). Guests are banned from the request history, where moderators see who they are.
+As implemented (web, `web/src/roommanage.ts` + `roomsettings.ts`): the **management view** is its own page, `/rooms/{idOrSlug}/manage`, linked as "Manage room" from the room page for the owner and moderators. Tabs: **Settings** (name, link name, visibility, control mode and every room setting, grouped; the owner saves only what changed, as one `PATCH`; moderators see them read-only; a setting whose server switch is off (`GET /api/rooms/{id}/server-switches`) is greyed out and disabled with "… disabled by the server admin" and is left out of the patch: the guest capabilities by `guests.enabled` / `guests.*`, every `overlay.*` setting by `overlay.enabled`, `outputs.<kind>.*` and `estimatedDelayMs.<kind>` by `outputs.<kind>.enabled`; vote-skip is a percentage, empty = off; "Delete room" for the owner or `rooms.moderateAny`), **Members** (role select as the viewer may give roles, "Make owner" for the owner, Remove / Lift ban, Leave for oneself, add by username with `POST /api/rooms/{id}/members`), and **Guest bans** (list with the IP-mode note, and the address for `ip.view` only; Unban). Guests are banned from the room page's [history](#history) ("Ban guest", after `GET …/guest-bans/{guestId}` and a confirmation that repeats the IP-mode warning), where moderators see who added what. (The **Request history** tab was removed on 2026-11-10: one history per room.)
 
 - The first action that needs an identity creates the guest (see [auth.md](auth.md#guests)). With custom names allowed, the UI asks for a name first, pre-filled with a generated one.
 - Owners and moderators can **ban a guest** from the room (`room_guest_bans`). In IP mode this bans everyone sharing that IP or /64. The UI warns about this, but doesn't show the IP unless the viewer has `ip.view`.
@@ -117,15 +117,26 @@ As implemented (`RoomGuests`, `RoomPresence`, `PresenceOps`):
 - A guest banned from a room is treated like a banned user: `403 banned_from_room`, the room isn't listed for it, and it can't upload or add links for it. Banning removes its connections from presence (the WebSocket layer closes them). Its queue entries and votes stay, as for a banned user; moderators can remove entries.
 - Presence counts each identified actor once, however many sockets it has: `listening` if any of them listens, else `remote`. `anonymous` counts sockets. A change of the counts is broadcast with a new `version`; a drop in identified members re-checks the vote-skip threshold. Presence is in memory only (kept when the executor reloads its state, empty after a restart).
 
-## Requests and the owner's request history
+## Requests
 
-A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from three sources:
+A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from four sources:
 
 - **Library:** search within `requestScope`.
 - **Upload:** the file is ingested into a new item (or deduplicated). The queue entry is "processing" until the item is ready.
 - **YouTube:** the link is normalised to a video ID and served from the cache when possible ([library-and-ingest.md](library-and-ingest.md#youtube-caching)). See [Adding a YouTube link](#adding-a-youtube-link) for the feedback while a new one is looked up.
+- **History:** "Add to Queue" on a row of the room's [history](#history).
 
-Each request writes a `room_requests` row. The owner reviews them in the request history and can add items to their library from there ([libraries.md](libraries.md#room-owners-request-history)). Items that nobody adds to a library are deleted by retention after the configured period.
+The owner and moderators get `request.new` for each request. Items that nobody adds to a library are deleted by retention after the configured period.
+
+## History
+
+Each room has **one history**: every entry that started playing there and has ended (played or skipped), newest first, kept for `rooms.requestHistoryDays` (default 90, 0 = forever; the hourly retention run deletes older entries, never a room's current one). It replaced the owner's request history (Siggi, 2026-11-10). Everyone who may open the room sees it (the room page, below the queue), so it shows nothing the queue doesn't: per row the item (title and artist; a purged item keeps its row, marked expired), when it played, who added it (the display name they had then; guests marked as guests; never an IP address), how (from a library, by upload, by YouTube link, from a playlist, from the history) and whether it was skipped.
+
+- **Add to Library** on every row whose item isn't in the **viewer's** library (signed-in users; guests have no library), through `PUT /api/library/{itemId}`, so retention protection and the quality re-encode follow. Rows already in their library say "In your library". A purged YouTube item is fetched again; a purged or failed upload can't be restored and has no button.
+- **Add to Queue:** the owner and moderators on every row, exempt from the request rules. Everyone else only where they may request from the library (a guest needs `guests.canRequestLibrary`), with the usual rules: `requestsPerActor`, `owner` mode turns it into a suggestion, and **`noRepeatWindow`**: for an item that started playing within the last N entries (the current one included) the button is disabled with "Played within the last N songs", and the server refuses it (`409 recently_played`). There is **no request scope check**: the item was available in this room already.
+- Moderators also get **Ban guest** on a guest's row (after a confirmation with the IP-mode warning); this used to live in the request history.
+
+As implemented (`rooms/RoomHistory`, `web/src/history.ts` + `room.ts`): the history is `queue_entries` with `played_at` set and state `played`/`skipped`; entries record `via` and `added_by_name` (migration `0011`; older entries show the current name and no `via`). `GET /api/rooms/{id}/history` serves it in pages of 50 with per-viewer `inYourLibrary` and `recentlyPlayed` ([api.md](api.md#rooms)); the room state still carries the last 20 rows, and the page loads the first page again whenever that changes ("Show more" for older ones). `queue.add {historyEntryId}` adds an entry's item again (an entry of this room that has started playing; `404 history_entry_not_found` otherwise). An entry that `previous` plays again moves to the top when it ends again.
 
 ## Outputs
 
@@ -242,7 +253,7 @@ The program output ([program-output.md](program-output.md)) **follows** the time
 
 These are performed by the executor; each one checks the actor's permissions and the mode's rules.
 
-- `add(itemId | uploadId | youtubeUrl)`: checks `requestsPerActor`, `noRepeatWindow`, the guest capabilities and the request scope. In `owner` mode, a request from anyone else becomes a suggestion. Writes a `room_requests` row.
+- `add(itemId | uploadId | youtubeUrl | historyEntryId)`: checks `requestsPerActor`, `noRepeatWindow`, the guest capabilities and the request scope (not for a history entry). In `owner` mode, a request from anyone else becomes a suggestion. Writes a `room_requests` row.
 - `addPlaylist(playlistId, shuffle)`: owner and moderators only.
 - `remove(entryId)`: owner and moderators; the requester while the entry is still queued; or anyone with request rights in `open` mode.
 - `retry(entryId)`: a failed YouTube entry (queued or suggested) is fetched again; owner and moderators, and the requester while they may add YouTube links here ([Retrying](#room-state)).

@@ -95,20 +95,15 @@ Implementation (`retention/RetentionSweeper`): steps 3 and 4 are one manual-styl
 
 **Purged items:**
 
-- History and request lists still show their title and artist, marked as "media expired".
+- The room's history still shows their title and artist, marked as "media expired".
 - Requesting, or adding to a library, a purged **YouTube** item fetches it again (an ingest job of kind `refetch`) using the stored `youtube_id`. To the requester it behaves as if the video were being requested for the first time.
 - A purged **upload** can't be restored. It has to be uploaded again; the content hash then matches the old row, which is reused.
 
-## Room owner's request history
+## Keeping requested items (the room's history)
 
-Every request in a room creates a `room_requests` row, whether it came from the library, an upload or YouTube, and whether the requester is a user or a guest. The row records who made the request (display name at the time), how, when, and the resulting queue entry.
+There is no separate request history (Siggi, 2026-11-10: "We should have just one history -- it should be play history"). Every room has one **history** of what played there ([rooms.md](rooms.md#history)), visible to everyone in the room, and anyone signed in can **Add to Library** from it, which protects the item from retention. That is how a room owner keeps what was requested while they were away: they add it from the history like anyone else.
 
-The room owner (and moderators, read-only) sees the request history in the room's management view:
-
-- filter by source (upload, YouTube, library) and by requester;
-- **"Add to my library"** on each row, or on a multi-selection. This adds the item to the **owner's** library and thereby protects it from retention;
-- the history is kept for `rooms.requestHistoryDays` (default 90) and then trimmed.
-
-Requests are shown even after the item has been purged. That lets the owner see what was requested while they were away, and re-fetch YouTube items.
-
-As implemented (`RoomRequests`): the row is written by `queue.add` in the same transaction as the queue entry (also when it becomes a suggestion), for adds by anyone but the room's owner, and in `owner` mode also not by moderators (who add directly there). Playlists added by the owner or moderators aren't requests. A `RoomEvent.RequestAdded` tells the WebSocket layer (`request.new`). `rooms.requestHistoryDays` is a server setting (default 90, 0 = keep forever, up to 36500): older rows are no longer listed or addable at once, and the hourly retention run deletes them. "Add to my library" adds with `via: "request"` and only the owner may do it (moderators and `rooms.moderateAny` read only); after an ownership transfer it adds to the new owner's library. The requester filter takes a user's or guest's id. The API is in [api.md](api.md#rooms).
+- Items that were requested but **never played** (removed from the queue, or rejected suggestions) are not listed anywhere; nobody can keep them from the history, and retention deletes them after the usual period unless someone has them in a library.
+- History entries are kept for `rooms.requestHistoryDays` (default 90; the name stayed from the request history so stored values stay valid) and then trimmed.
+- Purged items stay listed (title and artist), marked as expired. Adding a purged YouTube item to a library or the queue fetches it again; a purged upload can't be restored, so it has no buttons.
+- The old `room_requests` table is gone (migration `0011`): its rows' `via` and requester name were copied onto their queue entries. Library entries added from it keep `via: "request"`.

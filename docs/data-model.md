@@ -113,18 +113,16 @@ room_guest_bans(room_id FK, guest_id FK, created_at, PRIMARY KEY(room_id, guest_
 queue_entries(id PK, room_id FK, item_id FK,
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       state TEXT,                           -- 'queued'|'suggested'|'playing'|'played'|'skipped'|'removed'
-      position REAL, pinned INTEGER, played_at NULL)
+      position REAL, pinned INTEGER, played_at NULL,
+      via TEXT NULL,                        -- 'library'|'upload'|'youtube'|'playlist'|'history' (NULL: older entries)
+      added_by_name TEXT NULL)              -- adder's display name at add time (NULL: older entries)
+-- The room's history is the entries with played_at set and state played/skipped
+-- (index (room_id, played_at)); trimmed after rooms.requestHistoryDays. room_requests was
+-- dropped in 0011 (its via and by_name copied onto the entries).
 
 votes(entry_id FK, voter_user_id NULL, voter_guest_id NULL, value INTEGER, at,
       UNIQUE(entry_id, voter_user_id), UNIQUE(entry_id, voter_guest_id))
 skip_votes(entry_id FK, voter_user_id NULL, voter_guest_id NULL, at, same uniques)
-
-room_requests(id PK, room_id FK, item_id FK,
-      by_user_id NULL, by_guest_id NULL,
-      by_name TEXT,                         -- display name at request time (guests can be renamed/deleted)
-      via TEXT,                             -- 'library' | 'upload' | 'youtube'
-      at, entry_id NULL,                    -- the queue entry created, if any
-      added_to_owner_library INTEGER)
 
 stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls'
       token TEXT UNIQUE NULL,               -- path token for ts/hls
