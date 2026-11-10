@@ -60,6 +60,10 @@ The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is th
 - **Offline playlists.** The user marks playlists as available offline; the app downloads their items (by default `audio.m4a` only: small, the same for every item, and what audio-only mode plays; video per playlist as an option) and keeps the playlist in sync. With no connection, it plays from those copies with no server at all.
 - **Rooms from local copies.** In a room, the app needs only the timeline over the WebSocket. If the current (or next) item is stored locally and its file version matches, it plays the local copy in sync instead of streaming it, so joining a room costs almost no data.
 
+### When the app ships
+
+- **Drop the web client's iOS 15 syntax baseline** (Siggi, 2026-11-10): once iOS users have the app, the web UI no longer needs to support iOS 15 Safari. Remove the Safari 15.0 limits from CLAUDE.md (Frontend) and the matching checks in `WebBuildTest`, and raise `web/tsconfig.json`'s target. Remind Siggi of this when the app work starts.
+
 ### Open questions
 
 - May a device keep playing its copy of an item the server has purged (retention) or the user has lost access to?
