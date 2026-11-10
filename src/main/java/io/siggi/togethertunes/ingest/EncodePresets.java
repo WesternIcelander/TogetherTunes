@@ -64,6 +64,26 @@ public final class EncodePresets {
     }
 
     /**
+     * Presets from settings, checked against the reference card {@code reference} gives at the
+     * time (the current output encoding's, {@link OutputAssets}); call {@link #forget} when it
+     * changes.
+     */
+    public static EncodePresets checkedAgainst(java.util.function.Supplier<ReferenceCard> reference, Tools tools,
+                                               Path cardsDir, Setting quick, Setting quality) {
+        Objects.requireNonNull(reference);
+        return new EncodePresets(p -> {
+            ReferenceCard card = reference.get();
+            return card != null && card.presetMatches(tools, cardsDir, p);
+        }, quick, quality);
+    }
+
+    /** Forgets the checks made so far (the reference card changed); each preset is checked again on next use. */
+    public void forget() {
+        results.clear();
+        warned.clear();
+    }
+
+    /**
      * Whether {@code preset} gives the reference avcC (checked once, then cached). A check that
      * can't run (ffmpeg missing or failing) counts as a mismatch for now and is tried again next
      * time.

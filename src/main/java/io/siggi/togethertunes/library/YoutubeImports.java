@@ -26,6 +26,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.function.IntSupplier;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -81,8 +82,8 @@ public final class YoutubeImports {
     private final Tools tools;
     private final IngestJobs jobs;
     private final Runnable wake;
-    private final OutputEncoding profile;
-    private final int maxDurationSec;
+    private volatile Supplier<OutputEncoding> profile;
+    private volatile IntSupplier maxDurationSec;
     private final Supplier<String> cookiesFile;
     private final Clock clock;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
@@ -115,13 +116,27 @@ public final class YoutubeImports {
         this.tools = Objects.requireNonNull(tools);
         this.jobs = Objects.requireNonNull(jobs);
         this.wake = Objects.requireNonNull(wake);
-        this.profile = Objects.requireNonNull(profile);
-        this.maxDurationSec = maxDurationSec;
+        Objects.requireNonNull(profile);
+        this.profile = () -> profile;
+        this.maxDurationSec = () -> maxDurationSec;
         this.cookiesFile = Objects.requireNonNull(cookiesFile);
         this.clock = Objects.requireNonNull(clock);
         for (int i = 0; i < locks.length; i++) {
             locks[i] = new ReentrantLock();
         }
+    }
+
+    /**
+     * Where the output encoding new items are recorded with comes from (the current one,
+     * {@code ingest.OutputAssets}); replaces the fixed one given to the constructor.
+     */
+    public void outputEncoding(Supplier<OutputEncoding> encoding) {
+        this.profile = Objects.requireNonNull(encoding);
+    }
+
+    /** Where {@code ingest.maxDurationSeconds} comes from (the admin setting), read for every import. */
+    public void maxDurationSeconds(IntSupplier maxDurationSec) {
+        this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
     }
 
     /**
@@ -323,6 +338,7 @@ public final class YoutubeImports {
                     : "post_live".equals(meta.liveStatus()) ? " (this one has just ended and is still being processed)"
                     : ""));
         }
+        int maxDurationSec = this.maxDurationSec.getAsInt();
         if (meta.durationSec() > maxDurationSec) {
             throw new HttpError(422, "too_long", String.format(Locale.ROOT,
                     "The video is too long (%d s; the limit is %d s)", Math.round(meta.durationSec()), maxDurationSec));
@@ -389,7 +405,7 @@ public final class YoutubeImports {
             ps.setString(7, userId);
             ps.setString(8, guestId);
             ps.setLong(9, now);
-            ps.setString(10, profile.id());
+            ps.setString(10, profile.get().id());
             ps.setString(11, meta.toItemMetadata().toString());
             ps.setInt(12, presentAsAudio ? 1 : 0);
             ps.setLong(13, now);

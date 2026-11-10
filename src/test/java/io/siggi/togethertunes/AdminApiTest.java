@@ -92,6 +92,18 @@ class AdminApiTest {
                 presets.validate(key.name(), preset);
             }
         });
+        // a fake library: 7 ready items, all of them encoded for the default encoding
+        adminApi.encodingInfo(new AdminApi.EncodingInfo() {
+            @Override
+            public io.siggi.togethertunes.config.OutputEncoding current() {
+                return io.siggi.togethertunes.config.OutputEncoding.DEFAULT;
+            }
+
+            @Override
+            public long reencodeCount(io.siggi.togethertunes.config.OutputEncoding target) {
+                return target.equals(io.siggi.togethertunes.config.OutputEncoding.DEFAULT) ? 0 : 7;
+            }
+        });
         // a fake data volume: 8 GiB free of 100, against the storage.minFreeBytes setting
         adminApi.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
                 () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(freeBytes, 100 * Settings.GIB),
@@ -301,7 +313,7 @@ class AdminApiTest {
                 {"PATCH", "/api/admin/roles/x"}, {"DELETE", "/api/admin/roles/x"},
                 {"GET", "/api/admin/roles/x/permissions"}, {"PUT", "/api/admin/roles/x/permissions"},
                 {"GET", "/api/admin/settings"}, {"PATCH", "/api/admin/settings"}, {"GET", "/api/admin/storage"},
-                {"GET", "/api/admin/guests"}, {"GET", "/api/admin/audit"}, {"GET", "/api/admin/ip/sessions/" + bobId},
+                {"GET", "/api/admin/encoding"}, {"GET", "/api/admin/guests"}, {"GET", "/api/admin/audit"}, {"GET", "/api/admin/ip/sessions/" + bobId},
         };
         for (String[] route : routes) {
             String body = route[0].equals("GET") || route[0].equals("DELETE") ? null : "{}";
@@ -495,6 +507,59 @@ class AdminApiTest {
         String empty = call(201, "POST", "/api/admin/roles", "{\"name\":\"empty\",\"permissions\":[\"admin.roles\"]}", erin)
                 .get("id").getAsString();
         call(204, "DELETE", "/api/admin/roles/" + empty, null, erin);
+    }
+
+    /**
+     * output.profile, output.videoBitrateKbps, ingest.workers, ingest.maxUploadBytes,
+     * overlay.workers and overlay.cacheMaxBytes are admin settings; GET /api/admin/encoding tells
+     * the page how many items a new encoding would re-encode.
+     */
+    @Test
+    void outputEncodingAndWorkerSettings() throws Exception {
+        JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");
+        JsonObject profile = find(items, "output.profile");
+        assertEquals("output", profile.get("group").getAsString());
+        assertEquals("enum", profile.get("type").getAsString());
+        assertEquals(List.of("720p30", "1080p30"), strings(profile.getAsJsonArray("options")));
+        JsonObject bitrate = find(items, "output.videoBitrateKbps");
+        assertEquals("integer", bitrate.get("type").getAsString());
+        assertFalse(bitrate.has("value"), "unset: the profile's default");
+        assertEquals("bytes", find(items, "ingest.maxUploadBytes").get("type").getAsString());
+        assertEquals("library", find(items, "ingest.workers").get("group").getAsString());
+        assertEquals("overlay", find(items, "overlay.workers").get("group").getAsString());
+        assertEquals("bytes", find(items, "overlay.cacheMaxBytes").get("type").getAsString());
+
+        JsonObject same = call(200, "GET", "/api/admin/encoding", null, admin);
+        assertEquals("720p30-3000k-v2", same.get("current").getAsString());
+        assertEquals("720p30-3000k-v2", same.get("encoding").getAsString());
+        assertEquals(0, same.get("reencodeItems").getAsInt());
+        JsonObject hd = call(200, "GET", "/api/admin/encoding?profile=1080p30&videoBitrateKbps=", null, admin);
+        assertEquals("1080p30-6000k-v2", hd.get("encoding").getAsString());
+        assertEquals(7, hd.get("reencodeItems").getAsInt());
+        assertEquals("720p30-2000k-v2",
+                call(200, "GET", "/api/admin/encoding?videoBitrateKbps=2000", null, admin).get("encoding").getAsString());
+        assertError("invalid_setting", call(400, "GET", "/api/admin/encoding?profile=480p25", null, admin));
+        assertError("invalid_setting", call(400, "GET", "/api/admin/encoding?videoBitrateKbps=100", null, admin));
+        assertError("invalid_setting", call(400, "GET", "/api/admin/encoding?videoBitrateKbps=fast", null, admin));
+
+        JsonObject changed = call(200, "PATCH", "/api/admin/settings", "{\"output.profile\":\"1080p30\","
+                + "\"output.videoBitrateKbps\":8000,\"ingest.workers\":5,\"ingest.maxUploadBytes\":1073741824,"
+                + "\"overlay.workers\":2,\"overlay.cacheMaxBytes\":0}", admin);
+        assertEquals(8000, find(changed.getAsJsonArray("items"), "output.videoBitrateKbps").get("value").getAsInt());
+        assertEquals("1080p30-8000k-v2", settings.outputEncoding().id());
+        assertEquals(5, settings.ingestWorkers());
+        assertEquals(Settings.GIB, settings.ingestMaxUploadBytes());
+        assertEquals(2, settings.overlayWorkers());
+        assertEquals(0, settings.overlayCacheMaxBytes());
+        // the missing profile is now the setting's
+        assertEquals("1080p30-6000k-v2",
+                call(200, "GET", "/api/admin/encoding", null, admin).get("encoding").getAsString());
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"ingest.workers\":0}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"output.videoBitrateKbps\":30000}", admin));
+        call(200, "PATCH", "/api/admin/settings", "{\"output.videoBitrateKbps\":null,\"output.profile\":null}", admin);
+        assertEquals("720p30-3000k-v2", settings.outputEncoding().id());
     }
 
     @Test

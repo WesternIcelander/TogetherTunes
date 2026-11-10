@@ -586,6 +586,49 @@ abstract class IngestJobsContract {
         assertNull(jobs.claimNext());
     }
 
+    /**
+     * The encoding changed while a job ran (an admin changed output.profile or the bitrate): the
+     * job finishes for the old encoding, so its item gets a {@code reencode} at once; an item that
+     * finished for the current encoding doesn't. {@link IngestJobs#countStale} counts the ready
+     * items a switch would re-encode.
+     */
+    @Test
+    void aJobThatFinishesForAnOldEncodingQueuesAReencode() throws SQLException {
+        OutputEncoding now = OutputEncoding.defaultFor(OutputProfile.P1080_30);
+        String stale = fixtures.item("pending"); // fixtures record '720p30'
+        String fresh = fixtures.item("pending");
+        String readyOld = fixtures.item("ready");
+        String readyNew = fixtures.item("ready");
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET output_profile = ? WHERE id IN (?, ?)")) {
+                ps.setString(1, now.id());
+                ps.setString(2, fresh);
+                ps.setString(3, readyNew);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(1, jobs.countStale(now), "only ready items count: readyOld");
+        assertEquals(2, jobs.countStale(OutputEncoding.DEFAULT), "readyNew and readyOld");
+
+        // Without a current encoding nothing extra happens (startup sweep only).
+        IngestJob first = jobs.enqueue(stale, Kind.UPLOAD);
+        assertEquals(first.id(), jobs.claimNext().id());
+        assertTrue(jobs.complete(first.id(), "log"));
+        assertTrue(jobs.latestForItem(stale).orElseThrow().state() == State.DONE);
+
+        jobs.currentEncoding(() -> now);
+        IngestJob again = jobs.enqueue(stale, Kind.REFETCH);
+        IngestJob ok = jobs.enqueue(fresh, Kind.UPLOAD);
+        assertEquals(Set.of(again.id(), ok.id()), Set.of(jobs.claimNext().id(), jobs.claimNext().id()));
+        assertTrue(jobs.complete(again.id(), "log"));
+        assertTrue(jobs.complete(ok.id(), "log"));
+        IngestJob reencode = jobs.latestForItem(stale).orElseThrow();
+        assertEquals(Kind.REENCODE, reencode.kind());
+        assertEquals(State.QUEUED, reencode.state());
+        assertEquals(State.DONE, jobs.latestForItem(fresh).orElseThrow().state(), "already the current encoding");
+    }
+
     @Test
     void aFailedReencodeLeavesTheItemReady() throws SQLException {
         String item = fixtures.item("ready");

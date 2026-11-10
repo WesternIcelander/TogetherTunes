@@ -51,6 +51,11 @@ public final class ReferenceCard {
         this.created = created;
     }
 
+    /** A reference made up for tests (no file, no encode). */
+    static ReferenceCard forTest(OutputEncoding encoding, Path card, byte[] avcC) {
+        return new ReferenceCard(encoding, card, avcC.clone(), avcC.clone(), false);
+    }
+
     /** The directory holding an encoding's server-wide cards: {@code <cardsDir>/<encoding id>}. */
     public static Path encodingDir(Path cardsDir, OutputEncoding encoding) {
         return cardsDir.resolve(encoding.id());

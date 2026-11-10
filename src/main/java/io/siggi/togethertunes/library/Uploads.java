@@ -43,6 +43,9 @@ import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
+import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
@@ -108,9 +111,9 @@ public final class Uploads {
     private final Tools tools;
     private final IngestJobs jobs;
     private final Runnable wake;
-    private final OutputEncoding profile;
-    private final long maxBytes;
-    private final long maxDurationUs;
+    private volatile Supplier<OutputEncoding> profile;
+    private volatile LongSupplier maxBytes;
+    private volatile IntSupplier maxDurationSec;
     private final Clock clock;
     private final GuestUploadQuota guestQuota;
 
@@ -166,9 +169,10 @@ public final class Uploads {
         this.tools = Objects.requireNonNull(tools);
         this.jobs = Objects.requireNonNull(jobs);
         this.wake = Objects.requireNonNull(wake);
-        this.profile = Objects.requireNonNull(profile);
-        this.maxBytes = maxBytes;
-        this.maxDurationUs = maxDurationSec * 1_000_000L;
+        Objects.requireNonNull(profile);
+        this.profile = () -> profile;
+        this.maxBytes = () -> maxBytes;
+        this.maxDurationSec = () -> maxDurationSec;
         this.guestQuota = Objects.requireNonNull(guestQuota);
         this.clock = Objects.requireNonNull(clock);
     }
@@ -180,6 +184,23 @@ public final class Uploads {
      */
     public void diskSpace(DiskSpace diskSpace) {
         this.diskSpace = Objects.requireNonNull(diskSpace);
+    }
+
+    /**
+     * Where the output encoding new items are recorded with comes from (the current one,
+     * {@code ingest.OutputAssets}); replaces the fixed one given to the constructor.
+     */
+    public void outputEncoding(Supplier<OutputEncoding> encoding) {
+        this.profile = Objects.requireNonNull(encoding);
+    }
+
+    /**
+     * Where {@code ingest.maxUploadBytes} and {@code ingest.maxDurationSeconds} come from (the
+     * admin settings), read for every new upload; replaces the fixed limits given to the constructor.
+     */
+    public void limits(LongSupplier maxBytes, IntSupplier maxDurationSec) {
+        this.maxBytes = Objects.requireNonNull(maxBytes);
+        this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
     }
 
     /** The guest upload quota. */
@@ -222,8 +243,9 @@ public final class Uploads {
         if (size < 1) {
             throw new HttpError(400, "invalid_size", "size must be at least 1 byte");
         }
-        if (size > maxBytes) {
-            throw HttpError.payloadTooLarge("The file is larger than the upload limit (" + maxBytes + " bytes)");
+        long limit = maxBytes.getAsLong();
+        if (size > limit) {
+            throw HttpError.payloadTooLarge("The file is larger than the upload limit (" + limit + " bytes)");
         }
         diskSpace.requireRoomFor(size);
         return name;
@@ -639,7 +661,7 @@ public final class Uploads {
             throw new HttpError(422, "no_audio", "The file has no audio");
         }
         try {
-            IngestPipeline.checkSource(probe, maxDurationUs);
+            IngestPipeline.checkSource(probe, maxDurationSec.getAsInt() * 1_000_000L);
         } catch (IngestFailure e) {
             discard(upload);
             throw new HttpError(422, "too_long", e.getMessage());
@@ -708,7 +730,7 @@ public final class Uploads {
             ps.setString(7, upload.userId());
             ps.setString(8, upload.guestId());
             ps.setLong(9, now);
-            ps.setString(10, profile.id());
+            ps.setString(10, profile.get().id());
             ps.setLong(11, now);
             ps.executeUpdate();
         }

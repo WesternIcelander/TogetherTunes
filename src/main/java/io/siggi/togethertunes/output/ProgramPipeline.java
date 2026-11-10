@@ -17,8 +17,24 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
         TimelineFollower.SourceFactory open() throws IOException;
     }
 
-    private final SourcesOpener sources;
-    private final byte[] avcC;
+    /**
+     * Opens the sources for one output together with the avcC they were encoded for (so an output
+     * started after the output encoding changed uses the new encoding throughout).
+     */
+    @FunctionalInterface
+    public interface EncodedOpener {
+        Opened open() throws IOException;
+    }
+
+    /** One output's sources and the reference avcC its muxer writes SPS/PPS from. */
+    public record Opened(TimelineFollower.SourceFactory sources, byte[] avcC) {
+        public Opened {
+            Objects.requireNonNull(sources, "sources");
+            Objects.requireNonNull(avcC, "avcC");
+        }
+    }
+
+    private final EncodedOpener opener;
     private final TimeSource time;
 
     /**
@@ -27,14 +43,23 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
      * @param time    real time in production
      */
     public ProgramPipeline(SourcesOpener sources, byte[] avcC, TimeSource time) {
-        this.sources = Objects.requireNonNull(sources, "sources");
-        this.avcC = Objects.requireNonNull(avcC, "avcC").clone();
+        Objects.requireNonNull(sources, "sources");
+        byte[] fixed = Objects.requireNonNull(avcC, "avcC").clone();
+        this.opener = () -> new Opened(sources.open(), fixed);
+        this.time = Objects.requireNonNull(time, "time");
+    }
+
+    /** @param opener opens each output's sources with their encoding's avcC */
+    public ProgramPipeline(EncodedOpener opener, TimeSource time) {
+        this.opener = Objects.requireNonNull(opener, "opener");
         this.time = Objects.requireNonNull(time, "time");
     }
 
     @Override
     public ProgramOutputs.Output start(String roomId, ProgramCue initial) throws IOException {
-        TimelineFollower.SourceFactory src = sources.open();
+        Opened opened = opener.open();
+        TimelineFollower.SourceFactory src = opened.sources();
+        byte[] avcC = opened.avcC();
         try {
             PacingClock clock = new PacingClock(time);
             TimelineFollower follower = new TimelineFollower(new UnitBuilder(), src, clock, initial);

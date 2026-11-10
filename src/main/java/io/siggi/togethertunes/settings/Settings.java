@@ -7,6 +7,8 @@ import com.google.gson.Strictness;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 import io.siggi.togethertunes.config.Config;
+import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import java.io.IOException;
@@ -81,21 +83,44 @@ public final class Settings {
     public static final SettingKey<X264Preset> INGEST_QUALITY_PRESET = SettingKey.enumeration(
             "ingest.qualityPreset", X264Preset.class, X264Preset.DEFAULT_QUALITY, X264Preset::id);
 
-    // Storage
-    /** One GiB, the unit the admin page shows {@link #STORAGE_MIN_FREE_BYTES} in. */
+    /** One GiB, the unit the admin page shows byte sizes in. */
     public static final long GIB = 1024L * 1024 * 1024;
+    /** The largest byte size a setting takes: 1 PiB (well inside what JavaScript numbers hold exactly). */
+    public static final long MAX_BYTES = 1024L * 1024 * GIB;
+    /** The most ingest or overlay workers. */
+    public static final int MAX_WORKERS = 256;
+
+    /** Ingest worker count; the built-in default is half the cores, the config file's is used instead. */
+    public static final SettingKey<Integer> INGEST_WORKERS = SettingKey.integer(
+            "ingest.workers", Math.max(1, Runtime.getRuntime().availableProcessors() / 2), 1, MAX_WORKERS);
+    /** Upload size limit in bytes (new uploads). Default from the config file. */
+    public static final SettingKey<Long> INGEST_MAX_UPLOAD_BYTES = SettingKey.bytes(
+            "ingest.maxUploadBytes", 4 * GIB, 1, MAX_BYTES);
+
+    // Storage
     /**
      * Adding media pauses while the data volume has less free space than this
      * ({@code docs/library-and-ingest.md#free-disk-space}); 0 disables the check. At most 1 PiB
      * (well inside what JavaScript numbers hold exactly).
      */
     public static final SettingKey<Long> STORAGE_MIN_FREE_BYTES = SettingKey.bytes(
-            "storage.minFreeBytes", 5 * GIB, 0, 1024L * 1024 * GIB);
+            "storage.minFreeBytes", 5 * GIB, 0, MAX_BYTES);
 
     // Rooms
     /** Days a room's request history is kept ({@code room_requests}); 0 means never trim. */
     public static final SettingKey<Integer> ROOMS_REQUEST_HISTORY_DAYS = SettingKey.integer(
             "rooms.requestHistoryDays", 90, 0, 36_500);
+
+    // Output encoding (docs/library-and-ingest.md#re-encodes): changing either re-encodes every item.
+    /** The output profile every encode is made for. Default from the config file. */
+    public static final SettingKey<OutputProfile> OUTPUT_PROFILE = SettingKey.enumeration(
+            "output.profile", OutputProfile.class, OutputProfile.DEFAULT, OutputProfile::id);
+    /**
+     * Constant video bitrate of every encode in kb/s; {@code null} (the built-in default) means the
+     * profile's own ({@link OutputEncoding#defaultVideoBitrateKbps}).
+     */
+    public static final SettingKey<Integer> OUTPUT_VIDEO_BITRATE_KBPS = SettingKey.optionalInteger(
+            "output.videoBitrateKbps", OutputEncoding.MIN_VIDEO_BITRATE_KBPS, OutputEncoding.MAX_VIDEO_BITRATE_KBPS);
 
     // Outputs
     public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
@@ -110,6 +135,11 @@ public final class Settings {
 
     // Overlay
     public static final SettingKey<Boolean> OVERLAY_ENABLED = SettingKey.bool("overlay.enabled", false);
+    /** Concurrent overlay re-encodes (M5). Default from the config file. */
+    public static final SettingKey<Integer> OVERLAY_WORKERS = SettingKey.integer("overlay.workers", 1, 1, MAX_WORKERS);
+    /** Size limit of the overlay re-encode cache in bytes (M5); 0 keeps nothing. Default from the config file. */
+    public static final SettingKey<Long> OVERLAY_CACHE_MAX_BYTES = SettingKey.bytes(
+            "overlay.cacheMaxBytes", 20 * GIB, 0, MAX_BYTES);
 
     /** Every setting, in documentation order, by name. */
     public static final Map<String, SettingKey<?>> KEYS;
@@ -121,11 +151,12 @@ public final class Settings {
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
-                INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
+                INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,
                 STORAGE_MIN_FREE_BYTES,
                 ROOMS_REQUEST_HISTORY_DAYS,
+                OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
-                OVERLAY_ENABLED)) {
+                OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES)) {
             if (keys.put(k.name(), k) != null) {
                 throw new ExceptionInInitializerError("duplicate setting " + k.name());
             }
@@ -142,14 +173,33 @@ public final class Settings {
     }
 
     /**
-     * Settings whose {@code ingest.maxDurationSeconds}, {@code ingest.quickPreset} and
-     * {@code ingest.qualityPreset} defaults come from the config file
-     * ({@code docs/architecture.md#configuration}); the admin UI can still override them.
+     * Settings whose defaults for the config keys that are also admin settings come from the config
+     * file ({@code docs/architecture.md#configuration}): {@code output.profile},
+     * {@code output.videoBitrateKbps}, {@code ingest.workers}, {@code ingest.maxUploadBytes},
+     * {@code ingest.maxDurationSeconds}, {@code ingest.quickPreset}, {@code ingest.qualityPreset},
+     * {@code overlay.workers} and {@code overlay.cacheMaxBytes}. The admin UI can still override them.
+     * A configured bitrate equal to its profile's default counts as "the profile's default"
+     * ({@code null}), so an admin who switches the profile gets that profile's default bitrate.
+     * Sizes above {@link #MAX_BYTES} are capped to it.
      */
     public Settings(Database db, Config config) {
-        this(db, Map.of(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds(),
-                INGEST_QUICK_PRESET, config.ingestQuickPreset(),
-                INGEST_QUALITY_PRESET, config.ingestQualityPreset()));
+        this(db, configDefaults(config));
+    }
+
+    private static Map<SettingKey<?>, Object> configDefaults(Config config) {
+        Map<SettingKey<?>, Object> d = new HashMap<>();
+        d.put(OUTPUT_PROFILE, config.outputProfile());
+        int bitrate = config.outputVideoBitrateKbps();
+        d.put(OUTPUT_VIDEO_BITRATE_KBPS,
+                bitrate == OutputEncoding.defaultVideoBitrateKbps(config.outputProfile()) ? null : bitrate);
+        d.put(INGEST_WORKERS, Math.min(config.ingestWorkers(), MAX_WORKERS));
+        d.put(INGEST_MAX_UPLOAD_BYTES, Math.min(config.ingestMaxUploadBytes(), MAX_BYTES));
+        d.put(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds());
+        d.put(INGEST_QUICK_PRESET, config.ingestQuickPreset());
+        d.put(INGEST_QUALITY_PRESET, config.ingestQualityPreset());
+        d.put(OVERLAY_WORKERS, Math.min(config.overlayWorkers(), MAX_WORKERS));
+        d.put(OVERLAY_CACHE_MAX_BYTES, Math.min(config.overlayCacheMaxBytes(), MAX_BYTES));
+        return d;
     }
 
     private Settings(Database db, Map<SettingKey<?>, Object> defaultOverrides) {
@@ -163,6 +213,9 @@ public final class Settings {
     }
 
     private static <T> T validated(SettingKey<T> key, Object value) {
+        if (value == null && key.nullable()) {
+            return null;
+        }
         T typed = key.type().cast(value);
         return key.decode(key.encode(typed));
     }
@@ -364,6 +417,45 @@ public final class Settings {
 
     public X264Preset ingestQualityPreset() throws SQLException {
         return get(INGEST_QUALITY_PRESET);
+    }
+
+    /** Number of ingest workers. */
+    public int ingestWorkers() throws SQLException {
+        return get(INGEST_WORKERS);
+    }
+
+    /** Upload size limit in bytes. */
+    public long ingestMaxUploadBytes() throws SQLException {
+        return get(INGEST_MAX_UPLOAD_BYTES);
+    }
+
+    public OutputProfile outputProfile() throws SQLException {
+        return get(OUTPUT_PROFILE);
+    }
+
+    /** The {@code output.videoBitrateKbps} setting, or null for the profile's default. */
+    public Integer outputVideoBitrateKbps() throws SQLException {
+        return get(OUTPUT_VIDEO_BITRATE_KBPS);
+    }
+
+    /** The output encoding every encode is made for: {@code output.profile} at its effective bitrate. */
+    public OutputEncoding outputEncoding() throws SQLException {
+        Map<SettingKey<?>, Object> all = all();
+        return encoding((OutputProfile) all.get(OUTPUT_PROFILE), (Integer) all.get(OUTPUT_VIDEO_BITRATE_KBPS));
+    }
+
+    /** {@code profile} at {@code videoBitrateKbps}, or at the profile's default bitrate if that is null. */
+    public static OutputEncoding encoding(OutputProfile profile, Integer videoBitrateKbps) {
+        return videoBitrateKbps == null ? OutputEncoding.defaultFor(profile)
+                : new OutputEncoding(profile, videoBitrateKbps);
+    }
+
+    public int overlayWorkers() throws SQLException {
+        return get(OVERLAY_WORKERS);
+    }
+
+    public long overlayCacheMaxBytes() throws SQLException {
+        return get(OVERLAY_CACHE_MAX_BYTES);
     }
 
     /** The minimum free space on the data volume in bytes; 0 means no minimum. */

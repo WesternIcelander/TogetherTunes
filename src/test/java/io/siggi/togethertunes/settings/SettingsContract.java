@@ -88,13 +88,20 @@ abstract class SettingsContract {
         assertTrue(settings.outputsTsEnabled());
         assertTrue(settings.outputsHlsEnabled());
         assertFalse(settings.overlayEnabled());
+        assertEquals(OutputProfile.P720_30, settings.outputProfile());
+        assertNull(settings.outputVideoBitrateKbps());
+        assertEquals("720p30-3000k-v2", settings.outputEncoding().id());
+        assertEquals(4L * 1024 * 1024 * 1024, settings.ingestMaxUploadBytes());
+        assertEquals(Math.max(1, Runtime.getRuntime().availableProcessors() / 2), settings.ingestWorkers());
+        assertEquals(1, settings.overlayWorkers());
+        assertEquals(20L * 1024 * 1024 * 1024, settings.overlayCacheMaxBytes());
     }
 
     @Test
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(24, all.size());
+        assertEquals(30, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -214,7 +221,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(24, settings.all().size());
+        assertEquals(30, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());
@@ -249,5 +256,79 @@ abstract class SettingsContract {
         assertEquals(3600, withConfig.ingestMaxDurationSeconds());
         withConfig.reset(Settings.INGEST_MAX_DURATION_SECONDS);
         assertEquals(600, withConfig.ingestMaxDurationSeconds());
+    }
+
+    /**
+     * The config keys that became admin settings (output.profile, output.videoBitrateKbps,
+     * ingest.workers, ingest.maxUploadBytes, overlay.workers, overlay.cacheMaxBytes): each takes
+     * its default from the config, round-trips, overrides that default and resets back to it.
+     */
+    @Test
+    void configKeysThatAreSettingsRoundTripAndOverrideTheirConfigDefault() throws SQLException {
+        Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P1080_30, 6000, 3,
+                2 * Settings.GIB, 600, X264Preset.FASTER, X264Preset.SLOWER, 2, 7 * Settings.GIB);
+        Settings s = new Settings(db, config);
+        assertEquals(OutputProfile.P1080_30, s.outputProfile());
+        assertNull(s.outputVideoBitrateKbps(), "the profile's default bitrate counts as unset");
+        assertEquals("1080p30-6000k-v2", s.outputEncoding().id());
+        assertEquals(3, s.ingestWorkers());
+        assertEquals(2 * Settings.GIB, s.ingestMaxUploadBytes());
+        assertEquals(2, s.overlayWorkers());
+        assertEquals(7 * Settings.GIB, s.overlayCacheMaxBytes());
+
+        // Switching the profile alone takes that profile's default bitrate.
+        s.setJson("output.profile", "\"720p30\"");
+        assertEquals("720p30-3000k-v2", s.outputEncoding().id());
+        s.setJson("output.videoBitrateKbps", "2500");
+        assertEquals(2500, s.outputVideoBitrateKbps());
+        assertEquals("720p30-2500k-v2", s.outputEncoding().id());
+        s.setJson("ingest.workers", "8");
+        s.setJson("ingest.maxUploadBytes", String.valueOf(10 * Settings.GIB));
+        s.setJson("overlay.workers", "4");
+        s.setJson("overlay.cacheMaxBytes", "0");
+        assertEquals(8, s.ingestWorkers());
+        assertEquals(10 * Settings.GIB, s.ingestMaxUploadBytes());
+        assertEquals(4, s.overlayWorkers());
+        assertEquals(0, s.overlayCacheMaxBytes());
+        assertEquals("720p30", raw("output.profile").replace("\"", ""));
+
+        for (String key : List.of("output.profile", "output.videoBitrateKbps", "ingest.workers",
+                "ingest.maxUploadBytes", "overlay.workers", "overlay.cacheMaxBytes")) {
+            s.reset(Settings.KEYS.get(key));
+        }
+        assertEquals("1080p30-6000k-v2", s.outputEncoding().id());
+        assertEquals(3, s.ingestWorkers());
+        assertEquals(2 * Settings.GIB, s.ingestMaxUploadBytes());
+        assertEquals(2, s.overlayWorkers());
+        assertEquals(7 * Settings.GIB, s.overlayCacheMaxBytes());
+
+        // A configured bitrate other than the profile's default is the setting's default.
+        Config custom = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P720_30, 4000, 1,
+                1L << 62, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 62);
+        Settings c = new Settings(db, custom);
+        assertEquals(4000, c.outputVideoBitrateKbps());
+        assertEquals(4000, c.defaultValue(Settings.OUTPUT_VIDEO_BITRATE_KBPS));
+        assertEquals(Settings.MAX_BYTES, c.ingestMaxUploadBytes(), "sizes above 1 PiB are capped");
+        assertEquals(Settings.MAX_BYTES, c.overlayCacheMaxBytes());
+        // A stored null means the profile's default, even where the config gave a bitrate.
+        c.set(Settings.OUTPUT_VIDEO_BITRATE_KBPS, null);
+        assertNull(c.outputVideoBitrateKbps());
+        assertEquals("720p30-3000k-v2", c.outputEncoding().id());
+    }
+
+    @Test
+    void newSettingsValidateLikeTheConfig() {
+        for (String[] bad : new String[][] {
+                {"output.profile", "\"480p25\""}, {"output.profile", "720"},
+                {"output.videoBitrateKbps", "499"}, {"output.videoBitrateKbps", "25001"},
+                {"output.videoBitrateKbps", "3000.5"}, {"output.videoBitrateKbps", "\"3000\""},
+                {"ingest.workers", "0"}, {"ingest.workers", "257"},
+                {"ingest.maxUploadBytes", "0"}, {"ingest.maxUploadBytes", String.valueOf(Settings.MAX_BYTES + 1)},
+                {"overlay.workers", "0"}, {"overlay.cacheMaxBytes", "-1"}}) {
+            assertThrows(IllegalArgumentException.class, () -> settings.setJson(bad[0], bad[1]),
+                    bad[0] + " = " + bad[1]);
+        }
     }
 }

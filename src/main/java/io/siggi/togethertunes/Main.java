@@ -20,6 +20,7 @@ import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -37,6 +38,7 @@ import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.JobsApi;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
+import io.siggi.togethertunes.ingest.OutputAssets;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
@@ -101,6 +103,7 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -177,21 +180,27 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(overlay, M5): the overlay encoder verifies its encodes against this too.
-        ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
-        // The packager plays these when a room is paused, idle or loading.
-        FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
+        // Config keys that are also admin settings: the config gives the default, the admin setting wins.
+        Settings settings = new Settings(database, config);
+        // The output encoding (output.profile, output.videoBitrateKbps) with its reference and filler
+        // cards; an admin can change it at runtime (OutputAssets.follow, from the settings listener below).
+        // TODO(overlay, M5): the overlay encoder verifies its encodes against the reference card too.
+        OutputAssets outputAssets = outputAssets(config, dataDir,
+                setting(settings::outputEncoding, config.outputEncoding()), System.out, System.err);
+        ReferenceCard referenceCard = outputAssets.reference();
         // Repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
-        Settings settings = new Settings(database, config);
         Supplier<String> cookiesFile = cookiesFile(settings);
         // The quick and quality x264 presets, each checked against the reference avcC before use.
-        EncodePresets presets = encodePresets(config, dataDir, referenceCard, settings, System.err);
+        EncodePresets presets = encodePresets(config, dataDir, outputAssets, settings, System.err);
         IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
                 referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
+        pipeline.reference(outputAssets::reference);
+        pipeline.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
         // Adding media pauses (and queued ingest jobs wait) while the data volume is below storage.minFreeBytes.
         DiskSpace diskSpace = DiskSpace.of(dataDir.root(), settings::storageMinFreeBytes);
-        IngestQueue ingest = startIngest(config, dataDir, database, referenceCard, pipeline, diskSpace, System.err);
+        IngestQueue ingest = startIngest(setting(settings::ingestWorkers, config.ingestWorkers()), dataDir, database,
+                outputAssets, pipeline, diskSpace, System.err);
         Path tmpDir = dataDir.tmp();
         StaticFiles staticFiles;
         try {
@@ -230,7 +239,7 @@ public final class Main {
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
-        Uploads uploads = uploads(config, dataDir, database, ingest, settings);
+        Uploads uploads = uploads(config, dataDir, database, ingest, settings, outputAssets);
         // Adding a quick-encoded item to a library queues its quality re-encode.
         LibraryAddListener qualityOnLibraryAdd = itemId -> ingest.jobs().enqueueQualityIfNeeded(itemId);
         uploads.libraryAddListener(qualityOnLibraryAdd);
@@ -244,8 +253,10 @@ public final class Main {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
         // The rooms' program outputs follow the room timelines (the registry's packager hook).
-        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, referenceCard, fillerCards,
-                silence);
+        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence);
+        // A new output encoding: presets are checked against its reference card, every item re-encodes
+        // and running program outputs restart on it (docs/library-and-ingest.md#changing-the-encoding-at-runtime).
+        outputAssets.addListener(encodingChanged(presets, ingest, programOutputs, System.out, System.err));
         RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), programOutputs);
         programOutputs.snapshotsFrom(roomRegistry);
         // RTMP pushes (supervised ffmpeg); started by the outputs API. Null without ffmpeg.
@@ -256,6 +267,9 @@ public final class Main {
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
         YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
+        youtubeImports.outputEncoding(outputAssets::encoding);
+        youtubeImports.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds,
+                config.ingestMaxDurationSeconds()));
         youtubeImports.libraryAddListener(qualityOnLibraryAdd);
         youtubeImports.diskSpace(diskSpace);
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
@@ -328,7 +342,23 @@ public final class Main {
         // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
         new JobsApi(ingest.jobs(), new JobList(database, ingest.jobs(), Clock.systemUTC()), permissions, ingest::paused,
                 Clock.systemUTC()).register(appRouter);
-        admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
+        // How many items a new output encoding would re-encode (the admin page asks before saving).
+        admin.encodingInfo(new AdminApi.EncodingInfo() {
+            @Override
+            public OutputEncoding current() {
+                return outputAssets.encoding();
+            }
+
+            @Override
+            public long reencodeCount(OutputEncoding target) throws SQLException {
+                return ingest.jobs().countStale(target);
+            }
+        });
+        admin.settingsListener(() -> {
+            Thread.ofVirtual().start(outputControl::reconcile);
+            // ingest.workers, output.profile and output.videoBitrateKbps take effect without a restart.
+            Thread.ofVirtual().start(() -> applyRuntimeSettings(settings, ingest, outputAssets, System.err));
+        });
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.
         OutputStatusFeed outputStatus = new OutputStatusFeed(streamOutputs, outputControl, roomSocket::outputStatus);
         roomSocket.outputs(outputStatus);
@@ -381,8 +411,9 @@ public final class Main {
      * get a {@code reencode} job ({@link IngestJobs#enqueueReencodes}). A database error here is reported and
      * ingest stays off until the next start (the server still runs).
      */
-    static IngestQueue startIngest(Config config, DataDir dataDir, Database database, ReferenceCard referenceCard,
+    static IngestQueue startIngest(int workers, DataDir dataDir, Database database, OutputAssets outputAssets,
                                    IngestPipeline handler, DiskSpace diskSpace, PrintStream err) {
+        ReferenceCard referenceCard = outputAssets.reference();
         try {
             int cleaned = IngestPipeline.recoverDirectories(dataDir);
             if (cleaned > 0) {
@@ -393,7 +424,9 @@ public final class Main {
         }
         IngestJobs jobs = new IngestJobs(database);
         jobs.qualityPreset(handler.presets()::quality);
-        IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
+        // A job that finishes for an encoding that changed while it ran queues a re-encode.
+        jobs.currentEncoding(outputAssets::encoding);
+        IngestQueue queue = new IngestQueue(jobs, workers, handler);
         queue.pauseWhile(diskSpace::low);
         if (referenceCard != null) {
             try {
@@ -427,12 +460,12 @@ public final class Main {
      * the reference avcC; a configured preset that fails the check is reported and not used. Without
      * a reference card (no ffmpeg) both are {@link X264Preset#REFERENCE}.
      */
-    static EncodePresets encodePresets(Config config, DataDir dataDir, ReferenceCard reference, Settings settings,
+    static EncodePresets encodePresets(Config config, DataDir dataDir, OutputAssets assets, Settings settings,
                                        PrintStream err) {
-        if (reference == null) {
+        if (assets.reference() == null) {
             return EncodePresets.fixed(X264Preset.REFERENCE, X264Preset.REFERENCE);
         }
-        EncodePresets presets = EncodePresets.checkedAgainst(reference, Tools.from(config), dataDir.cards(),
+        EncodePresets presets = EncodePresets.checkedAgainst(assets::reference, Tools.from(config), dataDir.cards(),
                 settings::ingestQuickPreset, settings::ingestQualityPreset);
         for (String problem : presets.checkConfigured()) {
             err.println("WARNING: " + problem);
@@ -445,10 +478,102 @@ public final class Main {
      * configured output profile, each queued job wakes the ingest workers, and the guest upload
      * quota comes from the settings.
      */
-    static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest, Settings settings) {
-        return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputEncoding(),
-                config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(),
+    static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest, Settings settings,
+                           OutputAssets outputAssets) {
+        Uploads uploads = new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake,
+                outputAssets.encoding(), config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(),
                 new GuestUploadQuota(database, settings, Clock.systemUTC()), Clock.systemUTC());
+        uploads.outputEncoding(outputAssets::encoding);
+        // ingest.maxUploadBytes and ingest.maxDurationSeconds are admin settings (config = default).
+        uploads.limits(() -> setting(settings::ingestMaxUploadBytes, config.ingestMaxUploadBytes()),
+                () -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
+        return uploads;
+    }
+
+    /**
+     * What happens when an admin changed the output encoding ({@link OutputAssets.Listener}): the
+     * x264 presets are checked again against the new reference card, every {@code ready} item of
+     * another encoding gets a {@code reencode} job ({@link IngestJobs#enqueueReencodes}) and the
+     * running program outputs restart on the new encoding ({@link ProgramOutputs#restartRunning}).
+     */
+    static OutputAssets.Listener encodingChanged(EncodePresets presets, IngestQueue ingest, ProgramOutputs outputs,
+                                                 PrintStream out, PrintStream err) {
+        return (previous, now) -> {
+            presets.forget();
+            try {
+                int queued = ingest.jobs().enqueueReencodes(now.encoding());
+                out.println("Output encoding changed from " + previous.encoding().id() + " to "
+                        + now.encoding().id() + ": queued " + queued + " re-encode jobs");
+            } catch (SQLException e) {
+                err.println("WARNING: could not queue re-encode jobs for output encoding "
+                        + now.encoding().id() + ": " + e.getMessage());
+            }
+            ingest.wake();
+            int restarted = outputs.restartRunning("the output encoding changed to " + now.encoding().id());
+            if (restarted > 0) {
+                out.println("Restarted " + restarted + " program outputs on output encoding " + now.encoding().id());
+            }
+        };
+    }
+
+    /**
+     * Reads a setting; if the database can't be read, logs it and returns {@code fallback} (the
+     * config file's value).
+     */
+    static <T> T setting(Callable<T> read, T fallback) {
+        try {
+            return read.call();
+        } catch (Exception e) {
+            System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
+                    "Could not read a setting; using the config file's value: " + e.getMessage());
+            return fallback;
+        }
+    }
+
+    /**
+     * Applies the admin settings that change running parts of the server after an admin saved
+     * settings: {@code ingest.workers} resizes the ingest pool, {@code output.profile} and
+     * {@code output.videoBitrateKbps} switch the output encoding ({@link OutputAssets#follow}:
+     * new cards, re-encodes queued, program outputs restarted). Problems are logged.
+     */
+    static void applyRuntimeSettings(Settings settings, IngestQueue ingest, OutputAssets outputAssets,
+                                     PrintStream err) {
+        try {
+            int workers = settings.ingestWorkers();
+            if (workers != ingest.workers()) {
+                ingest.resize(workers);
+            }
+        } catch (SQLException | RuntimeException e) {
+            err.println("WARNING: could not apply ingest.workers: " + e.getMessage());
+        }
+        try {
+            outputAssets.follow(settings::outputEncoding);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            err.println("WARNING: could not change the output encoding: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The output encoding in use, starting with {@code initial} (the admin setting, else the config
+     * file's): its reference card and filler cards are made or checked now
+     * ({@link #loadReferenceCard}, {@link #loadFillerCards}), and again for each new encoding an
+     * admin picks.
+     */
+    static OutputAssets outputAssets(Config config, DataDir dataDir, OutputEncoding initial, PrintStream out,
+                                     PrintStream err) throws InterruptedException {
+        OutputAssets.Maker maker = encoding -> {
+            ReferenceCard reference = loadReferenceCard(config, dataDir, encoding, out, err);
+            // The packager plays these when a room is paused, idle or loading.
+            FillerCards fillers = loadFillerCards(config, dataDir, encoding, reference, out, err);
+            return new OutputAssets.Assets(encoding, reference, fillers);
+        };
+        if (!initial.equals(config.outputEncoding())) {
+            out.println("Output encoding " + initial + " (admin setting; the config file says "
+                    + config.outputEncoding() + ")");
+        }
+        return new OutputAssets(maker, maker.make(initial));
     }
 
     /**
@@ -482,22 +607,22 @@ public final class Main {
      * ({@link ReferenceCard#ensure}). Without a working ffmpeg/ffprobe the server still starts
      * (nothing can be ingested then), so this reports problems and returns null instead of failing.
      */
-    static ReferenceCard loadReferenceCard(Config config, DataDir dataDir, PrintStream out, PrintStream err)
-            throws InterruptedException {
+    static ReferenceCard loadReferenceCard(Config config, DataDir dataDir, OutputEncoding encoding, PrintStream out,
+                                           PrintStream err) throws InterruptedException {
         Tools tools = Tools.from(config);
         try {
-            ReferenceCard card = ReferenceCard.ensure(tools, dataDir.cards(), config.outputEncoding(), null);
+            ReferenceCard card = ReferenceCard.ensure(tools, dataDir.cards(), encoding, null);
             if (card.created()) {
-                out.println("Created the " + config.outputEncoding() + " reference card in " + card.card());
+                out.println("Created the " + encoding + " reference card in " + card.card());
             }
             if (card.encoderChanged()) {
-                err.println("WARNING: ffmpeg/x264 no longer reproduces the " + config.outputEncoding()
-                        + " reference card's avcC (" + ReferenceCard.encodingDir(dataDir.cards(), config.outputEncoding())
+                err.println("WARNING: ffmpeg/x264 no longer reproduces the " + encoding
+                        + " reference card's avcC (" + ReferenceCard.encodingDir(dataDir.cards(), encoding)
                         + "). New encodes will fail the avcC check until the library is re-encoded against a new reference.");
             }
             return card;
         } catch (ToolException | IOException e) {
-            err.println("WARNING: could not create the " + config.outputEncoding()
+            err.println("WARNING: could not create the " + encoding
                     + " reference card; ingest won't work: " + e.getMessage());
             return null;
         }
@@ -508,61 +633,73 @@ public final class Main {
      * ({@link FillerCards#ensure}). Like the reference card, a failure is reported and the server
      * keeps starting; returns null then (and when there is no reference card).
      */
-    static FillerCards loadFillerCards(Config config, DataDir dataDir, ReferenceCard reference, PrintStream out,
-            PrintStream err) throws InterruptedException {
+    static FillerCards loadFillerCards(Config config, DataDir dataDir, OutputEncoding encoding, ReferenceCard reference,
+                                       PrintStream out, PrintStream err) throws InterruptedException {
         if (reference == null) {
             return null;
         }
         try {
             FillerCards cards = FillerCards.ensure(Tools.from(config), dataDir.cards(), reference, null);
             if (cards.encoded() > 0) {
-                out.println("Encoded " + cards.encoded() + " " + config.outputEncoding() + " filler card(s) in "
-                        + ReferenceCard.encodingDir(dataDir.cards(), config.outputEncoding()));
+                out.println("Encoded " + cards.encoded() + " " + encoding + " filler card(s) in "
+                        + ReferenceCard.encodingDir(dataDir.cards(), encoding));
             }
             return cards;
         } catch (ToolException | IOException | ReferenceCard.AvcCMismatchException e) {
-            err.println("WARNING: could not create the " + config.outputEncoding() + " filler cards: " + e.getMessage());
+            err.println("WARNING: could not create the " + encoding + " filler cards: " + e.getMessage());
             return null;
         }
     }
 
     /**
      * The program outputs ({@code docs/program-output.md#lifecycle}). Each start opens a
-     * {@link ProgramMedia} on {@code <data>/media}; the filler cards are indexed (ffprobe) on the
-     * first start and kept. Without the reference card, the filler cards or the silence frame every
-     * start fails (the warning about them was printed at startup).
+     * {@link ProgramMedia} on {@code <data>/media} for the output encoding in use then
+     * ({@link OutputAssets}); its filler cards are indexed (ffprobe) on the first start with that
+     * encoding and kept. Without the reference card, the filler cards or the silence frame every
+     * start fails (the warning about them was printed when they were made).
      */
-    static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, ReferenceCard reference,
-            FillerCards fillerCards, SilenceFrame silence) {
+    static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, OutputAssets assets,
+            SilenceFrame silence) {
         ProgramOutputs.ItemKinds kinds = ProgramOutputs.itemKindsFrom(database);
-        if (reference == null || fillerCards == null || silence == null) {
+        if (silence == null) {
             return new ProgramOutputs((roomId, cue) -> {
-                throw new IOException("program output unavailable: the reference card, filler cards or silence"
-                        + " frame could not be created at startup");
+                throw new IOException("program output unavailable: the silence frame could not be created at startup");
             }, kinds, System::currentTimeMillis);
         }
-        ProgramMedia.CardLoader cardLoader = ProgramMedia.ffprobeCardLoader(Tools.from(config), config.outputEncoding());
-        AtomicReference<Map<Filler, CardGop>> fillers = new AtomicReference<>();
+        // The filler cards of the encoding in use, indexed once per encoding.
+        record LoadedFillers(OutputAssets.Assets assets, Map<Filler, CardGop> cards) {
+        }
+        AtomicReference<LoadedFillers> fillers = new AtomicReference<>();
         ReentrantLock fillersLock = new ReentrantLock();
-        ProgramPipeline.SourcesOpener opener = () -> {
+        ProgramPipeline.EncodedOpener opener = () -> {
+            // Each start uses the encoding in use then, for its sources, cards and muxer alike.
+            OutputAssets.Assets current = assets.current();
+            if (current.reference() == null || current.fillerCards() == null) {
+                throw new IOException("program output unavailable: no reference or filler cards for "
+                        + current.encoding().id());
+            }
+            ProgramMedia.CardLoader cardLoader = ProgramMedia.ffprobeCardLoader(Tools.from(config), current.encoding());
             Map<Filler, CardGop> cards;
             fillersLock.lock();
             try {
-                if (fillers.get() == null) {
-                    fillers.set(ProgramMedia.loadFillerCards(fillerCards, cardLoader));
+                LoadedFillers loaded = fillers.get();
+                if (loaded == null || loaded.assets() != current) {
+                    loaded = new LoadedFillers(current, ProgramMedia.loadFillerCards(current.fillerCards(), cardLoader));
+                    fillers.set(loaded);
                 }
-                cards = fillers.get();
+                cards = loaded.cards();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new IOException("interrupted while loading the filler cards", e);
             } finally {
                 fillersLock.unlock();
             }
-            return new ProgramMedia(dataDir.media(), config.outputEncoding(), reference.avcC(), cardLoader, cards,
-                    silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
-                    System::currentTimeMillis);
+            byte[] avcC = current.reference().avcC();
+            return new ProgramPipeline.Opened(new ProgramMedia(dataDir.media(), current.encoding(), avcC, cardLoader,
+                    cards, silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
+                    System::currentTimeMillis), avcC);
         };
-        return new ProgramOutputs(new ProgramPipeline(opener, reference.avcC(), TimeSource.system(Clock.systemUTC())),
+        return new ProgramOutputs(new ProgramPipeline(opener, TimeSource.system(Clock.systemUTC())),
                 kinds, System::currentTimeMillis);
     }
 

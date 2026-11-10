@@ -140,8 +140,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final Tools tools;
     private final DataDir dataDir;
     private final IngestItems items;
-    private final ReferenceCard reference;
-    private final long maxDurationUs;
+    private volatile Supplier<ReferenceCard> reference;
+    private volatile java.util.function.IntSupplier maxDurationSec;
     private final Supplier<String> cookiesFile;
     private final EncodePresets presets;
     private volatile Predicate<String> inUse = id -> false;
@@ -174,8 +174,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         this.tools = Objects.requireNonNull(tools);
         this.dataDir = Objects.requireNonNull(dataDir);
         this.items = Objects.requireNonNull(items);
-        this.reference = reference;
-        this.maxDurationUs = maxDurationSec * 1_000_000L;
+        this.reference = () -> reference;
+        this.maxDurationSec = () -> maxDurationSec;
         this.cookiesFile = Objects.requireNonNull(cookiesFile);
     }
 
@@ -186,6 +186,21 @@ public final class IngestPipeline implements IngestQueue.Handler {
      */
     public void inUse(Predicate<String> playing) {
         this.inUse = playing == null ? id -> false : playing;
+    }
+
+    /**
+     * Where the reference card of the current output encoding comes from ({@link OutputAssets}),
+     * read once when each job starts; replaces the fixed one given to the constructor. A job that
+     * started before the encoding changed finishes for the old one (its item then gets a
+     * {@code reencode} job when it finishes, {@link IngestJobs#currentEncoding}).
+     */
+    public void reference(Supplier<ReferenceCard> reference) {
+        this.reference = Objects.requireNonNull(reference);
+    }
+
+    /** Where {@code ingest.maxDurationSeconds} comes from (the admin setting), read for every job. */
+    public void maxDurationSeconds(java.util.function.IntSupplier maxDurationSec) {
+        this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
     }
 
     /** Test hook: how often and how long a re-encode waits for its item to stop playing. */
@@ -225,6 +240,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     public void run(IngestQueue.Context ctx) throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
+        ReferenceCard reference = this.reference.get();
         if (reference == null) {
             throw new IngestFailure("Ingest is unavailable: the server could not create its reference card at startup"
                     + " (are ffmpeg and ffprobe installed?)");
@@ -275,7 +291,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Files.createDirectories(scratch);
         Files.createDirectories(work);
         try {
-            run(ctx, item, scratch, work);
+            run(ctx, item, scratch, work, reference);
         } finally {
             deleteQuietly(scratch);
             deleteQuietly(work);
@@ -347,7 +363,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         };
     }
 
-    private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work) throws Exception {
+    private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work, ReferenceCard reference)
+            throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
         OutputEncoding profile = reference.encoding();
@@ -594,7 +611,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     /** @param limitDuration whether {@code ingest.maxDurationSeconds} applies (not for re-encodes) */
     void checkProbe(MediaProbe probe, boolean limitDuration) throws IngestFailure {
-        checkSource(probe, limitDuration ? maxDurationUs : -1);
+        checkSource(probe, limitDuration ? maxDurationSec.getAsInt() * 1_000_000L : -1);
     }
 
     /**
@@ -1005,6 +1022,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     /** For tests and logs. */
     @Override
     public String toString() {
-        return "IngestPipeline[" + (reference == null ? "no reference" : reference.encoding().id()) + "]";
+        ReferenceCard r = reference.get();
+        return "IngestPipeline[" + (r == null ? "no reference" : r.encoding().id()) + "]";
     }
 }

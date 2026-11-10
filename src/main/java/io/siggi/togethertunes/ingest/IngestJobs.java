@@ -58,6 +58,7 @@ public final class IngestJobs {
     private volatile Runnable enqueueListener = () -> { };
     private volatile Supplier<X264Preset> qualityPreset;
     private volatile WantedItems wanted = WantedItems.NONE;
+    private volatile Supplier<OutputEncoding> currentEncoding;
 
     public IngestJobs(Database db) {
         this(db, Clock.systemUTC());
@@ -118,6 +119,16 @@ public final class IngestJobs {
      */
     public void enqueueListener(Runnable listener) {
         this.enqueueListener = listener == null ? () -> { } : listener;
+    }
+
+    /**
+     * Sets where the current output encoding comes from ({@link OutputAssets#encoding()}). Once
+     * set, a job that finishes {@code done} for an item that ends up {@code ready} but encoded for
+     * another encoding (the encoding changed while the job ran) queues a {@code reencode} for it
+     * right away, instead of waiting for the next start.
+     */
+    public void currentEncoding(Supplier<OutputEncoding> encoding) {
+        this.currentEncoding = encoding;
     }
 
     /**
@@ -225,8 +236,8 @@ public final class IngestJobs {
      * another output encoding (profile or video bitrate) than {@code encoding}, unless the item already has an
      * unfinished job. Purged items are skipped (a refetch or new upload encodes for the current
      * profile anyway), and so are items that are pending, processing or failed (their next ingest
-     * does too). Run at startup, before the workers start; a re-encode that failed is therefore
-     * tried again at the next start.
+     * does too). Run at startup, before the workers start, and when an admin changes the encoding
+     * ({@link OutputAssets}); a re-encode that failed is therefore tried again at the next start.
      *
      * @return the number of jobs queued
      */
@@ -251,6 +262,51 @@ public final class IngestJobs {
                 enqueue(itemId, Kind.REENCODE);
             }
             return stale.size();
+        });
+    }
+
+    /**
+     * With {@link #currentEncoding} set: queues a {@code reencode} job for {@code itemId} if it is
+     * {@code ready} but encoded for another output encoding, and has no unfinished job.
+     */
+    private boolean enqueueReencodeIfStale(Connection c, String itemId) throws SQLException {
+        Supplier<OutputEncoding> encoding = currentEncoding;
+        if (encoding == null) {
+            return false;
+        }
+        String id = encoding.get().id();
+        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items WHERE id = ? AND status = 'ready'"
+                + " AND output_profile <> ?")) {
+            ps.setString(1, itemId);
+            ps.setString(2, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return false;
+                }
+            }
+        }
+        if (activeForItem(c, itemId) != null) {
+            return false;
+        }
+        enqueue(itemId, Kind.REENCODE);
+        return true;
+    }
+
+    /**
+     * The number of {@code ready} items whose files aren't encoded for {@code encoding}: how many
+     * would re-encode if the server switched to it (shown before an admin changes the encoding).
+     */
+    public long countStale(OutputEncoding encoding) throws SQLException {
+        Objects.requireNonNull(encoding);
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM items WHERE status = 'ready'"
+                    + " AND output_profile <> ?")) {
+                ps.setString(1, encoding.id());
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
         });
     }
 
@@ -543,7 +599,7 @@ public final class IngestJobs {
             }
             // A running job references its item; it stops doing so now.
             References.touch(c, job.itemId(), now);
-            if (state == State.DONE) {
+            if (state == State.DONE && !enqueueReencodeIfStale(c, job.itemId())) {
                 enqueueQualityIfNeeded(job.itemId());
             }
             return true;

@@ -389,6 +389,47 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         }
     }
 
+    /**
+     * Restarts every running output, e.g. because the output encoding changed: a running output
+     * keeps the encoding (avcC, cards) it started with, and a stream can't change its SPS midway
+     * (invariants 1 and 3), so each one is stopped (its {@code .ts} connections end and its RTMP
+     * push reconnects, as after a server restart) and started again at once on the current
+     * encoding; one that nobody uses any more stops at the usual idle time.
+     *
+     * @return the number of outputs restarted
+     */
+    public int restartRunning(String why) {
+        int restarted = 0;
+        for (RoomOutput ro : new ArrayList<>(rooms.values())) {
+            Output out;
+            ro.lock.lock();
+            try {
+                out = ro.output;
+                if (out == null) {
+                    continue;
+                }
+                detach(ro);
+            } finally {
+                ro.lock.unlock();
+            }
+            LOG.log(System.Logger.Level.INFO, "Program output of room {0} restarting: {1}", ro.roomId, why);
+            out.close();
+            ro.lock.lock();
+            try {
+                if (!closed && ro.output == null) {
+                    ensureRunning(ro);
+                    ro.lastActiveMs = nowMs.getAsLong();
+                }
+                restarted++;
+            } catch (Exception e) {
+                LOG.log(System.Logger.Level.WARNING, "Could not restart the program output of room " + ro.roomId, e);
+            } finally {
+                ro.lock.unlock();
+            }
+        }
+        return restarted;
+    }
+
     /** The room's running packager, or null; never starts one. */
     public Packager running(String roomId) {
         RoomOutput ro = rooms.get(roomId);

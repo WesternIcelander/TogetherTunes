@@ -201,6 +201,7 @@ class PermissionMatrixTest {
             admin("GET /api/admin/settings", c -> Call.get("/api/admin/settings"), 200),
             admin("PATCH /api/admin/settings", c -> Call.patch("/api/admin/settings", "{\"overlay.enabled\":false}"), 200),
             admin("GET /api/admin/storage", c -> Call.get("/api/admin/storage"), 200),
+            admin("GET /api/admin/encoding", c -> Call.get("/api/admin/encoding"), 200),
             admin("GET /api/admin/guests", c -> Call.get("/api/admin/guests"), 200),
             admin("GET /api/admin/audit", c -> Call.get("/api/admin/audit"), 200),
             admin("GET /api/admin/ip/sessions/{userId}", c -> Call.get("/api/admin/ip/sessions/" + c.targetUserId()), 200),

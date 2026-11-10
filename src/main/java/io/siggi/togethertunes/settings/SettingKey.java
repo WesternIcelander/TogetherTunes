@@ -138,6 +138,28 @@ public final class SettingKey<T> {
         });
     }
 
+    /**
+     * A whole number from {@code min} to {@code max}, or {@code null} for "not set" (e.g. the
+     * output profile's own video bitrate).
+     */
+    static SettingKey<Integer> optionalInteger(String name, int min, int max) {
+        return new SettingKey<>(name, Integer.class, null, true, new Codec<>() {
+            @Override
+            public Integer decode(JsonElement json) {
+                long v = wholeNumber(json);
+                if (v < min || v > max) {
+                    throw new IllegalArgumentException("must be between " + min + " and " + max + ", got " + v);
+                }
+                return (int) v;
+            }
+
+            @Override
+            public JsonElement encode(Integer value) {
+                return new JsonPrimitive(value);
+            }
+        });
+    }
+
     /** A size in bytes, as a JSON whole number from {@code min} to {@code max}. */
     static SettingKey<Long> bytes(String name, long defaultValue, long min, long max) {
         return new SettingKey<>(name, Long.class, defaultValue, false, new Codec<>() {

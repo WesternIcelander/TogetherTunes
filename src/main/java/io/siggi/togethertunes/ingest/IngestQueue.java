@@ -131,7 +131,8 @@ public final class IngestQueue implements AutoCloseable {
     }
 
     private final IngestJobs jobs;
-    private final int workerCount;
+    /** The number of workers wanted ({@link #resize}); workers in slots at or above it retire. */
+    private volatile int workerCount;
     private final Handler handler;
     private final Clock clock;
     private final Duration pollInterval;
@@ -143,7 +144,9 @@ public final class IngestQueue implements AutoCloseable {
     private volatile boolean closing;
     private volatile BooleanSupplier paused = () -> false;
     private volatile boolean pauseLogged;
+    /** The worker thread of each slot; null for a slot whose worker retired. Guarded by {@code this}. */
     private final List<Thread> workers = new ArrayList<>();
+    private boolean started;
     /** The jobs running now, by job id. */
     private final Map<String, Running> running = new ConcurrentHashMap<>();
 
@@ -201,18 +204,74 @@ public final class IngestQueue implements AutoCloseable {
         return jobs;
     }
 
-    /** Number of workers ({@code ingest.workers}). */
+    /** Number of workers wanted ({@code ingest.workers}). */
     public int workers() {
         return workerCount;
+    }
+
+    /**
+     * Changes the number of workers ({@code ingest.workers} changed in the admin settings). Growing
+     * starts workers at once (before {@link #start}, only the count changes). Shrinking lets the
+     * running jobs finish: a worker whose slot is no longer needed stops before it would take its
+     * next job.
+     *
+     * @throws IllegalArgumentException if {@code count} is below 1
+     */
+    public synchronized void resize(int count) {
+        if (count < 1) {
+            throw new IllegalArgumentException("workers must be at least 1");
+        }
+        int before = workerCount;
+        workerCount = count;
+        if (started && !closing) {
+            for (int slot = 0; slot < count; slot++) {
+                if (slot >= workers.size()) {
+                    workers.add(startWorker(slot));
+                } else if (workers.get(slot) == null) {
+                    workers.set(slot, startWorker(slot));
+                }
+            }
+        }
+        if (count != before) {
+            LOG.log(System.Logger.Level.INFO, "Ingest workers: " + before + " -> " + count);
+        }
+        wake(); // idle workers in retired slots stop now; a busy pool may let a waiting job in
+    }
+
+    /** Workers alive now (busy retiring ones included); for tests. */
+    synchronized int liveWorkers() {
+        int n = 0;
+        for (Thread t : workers) {
+            if (t != null && t.isAlive()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private Thread startWorker(int slot) {
+        return Thread.ofVirtual().name("ingest-worker-" + (slot + 1)).start(() -> workerLoop(slot));
+    }
+
+    /** Whether the worker in {@code slot} should stop; if so, its slot is freed (atomically with {@link #resize}). */
+    private synchronized boolean retire(int slot) {
+        if (slot < workerCount) {
+            return false;
+        }
+        if (slot < workers.size() && workers.get(slot) == Thread.currentThread()) {
+            workers.set(slot, null);
+        }
+        return true;
     }
 
     /**
      * Requeues jobs interrupted by a crash, then starts the workers (virtual threads). Call once.
      */
     public synchronized IngestJobs.Recovered start() throws SQLException {
-        if (!workers.isEmpty() || closing) {
+        if (started || closing) {
             throw new IllegalStateException("already started or closed");
         }
+        started = true;
         jobs.enqueueListener(this::wake);
         IngestJobs.Recovered recovered = jobs.recoverInterrupted();
         if (recovered.requeued() > 0 || recovered.failed() > 0) {
@@ -220,7 +279,7 @@ public final class IngestQueue implements AutoCloseable {
                     + " queued again, " + recovered.failed() + " failed (too many attempts)");
         }
         for (int i = 0; i < workerCount; i++) {
-            workers.add(Thread.ofVirtual().name("ingest-worker-" + (i + 1)).start(this::workerLoop));
+            workers.add(startWorker(i));
         }
         return recovered;
     }
@@ -312,8 +371,11 @@ public final class IngestQueue implements AutoCloseable {
         return true;
     }
 
-    private void workerLoop() {
+    private void workerLoop(int slot) {
         while (!closing) {
+            if (retire(slot)) {
+                return;
+            }
             long seen;
             lock.lock();
             try {
@@ -474,7 +536,12 @@ public final class IngestQueue implements AutoCloseable {
                 return;
             }
             closing = true;
-            threads = List.copyOf(workers);
+            threads = new ArrayList<>();
+            for (Thread t : workers) {
+                if (t != null) {
+                    threads.add(t);
+                }
+            }
         }
         wake();
         for (Thread t : threads) {

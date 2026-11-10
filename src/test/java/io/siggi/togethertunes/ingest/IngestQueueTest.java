@@ -103,6 +103,79 @@ class IngestQueueTest {
     }
 
     /**
+     * {@code ingest.workers} changes live: growing starts workers at once (three jobs run side by
+     * side), shrinking lets the running jobs finish and then runs one job at a time.
+     */
+    @Test
+    void resizesTheWorkerPoolLive() throws Exception {
+        AtomicInteger runningNow = new AtomicInteger();
+        AtomicInteger maxRunning = new AtomicInteger();
+        CountDownLatch release = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<CountDownLatch> gate = new java.util.concurrent.atomic.AtomicReference<>(release);
+        IngestQueue q = queue(1, job -> {
+            int n = runningNow.incrementAndGet();
+            maxRunning.accumulateAndGet(n, Math::max);
+            try {
+                gate.get().await(20, TimeUnit.SECONDS);
+            } finally {
+                runningNow.decrementAndGet();
+            }
+        }, LONG_POLL);
+        q.start();
+        assertThrows(IllegalArgumentException.class, () -> q.resize(0));
+        List<String> ids = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            ids.add(q.enqueue(fixtures.item("pending"), Kind.UPLOAD).id());
+        }
+        awaitRunning(runningNow, 1);
+        q.resize(3);
+        assertEquals(3, q.workers());
+        awaitRunning(runningNow, 3); // the two new workers took the waiting jobs at once
+        assertEquals(3, q.liveWorkers());
+
+        // Shrink while all three are busy: nothing is interrupted; two workers stop after their job.
+        q.resize(1);
+        assertEquals(3, q.liveWorkers());
+        release.countDown();
+        for (String id : ids) {
+            awaitState(id, State.DONE);
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (q.liveWorkers() > 1 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertEquals(1, q.liveWorkers());
+
+        // One worker now: two new jobs run one after the other.
+        maxRunning.set(0);
+        CountDownLatch second = new CountDownLatch(1);
+        gate.set(second);
+        String a = q.enqueue(fixtures.item("pending"), Kind.UPLOAD).id();
+        String b = q.enqueue(fixtures.item("pending"), Kind.UPLOAD).id();
+        awaitRunning(runningNow, 1);
+        Thread.sleep(200);
+        assertEquals(1, runningNow.get());
+        second.countDown();
+        awaitState(a, State.DONE);
+        awaitState(b, State.DONE);
+        assertEquals(1, maxRunning.get());
+
+        // Growing again reuses the freed slots.
+        q.resize(2);
+        assertEquals(2, q.liveWorkers());
+    }
+
+    private static void awaitRunning(AtomicInteger runningNow, int n) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+        while (runningNow.get() != n) {
+            if (System.nanoTime() > deadline) {
+                fail("expected " + n + " running jobs, got " + runningNow.get());
+            }
+            Thread.sleep(10);
+        }
+    }
+
+    /**
      * With every worker busy on a re-encode, a new job (a request) doesn't wait: the re-encode is
      * interrupted, put back without counting the attempt, and runs again after the new job.
      */

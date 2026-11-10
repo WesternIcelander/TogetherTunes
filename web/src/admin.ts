@@ -50,6 +50,7 @@ const GROUPS: Record<string, string> = {
   guests: "Guests",
   library: "Library",
   storage: "Storage",
+  output: "Output encoding",
   outputs: "Outputs",
   overlay: "Overlay",
 };
@@ -415,8 +416,13 @@ async function loadStorage(): Promise<void> {
   }
 }
 
-function describe(value: SettingValue, type?: Setting["type"]): string {
-  if (value === undefined) return "(none)";
+/** What an unset (null) value means, for settings where it isn't just "none". */
+const UNSET_TEXT: Record<string, string> = {
+  "output.videoBitrateKbps": "the profile's default",
+};
+
+function describe(value: SettingValue, type?: Setting["type"], key?: string): string {
+  if (value === undefined) return (key !== undefined ? UNSET_TEXT[key] : undefined) ?? "(none)";
   if (type === "bytes" && typeof value === "number") return value === 0 ? "0 (off)" : formatGib(value) + " GiB";
   if (Array.isArray(value)) return value.length === 0 ? "(empty)" : `${value.length} entries`;
   if (typeof value === "object") return `${value.perHour} per hour, ${value.maxItemBytes} bytes per item`;
@@ -444,7 +450,8 @@ function settingRow(s: Setting): HTMLElement {
       input = h("input", { type: "checkbox", name, checked: s.value === true });
       break;
     case "integer":
-      input = h("input", { type: "number", name, step: "1", value: String(s.value ?? "") });
+      input = h("input", { type: "number", name, step: "1", value: String(s.value ?? ""),
+        placeholder: UNSET_TEXT[s.key] ?? "" });
       break;
     case "bytes":
       input = h("span", { class: "row" },
@@ -471,10 +478,11 @@ function settingRow(s: Setting): HTMLElement {
     default:
       input = h("input", { type: "text", name, value: typeof s.value === "string" ? s.value : "", size: "40" });
   }
-  const reset = h("button", { type: "button", text: "Default", title: "Reset to " + describe(s.default, s.type) });
+  const reset = h("button", { type: "button", text: "Default", title: "Reset to " + describe(s.default, s.type, s.key) });
   reset.addEventListener("click", () => {
     const error = element("settings-form").querySelector<HTMLElement>(".error");
     void run(error, reset, async () => {
+      if (!(await confirmEncodingChange({ [s.key]: s.default === undefined ? null : s.default }))) return;
       loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", { [s.key]: null })).items;
       status(`Reset ${s.key}.`);
       renderSettings();
@@ -482,7 +490,7 @@ function settingRow(s: Setting): HTMLElement {
     });
   });
   return h("div", { class: "setting" }, h("span", { text: s.key }), input, reset,
-    h("span", { class: "muted", text: "default: " + describe(s.default, s.type) }));
+    h("span", { class: "muted", text: "default: " + describe(s.default, s.type, s.key) }));
 }
 
 /** The settings whose form value differs from the loaded one, as a PATCH body. */
@@ -496,9 +504,12 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
       case "boolean":
         value = data.get(name) !== null;
         break;
-      case "integer":
-        value = Number(data.get(name));
+      case "integer": {
+        // An empty field resets the setting to its default.
+        const text = String(data.get(name) ?? "").trim();
+        value = text === "" ? null : Number(text);
         break;
+      }
       case "bytes": {
         // Unchanged text keeps the stored value (GiB with 3 decimals may not round-trip exactly).
         const text = String(data.get(name) ?? "");
@@ -527,6 +538,36 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
   return out;
 }
 
+/** The value a setting would have after `changes` (null: back to its default). */
+function valueAfter(changes: Record<string, unknown>, key: string): unknown {
+  const s = loadedSettings.find((x) => x.key === key);
+  if (s === undefined) return undefined;
+  if (!(key in changes)) return s.value;
+  const v = changes[key];
+  return v === null || v === undefined ? s.default : v;
+}
+
+/**
+ * A change of output.profile or output.videoBitrateKbps re-encodes every item: say how many and
+ * ask first. Resolves true to go ahead (also when the encoding stays the same).
+ */
+async function confirmEncodingChange(changes: Record<string, unknown>): Promise<boolean> {
+  if (!("output.profile" in changes) && !("output.videoBitrateKbps" in changes)) return true;
+  const params = new URLSearchParams();
+  const profile = valueAfter(changes, "output.profile");
+  if (typeof profile === "string") params.set("profile", profile);
+  const bitrate = valueAfter(changes, "output.videoBitrateKbps");
+  if (typeof bitrate === "number") params.set("videoBitrateKbps", String(bitrate));
+  const info = await api<{ current: string; encoding: string; reencodeItems: number }>(
+    "GET", "/api/admin/encoding?" + params.toString());
+  if (info.encoding === info.current) return true;
+  const items = info.reencodeItems === 1 ? "1 item" : `${info.reencodeItems} items`;
+  return confirm(`Change the output encoding from ${info.current} to ${info.encoding}?\n\n`
+    + `${items} will re-encode (this takes a while and keeps the ingest workers busy). `
+    + "Until an item is re-encoded, the program output shows \u201cLoading\u2026\u201d for it; web players are not affected. "
+    + "Running program outputs restart: .ts viewers and RTMP pushes reconnect.");
+}
+
 function setUpSettings(): void {
   const form = element<HTMLFormElement>("settings-form");
   form.addEventListener("submit", (event) => {
@@ -537,6 +578,7 @@ function setUpSettings(): void {
       return;
     }
     void run(form.querySelector(".error"), form, async () => {
+      if (!(await confirmEncodingChange(changes))) return;
       loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", changes)).items;
       status("Saved " + Object.keys(changes).join(", ") + ".");
       renderSettings();

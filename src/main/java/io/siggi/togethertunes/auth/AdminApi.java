@@ -3,6 +3,9 @@ package io.siggi.togethertunes.auth;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
@@ -87,6 +90,13 @@ import java.util.Set;
  *       or {@code 400 invalid_setting} change nothing. {@code invalid_setting} also covers a value
  *       the server can't use, e.g. an x264 preset that doesn't give the reference avcC
  *       ({@link #settingCheck}).</li>
+ *   <li>{@code GET /api/admin/encoding?profile=&videoBitrateKbps=} → {@code {"current", "encoding",
+ *       "reencodeItems"}}: what changing {@code output.profile} / {@code output.videoBitrateKbps}
+ *       to these values would do, so the admin page can ask before saving: the encoding the server
+ *       encodes for now, the one these values give (a missing {@code profile} is the current
+ *       setting's, a missing or empty {@code videoBitrateKbps} the profile's default) and how many
+ *       {@code ready} items aren't encoded for it (they would re-encode). Bad values →
+ *       {@code 400 invalid_setting}.</li>
  *   <li>{@code GET /api/admin/storage} → {@code {"freeBytes"?, "totalBytes"?, "minFreeBytes",
  *       "low"}}: the data volume's free space now ({@link DiskSpace}; left out if it can't be
  *       measured), the minimum ({@code storage.minFreeBytes}, 0 = no check) and whether adding
@@ -113,6 +123,16 @@ public final class AdminApi {
     private volatile Runnable settingsListener = () -> { };
     private volatile SettingCheck settingCheck = (key, value) -> { };
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
+    private volatile EncodingInfo encodingInfo;
+
+    /** What {@code GET /api/admin/encoding} reports on. */
+    public interface EncodingInfo {
+        /** The output encoding the server encodes for now. */
+        OutputEncoding current();
+
+        /** The number of {@code ready} items not encoded for {@code target}. */
+        long reencodeCount(OutputEncoding target) throws SQLException;
+    }
 
     /** A check a new setting value must pass beyond its own validation (e.g. an x264 preset that works). */
     @FunctionalInterface
@@ -145,6 +165,11 @@ public final class AdminApi {
      */
     public void settingCheck(SettingCheck check) {
         this.settingCheck = check == null ? (key, value) -> { } : check;
+    }
+
+    /** What {@code GET /api/admin/encoding} reports; until set, the settings' encoding and no items. */
+    public void encodingInfo(EncodingInfo info) {
+        this.encodingInfo = info;
     }
 
     /** The data volume {@code GET /api/admin/storage} reports on. */
@@ -181,6 +206,7 @@ public final class AdminApi {
         router.get("/api/admin/settings", this::getSettings, settingsPerm);
         router.patch("/api/admin/settings", this::patchSettings, settingsPerm);
         router.get("/api/admin/storage", this::getStorage, settingsPerm);
+        router.get("/api/admin/encoding", this::getEncoding, settingsPerm);
     }
 
     // ------------------------------------------------------------- users
@@ -499,6 +525,38 @@ public final class AdminApi {
         send(response, 200, settingsJson());
     }
 
+    private void getEncoding(Request request, Response response) throws Exception {
+        OutputEncoding target;
+        try {
+            String profileParam = emptyToNull(request.query("profile"));
+            OutputProfile profile = profileParam == null ? settings.outputProfile()
+                    : Settings.OUTPUT_PROFILE.decode(new JsonPrimitive(profileParam));
+            String bitrateParam = emptyToNull(request.query("videoBitrateKbps"));
+            Integer bitrate;
+            if (bitrateParam == null) {
+                bitrate = null;
+            } else {
+                long n;
+                try {
+                    n = Long.parseLong(bitrateParam.strip());
+                } catch (NumberFormatException e) {
+                    throw new IllegalArgumentException("output.videoBitrateKbps: expected a whole number, got "
+                            + bitrateParam);
+                }
+                bitrate = Settings.OUTPUT_VIDEO_BITRATE_KBPS.decode(new JsonPrimitive(n));
+            }
+            target = Settings.encoding(profile, bitrate);
+        } catch (IllegalArgumentException e) {
+            throw new HttpError(400, "invalid_setting", e.getMessage());
+        }
+        EncodingInfo info = encodingInfo;
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("current", (info == null ? settings.outputEncoding() : info.current()).id());
+        out.put("encoding", target.id());
+        out.put("reencodeItems", info == null ? 0 : info.reencodeCount(target));
+        send(response, 200, out);
+    }
+
     private void getStorage(Request request, Response response) throws Exception {
         DiskSpace.Status s = diskSpace.status();
         Map<String, Object> out = new LinkedHashMap<>();
@@ -573,6 +631,9 @@ public final class AdminApi {
         }
         if (name.startsWith("storage.")) {
             return "storage";
+        }
+        if (name.startsWith("output.")) {
+            return "output";
         }
         if (name.startsWith("outputs.")) {
             return "outputs";

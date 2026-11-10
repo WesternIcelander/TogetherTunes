@@ -228,6 +228,38 @@ class ProgramOutputsTest {
         assertTrue(b.packager().isRunning());
     }
 
+    /**
+     * The output encoding changed: every running output is stopped and started again at once (a
+     * new packager, so new cards and avcC), keeping an RTMP push's hold; rooms without a running
+     * output stay stopped.
+     */
+    @Test
+    void restartRunningRestartsEveryRunningOutput() throws Exception {
+        outputs();
+        ProgramOutputs.Lease ts = outputs.acquire("r1");
+        outputs.keepRunning("r2", true);
+        outputs.touch("r3");
+        outputs.stop("r3");
+        FakeOutput r1 = started.get(0);
+        FakeOutput r2 = started.get(1);
+        assertEquals(3, started.size());
+
+        assertEquals(2, outputs.restartRunning("test"));
+        assertTrue(r1.closed);
+        assertTrue(r2.closed);
+        assertEquals(5, started.size());
+        assertNotSame(ts.packager(), outputs.running("r1"));
+        assertNotNull(outputs.running("r2"));
+        assertNull(outputs.running("r3"));
+        ts.close();
+
+        // r2 is still held by its RTMP push: no idle stop; r1 stops after the idle time.
+        now.addAndGet(ProgramOutputs.IDLE_STOP_MS);
+        outputs.sweep();
+        assertNull(outputs.running("r1"));
+        assertNotNull(outputs.running("r2"));
+    }
+
     @Test
     void stopStopsAtOnceEvenWithRtmp() throws Exception {
         outputs();
