@@ -64,26 +64,84 @@ test("seek mode: never a rate change; seeks above 60 ms at most once per cooldow
   }
 });
 
-test("seek mode: seeks that miss double the cooldown (up to 30 s), a landing in the band resets it", () => {
+test("seek mode: only scattered seeks back off (up to 8 s); a systematic miss keeps the normal cooldown", () => {
   const c = new L.DriftController("seek");
   assert.equal(c.cooldownMs, 2500);
-  c.landed(100);
+  // The same delay every time (the lead is just wrong): no backoff, however often it misses.
+  for (let i = 0; i < 6; i++) c.landed(-104, { delayMs: 270 });
+  assert.equal(c.cooldownMs, 2500);
+  // Delays that scatter by more than 100 ms: doubling, capped at 8 s.
+  c.landed(-200, { delayMs: 500 });
   assert.equal(c.cooldownMs, 5000);
-  c.landed(-90);
-  assert.equal(c.cooldownMs, 10_000);
-  c.landed(80);
-  c.landed(80);
-  c.landed(80);
+  c.landed(150, { delayMs: 120 });
   assert.equal(c.cooldownMs, L.SEEK_MODE_MAX_COOLDOWN_MS);
-  c.landed(20);
+  assert.equal(L.SEEK_MODE_MAX_COOLDOWN_MS, 8000);
+  c.landed(-90, { delayMs: 450 });
+  assert.equal(c.cooldownMs, 8000);
+  // A landing in the band resets it, even with scattered history.
+  c.landed(20, { delayMs: 300 });
   assert.equal(c.cooldownMs, 2500);
-  c.landed(100);
-  c.reset();
-  assert.equal(c.cooldownMs, 2500);
+  // A drift that never came to rest counts as scatter.
+  const u = new L.DriftController("seek");
+  u.landed(100, { stable: false });
+  assert.equal(u.cooldownMs, 5000);
+  u.reset();
+  assert.equal(u.cooldownMs, 2500);
   // rate mode ignores landings
   const r = new L.DriftController("rate");
-  r.landed(500);
+  r.landed(500, { stable: false });
   assert.equal(r.cooldownMs, 2500);
+});
+
+test("seek mode: after a landing in the band the seek threshold widens to 80 ms until a miss or reset", () => {
+  const c = new L.DriftController("seek");
+  assert.equal(c.seekBandMs, 60);
+  c.landed(12, { delayMs: 320 });
+  assert.equal(c.converged, true);
+  assert.equal(c.seekBandMs, L.SEEK_MODE_CONVERGED_MS);
+  assert.deepEqual(c.decide(10_000, 79), { kind: "rate", rate: 1 });
+  assert.deepEqual(c.decide(10_000, -80), { kind: "rate", rate: 1 });
+  assert.deepEqual(c.decide(10_000, 81), { kind: "seek" });
+  c.landed(-70, { delayMs: 390 }); // missed the 60 ms band: back to 60
+  assert.equal(c.seekBandMs, 60);
+  c.landed(5, { stable: false }); // not at rest: not converged
+  assert.equal(c.converged, false);
+  c.landed(5);
+  c.reset();
+  assert.equal(c.seekBandMs, 60);
+});
+
+test("seek landing: judged on the settled drift 0.8 s+ after seeked, not at seeked", () => {
+  const l = new L.SeekLanding(0, "correct", 40, true);
+  assert.equal(l.seekedAt, undefined);
+  // seeked after 90 ms, landed "exactly"; then the clock stands still for 300 ms (iPad diagnostics).
+  assert.deepEqual(l.sample(90, 2), { kind: "settling" });
+  assert.equal(l.seekedAt, 90);
+  assert.deepEqual(l.sample(250, -100), { kind: "settling" });
+  assert.deepEqual(l.sample(500, -300), { kind: "settling" });
+  assert.deepEqual(l.sample(750, -316), { kind: "settling" });
+  assert.deepEqual(l.sample(900, -316), { kind: "settling" }); // first settled sample
+  assert.deepEqual(l.sample(950, -500), { kind: "settling" }); // too close to the last: not counted
+  assert.deepEqual(l.sample(1150, -317), { kind: "settling" });
+  assert.deepEqual(l.sample(1400, -316),
+    { kind: "settled", driftMs: -316, stable: true, seekedDriftMs: 2, afterMs: 1310 });
+  // Never at rest: the median of the last three after 3 s.
+  const m = new L.SeekLanding(0, "correct", 0, true);
+  m.sample(100, 0);
+  let r;
+  for (let t = 1000, d = -100; t <= 3600; t += 250, d -= 40) {
+    r = m.sample(t, d);
+    if (r.kind !== "settling") break;
+  }
+  assert.equal(r.kind, "settled");
+  assert.equal(r.stable, false);
+  assert.ok(r.afterMs >= L.SETTLE_MAX_MS);
+  // Far off: lost (dropped seek), reported at once; seeked too late: expired.
+  assert.deepEqual(new L.SeekLanding(0, "x", 0, true).sample(100, -20_000), { kind: "lost", driftMs: -20_000 });
+  const late = new L.SeekLanding(0, "x", 0, true);
+  late.sample(100, 0);
+  assert.deepEqual(late.sample(600, 800), { kind: "lost", driftMs: 800 });
+  assert.deepEqual(new L.SeekLanding(0, "x", 0, true).sample(L.LANDING_MAX_AGE_MS + 1, 0), { kind: "expired" });
 });
 
 test("a seek that landed more than 150 ms off is followed by another at once, at most twice in a row", () => {
@@ -149,54 +207,87 @@ test("seek lead: learnt from where seeks landed, first as is, then halfway; lost
   assert.equal(neg.ms, L.MIN_LEAD_MS);
 });
 
+test("seek lead: an unbuffered seek's landing is a first guess only, replaced by the first real sample", () => {
+  const lead = new L.SeekLead();
+  assert.equal(lead.guess(-313), true); // a slow seek to unbuffered data settled 313 ms behind
+  assert.equal(lead.ms, 313);
+  assert.equal(lead.samples, 0);
+  assert.equal(lead.landed(-10), true); // aimed 313 ahead, 10 behind: the whole estimate is replaced
+  assert.equal(lead.ms, 323);
+  assert.equal(lead.guess(-900), false); // once measured, guesses are ignored
+  assert.equal(lead.ms, 323);
+  assert.equal(new L.SeekLead().guess(-20_000), false); // a lost seek isn't a guess
+});
+
 /**
- * A simulated element: it plays at its rate, and a seek takes `seekMs` (during which the element
- * is stopped), then lands where it was asked to go. Driven like the player: a tick every 250 ms,
- * skipped while seeking, landing measured on the first tick after a seek.
+ * A simulated element, driven like the player (listen.ts): a seek takes `seekMs` (the element is
+ * stopped and ticks skip it), then reports `seeked` at the asked position (a tick runs right then),
+ * and then, like WebKit, keeps its clock still for `freezeMs` more (`freezeJitterMs`: ± that,
+ * random but repeatable) before playing on at its rate. Ticks every 250 ms; a seek's landing is
+ * measured with SeekLanding and teaches the lead when `buffered(now)` says the target was buffered.
+ * `pushes`: [time, ms] the element jumps by (e.g. an outside stall), to make it drift.
  */
-function simulate(mode, { startDriftMs, seekMs, seconds, clockSkewPpm = 0 }) {
+function simulate(mode, { startDriftMs, seekMs, seconds, clockSkewPpm = 0, freezeMs = 0, freezeJitterMs = 0,
+    buffered = () => true, pushes = [], seekMsAt = () => seekMs }) {
   const ctl = new L.DriftController(mode);
   const lead = new L.SeekLead();
+  let seed = 12345;
+  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
   let pos = startDriftMs; // element position, ms; the timeline is at `now`
   let rate = 1;
   let seekingUntil = -1;
+  let frozenUntil = -1;
   let seekTo = 0;
-  let landing = false;
+  let landing;
   const rates = new Set([1]);
   let rateChanges = 0;
-  let seeks = 0;
+  const seekTimes = [];
   const drifts = [];
+  const cooldowns = [];
+  const landings = [];
   const step = 10;
+  const pending = pushes.slice();
   for (let now = 0; now <= seconds * 1000; now += step) {
-    if (now < seekingUntil) continue;
-    if (seekingUntil >= 0 && now >= seekingUntil) {
+    let seekedNow = false;
+    if (seekingUntil >= 0) {
+      if (now < seekingUntil) continue;
       pos = seekTo;
       seekingUntil = -1;
-    } else {
+      seekedNow = true;
+      frozenUntil = now + Math.max(0, freezeMs + (freezeJitterMs ? (rnd() * 2 - 1) * freezeJitterMs : 0));
+    } else if (now >= frozenUntil) {
       pos += step * rate * (1 + clockSkewPpm / 1e6);
     }
-    if (now % 250 !== 0) continue;
+    while (pending.length > 0 && pending[0][0] <= now) pos += pending.shift()[1];
+    if (now % 250 !== 0 && !seekedNow) continue;
     const drift = pos - now;
     drifts.push({ now, drift });
-    if (landing) {
-      landing = false;
-      lead.landed(drift);
-      ctl.landed(drift);
+    if (landing !== undefined) {
+      const r = landing.sample(now, drift);
+      if (r.kind === "settling") continue;
+      if (r.kind === "settled") {
+        const used = landing.learn && lead.landed(r.driftMs);
+        if (!landing.learn) lead.guess(r.driftMs);
+        ctl.landed(r.driftMs, { stable: r.stable, delayMs: used ? landing.leadMs - r.driftMs : undefined });
+        landings.push({ now, ...r });
+      }
+      landing = undefined;
     }
     const a = ctl.decide(now, drift);
+    cooldowns.push(ctl.cooldownMs);
     if (a.kind === "seek") {
-      seeks++;
+      seekTimes.push(now);
       rate = 1;
       seekTo = now + lead.ms;
-      seekingUntil = now + seekMs;
-      landing = true;
+      seekingUntil = now + seekMsAt(now);
+      landing = new L.SeekLanding(now, "sim", lead.ms, buffered(now));
     } else if (a.rate !== rate) {
       rate = a.rate;
       rates.add(rate);
       rateChanges++;
     }
   }
-  return { rates, rateChanges, seeks, drifts, lead: lead.ms };
+  return { rates, rateChanges, seeks: seekTimes.length, seekTimes, drifts, lead: lead.ms, cooldowns, landings };
 }
 
 test("simulation, seek mode (Safari-like 400 ms seeks): lands within 60 ms after a few seeks, rate always 1", () => {
@@ -204,9 +295,87 @@ test("simulation, seek mode (Safari-like 400 ms seeks): lands within 60 ms after
     const r = simulate("seek", { startDriftMs: start, seekMs: 400, seconds: 60, clockSkewPpm: 300 });
     assert.deepEqual([...r.rates], [1]);
     const late = r.drifts.filter((d) => d.now >= 15_000);
-    assert.ok(late.every((d) => Math.abs(d.drift) <= L.SEEK_MODE_MS + 20), JSON.stringify(late.slice(0, 5)));
+    assert.ok(late.every((d) => Math.abs(d.drift) <= L.SEEK_MODE_CONVERGED_MS + 20), JSON.stringify(late.slice(0, 5)));
     assert.ok(r.seeks <= 6, "seeks " + r.seeks);
     assert.ok(Math.abs(r.lead - 400) <= 20, "lead " + r.lead);
+  }
+});
+
+test("simulation, WebKit (clock still ~300 ms after seeked, as in the iPad/iPhone reports): converges in ≤ 2 seeks", () => {
+  // The iPad report: drift −319, correction seeks of 73–103 ms, then ~300 ms frozen; the iPhone:
+  // −174, seeks ~60–90 ms, 280–320 ms frozen.
+  for (const [start, seekMs, freezeMs] of [[-319, 90, 310], [-174, 75, 300], [-104, 75, 280], [210, 90, 330], [-500, 100, 300]]) {
+    const r = simulate("seek", { startDriftMs: start, seekMs, freezeMs, freezeJitterMs: 17, seconds: 180 });
+    const tag = `start ${start}: ` + JSON.stringify({ seeks: r.seekTimes, lead: r.lead, landings: r.landings });
+    assert.deepEqual([...r.rates], [1], tag);
+    assert.ok(r.seeks <= 2, tag);
+    // In sync from the end of the second seek's settling on, and for the rest of the 3 minutes.
+    const after = r.drifts.filter((d) => d.now >= 6000);
+    assert.ok(after.every((d) => Math.abs(d.drift) <= L.SEEK_MODE_MS), tag);
+    assert.ok(Math.abs(r.lead - (seekMs + freezeMs)) <= 40, tag);
+    assert.ok(Math.max(...r.cooldowns) <= L.SEEK_MODE_MAX_COOLDOWN_MS, tag);
+  }
+});
+
+test("simulation, WebKit: a systematic miss is fixed by the lead, never parked behind a long cooldown", () => {
+  // Learnt lead 120 ms short of the real delay (as in the iPhone report, −104 settled): the second
+  // seek must come after the normal cooldown and land, not 30 s later.
+  const r = simulate("seek", { startDriftMs: -104, seekMs: 75, freezeMs: 300, seconds: 60,
+    pushes: [[20_000, -250], [40_000, 180]] });
+  const tag = JSON.stringify({ seeks: r.seekTimes, landings: r.landings });
+  for (const [t] of [[0], [20_000], [40_000]]) {
+    // every disturbance is corrected within ~5 s (one or two seeks), never parked off-sync
+    const later = r.drifts.filter((d) => d.now >= t + 5000 && d.now < t + 20_000);
+    assert.ok(later.every((d) => Math.abs(d.drift) <= L.SEEK_MODE_MS), tag + " at " + t);
+  }
+  assert.ok(r.seeks <= 5, tag);
+  assert.ok(r.cooldowns.every((c) => c === L.SEEK_MODE_COOLDOWN_MS), tag);
+});
+
+test("simulation, WebKit after converging: steady drift and a slow clock skew seek rarely", () => {
+  // 50 ppm: 3 ms per minute. After converging, no seek until the drift passes 80 ms, i.e. not
+  // within the 10 minutes.
+  const r = simulate("seek", { startDriftMs: -319, seekMs: 90, freezeMs: 310, freezeJitterMs: 17, seconds: 600,
+    clockSkewPpm: 50 });
+  assert.ok(r.seeks <= 2, JSON.stringify(r.seekTimes));
+  // 300 ppm (18 ms/min): one correction every few minutes, not every 2.5 s.
+  const s = simulate("seek", { startDriftMs: -319, seekMs: 90, freezeMs: 310, freezeJitterMs: 17, seconds: 600,
+    clockSkewPpm: 300 });
+  assert.ok(s.seeks <= 6, JSON.stringify(s.seekTimes));
+  // (apart from the second after each seek, where the reading at `seeked` is ~300 ms ahead)
+  const late = s.drifts.filter((d) => d.now >= 6000 && !s.seekTimes.some((t) => d.now >= t && d.now < t + 1000));
+  const bad = late.filter((d) => Math.abs(d.drift) > L.SEEK_MODE_CONVERGED_MS + 5);
+  assert.deepEqual(bad, [], JSON.stringify({ seeks: s.seekTimes, landings: s.landings }));
+});
+
+test("simulation, WebKit: a slow seek to unbuffered data doesn't spoil the lead", () => {
+  // As the iPhone's owner seek: the hard seek takes 1375 ms (download), later ones ~75 ms.
+  const r = simulate("seek", { startDriftMs: -3000, seekMs: 75, freezeMs: 300, seconds: 60,
+    seekMsAt: (now) => (now === 0 ? 1375 : 75), buffered: (now) => now !== 0 });
+  const tag = JSON.stringify({ seeks: r.seekTimes, lead: r.lead, landings: r.landings });
+  assert.ok(Math.abs(r.lead - 375) <= 30, tag);
+  assert.ok(r.seeks <= 3, tag);
+  assert.ok(r.drifts.filter((d) => d.now >= 10_000).every((d) => Math.abs(d.drift) <= L.SEEK_MODE_MS), tag);
+});
+
+test("simulation, WebKit: a moderately slow first seek to unbuffered data gives a first guess (≤ 2 seeks)", () => {
+  const r = simulate("seek", { startDriftMs: -3000, seekMs: 75, freezeMs: 300, seconds: 60,
+    seekMsAt: (now) => (now === 0 ? 120 : 75), buffered: (now) => now !== 0 });
+  const tag = JSON.stringify({ seeks: r.seekTimes, lead: r.lead, landings: r.landings });
+  assert.ok(r.seeks <= 2, tag);
+  assert.ok(Math.abs(r.lead - 375) <= 30, tag);
+  assert.ok(r.drifts.filter((d) => d.now >= 6000).every((d) => Math.abs(d.drift) <= L.SEEK_MODE_MS), tag);
+});
+
+test("simulation, WebKit with scattering seeks: backs off, but never beyond 8 s", () => {
+  const r = simulate("seek", { startDriftMs: -300, seekMs: 90, freezeMs: 300, freezeJitterMs: 280, seconds: 120 });
+  assert.deepEqual([...r.rates], [1]);
+  assert.ok(Math.max(...r.cooldowns) <= L.SEEK_MODE_MAX_COOLDOWN_MS);
+  // gaps between seeks never longer than the cap plus the settling time
+  for (let i = 1; i < r.seekTimes.length; i++) {
+    assert.ok(r.seekTimes[i] - r.seekTimes[i - 1] <= L.SEEK_MODE_MAX_COOLDOWN_MS + L.SETTLE_MAX_MS + 500
+      || r.drifts.filter((d) => d.now > r.seekTimes[i - 1] + 4000 && d.now < r.seekTimes[i])
+        .every((d) => Math.abs(d.drift) <= L.SEEK_MODE_CONVERGED_MS), JSON.stringify(r.seekTimes));
   }
 });
 

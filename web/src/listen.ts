@@ -22,11 +22,13 @@
 // (±5 % above 300 ms; pitch kept) that holds until the drift is within 10 ms; in "seek" mode
 // (WebKit's media stack, found by feature detection: Safari and WebKit browsers on iOS, where the
 // pitch rises with the rate and every rate change stalls the video) the rate stays 1 and a drift
-// above 60 ms is corrected by a seek, at most every
-// 2.5 s (backing off while seeks miss). Every seek of a playing element aims ahead by the time this
-// element's seeks have been taking (SeekLead, learnt from where they landed), and the first settled
-// tick after it checks where it landed: a seek the browser dropped (iOS resets a seek made before
-// playback started) is just seen as drift and done again. The loop never throws: errors are
+// above 60 ms (80 ms once a seek has landed inside the band) is corrected by a seek, at most every
+// 2.5 s (backing off up to 8 s only while seeks scatter). Every seek of a playing element aims
+// ahead by the time this element's seeks have been taking (SeekLead), learnt from where they
+// *settled* (SeekLanding: WebKit holds the clock still for ~300 ms after `seeked`, so the drift at
+// `seeked` is too optimistic); the loop makes no correction while a landing settles, except a hard
+// seek. A seek the browser dropped (iOS resets a seek made before playback started) is just seen
+// as drift and done again. The loop never throws: errors are
 // recorded in the diagnostics ring (diagnostics.ts) and the next tick runs as usual.
 //
 // An original that keeps needing hard seeks, that fails to load, or whose type `canPlayType`
@@ -34,7 +36,7 @@
 import { recordDecision, recordError, recordEvent } from "./diagnostics.js";
 import {
   chooseSource, CROSSFADE_MS, dbToGain, DriftController, HARD_SEEK_MS, nextToPreload, SEEK_MODE_MS, SeekGuard,
-  SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
+  SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
 
@@ -42,8 +44,6 @@ const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
 /** A paused element further than this (ms) from the timeline is moved there, so resuming starts in sync. */
 const PAUSED_SEEK_MS = 100;
-/** A seek's landing is measured only this long (ms) after it; later, the delay wasn't the seek's. */
-const LANDING_MAX_AGE_MS = 4000;
 /** A seek still pending after this long (ms) is made again (seen on iOS when a seek races play()). */
 const SEEK_STUCK_MS = 5000;
 /** While autoplay is blocked, a paused element is moved and `play()` retried at most this often (ms). */
@@ -58,8 +58,8 @@ interface Deck {
   readonly ctl: DriftController;
   /** How far ahead this element's seeks aim (kept across loads: it is the element's latency). */
   readonly lead: SeekLead;
-  /** A seek whose landing the next settled tick measures. */
-  landing: { at: number; why: string } | undefined;
+  /** A seek whose landing the following ticks measure. */
+  landing: SeekLanding | undefined;
   /** When the last seek was made (performance.now()). */
   seekAt: number;
   /** Seeks made / seeks that didn't land (dropped or far off), for debug(). */
@@ -88,6 +88,22 @@ interface Deck {
 
 function round(x: number): number {
   return Math.round(x);
+}
+
+/**
+ * Whether `sec` lies inside the element's buffered data (with 0.5 s to spare after it): a seek
+ * there measures the element's own latency; one outside also waits for the download.
+ */
+function isBuffered(el: HTMLMediaElement, sec: number): boolean {
+  try {
+    const b = el.buffered;
+    for (let i = 0; i < b.length; i++) {
+      if (sec >= b.start(i) && sec + 0.5 <= b.end(i)) return true;
+    }
+  } catch {
+    // no buffered ranges: not buffered
+  }
+  return false;
 }
 
 /** A video ↔ audio-only switch in progress. */
@@ -269,6 +285,8 @@ export class ListenPlayer {
         seeks: d.seeks,
         lostSeeks: d.lostSeeks,
         seekCooldownMs: d.ctl.cooldownMs,
+        seekBandMs: d.ctl.seekBandMs,
+        settling: d.landing !== undefined,
         preservesPitch: (d.el as HTMLMediaElement & { preservesPitch?: boolean }).preservesPitch,
         webkitPreservesPitch: (d.el as HTMLMediaElement & { webkitPreservesPitch?: boolean }).webkitPreservesPitch,
       },
@@ -649,13 +667,23 @@ export class ListenPlayer {
     if (el.readyState < HAVE_FUTURE_DATA && !advancing) return "buffering";
     const landing = deck.landing;
     if (landing !== undefined) {
+      const firstTick = landing.seekedAt === undefined;
+      const r = landing.sample(now, drift);
+      if (firstTick && r.kind !== "expired") {
+        recordEvent("seeked", { el: deck.name, why: landing.why, driftMs: round(drift), tookMs: round(now - landing.at) });
+      }
+      if (r.kind === "settling") return "settling";
       deck.landing = undefined;
-      if (now - landing.at <= LANDING_MAX_AGE_MS) {
-        const used = deck.lead.landed(drift);
-        deck.ctl.landed(drift);
-        if (!used) deck.lostSeeks++;
-        recordEvent("landed", { el: deck.name, why: landing.why, driftMs: round(drift), tookMs: round(now - landing.at),
-          leadMs: round(deck.lead.ms), used });
+      if (r.kind === "lost") {
+        deck.lostSeeks++;
+        recordEvent("landed", { el: deck.name, why: landing.why, lost: true, driftMs: round(r.driftMs) });
+      } else if (r.kind === "settled") {
+        const used = landing.learn && deck.lead.landed(r.driftMs);
+        if (!landing.learn) deck.lead.guess(r.driftMs);
+        deck.ctl.landed(r.driftMs, { stable: r.stable, delayMs: used ? landing.leadMs - r.driftMs : undefined });
+        recordEvent("landed", { el: deck.name, why: landing.why, driftMs: round(r.driftMs), stable: r.stable,
+          seekedDriftMs: round(r.seekedDriftMs), afterMs: round(r.afterMs), leadMs: round(deck.lead.ms), used,
+          cooldownMs: deck.ctl.cooldownMs, bandMs: deck.ctl.seekBandMs });
       }
     }
     const a = deck.ctl.decide(now, drift);
@@ -686,8 +714,9 @@ export class ListenPlayer {
   }
 
   /**
-   * Moves the element to `posMs` (clamped to the file). `measure`: the next settled tick checks
-   * where it landed and teaches the element's SeekLead.
+   * Moves the element to `posMs` (clamped to the file). `measure`: the following ticks check where
+   * it settled (SeekLanding) and, for a seek within the buffered data, teach the element's SeekLead.
+   * A measured seek aims `deck.lead.ms` ahead of the target.
    */
   #seekTo(deck: Deck, posMs: number, measure: boolean, why: string): void {
     const el = deck.el;
@@ -697,12 +726,13 @@ export class ListenPlayer {
       recordEvent("seek-skipped", { el: deck.name, why, posMs: String(posMs) });
       return;
     }
+    const buffered = isBuffered(el, pos / 1000);
     el.currentTime = pos / 1000;
     deck.seekAt = performance.now();
     deck.seeks++;
-    deck.landing = measure ? { at: deck.seekAt, why } : undefined;
+    deck.landing = measure ? new SeekLanding(deck.seekAt, why, deck.lead.ms, buffered) : undefined;
     recordEvent("seek", { el: deck.name, why, toMs: round(pos), leadMs: round(deck.lead.ms), readyState: el.readyState,
-      paused: el.paused });
+      paused: el.paused, buffered });
   }
 
   #play(deck: Deck): void {
