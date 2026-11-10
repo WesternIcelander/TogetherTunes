@@ -32,6 +32,9 @@ import java.util.regex.Pattern;
  *   <li>The segmenter follows the room's packager from the first HLS request on, and after a
  *       restart of the packager ({@link #started}) while HLS was fetched in the last
  *       {@link ProgramOutputs#IDLE_STOP_MS}. Rooms nobody fetches HLS from keep no segment ring.</li>
+ *   <li><b>Limits</b> ({@link LiveLimits}): every request counts against the client IP's rate
+ *       limit ({@code 429 rate_limited}) and, while it is served, against the token's connection
+ *       cap ({@code 429 too_many_connections}).</li>
  *   <li>Unknown, disabled or malformed tokens, a room without the HLS output, or the server switch
  *       {@code outputs.hls.enabled} off: {@code 404}. Tokens are never logged in full (invariant 6).</li>
  * </ul>
@@ -56,6 +59,7 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     private final Targets targets;
     private final ProgramOutputs outputs;
     private final LongSupplier nowMs;
+    private final LiveLimits limits;
     private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();
 
     private static final class Room {
@@ -63,10 +67,26 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
         volatile long lastFetchMs;
     }
 
+    /** Without a per-IP limit (tests); the per-token cap still applies. */
     public LiveHlsApi(Targets targets, ProgramOutputs outputs, LongSupplier nowMs) {
+        this(targets, outputs, nowMs, LiveLimits.noIpLimit());
+    }
+
+    public LiveHlsApi(Targets targets, ProgramOutputs outputs, LongSupplier nowMs, LiveLimits limits) {
         this.targets = Objects.requireNonNull(targets, "targets");
         this.outputs = Objects.requireNonNull(outputs, "outputs");
         this.nowMs = Objects.requireNonNull(nowMs, "nowMs");
+        this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    /** Checks the client IP's rate limit and counts the request against its token while it is served. */
+    private LiveLimits.Slot admit(Request request) {
+        limits.checkIp(request.clientIp());
+        String token = request.pathParam("token");
+        if (token == null || !TOKEN_SHAPE.matcher(token).matches()) {
+            throw HttpError.notFound();
+        }
+        return limits.open(token);
     }
 
     /** Targets from {@code stream_outputs} (kind {@code hls}, enabled), behind the server switch {@code outputs.hls.enabled}. */
@@ -144,6 +164,12 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     }
 
     void playlist(Request request, Response response) throws Exception {
+        try (LiveLimits.Slot slot = admit(request)) {
+            sendPlaylist(request, response);
+        }
+    }
+
+    private void sendPlaylist(Request request, Response response) throws Exception {
         Room room = open(request, response);
         if (room == null) {
             return;
@@ -161,6 +187,12 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     }
 
     void segment(Request request, Response response) throws Exception {
+        try (LiveLimits.Slot slot = admit(request)) {
+            sendSegment(request, response);
+        }
+    }
+
+    private void sendSegment(Request request, Response response) throws Exception {
         String file = request.pathParam("file");
         if (file == null || !SEGMENT_FILE.matcher(file).matches()) {
             throw HttpError.notFound();

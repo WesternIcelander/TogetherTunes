@@ -102,6 +102,7 @@ public final class AdminApi {
     private final Roles roles;
     private final Permissions permissions;
     private final Settings settings;
+    private volatile Runnable settingsListener = () -> { };
 
     public AdminApi(Database db, Accounts accounts, Users users, Roles roles, Permissions permissions,
                     Settings settings) {
@@ -111,6 +112,14 @@ public final class AdminApi {
         this.roles = Objects.requireNonNull(roles);
         this.permissions = Objects.requireNonNull(permissions);
         this.settings = Objects.requireNonNull(settings);
+    }
+
+    /**
+     * Runs after the admin changed settings (on the request thread, after the commit), e.g. so the
+     * stream outputs follow the {@code outputs.*.enabled} switches at once. Must not block long.
+     */
+    public void settingsListener(Runnable listener) {
+        this.settingsListener = Objects.requireNonNull(listener);
     }
 
     public void register(Router router) {
@@ -448,6 +457,7 @@ public final class AdminApi {
                 details.put("reset", reset);
             }
             accounts.audit(actor.userId(), request.clientIp(), AUDIT_SETTINGS, null, details);
+            settingsListener.run();
         }
         send(response, 200, settingsJson());
     }

@@ -255,6 +255,64 @@ class LiveHlsApiTest {
         assertTrue(producers.isEmpty());
     }
 
+    /** A request to a second server on the same outputs with these limits. */
+    static LiveTsApiTest.Head request(WebServer ws, String path) throws IOException {
+        try (Socket s = new Socket("127.0.0.1", ws.port())) {
+            s.setSoTimeout(10_000);
+            send(s, "GET", path);
+            return readHead(s.getInputStream());
+        }
+    }
+
+    WebServer limitedServer(LiveLimits limits) throws IOException {
+        LiveHlsApi limited = new LiveHlsApi(token -> token.equals(TOKEN) ? "room-hls" : null, outputs, now::get,
+                limits);
+        Router router = new Router();
+        limited.register(router);
+        return WebServer.start("127.0.0.1", 0, router, dir.toFile());
+    }
+
+    @Test
+    void requestsInFlightPerTokenAreCapped() throws Exception {
+        LiveLimits limits = new LiveLimits(null, 1);
+        WebServer ws = limitedServer(limits);
+        try {
+            // the producer never builds a unit: the first playlist request waits for a segment
+            var waiting = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return request(ws, "/live/" + TOKEN + "/index.m3u8").statusLine();
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            });
+            await(() -> limits.connections(TOKEN) == 1);
+            LiveTsApiTest.Head refused = request(ws, "/live/" + TOKEN + "/seg/0.ts");
+            assertEquals("HTTP/1.1 429 Too Many Requests", refused.statusLine());
+            assertEquals("10", refused.header("Retry-After"));
+            assertEquals("HTTP/1.1 503 Service Unavailable", waiting.get());
+            assertEquals(0, limits.connections(TOKEN));
+        } finally {
+            ws.close();
+        }
+    }
+
+    @Test
+    void requestsArePerIpRateLimited() throws Exception {
+        io.siggi.togethertunes.TestClock clock = new io.siggi.togethertunes.TestClock(1_800_000_000_000L);
+        WebServer ws = limitedServer(new LiveLimits(
+                new io.siggi.togethertunes.http.RateLimiter("live", 2, 1000, clock), 64));
+        try {
+            assertEquals("HTTP/1.1 404 Not Found", request(ws, "/live/AAAAunknownToken000001/index.m3u8").statusLine());
+            assertEquals("HTTP/1.1 404 Not Found", request(ws, "/live/" + TOKEN + "/seg/abc.ts").statusLine());
+            assertEquals("HTTP/1.1 429 Too Many Requests", request(ws, "/live/" + TOKEN + "/seg/0.ts").statusLine());
+            assertEquals("HTTP/1.1 429 Too Many Requests",
+                    request(ws, "/live/" + TOKEN + "/index.m3u8").statusLine());
+            assertTrue(producers.isEmpty(), "refused requests start nothing");
+        } finally {
+            ws.close();
+        }
+    }
+
     @Test
     void lookupFailureIs500AndStartFailureIs503() throws Exception {
         assertEquals(500, status(fetch("GET", "/live/" + FAILING_TOKEN + "/index.m3u8")));

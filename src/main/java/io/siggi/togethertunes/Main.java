@@ -40,10 +40,14 @@ import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.FillerSource.Filler;
 import io.siggi.togethertunes.output.LiveHlsApi;
+import io.siggi.togethertunes.output.LiveLimits;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
 import io.siggi.togethertunes.output.RtmpPushers;
+import io.siggi.togethertunes.output.StreamOutputControl;
+import io.siggi.togethertunes.output.StreamOutputs;
+import io.siggi.togethertunes.output.StreamOutputsApi;
 import io.siggi.togethertunes.output.ProgramPipeline;
 import io.siggi.togethertunes.output.TimeSource;
 import io.siggi.togethertunes.library.AddMediaPolicy;
@@ -140,7 +144,7 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(OIDC provider admin / stream outputs): pass `secrets` to the repositories with *_enc columns.
+        // TODO(OIDC provider admin): pass `secrets` to the repositories with *_enc columns (stream outputs have it).
         Database database;
         try {
             database = Database.open(config.dbUrl());
@@ -258,11 +262,20 @@ public final class Main {
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
+        // /live/...: per-IP rate limit and per-token connection cap (docs/auth.md#stream-urls).
+        LiveLimits liveLimits = LiveLimits.defaults(Clock.systemUTC());
         // The direct MPEG-TS output: GET/HEAD /live/{token}.ts (docs/program-output.md#direct-mpeg-ts-ts).
-        new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs).register(appRouter);
+        LiveTsApi liveTs = new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs, liveLimits);
+        liveTs.register(appRouter);
         // HLS: GET /live/{token}/index.m3u8 and /live/{token}/seg/{seq}.ts (docs/program-output.md#hls).
-        new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis)
-                .register(appRouter);
+        new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis,
+                liveLimits).register(appRouter);
+        // The rooms' outputs (/api/rooms/{room}/outputs...) and what keeps pushes and .ts viewers in line with them.
+        StreamOutputs streamOutputs = new StreamOutputs(database, secrets, new SecureRandom(), Clock.systemUTC());
+        StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
+                liveTs);
+        new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
+        admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), appRouter,
@@ -279,8 +292,11 @@ public final class Main {
                 Clock.systemUTC());
         retention.alsoRun("trimmed request history rows", roomRequests::trim);
         retention.start();
+        // Starts the enabled RTMP pushes, then re-checks every 10 s.
+        outputControl.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            outputControl.close();
             if (rtmpPushers != null) {
                 rtmpPushers.close();
             }
@@ -461,6 +477,43 @@ public final class Main {
         };
         return new ProgramOutputs(new ProgramPipeline(opener, reference.avcC(), TimeSource.system(Clock.systemUTC())),
                 kinds, System::currentTimeMillis);
+    }
+
+    /**
+     * The stream outputs' control ({@link StreamOutputControl}): the server switches from the
+     * settings, the program outputs, the RTMP pushes (none without ffmpeg) and the {@code .ts}
+     * connections' revalidation.
+     */
+    static StreamOutputControl streamOutputControl(StreamOutputs rows, Settings settings, ProgramOutputs outputs,
+                                                   RtmpPushers pushers, LiveTsApi liveTs) {
+        StreamOutputControl.Switches switches = new StreamOutputControl.Switches() {
+            @Override
+            public boolean rtmp() throws SQLException {
+                return settings.outputsRtmpEnabled();
+            }
+
+            @Override
+            public boolean ts() throws SQLException {
+                return settings.outputsTsEnabled();
+            }
+
+            @Override
+            public boolean hls() throws SQLException {
+                return settings.outputsHlsEnabled();
+            }
+        };
+        StreamOutputControl.Outputs programs = new StreamOutputControl.Outputs() {
+            @Override
+            public void start(String roomId) throws Exception {
+                outputs.touch(roomId);
+            }
+
+            @Override
+            public void stop(String roomId) {
+                outputs.stop(roomId);
+            }
+        };
+        return new StreamOutputControl(rows, switches, programs, pushers, liveTs::revalidate);
     }
 
     /**

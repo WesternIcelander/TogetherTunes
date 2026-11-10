@@ -22,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 class LiveTsTargetsTest {
     static final String ROOM = "0190a000-0000-7000-8000-000000000001";
     static final String LATEST_ROOM = "0190a000-0000-7000-8000-000000000002";
+    static final String THIRD_ROOM = "0190a000-0000-7000-8000-000000000003";
 
     @TempDir
     Path dir;
@@ -39,10 +40,11 @@ class LiveTsTargetsTest {
         exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'owner', 'Owner', 1)");
         room(ROOM, "room-a", "{}");
         room(LATEST_ROOM, "room-b", "{\"outputs\":{\"ts\":{\"join\":\"latest\"}}}");
+        room(THIRD_ROOM, "room-c", "{}");
         output("o1", ROOM, "ts", "tokenNextJoin000000001", 1);
         output("o2", LATEST_ROOM, "ts", "tokenLatestJoin0000001", 1);
         output("o3", ROOM, "hls", "tokenHlsOutput00000001", 1);
-        output("o4", LATEST_ROOM, "ts", "tokenDisabled000000001", 0);
+        output("o4", THIRD_ROOM, "ts", "tokenDisabled000000001", 0);
         targets = LiveTsApi.targetsFrom(db, settings);
     }
 

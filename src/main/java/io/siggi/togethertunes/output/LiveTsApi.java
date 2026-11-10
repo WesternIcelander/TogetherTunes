@@ -10,7 +10,12 @@ import io.siggi.togethertunes.rooms.RoomSettings;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -33,6 +38,13 @@ import java.util.regex.Pattern;
  *   <li><b>Viewers:</b> a connection counts as a viewer ({@link #viewers}) only once it has been
  *       sent {@link #VIEWER_AFTER_UNITS} units (about 2 s of real-time output), so a probe (yt-dlp's
  *       generic extractor reading the first bytes, a player checking the type) never counts.</li>
+ *   <li><b>Limits</b> ({@link LiveLimits}): every request counts against the client IP's rate
+ *       limit ({@code 429 rate_limited}) before the token is looked up; a {@code GET} connection
+ *       counts against the token's connection cap for as long as it lasts
+ *       ({@code 429 too_many_connections}).</li>
+ *   <li><b>Revocation:</b> {@link #revalidate} ends every open connection whose token no longer
+ *       opens its room's {@code .ts} output (rotated, disabled, deleted, server switch off, room
+ *       deleted); the outputs API calls it after each change, and periodically.</li>
  *   <li>Unknown, disabled or malformed tokens, a room without the {@code .ts} output, or the server
  *       switch {@code outputs.ts.enabled} off: {@code 404}. The token is a capability: it is never
  *       logged in full (invariant 6), so errors are handled here, not by the router (which logs
@@ -67,13 +79,68 @@ public final class LiveTsApi {
         void abort();
     }
 
+    /** An open {@code GET} connection, for {@link #revalidate}. */
+    private record Connection(String token, String roomId, ConsumerQueue queue, Abort abort) {
+        void end() {
+            queue.leave();
+            abort.abort();
+        }
+    }
+
     private final Targets targets;
     private final ProgramOutputs outputs;
+    private final LiveLimits limits;
     private final ConcurrentHashMap<String, AtomicInteger> viewers = new ConcurrentHashMap<>();
+    private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
 
+    /** Without a per-IP limit (tests); the per-token cap still applies. */
     public LiveTsApi(Targets targets, ProgramOutputs outputs) {
+        this(targets, outputs, LiveLimits.noIpLimit());
+    }
+
+    public LiveTsApi(Targets targets, ProgramOutputs outputs, LiveLimits limits) {
         this.targets = Objects.requireNonNull(targets, "targets");
         this.outputs = Objects.requireNonNull(outputs, "outputs");
+        this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    /** Open {@code GET} connections (being streamed to). */
+    public int connections() {
+        return connections.size();
+    }
+
+    /**
+     * Ends every open connection whose token no longer opens the same room's {@code .ts} output
+     * (each distinct token looked up once). A lookup that fails leaves its connections alone.
+     *
+     * @return how many connections were ended
+     */
+    public int revalidate() {
+        Map<String, List<Connection>> byToken = new HashMap<>();
+        for (Connection c : connections) {
+            byToken.computeIfAbsent(c.token(), k -> new ArrayList<>()).add(c);
+        }
+        int ended = 0;
+        for (Map.Entry<String, List<Connection>> e : byToken.entrySet()) {
+            Target t;
+            try {
+                t = targets.lookup(e.getKey());
+            } catch (SQLException | RuntimeException ex) {
+                LOG.log(System.Logger.Level.WARNING, "Live .ts: could not re-check token " + masked(e.getKey()), ex);
+                continue;
+            }
+            for (Connection c : e.getValue()) {
+                if (t == null || !t.roomId().equals(c.roomId())) {
+                    connections.remove(c);
+                    c.end();
+                    ended++;
+                }
+            }
+        }
+        if (ended > 0) {
+            LOG.log(System.Logger.Level.INFO, "Live .ts: ended " + ended + " connection(s) whose token was revoked");
+        }
+        return ended;
     }
 
     /**
@@ -118,6 +185,7 @@ public final class LiveTsApi {
     }
 
     void handle(Request request, Response response) throws Exception {
+        limits.checkIp(request.clientIp());
         String file = request.pathParam("file");
         if (file == null || !file.endsWith(".ts")) {
             throw HttpError.notFound();
@@ -144,19 +212,21 @@ public final class LiveTsApi {
             response.empty(200);
             return;
         }
-        ProgramOutputs.Lease lease;
-        try {
-            lease = outputs.acquire(target.roomId());
-        } catch (Exception e) {
-            LOG.log(System.Logger.Level.WARNING, "Live .ts " + masked(token) + ": the program output of room "
-                    + target.roomId() + " could not start", e);
-            response.error(503, "output_unavailable", "The program output is not available right now");
-            return;
-        }
-        try {
-            stream(response, lease.packager(), target, abortFor(response));
-        } finally {
-            lease.close();
+        try (LiveLimits.Slot slot = limits.open(token)) {
+            ProgramOutputs.Lease lease;
+            try {
+                lease = outputs.acquire(target.roomId());
+            } catch (Exception e) {
+                LOG.log(System.Logger.Level.WARNING, "Live .ts " + masked(token) + ": the program output of room "
+                        + target.roomId() + " could not start", e);
+                response.error(503, "output_unavailable", "The program output is not available right now");
+                return;
+            }
+            try {
+                stream(response, lease.packager(), token, target, abortFor(response));
+            } finally {
+                lease.close();
+            }
         }
     }
 
@@ -171,8 +241,10 @@ public final class LiveTsApi {
     }
 
     /** Sends units until the client leaves or its queue closes (overflow, output stopped). */
-    void stream(Response response, Packager packager, Target target, Abort abort) throws IOException {
+    void stream(Response response, Packager packager, String token, Target target, Abort abort) throws IOException {
         ConsumerQueue queue = packager.subscribe(target.joinLatest());
+        Connection connection = new Connection(token, target.roomId(), queue, abort);
+        connections.add(connection);
         java.util.concurrent.atomic.AtomicBoolean writing = new java.util.concurrent.atomic.AtomicBoolean();
         queue.onClose(() -> {
             // Overflow: the client is too slow (maybe stalled, its writer blocked), so end the
@@ -211,6 +283,7 @@ public final class LiveTsApi {
                 }
             }
         } finally {
+            connections.remove(connection);
             queue.leave();
             if (viewer) {
                 viewers.computeIfPresent(target.roomId(), (k, n) -> n.decrementAndGet() <= 0 ? null : n);

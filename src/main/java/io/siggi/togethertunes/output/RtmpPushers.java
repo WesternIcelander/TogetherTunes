@@ -11,7 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * an IDR, goes to ffmpeg at once). Checking the server and room switches and decrypting the key stay
  * with the caller (the outputs API).
  */
-public final class RtmpPushers implements AutoCloseable {
+public final class RtmpPushers implements StreamOutputControl.Pushers, AutoCloseable {
     private static final System.Logger LOG = System.getLogger(RtmpPushers.class.getName());
 
     /** Told about every status change of a room's push (any thread; must not block). */

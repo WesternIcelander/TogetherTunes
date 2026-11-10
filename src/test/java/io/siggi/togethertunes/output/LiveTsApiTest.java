@@ -49,6 +49,8 @@ class LiveTsApiTest {
     final List<PackagerTest.FakeProducer> producers = Collections.synchronizedList(new ArrayList<>());
     final List<Packager> packagers = Collections.synchronizedList(new ArrayList<>());
     final AtomicBoolean failStart = new AtomicBoolean();
+    /** The next-join token no longer resolves (rotated or disabled). */
+    final AtomicBoolean revoked = new AtomicBoolean();
     ProgramOutputs outputs;
     LiveTsApi api;
     WebServer server;
@@ -119,7 +121,7 @@ class LiveTsApiTest {
         }, id -> null, System::currentTimeMillis, 0);
         outputs.snapshots(roomId -> new ProgramOutputs.Snapshot(1, Timeline.IDLE, null, null, null));
         api = new LiveTsApi(token -> switch (token) {
-            case NEXT_TOKEN -> new LiveTsApi.Target("room-next", false);
+            case NEXT_TOKEN -> revoked.get() ? null : new LiveTsApi.Target("room-next", false);
             case LATEST_TOKEN -> new LiveTsApi.Target("room-latest", true);
             case FAILING_TOKEN -> throw new java.sql.SQLException("database down");
             default -> null;
@@ -380,6 +382,109 @@ class LiveTsApiTest {
         }
         assertEquals(0, api.viewers("room-next"));
         assertEquals(0, outputs.leases("room-next"));
+    }
+
+    @Test
+    void revokedTokenEndsItsOpenConnections() throws Exception {
+        try (Socket next = connect(); Socket latest = connect()) {
+            send(next, "GET", "/live/" + NEXT_TOKEN + ".ts");
+            send(latest, "GET", "/live/" + LATEST_TOKEN + ".ts");
+            readHead(next.getInputStream());
+            readHead(latest.getInputStream());
+            await(() -> api.connections() == 2);
+            assertEquals(0, api.revalidate(), "both tokens still valid");
+            revoked.set(true);
+            assertEquals(1, api.revalidate());
+            assertEquals(1, api.connections());
+            InputStream in = next.getInputStream();
+            boolean ended;
+            try {
+                ended = in.read(new byte[65536]) == -1 || in.read(new byte[65536]) == -1;
+            } catch (IOException e) {
+                ended = true; // reset
+            }
+            assertTrue(ended, "the revoked connection ends");
+            await(() -> outputs.leases("room-next") == 0);
+            assertEquals(1, outputs.leases("room-latest"), "the other token's connection stays");
+            // and the revoked token no longer opens anything
+            try (Socket again = connect()) {
+                send(again, "GET", "/live/" + NEXT_TOKEN + ".ts");
+                assertEquals("HTTP/1.1 404 Not Found", readHead(again.getInputStream()).statusLine());
+            }
+        }
+    }
+
+    /** A second server on the same outputs with these limits. */
+    WebServer limitedServer(LiveLimits limits) throws IOException {
+        LiveTsApi limited = new LiveTsApi(token -> token.equals(NEXT_TOKEN)
+                ? new LiveTsApi.Target("room-next", false) : null, outputs, limits);
+        Router router = new Router();
+        limited.register(router);
+        return WebServer.start("127.0.0.1", 0, router, dir.toFile());
+    }
+
+    static Socket connect(WebServer ws) throws IOException {
+        Socket s = new Socket("127.0.0.1", ws.port());
+        s.setSoTimeout(5000);
+        return s;
+    }
+
+    @Test
+    void connectionsPerTokenAreCapped() throws Exception {
+        LiveLimits limits = new LiveLimits(null, 2);
+        WebServer ws = limitedServer(limits);
+        try (Socket a = connect(ws); Socket b = connect(ws)) {
+            send(a, "GET", "/live/" + NEXT_TOKEN + ".ts");
+            send(b, "GET", "/live/" + NEXT_TOKEN + ".ts");
+            assertEquals("HTTP/1.1 200 OK", readHead(a.getInputStream()).statusLine());
+            assertEquals("HTTP/1.1 200 OK", readHead(b.getInputStream()).statusLine());
+            assertEquals(2, limits.connections(NEXT_TOKEN));
+            try (Socket c = connect(ws)) {
+                send(c, "GET", "/live/" + NEXT_TOKEN + ".ts");
+                Head head = readHead(c.getInputStream());
+                assertEquals("HTTP/1.1 429 Too Many Requests", head.statusLine());
+                assertEquals("10", head.header("Retry-After"));
+                assertTrue(new String(c.getInputStream().readNBytes(Integer.parseInt(head.header("Content-Length"))),
+                        StandardCharsets.UTF_8).contains("too_many_connections"));
+            }
+            // HEAD isn't a connection: still answered
+            try (Socket h = connect(ws)) {
+                send(h, "HEAD", "/live/" + NEXT_TOKEN + ".ts");
+                assertEquals("HTTP/1.1 200 OK", readHead(h.getInputStream()).statusLine());
+            }
+        } finally {
+            ws.close();
+        }
+        await(() -> limits.connections(NEXT_TOKEN) == 0);
+    }
+
+    @Test
+    void requestsArePerIpRateLimited() throws Exception {
+        io.siggi.togethertunes.TestClock clock = new io.siggi.togethertunes.TestClock(1_800_000_000_000L);
+        LiveLimits limits = new LiveLimits(new io.siggi.togethertunes.http.RateLimiter("live", 3, 1000, clock), 64);
+        WebServer ws = limitedServer(limits);
+        try {
+            for (String path : List.of("/live/" + NEXT_TOKEN + ".ts", "/live/AAAAunknownToken000001.ts",
+                    "/live/short.ts")) {
+                try (Socket s = connect(ws)) {
+                    send(s, "HEAD", path);
+                    assertTrue(readHead(s.getInputStream()).statusLine().matches("HTTP/1.1 (200|404) .*"));
+                }
+            }
+            try (Socket s = connect(ws)) {
+                send(s, "HEAD", "/live/" + NEXT_TOKEN + ".ts");
+                Head head = readHead(s.getInputStream());
+                assertEquals("HTTP/1.1 429 Too Many Requests", head.statusLine(), "unknown tokens count too");
+                assertEquals("1", head.header("Retry-After"));
+            }
+            clock.advance(1000);
+            try (Socket s = connect(ws)) {
+                send(s, "HEAD", "/live/" + NEXT_TOKEN + ".ts");
+                assertEquals("HTTP/1.1 200 OK", readHead(s.getInputStream()).statusLine());
+            }
+        } finally {
+            ws.close();
+        }
     }
 
     @Test
