@@ -8,9 +8,22 @@
 //
 // This module touches no DOM and imports nothing, so it can be tested outside a browser.
 
+/**
+ * When `performance.now()` was 0, in epoch ms: `performance.timeOrigin`, or where a browser lacks
+ * it (or returns nonsense), the wall clock minus `performance.now()` taken once at startup.
+ */
+function timeOrigin(): number {
+  const origin = (performance as Performance & { timeOrigin?: number }).timeOrigin;
+  if (typeof origin === "number" && Number.isFinite(origin) && origin > 0) return origin;
+  return Date.now() - performance.now();
+}
+
+let origin: number | undefined;
+
 /** The client's clock for clock sync: monotonic, in epoch milliseconds. */
 export function clientNow(): number {
-  return performance.timeOrigin + performance.now();
+  if (origin === undefined) origin = timeOrigin();
+  return origin + performance.now();
 }
 
 export interface ClockSample {
@@ -109,6 +122,20 @@ export class ClockSync {
   /** The server's clock as estimated now (the client's wall clock until the first round). */
   serverNow(): number {
     return this.offsetMs !== undefined ? this.#now() + this.offsetMs : Date.now();
+  }
+
+  /** The estimate and its history, for diagnostics. */
+  state(): Record<string, unknown> {
+    return {
+      offsetMs: this.offsetMs,
+      rttMs: this.rttMs,
+      running: this.#running,
+      roundInProgress: this.#round !== undefined,
+      recentRttsMs: this.#recentRtts.slice(),
+      clientNowMs: this.#now(),
+      dateNowMs: Date.now(),
+      serverNowMs: this.serverNow(),
+    };
   }
 
   /** Starts a round now and one every 30 s after it (call when the socket is connected). */

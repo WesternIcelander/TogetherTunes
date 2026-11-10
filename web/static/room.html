@@ -26,6 +26,9 @@
     <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
     <div id="room-listen-controls" class="row room-listen-controls" hidden>
       <label><input type="checkbox" id="room-audio-only"> Audio only</label>
+      <button type="button" id="room-diagnostics" class="link small"
+              title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
+      <span id="room-diagnostics-status" class="muted small" role="status"></span>
     </div>
     <!-- Remote mode: no media; the now-playing panel runs this much behind the timeline (the room's
          output delay plus this browser's nudge for the room). -->

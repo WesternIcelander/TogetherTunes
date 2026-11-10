@@ -55,6 +55,7 @@ import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
+import io.siggi.togethertunes.rooms.DiagnosticsApi;
 import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomRequests;
@@ -450,7 +451,8 @@ public final class Main {
      * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
      * media files ({@code /media/{id}/{file}}), {@link RoomsApi} rooms and room roles
-     * ({@code /api/rooms...}), {@link RoomSocket} the room WebSocket ({@code /ws}). {@code GET /items/{id}} serves the item page
+     * ({@code /api/rooms...}), {@link DiagnosticsApi} the room page's listen-mode diagnostics report
+     * ({@code /api/diagnostics}), {@link RoomSocket} the room WebSocket ({@code /ws}). {@code GET /items/{id}} serves the item page
      * ({@link #ITEM_PAGE}) of the web UI, {@link RoomLinks} the room page ({@link #ROOM_PAGE}) at
      * {@code /rooms/{idOrSlug}} and the short link {@code /r/{slug}}.
      */
@@ -477,6 +479,7 @@ public final class Main {
         userLibraries.register(router);
         media.register(router);
         rooms.register(router);
+        DiagnosticsApi.create(Clock.systemUTC()).register(router);
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         roomSocket.register(router, webSockets);

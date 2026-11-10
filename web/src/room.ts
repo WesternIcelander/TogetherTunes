@@ -10,10 +10,14 @@
 // (remote.ts) it loads no media and shows the timeline delayed by the active output's
 // estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
 // room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
+// In listen mode, "Send diagnostics" posts what the player did (diagnostics.ts) to the server log,
+// for devices without a console; `?sync=rate|seek` overrides the sync mode for testing.
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { ClockSync } from "./clocksync.js";
+import { captureErrors, recordEvent, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
 import { ListenPlayer } from "./listen.js";
+import { syncModeFor, type EngineHints } from "./listensync.js";
 import {
   chooseMode, DelayedTimeline, effectiveDelay, formatSeconds, modeKey, nudgeKey, outputDelay, parseNudge, stepNudge,
   type RoomMode,
@@ -28,6 +32,9 @@ import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
+
+// Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
+captureErrors(window as unknown as ErrorTarget);
 
 interface RoomResponse {
   id: string;
@@ -805,7 +812,9 @@ function switchMode(m: RoomMode): void {
 }
 
 function createPlayer(): ListenPlayer {
-  const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly());
+  const syncMode = syncModeFor(engineHints(), new URLSearchParams(location.search).get("sync"));
+  const p = new ListenPlayer(element("room-player"), element("room-listen-overlay"), serverNow, loadAudioOnly(),
+    syncMode);
   player = p;
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
@@ -817,6 +826,68 @@ function createPlayer(): ListenPlayer {
   // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
   (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
   return p;
+}
+
+/** The engine's features that decide the sync mode (the user agent may lie). */
+function engineHints(): EngineHints {
+  const proto = typeof HTMLMediaElement !== "undefined" ? HTMLMediaElement.prototype : {};
+  return {
+    preservesPitch: "preservesPitch" in proto,
+    webkitPreservesPitch: "webkitPreservesPitch" in proto,
+    mozPreservesPitch: "mozPreservesPitch" in proto,
+    webkitPlaybackTarget: "WebKitPlaybackTargetAvailabilityEvent" in window,
+  };
+}
+
+/** Largest diagnostics report sent (the server takes 256 KiB). */
+const MAX_REPORT_CHARS = 240_000;
+
+/** Everything "Send diagnostics" sends: no addresses, tokens or cookies (see diagnostics.ts). */
+function diagnosticsReport(ref: string): Record<string, unknown> {
+  const cur = shown?.current;
+  const report: Record<string, unknown> = {
+    ref,
+    userAgent: navigator.userAgent,
+    // The user agent may lie (Reynard, Gecko on iOS, says Android): the engine's own hints.
+    engine: { ...engineHints(), vendor: navigator.vendor, maxTouchPoints: navigator.maxTouchPoints,
+      platform: navigator.platform, audioContext: typeof AudioContext !== "undefined" ? "AudioContext"
+        : "webkitAudioContext" in window ? "webkitAudioContext" : "none" },
+    page: stripQuery(location.pathname),
+    syncOverride: new URLSearchParams(location.search).get("sync"),
+    roomId,
+    mode,
+    visibility: document.visibilityState,
+    epochMs: Date.now(),
+    perfNowMs: Math.round(performance.now()),
+    clock: clock?.state(),
+    timeline: shown?.timeline,
+    current: cur === undefined ? undefined : { entryId: cur.entryId, itemId: cur.item.id, kind: cur.item.kind,
+      durationMs: cur.item.durationMs, status: cur.status },
+    player: player?.debug(),
+    ...snapshot(),
+  };
+  // Keep it under the server's limit: drop the oldest decisions and events first.
+  for (const key of ["decisions", "events"]) {
+    while (JSON.stringify(report).length > MAX_REPORT_CHARS) {
+      const list = report[key] as unknown[];
+      if (list.length === 0) break;
+      list.splice(0, Math.ceil(list.length / 4));
+    }
+  }
+  return report;
+}
+
+async function sendDiagnostics(): Promise<void> {
+  const status = element("room-diagnostics-status");
+  const ref = Math.random().toString(36).slice(2, 8);
+  status.textContent = "Sending…";
+  try {
+    recordEvent("diagnostics", { ref });
+    await api("POST", "/api/diagnostics", diagnosticsReport(ref));
+    status.textContent = "Sent (ref " + ref + ").";
+  } catch (e) {
+    status.textContent = "Not sent: " + message(e);
+  }
 }
 
 function onRequest(r: NewRequest): void {
@@ -902,6 +973,7 @@ async function start(): Promise<void> {
   // A better clock estimate moves the target: correct at once instead of at the next tick.
   c.onUpdate = () => { if (mode === "listen") player?.tick(); };
   element("room-mode-toggle").addEventListener("click", () => switchMode(mode === "remote" ? "listen" : "remote"));
+  element("room-diagnostics").addEventListener("click", () => { void sendDiagnostics(); });
   element("room-delay-less").addEventListener("click", () => setNudge(stepNudge(nudge, -1, remoteDelays(shown).outputMs)));
   element("room-delay-more").addEventListener("click", () => setNudge(stepNudge(nudge, 1, remoteDelays(shown).outputMs)));
   element("room-delay-reset").addEventListener("click", () => setNudge(0));

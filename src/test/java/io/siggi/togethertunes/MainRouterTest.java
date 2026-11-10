@@ -216,6 +216,14 @@ class MainRouterTest {
     }
 
     @Test
+    void diagnosticsReportsAreAccepted() throws Exception {
+        HttpResponse<String> r = send("POST", "/api/diagnostics", "{\"ref\":\"x\",\"decisions\":[]}");
+        assertEquals(204, r.statusCode(), r.body());
+        // a cross-site page can't post one with the user's cookies
+        assertEquals(403, send("POST", "/api/diagnostics", "{}", "Origin", "https://evil.example").statusCode());
+    }
+
+    @Test
     void plainGetOnTheEchoSocketIs426() throws Exception {
         assertEquals(426, get("/ws/echo").statusCode());
     }

@@ -884,6 +884,7 @@ class DtoIpLeakTest {
         assertFalse(json(expect(200, anon, "GET", "/test/ws-echo/closes?tag=dto-leak", null))
                 .getAsJsonArray("closes").isEmpty(), "the close was recorded");
         expectOk(anon, "POST", "/test/ws-echo/report", "{\"ok\":true,\"from\":\"dto test\"}");
+        expectOk(anon, "POST", "/api/diagnostics", "{\"ref\":\"dto\",\"decisions\":[]}");
         expect(200, anon, "GET", "/test/ws-echo.html", null);
 
         // an upload by alice: started, one chunk, its status, completed as a duplicate of an
