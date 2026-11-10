@@ -55,7 +55,7 @@ export const SETTINGS: SettingDef[] = [
   { key: "overlay.margin", label: "Margin (% of the frame height)", kind: "int", group: "overlay", default: 3,
     min: 0, max: 20 },
   { key: "outputs.rtmp.playbackUrl", label: "RTMP playback URL for viewers", kind: "text", group: "outputs",
-    default: "", max: 2048, help: "The URL your RTMP service gives viewers (e.g. VRCDN). Empty for none." },
+    default: "", max: 2048, help: "The URL your RTMP service gives viewers. Empty for none." },
   { key: "outputs.rtmp.idleStopMinutes", label: "Stop the RTMP push after the queue was empty for (minutes)",
     kind: "int", group: "outputs", default: 10, min: 1, max: 1440,
     help: "The push turns off and stays off until you turn it on again on the room page." },

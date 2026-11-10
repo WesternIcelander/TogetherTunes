@@ -14,7 +14,7 @@ import org.junit.jupiter.api.Test;
  * ({@code src/test/resources/web-tests/outputs.test.mjs}) against the compiled {@code web/js/outputs.js},
  * and checks that the room page and its socket client use them: {@code output.status} applied to the
  * state, the outputs panel with copy buttons, rotate, on/off, the RTMP target form, status and
- * viewer URL, and the VRChat allowlist and HLS desync notes.
+ * viewer URL, and the player allowlist and HLS desync notes.
  */
 class OutputsJsTest {
     private static String read(String path) throws Exception {

@@ -1044,7 +1044,7 @@ function applyMode(m: RoomMode): void {
   element("room-body").dataset["mode"] = m;
   element("room-mode").textContent = m === "remote" ? "Remote mode" : "Listen mode";
   const toggle = element("room-mode-toggle") as HTMLButtonElement;
-  toggle.textContent = m === "remote" ? "Listen here instead" : "I'm listening in VRChat (remote mode)";
+  toggle.textContent = m === "remote" ? "Listen here instead" : "I'm listening through the stream (remote mode)";
   element("room-listen-controls").hidden = m !== "listen";
   element("room-remote-controls").hidden = m !== "remote";
   if (m === "listen") {

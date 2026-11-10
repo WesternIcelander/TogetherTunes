@@ -85,14 +85,14 @@ test("push line: live status first, failures and next try for retrying/error, of
   assert.equal(O.pushDetail(undefined, row({ active: false, status: failing.status })), undefined);
 });
 
-test("notes: VRChat allowlist with any self-hosted URL, HLS desync while HLS is on", () => {
+test("notes: player allowlist with any self-hosted URL, HLS desync while HLS is on", () => {
   assert.deepEqual(O.outputNotes([]), []);
   assert.deepEqual(O.outputNotes([row({})]), []);
-  assert.deepEqual(O.outputNotes([row({ kind: "ts" })]), [O.VRCHAT_ALLOWLIST_NOTE]);
-  assert.deepEqual(O.outputNotes([row({ kind: "hls" })]), [O.VRCHAT_ALLOWLIST_NOTE, O.HLS_DESYNC_NOTE]);
-  assert.deepEqual(O.outputNotes([row({ kind: "hls", active: false })]), [O.VRCHAT_ALLOWLIST_NOTE]);
-  assert.match(O.VRCHAT_ALLOWLIST_NOTE, /Allow Untrusted URLs/);
-  assert.match(O.VRCHAT_ALLOWLIST_NOTE, /Video Player Allowed Domains/);
+  assert.deepEqual(O.outputNotes([row({ kind: "ts" })]), [O.ALLOWLIST_NOTE]);
+  assert.deepEqual(O.outputNotes([row({ kind: "hls" })]), [O.ALLOWLIST_NOTE, O.HLS_DESYNC_NOTE]);
+  assert.deepEqual(O.outputNotes([row({ kind: "hls", active: false })]), [O.ALLOWLIST_NOTE]);
+  assert.match(O.ALLOWLIST_NOTE, /allow untrusted URLs/);
+  assert.doesNotMatch(O.ALLOWLIST_NOTE + O.HLS_DESYNC_NOTE, /VRChat/);
   assert.match(O.HLS_DESYNC_NOTE, /a few seconds apart/);
 });
 

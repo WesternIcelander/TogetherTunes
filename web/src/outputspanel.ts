@@ -3,7 +3,7 @@
 // button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
 // the `.ts` and HLS URLs with copy buttons, the RTMP push status and, for the owner only, the RTMP
 // target and key (in a password field with Reveal and Copy), live push status
-// (from the room state, which `output.status` keeps current), the VRChat allowlist note and, with
+// (from the room state, which `output.status` keeps current), the player allowlist note and, with
 // HLS on, the HLS desync note. The owner turns outputs on and off, rotates the URLs' tokens, sets
 // the RTMP target and key, and removes outputs. The decisions are in outputs.ts.
 import { api } from "./api.js";
@@ -173,9 +173,9 @@ export class OutputsPanel {
       return;
     }
     this.#playback.replaceChildren(
-      h("h3", { text: "Watch in VRChat" }),
-      h("p", { class: "muted small", text: "Paste this URL into the world's video player." }),
-      copyField(url, "Stream URL for VRChat"));
+      h("h3", { text: "Watch on the stream" }),
+      h("p", { class: "muted small", text: "Paste this URL into your video player." }),
+      copyField(url, "Stream URL"));
   }
 
   #fail(e: unknown): void {
@@ -277,7 +277,7 @@ export class OutputsPanel {
     const serverOn = this.#serverOn("rtmp");
     if (row === undefined) {
       const parts: Node[] = [title, h("p", { class: "muted small",
-        text: serverOn ? "Off. Pushes the program to an RTMP service (e.g. VRCDN), whose viewer URL goes into VRChat."
+        text: serverOn ? "Off. Pushes the program to an RTMP service, whose viewer URL viewers play."
           : "Disabled by the server admin" })];
       if (this.#owner && canCreate("rtmp", rows, serverOn)) {
         if (this.#rtmpForm === "create") parts.push(this.#rtmpTargetForm(undefined));
@@ -306,7 +306,7 @@ export class OutputsPanel {
       }
     }
     if (playback !== undefined) {
-      parts.push(h("p", { class: "small", text: "Viewer URL (for VRChat):" }), copyField(playback, "RTMP viewer URL"));
+      parts.push(h("p", { class: "small", text: "Viewer URL:" }), copyField(playback, "RTMP viewer URL"));
     } else {
       parts.push(h("p", { class: "muted small" }, "No viewer URL saved. Viewers need the URL the RTMP service gives "
         + "out: save it under ", h("a", { href: manageHref, text: "Manage room" }), " → Settings → Outputs."));

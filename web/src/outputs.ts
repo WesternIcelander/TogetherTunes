@@ -141,18 +141,18 @@ export function rtmpPlaybackUrl(outputs: OutputView[] | undefined, settings: Rec
   return typeof url === "string" && url.trim() !== "" ? url.trim() : undefined;
 }
 
-export const VRCHAT_ALLOWLIST_NOTE = "VRChat only plays URLs from its allowlist by itself. For these self-hosted "
-  + "URLs, viewers must turn on \"Allow Untrusted URLs\" in VRChat's settings; in public and group-public "
-  + "instances the world must also list this server's domain in its \"Video Player Allowed Domains\".";
+export const ALLOWLIST_NOTE = "Some players only play URLs from an allowlist. For these self-hosted URLs, "
+  + "viewers may need to allow untrusted URLs in their player's settings, or the place they watch in may need "
+  + "to allow this server's domain.";
 
 export const HLS_DESYNC_NOTE = "HLS players start a few segments behind the live edge, and not all at the same "
-  + "segment, so VRChat viewers on HLS can be a few seconds apart from each other. Use the .ts URL (or RTMP) "
+  + "segment, so viewers on HLS can be a few seconds apart from each other. Use the .ts URL (or RTMP) "
   + "when everyone should hear the same moment.";
 
-/** The notes under the outputs: the VRChat allowlist (any self-hosted URL) and HLS desync (HLS on). */
+/** The notes under the outputs: the player allowlist (any self-hosted URL) and HLS desync (HLS on). */
 export function outputNotes(rows: OutputRow[]): string[] {
   const notes: string[] = [];
-  if (rows.some((r) => r.kind === "ts" || r.kind === "hls")) notes.push(VRCHAT_ALLOWLIST_NOTE);
+  if (rows.some((r) => r.kind === "ts" || r.kind === "hls")) notes.push(ALLOWLIST_NOTE);
   if (rows.some((r) => r.kind === "hls" && r.active)) notes.push(HLS_DESYNC_NOTE);
   return notes;
 }
