@@ -3,6 +3,7 @@ package io.siggi.togethertunes.output;
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.PlayableFiles;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.media.SampleIndex;
@@ -10,7 +11,6 @@ import io.siggi.togethertunes.media.SampleIndex.Kind;
 import io.siggi.togethertunes.output.FillerSource.Filler;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -42,7 +42,9 @@ import java.util.function.LongSupplier;
  * <li>An index that can't be used — missing ({@code index.bin} isn't published yet, or the item was
  * purged), unreadable, for another output encoding (a re-encode for a new profile or video bitrate is still running,
  * {@code docs/library-and-ingest.md#re-encoding-on-a-profile-change}) or with an avcC that differs
- * from the reference (invariant 1) — counts as not loadable. It is retried no sooner than
+ * from the reference (invariant 1) — counts as not loadable. The rooms make the same checks before
+ * choosing an entry ({@link PlayableFiles}), so such an item is normally skipped rather than shown
+ * as Loading for its whole length. It is retried no sooner than
  * {@link #RETRY_MS} later, and each distinct failure is logged once.</li>
  * </ul>
  *
@@ -398,22 +400,10 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         }
     }
 
+    /** The item's index, if it passes the checks the rooms make too ({@link PlayableFiles#requireUsable}). */
     private SampleIndex readIndex(Slot s, Path dir) throws IOException {
-        SampleIndex index = SampleIndex.read(dir.resolve(SampleIndex.FILE_NAME));
-        if (!index.encoding().equals(profile)) {
-            throw new IOException("index is for " + index.encoding().id() + ", not " + profile.id()
-                    + " (re-encode pending)");
-        }
-        if (referenceAvcC != null && !Arrays.equals(referenceAvcC, index.avcC())) {
-            throw new IOException("avcC differs from the reference");
-        }
-        if (index.track(Kind.AUDIO) == null) {
-            throw new IOException("index has no audio track");
-        }
-        if (!s.videoItem && index.track(Kind.VIDEO) == null) {
-            throw new IOException("audio item's index has no card track");
-        }
-        return index;
+        return PlayableFiles.requireUsable(SampleIndex.read(dir.resolve(SampleIndex.FILE_NAME)), profile,
+                referenceAvcC, s.videoItem);
     }
 
     /** Records a failed load (lock held); logs each distinct failure of an item once. */

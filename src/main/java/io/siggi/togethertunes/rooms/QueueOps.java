@@ -2,6 +2,7 @@ package io.siggi.togethertunes.rooms;
 
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.PlayableFiles;
 import io.siggi.togethertunes.retention.References;
 import java.sql.SQLException;
 import java.util.ArrayList;
@@ -317,8 +318,9 @@ public final class QueueOps {
             return Playback.seek(tx, 0);
         }
         String roomId = s.id();
+        PlayableFiles.Check playable = tx.store().playable();
         QueueEntry prev = tx.store().db().read(c -> RoomStore.lastPlayed(c, roomId,
-                current == null ? null : current.id()));
+                current == null ? null : current.id(), playable));
         if (prev == null || !prev.ready()) {
             return current != null && Playback.seek(tx, 0);
         }
@@ -385,7 +387,7 @@ public final class QueueOps {
         RoomState s = tx.state();
         long now = tx.now();
         QueueEntry e = new QueueEntry(UuidV7.newId(), item.id(), a.userId(), a.guestId(), now, state, position,
-                false, null, item.status(), item.durationMs());
+                false, null, item.status(), item.durationMs(), tx.store().filesUsable(item));
         String roomId = s.id();
         tx.persist(c -> {
             RoomStore.insertEntry(c, roomId, e);

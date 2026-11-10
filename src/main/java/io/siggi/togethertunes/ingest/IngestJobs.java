@@ -596,6 +596,11 @@ public final class IngestJobs {
             }
             if (job.kind().ownsItemStatus()) {
                 setItemStatus(c, job.itemId(), state == State.DONE ? "ready" : "failed", error);
+            } else if (state == State.DONE) {
+                // A re-encode published new files: the item may be playable by the program output
+                // now (files of the current encoding), so the rooms look again.
+                String itemId = job.itemId();
+                db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
             }
             // A running job references its item; it stops doing so now.
             References.touch(c, job.itemId(), now);

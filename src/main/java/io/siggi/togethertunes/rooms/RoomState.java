@@ -302,20 +302,20 @@ public final class RoomState {
     void refreshItems(Map<String, ItemInfo> items) {
         if (current != null && items.containsKey(current.id())) {
             ItemInfo i = items.get(current.id());
-            current = current.withItem(i.status(), i.durationMs());
+            current = current.withItem(i.status(), i.durationMs(), i.filesUsable());
         }
         queue.replaceAll(e -> {
             ItemInfo i = items.get(e.id());
-            return i == null ? e : e.withItem(i.status(), i.durationMs());
+            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable());
         });
         suggestions.replaceAll(e -> {
             ItemInfo i = items.get(e.id());
-            return i == null ? e : e.withItem(i.status(), i.durationMs());
+            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable());
         });
     }
 
-    /** An item's status and duration, as read for {@link #refreshItems}. */
-    record ItemInfo(String status, Long durationMs) {
+    /** An item's status, duration and whether its files are usable, as read for {@link #refreshItems}. */
+    record ItemInfo(String status, Long durationMs, boolean filesUsable) {
     }
 
     void version(long version) {

@@ -208,6 +208,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.FfmpegProgress", "tool output, turned into a job's progress number"),
             Map.entry("io.siggi.togethertunes.ingest.ToolResult", "tool output, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJob", "ingest_jobs row; GET /api/items/{id}/job (later step) builds its own view of it"),
+            Map.entry("io.siggi.togethertunes.ingest.PlayableFiles$Item", "item id, kind, encoding and media version"
+                    + " for the rooms' playable-files check; never serialised"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Recovered", "startup recovery counts, server log only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Priority", "claim order rank and kind, inside the ingest queue only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Retry", "retry outcome; JobsApi answers with the new job's JobList row"),

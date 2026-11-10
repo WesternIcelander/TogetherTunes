@@ -3,6 +3,7 @@ package io.siggi.togethertunes.rooms;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.ItemStatusListener;
+import io.siggi.togethertunes.ingest.PlayableFiles;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
@@ -204,6 +205,44 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
                 LOG.log(System.Logger.Level.WARNING, "Could not tell the rooms about item " + itemId, t);
             }
         });
+    }
+
+    /**
+     * Sets how the rooms tell whether the program output can play a {@code ready} item's files
+     * ({@link PlayableFiles}): such an item is skipped over like one still processing. Default
+     * {@link PlayableFiles.Check#ANY} (the item status alone). Set before rooms are loaded.
+     */
+    public void playableFiles(PlayableFiles.Check check) {
+        store.playable(check);
+    }
+
+    /**
+     * Every item's playability may have changed (the output encoding was switched, so items of the
+     * old one wait for their re-encodes): every loaded room refreshes its entries
+     * ({@link Playback#itemsChanged}). Rooms that aren't loaded read them when they load. Returns
+     * at once.
+     *
+     * @return the number of rooms told
+     */
+    public int allItemsChanged() {
+        int n = 0;
+        for (RoomExecutor e : executors.values()) {
+            if (closed || e.isClosed()) {
+                continue;
+            }
+            try {
+                e.submit(Playback::itemsChanged).whenComplete((changed, failure) -> {
+                    if (failure != null && !(failure instanceof RoomClosedException)) {
+                        LOG.log(System.Logger.Level.WARNING, "Room " + e.roomId() + " could not refresh its entries",
+                                failure);
+                    }
+                });
+                n++;
+            } catch (RuntimeException ex) {
+                // closing meanwhile
+            }
+        }
+        return n;
     }
 
     /** {@link #itemStatusChanged}, on the calling thread; the futures complete when each room is done (tests). */

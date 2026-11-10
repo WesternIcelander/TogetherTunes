@@ -41,6 +41,7 @@ import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.OutputAssets;
+import io.siggi.togethertunes.ingest.PlayableFiles;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
@@ -263,6 +264,11 @@ public final class Main {
         // and running program outputs restart on it (docs/library-and-ingest.md#changing-the-encoding-at-runtime).
         outputAssets.addListener(encodingChanged(presets, ingest, programOutputs, System.out, System.err));
         RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), programOutputs);
+        // One notion of "playable" for rooms and packager: a ready item whose files the program output
+        // can't use (older encoding, unreadable index) is skipped like one still processing
+        // (docs/rooms.md#room-state). An encoding switch makes every room look again.
+        roomRegistry.playableFiles(playableFiles(dataDir, outputAssets)::usable);
+        outputAssets.addListener((previous, now) -> roomRegistry.allItemsChanged());
         programOutputs.snapshotsFrom(roomRegistry);
         // RTMP pushes (supervised ffmpeg); started by the outputs API. Null without ffmpeg.
         RtmpPushers rtmpPushers = config.ffmpeg() == null ? null : new RtmpPushers(programOutputs, config.ffmpeg());
@@ -543,6 +549,15 @@ public final class Main {
                 out.println("Restarted " + restarted + " program outputs on output encoding " + now.encoding().id());
             }
         };
+    }
+
+    /** The rooms' {@link PlayableFiles} check, for the output encoding in use and its reference card. */
+    static PlayableFiles playableFiles(DataDir dataDir, OutputAssets assets) {
+        return new PlayableFiles((id, version) -> MediaVersions.versionDir(dataDir, id, version), assets::encoding,
+                () -> {
+                    OutputAssets.Assets current = assets.current();
+                    return current.reference() == null ? null : current.reference().avcC();
+                });
     }
 
     /**

@@ -1000,6 +1000,48 @@ class RoomSocketTest {
     }
 
     @Test
+    void skipPassesOverAProcessingEntryWhichStaysOnTopAndPlaysOnceReady() throws Exception {
+        room("skipper", "public", "owner");
+        String song = item("Playing Song");
+        String[] upload = ingesting("Fresh Upload");
+        String later = item("Later Song");
+        String last = item("Last Song");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"skipper\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.await("presence");
+        String playing = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}").get("entryId").getAsString();
+        owner.await("state");
+        String waiting = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + upload[0] + "\"}")
+                .get("entryId").getAsString();
+        owner.await("state");
+        String second = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + later + "\"}").get("entryId").getAsString();
+        owner.await("state");
+        String third = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + last + "\"}").get("entryId").getAsString();
+        JsonObject state = owner.await("state");
+        assertEquals(playing, state.getAsJsonObject("current").get("entryId").getAsString());
+
+        // playback skip: the processing entry is passed over and stays first in the queue
+        owner.ok("{\"type\":\"next\"}");
+        state = owner.await("state");
+        assertEquals(second, state.getAsJsonObject("current").get("entryId").getAsString());
+        JsonArray queue = state.getAsJsonArray("queue");
+        assertEquals(2, queue.size(), state.toString());
+        assertEquals(waiting, queue.get(0).getAsJsonObject().get("entryId").getAsString());
+        assertEquals("processing", queue.get(0).getAsJsonObject().get("status").getAsString());
+
+        // ready while the second plays: shown ready, plays at the next skip (before the third)
+        finishIngest(upload);
+        state = owner.await("state");
+        assertEquals("ready", queued(state, waiting).get("status").getAsString());
+        assertEquals(second, state.getAsJsonObject("current").get("entryId").getAsString());
+        owner.ok("{\"type\":\"next\"}");
+        state = owner.await("state");
+        assertEquals(waiting, state.getAsJsonObject("current").get("entryId").getAsString());
+        assertEquals(third, state.getAsJsonArray("queue").get(0).getAsJsonObject().get("entryId").getAsString());
+    }
+
+    @Test
     void aFailedIngestShowsAsFailedAndIsSkipped() throws Exception {
         room("broken", "public", "owner");
         String[] upload = ingesting("Broken Upload");

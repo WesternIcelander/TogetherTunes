@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.rooms;
 
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.ingest.PlayableFiles;
 import io.siggi.togethertunes.retention.References;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -22,6 +23,8 @@ final class RoomStore {
     private static final System.Logger LOG = System.getLogger(RoomStore.class.getName());
 
     private final Database db;
+    /** Whether the program output can play a ready item's files (one notion for rooms and packager). */
+    private volatile PlayableFiles.Check playable = PlayableFiles.Check.ANY;
 
     RoomStore(Database db) {
         this.db = Objects.requireNonNull(db);
@@ -29,6 +32,24 @@ final class RoomStore {
 
     Database db() {
         return db;
+    }
+
+    void playable(PlayableFiles.Check check) {
+        this.playable = check == null ? PlayableFiles.Check.ANY : check;
+    }
+
+    PlayableFiles.Check playable() {
+        return playable;
+    }
+
+    /** Whether the program output can play this item's files (true while it isn't {@code ready}: not asked). */
+    boolean filesUsable(ItemRow item) {
+        return filesUsable(playable, item.id(), item.status(), item.kind(), item.outputProfile(), item.mediaVersion());
+    }
+
+    private static boolean filesUsable(PlayableFiles.Check check, String itemId, String status, String kind,
+                                       String outputProfile, int mediaVersion) {
+        return !"ready".equals(status) || check.usable(new PlayableFiles.Item(itemId, kind, outputProfile, mediaVersion));
     }
 
     /** The room's state as persisted, or {@code null} if there is no such room. */
@@ -62,7 +83,7 @@ final class RoomStore {
                             "control_mode");
                     String settings = rs.getString(6);
                     long version = rs.getLong(11);
-                    List<QueueEntry> entries = entries(c, roomId, entryId);
+                    List<QueueEntry> entries = entries(c, roomId, entryId, playable);
                     QueueEntry current = null;
                     List<QueueEntry> queue = new ArrayList<>();
                     List<QueueEntry> suggestions = new ArrayList<>();
@@ -96,7 +117,8 @@ final class RoomStore {
     }
 
     private static final String ENTRY_COLUMNS = "q.id, q.item_id, q.added_by_user_id, q.added_by_guest_id,"
-            + " q.added_at, q.state, q.position, q.pinned, q.played_at, i.status, i.duration_ms";
+            + " q.added_at, q.state, q.position, q.pinned, q.played_at, i.status, i.duration_ms,"
+            + " i.kind, i.output_profile, i.media_version";
 
     /** Votes on the room's queued and suggested entries: entryId -> voter key -> value. */
     private static Map<String, Map<String, Integer>> votes(Connection c, String roomId) throws SQLException {
@@ -140,7 +162,8 @@ final class RoomStore {
      * (whatever its state; may be {@code null}), with their items' status and duration. Entries with a state this version
      * doesn't know are left out (logged).
      */
-    static List<QueueEntry> entries(Connection c, String roomId, String currentId) throws SQLException {
+    static List<QueueEntry> entries(Connection c, String roomId, String currentId, PlayableFiles.Check check)
+            throws SQLException {
         List<QueueEntry> out = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement("SELECT " + ENTRY_COLUMNS
                 + " FROM queue_entries q JOIN items i ON i.id = q.item_id"
@@ -150,7 +173,7 @@ final class RoomStore {
             ps.setString(2, currentId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    QueueEntry e = entry(rs, roomId);
+                    QueueEntry e = entry(rs, roomId, check);
                     if (e != null) {
                         out.add(e);
                     }
@@ -161,7 +184,7 @@ final class RoomStore {
     }
 
     /** The entry of an {@link #ENTRY_COLUMNS} row, or {@code null} (logged) if its state is unknown. */
-    private static QueueEntry entry(ResultSet rs, String roomId) throws SQLException {
+    private static QueueEntry entry(ResultSet rs, String roomId, PlayableFiles.Check check) throws SQLException {
         QueueEntry.State state = QueueEntry.State.parse(rs.getString(6));
         if (state == null) {
             LOG.log(System.Logger.Level.WARNING, "Queue entry " + rs.getString(1) + " in room " + roomId
@@ -172,16 +195,18 @@ final class RoomStore {
         Long played = rs.wasNull() ? null : playedAt;
         long duration = rs.getLong(11);
         Long durationMs = rs.wasNull() ? null : duration;
+        String status = rs.getString(10);
+        boolean usable = filesUsable(check, rs.getString(2), status, rs.getString(12), rs.getString(13), rs.getInt(14));
         return new QueueEntry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, rs.getString(10),
-                durationMs);
+                rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, status, durationMs, usable);
     }
 
     /**
      * The entry that played (or was skipped) most recently, other than {@code exceptId}, with its
      * item; {@code null} if there is none. For {@code previous}.
      */
-    static QueueEntry lastPlayed(Connection c, String roomId, String exceptId) throws SQLException {
+    static QueueEntry lastPlayed(Connection c, String roomId, String exceptId, PlayableFiles.Check check)
+            throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT " + ENTRY_COLUMNS
                 + " FROM queue_entries q JOIN items i ON i.id = q.item_id"
                 + " WHERE q.room_id = ? AND q.state IN ('played', 'skipped') AND q.played_at IS NOT NULL"
@@ -189,7 +214,7 @@ final class RoomStore {
             ps.setString(1, roomId);
             ps.setString(2, exceptId == null ? "" : exceptId);
             try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? entry(rs, roomId) : null;
+                return rs.next() ? entry(rs, roomId, check) : null;
             }
         }
     }
@@ -217,12 +242,14 @@ final class RoomStore {
     }
 
     /** An item as a queue entry needs it. */
-    record ItemRow(String id, String status, Long durationMs, String source) {
+    record ItemRow(String id, String status, Long durationMs, String source, String kind, String outputProfile,
+                   int mediaVersion) {
     }
 
     /** The item, or {@code null} if there is no such item. */
     static ItemRow item(Connection c, String itemId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT id, status, duration_ms, source FROM items"
+        try (PreparedStatement ps = c.prepareStatement("SELECT id, status, duration_ms, source, kind,"
+                + " output_profile, media_version FROM items"
                 + " WHERE id = ?")) {
             ps.setString(1, itemId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -231,7 +258,8 @@ final class RoomStore {
                 }
                 long d = rs.getLong(3);
                 Long duration = rs.wasNull() ? null : d;
-                return new ItemRow(rs.getString(1), rs.getString(2), duration, rs.getString(4));
+                return new ItemRow(rs.getString(1), rs.getString(2), duration, rs.getString(4), rs.getString(5),
+                        rs.getString(6), rs.getInt(7));
             }
         }
     }
@@ -273,8 +301,8 @@ final class RoomStore {
         String currentId = state.current() == null ? null : state.current().id();
         return db.read(c -> {
             Map<String, RoomState.ItemInfo> out = new HashMap<>();
-            for (QueueEntry e : entries(c, state.id(), currentId)) {
-                out.put(e.id(), new RoomState.ItemInfo(e.itemStatus(), e.durationMs()));
+            for (QueueEntry e : entries(c, state.id(), currentId, playable)) {
+                out.put(e.id(), new RoomState.ItemInfo(e.itemStatus(), e.durationMs(), e.filesUsable()));
             }
             return out;
         });

@@ -514,4 +514,173 @@ abstract class PlaybackContract {
         registry.close();
         assertEquals(List.of(false, false, false, false), listed(a[1], b[1], c[1], d[1]), "closed: withdrawn");
     }
+    // ---- docs/rooms.md "Entries that aren't ready" (2026-11-10: a not-ready next entry is skipped) ----
+
+    /** The play order of the queued entries (entry ids). */
+    private List<String> queueOrder() throws Exception {
+        return registry.call(roomId, tx -> Playback.playOrder(tx.state()).stream().map(QueueEntry::id).toList());
+    }
+
+    /** Ends the current entry: naturally (the advance task at its end) or by {@code playback.skip}. */
+    private QueueEntry end(boolean skip) throws Exception {
+        if (skip) {
+            return registry.call(roomId, tx -> QueueOps.next(tx, RoomActor.user(userId, Rooms.Role.OWNER)));
+        }
+        return registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.PLAYED));
+    }
+
+    private void caseAProcessingFirstEntry(boolean skip) throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] first = entry("processing", null);
+        String[] second = entry("ready", 30_000L);
+        String[] third = entry("ready", 30_000L);
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(a[0], timeline().entryId());
+
+        // A ends: the processing entry is skipped over, the second plays
+        assertEquals(second[0], end(skip).id());
+        assertEquals(skip ? "skipped" : "played", entryRow(a[0]).get(0));
+        assertEquals("queued", entryRow(first[0]).get(0));
+        assertEquals(List.of(first[0], third[0]), queueOrder(), "still at the top of the queue");
+
+        // it turns ready while the second plays: nothing moves until the second ends
+        setItem(first[1], "ready", 20_000L);
+        registry.call(roomId, Playback::itemsChanged);
+        assertEquals(second[0], timeline().entryId());
+        assertEquals(first[0], end(skip).id(), "plays next, before the entry queued after it");
+        assertEquals(List.of(third[0]), queueOrder());
+    }
+
+    @Test
+    void aProcessingFirstEntryStaysOnTopAndPlaysOnceReady() throws Exception {
+        caseAProcessingFirstEntry(false);
+    }
+
+    @Test
+    void skipPassesOverAProcessingEntryLikeANaturalEnd() throws Exception {
+        caseAProcessingFirstEntry(true);
+    }
+
+    private void caseBFailedEntry(boolean skip) throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] failed = entry("failed", null);
+        String[] second = entry("ready", 30_000L);
+        String[] third = entry("ready", 30_000L);
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(second[0], end(skip).id());
+        assertEquals(third[0], end(skip).id(), "a failed entry is never chosen");
+        assertEquals(List.of(failed[0]), queueOrder(), "it stays in the queue");
+        assertEquals("failed", registry.call(roomId, tx -> tx.state().queue().get(0).itemStatus()));
+        assertNull(end(skip), "only the failed entry is left: idle");
+        assertEquals(Timeline.IDLE, timeline());
+        assertEquals("queued", entryRow(failed[0]).get(0));
+
+        // retried: pending, then ready → the idle room starts it
+        setItem(failed[1], "pending", null);
+        registry.call(roomId, Playback::itemsChanged);
+        assertEquals(Timeline.IDLE, timeline());
+        setItem(failed[1], "ready", 20_000L);
+        registry.call(roomId, Playback::itemsChanged);
+        assertEquals(failed[0], timeline().entryId());
+        assertEquals(skip ? "skipped" : "played", entryRow(a[0]).get(0));
+    }
+
+    @Test
+    void aFailedEntryStaysMarkedFailedAndIsNeverChosenUntilRetried() throws Exception {
+        caseBFailedEntry(false);
+    }
+
+    @Test
+    void skipPassesOverAFailedEntryLikeANaturalEnd() throws Exception {
+        caseBFailedEntry(true);
+    }
+
+    private void caseCNothingReady(boolean skip) throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("processing", null);
+        String[] c = entry("pending", null);
+        registry.call(roomId, Playback::startIfIdle);
+        assertNull(end(skip), "nothing queued is ready: idle (the Idle card)");
+        assertEquals(Timeline.IDLE, timeline());
+        assertEquals(List.of(b[0], c[0]), queueOrder());
+        assertEquals(skip ? "skipped" : "played", entryRow(a[0]).get(0));
+
+        // the second one is ready first: it starts as today; the first plays after it once ready
+        setItem(c[1], "ready", 10_000L);
+        assertTrue((boolean) registry.call(roomId, Playback::itemsChanged));
+        assertEquals(Timeline.playing(c[0], T0, 0), timeline());
+        setItem(b[1], "ready", 10_000L);
+        registry.call(roomId, Playback::itemsChanged);
+        assertEquals(b[0], end(skip).id());
+    }
+
+    @Test
+    void nothingReadyGoesIdleUntilOneIsReady() throws Exception {
+        caseCNothingReady(false);
+    }
+
+    @Test
+    void skipWithNothingReadyGoesIdleLikeANaturalEnd() throws Exception {
+        caseCNothingReady(true);
+    }
+
+    /**
+     * (e) A {@code ready} item whose files the program output can't use (files of an older output
+     * encoding, an unreadable index: {@code ingest.PlayableFiles}) is skipped over like a
+     * processing one, shows as processing, and plays once its files are usable.
+     */
+    @Test
+    void aReadyItemWhoseFilesTheOutputCantUseIsSkippedLikeAProcessingOne() throws Exception {
+        java.util.Set<String> unusable = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        List<io.siggi.togethertunes.ingest.PlayableFiles.Item> asked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        registry.playableFiles(item -> {
+            asked.add(item);
+            return !unusable.contains(item.itemId());
+        });
+        String[] a = entry("ready", 60_000L);
+        String[] stale = entry("ready", 30_000L);
+        String[] good = entry("ready", 30_000L);
+        String[] suggestion = entry("ready", 30_000L);
+        String[] later = entry("ready", 30_000L);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE queue_entries SET state = 'suggested' WHERE id = ?")) {
+                ps.setString(1, suggestion[0]);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        unusable.add(stale[1]);
+        unusable.add(suggestion[1]);
+        unusable.add(later[1]);
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(a[0], timeline().entryId());
+        assertTrue(asked.stream().anyMatch(i -> i.itemId().equals(stale[1]) && "audio".equals(i.kind())
+                && "720p30".equals(i.outputProfile()) && i.mediaVersion() == 0), asked.toString());
+
+        // shown as processing (entries and suggestions alike), skipped over, kept at the top
+        QueueEntry staleEntry = registry.call(roomId, tx -> tx.state().waitingEntry(stale[0]));
+        assertFalse(staleEntry.ready());
+        assertEquals("ready", staleEntry.itemStatus());
+        assertEquals("processing", RoomViews.entryStatus(staleEntry));
+        assertEquals("processing", RoomViews.entryStatus(registry.call(roomId,
+                tx -> tx.state().waitingEntry(suggestion[0]))));
+        assertEquals(good[0], registry.call(roomId, tx -> Playback.nextEligible(tx.state())).id(),
+                "the next entry the program output preloads");
+        assertEquals(good[0], end(false).id());
+        assertEquals(List.of(stale[0], later[0]), queueOrder());
+
+        // the re-encode publishes: the room hears it (item status listener) and the entry is ready again
+        unusable.remove(stale[1]);
+        assertTrue((boolean) registry.call(roomId, Playback::itemsChanged));
+        assertEquals("ready", RoomViews.entryStatus(registry.call(roomId, tx -> tx.state().waitingEntry(stale[0]))));
+        assertEquals(stale[0], end(true).id(), "skip behaves the same");
+
+        // only unusable files left: idle; it starts as soon as they are usable
+        assertNull(end(false));
+        assertFalse((boolean) registry.call(roomId, Playback::startIfIdle));
+        assertEquals(Timeline.IDLE, timeline());
+        unusable.remove(later[1]);
+        registry.call(roomId, Playback::itemsChanged);
+        assertEquals(later[0], timeline().entryId());
+    }
 }

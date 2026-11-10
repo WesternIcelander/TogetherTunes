@@ -2,7 +2,9 @@ package io.siggi.togethertunes.ingest;
 
 /**
  * Told when an item's {@code items.status} changed ({@code pending}, {@code processing},
- * {@code ready}, {@code failed}, {@code purged}), after the change was committed. The rooms use
+ * {@code ready}, {@code failed}, {@code purged}), or a re-encode of a {@code ready} item published
+ * new files (which may make it playable by the program output, {@link PlayableFiles}), after the
+ * change was committed. The rooms use
  * it to refresh the entries that play the item and to start an idle room
  * ({@code docs/rooms.md#room-state}: a not-ready entry becomes eligible as soon as its item is
  * ready).
