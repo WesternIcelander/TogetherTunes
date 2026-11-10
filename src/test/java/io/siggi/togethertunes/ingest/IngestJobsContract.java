@@ -953,4 +953,42 @@ abstract class IngestJobsContract {
         jobs.claimNext();
         assertEquals(IngestJobs.CancelOutcome.NOT_QUEUED, jobs.cancel(running.id(), null));
     }
+
+    /**
+     * {@link IngestJobs#enqueueTrim}: a new trim job carries its settings and leaves the item ready;
+     * a second trim updates the queued one; a queued quality job gives way; a running job or a
+     * new item's ingest makes the item busy; a retry keeps the settings.
+     */
+    @Test
+    void trimJobs() throws SQLException {
+        String item = fixtures.item("ready");
+        IngestJob trim = jobs.enqueueTrim(item, "{\"videoStartMs\":2000}");
+        assertEquals(Kind.TRIM, trim.kind());
+        assertEquals("ready", new IngestItems(db).get(item).orElseThrow().status(), "a trim doesn't own the item's status");
+        assertEquals("{\"videoStartMs\":2000}", jobs.get(trim.id()).orElseThrow().editJson());
+        IngestJob again = jobs.enqueueTrim(item, "{\"videoStartMs\":4000}");
+        assertEquals(trim.id(), again.id());
+        assertEquals("{\"videoStartMs\":4000}", jobs.get(trim.id()).orElseThrow().editJson());
+
+        IngestJob running = jobs.claimNext();
+        assertEquals(trim.id(), running.id());
+        assertEquals("{\"videoStartMs\":4000}", running.editJson());
+        assertEquals("ready", new IngestItems(db).get(item).orElseThrow().status());
+        assertThrows(IngestJobs.ItemBusy.class, () -> jobs.enqueueTrim(item, "{}"));
+        assertTrue(jobs.fail(running.id(), "x", null));
+        assertEquals("ready", new IngestItems(db).get(item).orElseThrow().status(), "a failed trim leaves the item as it was");
+        IngestJobs.Retry retry = jobs.retry(running.id(), null);
+        assertEquals(IngestJobs.RetryOutcome.QUEUED, retry.outcome());
+        assertEquals("{\"videoStartMs\":4000}", jobs.get(retry.job().id()).orElseThrow().editJson());
+
+        String other = fixtures.item("ready");
+        IngestJob quality = jobs.enqueue(other, Kind.QUALITY);
+        IngestJob t = jobs.enqueueTrim(other, "{}");
+        assertEquals(State.DONE, jobs.get(quality.id()).orElseThrow().state());
+        assertEquals(Kind.TRIM, t.kind());
+
+        String fresh = fixtures.item("pending");
+        jobs.enqueue(fresh, Kind.UPLOAD);
+        assertThrows(IngestJobs.ItemBusy.class, () -> jobs.enqueueTrim(fresh, "{}"));
+    }
 }

@@ -52,7 +52,7 @@ abstract class InitialSchemaContract {
                 "original_web", "original_gain_db", "last_referenced_at", "purged_at", "present_as_audio", "encode_preset",
                 "encode_quality", "media_version", "content_id");
         t("ingest_jobs", "id", "item_id", "kind", "state", "attempts", "progress", "created_at", "started_at",
-                "finished_at", "log", "tier");
+                "finished_at", "log", "tier", "edit_json");
         t("library_entries", "user_id", "item_id", "added_at", "via", "shared_by_user_id");
         t("playlists", "id", "owner_id", "name", "description", "created_at", "updated_at");
         t("playlist_entries", "id", "playlist_id", "item_id", "position", "added_at");

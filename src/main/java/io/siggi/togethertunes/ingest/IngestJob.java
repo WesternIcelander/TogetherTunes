@@ -19,9 +19,17 @@ import java.util.Locale;
  * @param log        tail of the job log ({@link JobLog}), or null
  * @param tier       the preset tier asked for when the job was queued, or null (decided when it
  *                   starts; {@code docs/library-and-ingest.md#presets})
+ * @param editJson   a {@code trim} job's target edit settings ({@link EditSettings}, JSON); null for
+ *                   every other kind
  */
 public record IngestJob(String id, String itemId, Kind kind, State state, int attempts, double progress,
-                        long createdAt, Long startedAt, Long finishedAt, String log, Tier tier) {
+                        long createdAt, Long startedAt, Long finishedAt, String log, Tier tier, String editJson) {
+
+    /** Without edit settings (any kind but {@code trim}). */
+    public IngestJob(String id, String itemId, Kind kind, State state, int attempts, double progress,
+                     long createdAt, Long startedAt, Long finishedAt, String log, Tier tier) {
+        this(id, itemId, kind, state, attempts, progress, createdAt, startedAt, finishedAt, log, tier, null);
+    }
 
     /** {@code ingest_jobs.kind}. */
     public enum Kind {
@@ -42,7 +50,14 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
          * lowest kind in the claim order, and gives way to a more urgent job (for example one of an
          * item a room is waiting on; {@code docs/library-and-ingest.md#presets}).
          */
-        QUALITY;
+        QUALITY,
+        /**
+         * Apply a person's new trim to a ready video item ({@code docs/library-and-ingest.md#trim}):
+         * a smart re-encode from the original that reuses whole GOPs of the current version where
+         * it can, else a full re-encode from the original. The item stays {@code ready} meanwhile
+         * (like {@link #REENCODE}); its publish can be undone.
+         */
+        TRIM;
 
         /** The value stored in the database. */
         public String wire() {
@@ -60,7 +75,7 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
 
         /** Whether this kind drives the item's status ({@code processing → ready | failed}). */
         public boolean ownsItemStatus() {
-            return this != REENCODE && this != QUALITY;
+            return this != REENCODE && this != QUALITY && this != TRIM;
         }
 
         /**
@@ -78,7 +93,14 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
         /** {@code ingest.quickPreset}: the item is wanted in a room now. */
         QUICK,
         /** {@code ingest.qualityPreset}: the item is for a library. */
-        QUALITY;
+        QUALITY,
+        /**
+         * Apply a person's new trim to a ready video item ({@code docs/library-and-ingest.md#trim}):
+         * a smart re-encode from the original that reuses whole GOPs of the current version where
+         * it can, else a full re-encode from the original. The item stays {@code ready} meanwhile
+         * (like {@link #REENCODE}); its publish can be undone.
+         */
+        TRIM;
 
         /** The value stored in the database. */
         public String wire() {

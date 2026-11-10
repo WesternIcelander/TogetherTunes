@@ -2,7 +2,7 @@
 // GET /api/admin/jobs and GET /api/jobs, and how they read. No DOM here, so Node tests can import it.
 
 /** `kind` of an ingest job. */
-export type JobKind = "upload" | "youtube" | "refetch" | "reencode" | "quality";
+export type JobKind = "upload" | "youtube" | "refetch" | "reencode" | "quality" | "trim";
 
 /** Which list: running and queued, unresolved failures, finished in the last 24 h. */
 export type JobListState = "active" | "failed" | "done";
@@ -46,6 +46,7 @@ const KIND_TEXT: Record<JobKind, string> = {
   refetch: "YouTube refetch",
   reencode: "Re-encode (new output profile)",
   quality: "Quality re-encode",
+  trim: "Trim",
 };
 
 /** What a job does, for people. */

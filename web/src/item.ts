@@ -8,6 +8,10 @@ import {
   ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, watchItem, type ItemPage, type JobView,
 } from "./media.js";
 import { checkPasswordChange, element, loadMe, message, onReady, renderNav, type Me } from "./session.js";
+import {
+  currentRange, estimate, estimateText, formatTime as formatTrimTime, fractionToMs, moveEnd, moveStart, msToFraction,
+  parseTime, playheadMs, previewSpan, trimBody, type Range, type TrimView,
+} from "./trim.js";
 
 let me: Me;
 let itemId = "";
@@ -129,6 +133,140 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
   return h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
+}
+
+/** Stops the trim panel's playhead and preview timers when the panel is replaced. */
+let stopTrimPanel: (() => void) | undefined;
+
+/**
+ * The video trim (docs/library-and-ingest.md#trim): a timeline of the original with start and end
+ * handles, the playhead, typed timestamps, "Snap to keyframes", what Save will do, Preview (plays
+ * the selection from the current version, no encode) and Save (queues the trim job).
+ */
+function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
+  stopTrimPanel?.();
+  let range: Range = currentRange(view);
+  const selection = h("div", { class: "trim-selection" });
+  const startHandle = h("div", { class: "trim-handle", role: "slider", tabindex: "0", "aria-label": "Start" });
+  const endHandle = h("div", { class: "trim-handle", role: "slider", tabindex: "0", "aria-label": "End" });
+  const playhead = h("div", { class: "trim-playhead" });
+  const bar = h("div", { class: "trim-bar" }, selection, playhead, startHandle, endHandle);
+  const startInput = h("input", { name: "start", inputmode: "decimal", size: "10", "aria-label": "Start (m:ss.mmm)" });
+  const endInput = h("input", { name: "end", inputmode: "decimal", size: "10", "aria-label": "End (m:ss.mmm)" });
+  const snap = h("input", { type: "checkbox", checked: true });
+  const hint = h("p", { class: "muted small" });
+  const error = h("p", { class: "error", role: "alert" });
+  const save = h("button", { type: "button", text: "Save" });
+
+  const draw = (): void => {
+    const a = msToFraction(range.startMs, view) * 100;
+    const b = msToFraction(range.endMs, view) * 100;
+    startHandle.style.left = a + "%";
+    endHandle.style.left = b + "%";
+    selection.style.left = a + "%";
+    selection.style.width = Math.max(0, b - a) + "%";
+    startInput.value = formatTrimTime(range.startMs);
+    endInput.value = formatTrimTime(range.endMs);
+    const e = estimate(view, range);
+    hint.textContent = estimateText(e);
+    save.disabled = e.kind === "none";
+  };
+  const fractionAt = (clientX: number): number => {
+    const box = bar.getBoundingClientRect();
+    return box.width <= 0 ? 0 : (clientX - box.left) / box.width;
+  };
+  const drag = (handle: HTMLElement, move: (ms: number) => void): void => {
+    handle.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      handle.setPointerCapture(ev.pointerId);
+      const onMove = (e: PointerEvent): void => { move(fractionToMs(fractionAt(e.clientX), view)); draw(); };
+      const onUp = (): void => {
+        handle.removeEventListener("pointermove", onMove);
+        handle.removeEventListener("pointerup", onUp);
+        handle.removeEventListener("pointercancel", onUp);
+      };
+      handle.addEventListener("pointermove", onMove);
+      handle.addEventListener("pointerup", onUp);
+      handle.addEventListener("pointercancel", onUp);
+    });
+  };
+  drag(startHandle, (ms) => { range = moveStart(range, ms, view, snap.checked); });
+  drag(endHandle, (ms) => { range = moveEnd(range, ms, view); });
+  // arrow keys: a keyframe (2 s) for the start while snapping, else 1/30 s
+  const step = (handle: "start" | "end", dir: number): void => {
+    if (handle === "start") range = moveStart(range, range.startMs + dir * (snap.checked ? 2000 : 1000 / 30), view, snap.checked);
+    else range = moveEnd(range, range.endMs + dir * (1000 / 30), view);
+    draw();
+  };
+  for (const [el, which] of [[startHandle, "start"], [endHandle, "end"]] as const) {
+    el.addEventListener("keydown", (ev) => {
+      if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+        ev.preventDefault();
+        step(which, ev.key === "ArrowLeft" ? -1 : 1);
+      }
+    });
+  }
+  const typed = (input: HTMLInputElement, apply: (ms: number) => void): void => {
+    input.addEventListener("change", () => {
+      const ms = parseTime(input.value);
+      error.textContent = ms === undefined ? "Type a time as m:ss.mmm, e.g. 1:05.250." : "";
+      if (ms !== undefined) apply(ms);
+      draw();
+    });
+  };
+  typed(startInput, (ms) => { range = moveStart(range, ms, view, snap.checked); });
+  typed(endInput, (ms) => { range = moveEnd(range, ms, view); });
+  snap.addEventListener("change", () => {
+    if (snap.checked) range = moveStart(range, range.startMs, view, true);
+    draw();
+  });
+
+  // the playhead follows the player (its time is on the current version, which starts at videoStartMs)
+  let previewEnd: number | undefined;
+  const timer = window.setInterval(() => {
+    const p = player;
+    if (p === undefined) return;
+    playhead.style.left = msToFraction(playheadMs(view, p.currentTime), view) * 100 + "%";
+    if (previewEnd !== undefined && p.currentTime >= previewEnd) {
+      p.pause();
+      previewEnd = undefined;
+    }
+  }, 100);
+  stopTrimPanel = () => window.clearInterval(timer);
+
+  const preview = button("Preview", async () => {
+    const span = previewSpan(view, range);
+    const p = player;
+    if (span === undefined || p === undefined) {
+      error.textContent = "The current version has none of the selection to preview; Save makes it.";
+      return;
+    }
+    error.textContent = "";
+    p.currentTime = span.fromS;
+    previewEnd = span.toS;
+    await p.play();
+  }, (e) => { error.textContent = message(e); });
+  save.addEventListener("click", () => {
+    error.textContent = "";
+    save.disabled = true;
+    api<ItemPage>("POST", "/api/items/" + encodeURIComponent(item.id) + "/trim", trimBody(view, range))
+      .then(async () => {
+        showNotice("Trim saved: the item is being encoded. It keeps playing the current version until then.");
+        await refresh();
+      })
+      .catch((e: unknown) => { error.textContent = message(e); save.disabled = false; });
+  });
+
+  draw();
+  return h("details", { class: "panel" }, h("summary", { text: "Trim video" }),
+    h("p", { class: "muted small", text: "Times are on the original file (" + formatTrimTime(view.originalMs) + " long)." }),
+    bar,
+    h("div", { class: "row" },
+      h("label", {}, "Start ", startInput), h("label", {}, "End ", endInput),
+      h("label", { class: "check" }, snap, " Snap to keyframes")),
+    hint,
+    h("div", { class: "row" }, preview, save),
+    error);
 }
 
 function shareForm(item: ItemPage): HTMLElement {
@@ -253,19 +391,34 @@ function render(item: ItemPage, job: JobView | undefined): void {
 function renderForms(item: ItemPage, job: JobView | undefined): void {
   element("item-forms").replaceChildren(
     ...nodes(item.you.canEdit ? editForm(item, (updated) => { render(updated, job); renderForms(updated, job); }) : null,
+      item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
+        ? trimPanel(item, item.trim) : null,
       me.kind === "user" && item.status !== "failed" ? shareForm(item) : null));
+}
+
+function formsKeyOf(item: ItemPage, job: JobView | undefined): string {
+  const busy = job !== undefined && (job.state === "queued" || job.state === "running");
+  return JSON.stringify([item.mediaVersion, item.status, item.trim ?? null, busy]);
 }
 
 async function refresh(): Promise<void> {
   stopWatching?.();
   await new Promise<void>((resolve) => {
     let first = true;
+    let formsKey = "";
     stopWatching = watchItem(itemId, ({ item, job }) => {
       render(item, job);
+      // The forms are kept while polling (so typing isn't lost), but follow a finished trim job
+      // or a new version: the trim panel shows again with the new settings.
+      const key = formsKeyOf(item, job);
       if (first) {
         first = false;
+        formsKey = key;
         renderForms(item, job);
         resolve();
+      } else if (key !== formsKey) {
+        formsKey = key;
+        renderForms(item, job);
       }
     }, (e) => {
       if (first) {

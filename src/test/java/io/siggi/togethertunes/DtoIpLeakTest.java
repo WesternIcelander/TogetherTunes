@@ -130,6 +130,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Items$ItemPage",
             "io.siggi.togethertunes.library.Items$JobView",
             "io.siggi.togethertunes.library.Items$UndoView",
+            "io.siggi.togethertunes.library.Items$TrimView",
             "io.siggi.togethertunes.library.Items$You",
             "io.siggi.togethertunes.library.Library$Entry",
             "io.siggi.togethertunes.library.Library$ItemView",
@@ -173,6 +174,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.MediaApi$Located", "a media file's name and the item's"
                     + " version, to find the file; never sent"),
             Map.entry("io.siggi.togethertunes.DataDir", "server paths"),
+            Map.entry("io.siggi.togethertunes.ingest.EditSettings", "an item's edit settings (trim times) as the"
+                    + " server reads them; the item page sends them as Items.TrimView"),
+            Map.entry("io.siggi.togethertunes.ingest.TrimPlan$Piece", "part of a trim job's plan; server-side only"),
+            Map.entry("io.siggi.togethertunes.ingest.TrimPlan$Plan", "a trim job's plan; server-side only"),
+            Map.entry("io.siggi.togethertunes.library.Items$Trim", "a trim request's parsed body; never sent"),
             Map.entry("io.siggi.togethertunes.Main$Startup", "startup status"),
             Map.entry("io.siggi.togethertunes.config.Config", "server configuration"),
             Map.entry("io.siggi.togethertunes.config.OutputEncoding", "server configuration (output profile and bitrate)"),
@@ -445,6 +451,7 @@ class DtoIpLeakTest {
                 io.siggi.togethertunes.ingest.MediaVersions.GRACE);
         versions.undoWindow(() -> 48 * 3_600_000L);
         items.mediaVersions(versions);
+        items.trimJobs(new io.siggi.togethertunes.ingest.IngestJobs(database, clock));
         playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         rooms = new io.siggi.togethertunes.rooms.Rooms(database, permissions, clock);
         roomRegistry = new io.siggi.togethertunes.rooms.RoomRegistry(database, clock,
@@ -1018,6 +1025,18 @@ class DtoIpLeakTest {
                             true, null, clock.millis()));
         }
         expect(200, alice, "POST", "/api/items/" + undoItem + "/undo", null);
+        // a trim of it (its original kept): the item page's trim, and the trim job queued
+        Path original = dir.resolve("data").resolve("media").resolve(undoItem).resolve("original.mp4");
+        Files.write(original, new byte[16]);
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "UPDATE items SET original_file = 'original.mp4', duration_ms = 10000 WHERE id = ?")) {
+                ps.setString(1, undoItem);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        expect(202, alice, "POST", "/api/items/" + undoItem + "/trim", "{\"videoStartMs\":2000,\"videoEndMs\":8000}");
 
         // alice's playlists: one created, renamed, filled (the same item twice), an entry moved and
         // one removed; another created and deleted

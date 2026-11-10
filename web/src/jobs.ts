@@ -107,7 +107,7 @@ export function mountJobs(root: HTMLElement, opts: JobsOptions): JobsView {
     }
     if (row.state === "queued") {
       cell.append(button("Cancel", async () => {
-        const what = row.kind === "reencode" || row.kind === "quality"
+        const what = row.kind === "reencode" || row.kind === "quality" || row.kind === "trim"
           ? "Only this job is dropped; the item keeps playing its current files."
           : "The item becomes failed; you can retry it from the Failed list.";
         if (!confirm(`Cancel the ${kindText(row.kind).toLowerCase()} of "${row.item.title}"? ${what}`)) return;

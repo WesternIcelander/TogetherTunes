@@ -48,6 +48,14 @@ import java.util.Set;
  *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
  *       forbidden} for other users); {@code 404 item_not_found}, {@code 409 nothing_to_undo},
  *       {@code 409 item_busy}.</li>
+ *   <li>{@code POST /api/items/{id}/trim} {@code {"videoStartMs", "videoEndMs"?}} → {@code 202}, the
+ *       item page: trim a video item ({@code docs/library-and-ingest.md#trim}, {@link Items#trim}):
+ *       queues a {@code trim} job. Times in ms on the original's timeline; {@code videoEndMs} null or
+ *       absent (or at/after the original's end) = to the end. Users who may edit the item ({@code 401
+ *       not_authenticated}, {@code 403 forbidden}); {@code 404 item_not_found}; {@code 400
+ *       invalid_trim} / {@code unknown_field}; {@code 409 not_a_video}, {@code item_not_ready},
+ *       {@code no_original}, {@code no_change}, {@code item_busy}. The item page carries the current
+ *       trim as {@code trim: {"videoStartMs", "videoEndMs"?, "originalMs"}} for those who may trim it.</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
  *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",
@@ -89,6 +97,7 @@ public final class ItemsApi {
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
         router.get("/api/items/{id}/job", this::job);
         router.post("/api/items/{id}/undo", this::undo);
+        router.post("/api/items/{id}/trim", this::trim);
         if (youtube != null) {
             router.post("/api/items/{id}/retry", this::retry);
         }
@@ -180,6 +189,50 @@ public final class ItemsApi {
         Items.ItemPage page = items.undo(user, request.pathParam("id"), rights(user), request.clientIp());
         response.header("Cache-Control", "no-store");
         response.json(page);
+    }
+
+    private void trim(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        if (!(actor instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        Items.Trim trim = parseTrim(request.readJson(JsonObject.class));
+        Items.ItemPage page = items.trim(user, request.pathParam("id"), trim, rights(user), request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.json(202, page);
+    }
+
+    /** The body of {@code POST /api/items/{id}/trim}: {@code {"videoStartMs", "videoEndMs"?}}. */
+    static Items.Trim parseTrim(JsonObject body) {
+        if (body == null) {
+            throw new HttpError(400, "invalid_trim", "Expected {\"videoStartMs\", \"videoEndMs\"}");
+        }
+        for (String key : body.keySet()) {
+            if (!key.equals("videoStartMs") && !key.equals("videoEndMs")) {
+                throw new HttpError(400, "unknown_field", "Unknown field: " + key);
+            }
+        }
+        Long start = millis(body.get("videoStartMs"));
+        if (start == null) {
+            throw new HttpError(400, "invalid_trim", "videoStartMs must be a whole number of milliseconds ≥ 0");
+        }
+        Long end = millis(body.get("videoEndMs"));
+        if (end == null && body.has("videoEndMs") && !body.get("videoEndMs").isJsonNull()) {
+            throw new HttpError(400, "invalid_trim", "videoEndMs must be a whole number of milliseconds, or null");
+        }
+        return new Items.Trim(start, end);
+    }
+
+    /** A whole, non-negative number of milliseconds (at most 30 days), or null. */
+    private static Long millis(JsonElement e) {
+        if (!(e instanceof JsonPrimitive p) || !p.isNumber()) {
+            return null;
+        }
+        double d = p.getAsDouble();
+        if (!Double.isFinite(d) || d < 0 || d > 30L * 24 * 3_600_000 || d != Math.rint(d)) {
+            return null;
+        }
+        return (long) d;
     }
 
     private void purge(Request request, Response response) throws Exception {

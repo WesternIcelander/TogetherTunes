@@ -50,7 +50,7 @@ public final class IngestJobs {
     static final int MAX_ERROR_CHARS = 2000;
 
     private static final String COLUMNS =
-            "id, item_id, kind, state, attempts, progress, created_at, started_at, finished_at, log, tier";
+            "id, item_id, kind, state, attempts, progress, created_at, started_at, finished_at, log, tier, edit_json";
 
     private final Database db;
     private final Clock clock;
@@ -86,6 +86,11 @@ public final class IngestJobs {
      * has an unfinished job, that one is returned unchanged.
      */
     public IngestJob enqueue(String itemId, Kind kind, Tier tier) throws SQLException {
+        return enqueue(itemId, kind, tier, null);
+    }
+
+    /** {@link #enqueue(String, Kind, Tier)} with a {@code trim} job's edit settings (JSON). */
+    private IngestJob enqueue(String itemId, Kind kind, Tier tier, String editJson) throws SQLException {
         Objects.requireNonNull(itemId);
         Objects.requireNonNull(kind);
         return db.write(c -> {
@@ -96,20 +101,74 @@ public final class IngestJobs {
             String id = UuidV7.newId();
             long now = EpochMs.now(clock);
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO ingest_jobs"
-                    + " (id, item_id, kind, state, attempts, progress, created_at, tier) VALUES (?, ?, ?, ?, 0, 0, ?, ?)")) {
+                    + " (id, item_id, kind, state, attempts, progress, created_at, tier, edit_json)"
+                    + " VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?)")) {
                 ps.setString(1, id);
                 ps.setString(2, itemId);
                 ps.setString(3, kind.wire());
                 ps.setString(4, State.QUEUED.wire());
                 ps.setLong(5, now);
                 ps.setString(6, tier == null ? null : tier.wire());
+                ps.setString(7, editJson);
                 ps.executeUpdate();
             }
             if (kind.ownsItemStatus()) {
                 setItemStatus(c, itemId, "pending", null);
             }
             db.afterCommit(enqueueListener);
-            return new IngestJob(id, itemId, kind, State.QUEUED, 0, 0, now, null, null, null, tier);
+            return new IngestJob(id, itemId, kind, State.QUEUED, 0, 0, now, null, null, null, tier, editJson);
+        });
+    }
+
+    /** A trim can't be queued now: the item has a job running ({@link #enqueueTrim}). */
+    public static final class ItemBusy extends RuntimeException {
+        public ItemBusy(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Queues a {@code trim} job applying {@code editJson} ({@code docs/library-and-ingest.md#trim}).
+     * The item's unfinished job decides: none → a new trim job; a queued {@code trim} job takes the
+     * new settings (the latest edit wins); a queued {@code reencode} or {@code quality} job is
+     * dropped (marked done with a log line; the trim encodes from the original anyway, and the
+     * item gets those jobs again afterwards if it still needs them); a running job, or a queued
+     * new-item job, → {@link ItemBusy}. Joins the caller's transaction.
+     */
+    public IngestJob enqueueTrim(String itemId, String editJson) throws SQLException {
+        Objects.requireNonNull(itemId);
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            IngestJob active = activeForItem(c, itemId);
+            if (active != null) {
+                if (active.state() == State.RUNNING || active.kind().ownsItemStatus()) {
+                    throw new ItemBusy("This item is being processed right now; try again when its job has ended");
+                }
+                if (active.kind() == Kind.TRIM) {
+                    try (PreparedStatement ps = c.prepareStatement(
+                            "UPDATE ingest_jobs SET edit_json = ? WHERE id = ? AND state = ?")) {
+                        ps.setString(1, editJson);
+                        ps.setString(2, active.id());
+                        ps.setString(3, State.QUEUED.wire());
+                        ps.executeUpdate();
+                    }
+                    return new IngestJob(active.id(), itemId, active.kind(), active.state(), active.attempts(),
+                            active.progress(), active.createdAt(), active.startedAt(), active.finishedAt(),
+                            active.log(), active.tier(), editJson);
+                }
+                JobLog log = JobLog.resume(active.log());
+                log.append("[ingest] Dropped at " + EpochMs.format(now) + ": a trim re-encodes the item from its original");
+                try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = ?, finished_at = ?,"
+                        + " log = ? WHERE id = ? AND state = ?")) {
+                    ps.setString(1, State.DONE.wire());
+                    ps.setLong(2, now);
+                    ps.setString(3, log.tail());
+                    ps.setString(4, active.id());
+                    ps.setString(5, State.QUEUED.wire());
+                    ps.executeUpdate();
+                }
+            }
+            return enqueue(itemId, Kind.TRIM, null, editJson);
         });
     }
 
@@ -220,10 +279,11 @@ public final class IngestJobs {
     public boolean hasQueuedNewItemJob() throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM ingest_jobs WHERE state = ?"
-                    + " AND kind NOT IN (?, ?) LIMIT 1")) {
+                    + " AND kind NOT IN (?, ?, ?) LIMIT 1")) {
                 ps.setString(1, State.QUEUED.wire());
                 ps.setString(2, Kind.REENCODE.wire());
                 ps.setString(3, Kind.QUALITY.wire());
+                ps.setString(4, Kind.TRIM.wire());
                 try (ResultSet rs = ps.executeQuery()) {
                     return rs.next();
                 }
@@ -537,7 +597,8 @@ public final class IngestJobs {
                     setItemStatus(c, candidate.itemId(), "processing", null);
                 }
                 return new IngestJob(candidate.id(), candidate.itemId(), candidate.kind(), State.RUNNING,
-                        candidate.attempts() + 1, 0, candidate.createdAt(), now, null, candidate.log(), candidate.tier());
+                        candidate.attempts() + 1, 0, candidate.createdAt(), now, null, candidate.log(), candidate.tier(),
+                        candidate.editJson());
             });
             if (claimed != null) {
                 return claimed;
@@ -687,7 +748,7 @@ public final class IngestJobs {
                     }
                 }
             }
-            IngestJob queued = enqueue(job.itemId(), job.kind(), job.tier());
+            IngestJob queued = enqueue(job.itemId(), job.kind(), job.tier(), job.editJson());
             if (audit != null) {
                 audit.write(c, job);
             }
@@ -853,6 +914,6 @@ public final class IngestJobs {
         return new IngestJob(rs.getString("id"), rs.getString("item_id"), Kind.fromWire(rs.getString("kind")),
                 State.fromWire(rs.getString("state")), rs.getInt("attempts"), rs.getDouble("progress"),
                 rs.getLong("created_at"), EpochMs.get(rs, "started_at"), EpochMs.get(rs, "finished_at"),
-                rs.getString("log"), Tier.fromWire(rs.getString("tier")));
+                rs.getString("log"), Tier.fromWire(rs.getString("tier")), rs.getString("edit_json"));
     }
 }

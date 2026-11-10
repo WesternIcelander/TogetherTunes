@@ -298,6 +298,7 @@ public final class Main {
         Items items = new Items(database, dataDir, Clock.systemUTC());
         items.jobSteps(ingest::liveStep);
         items.mediaVersions(mediaVersions);
+        items.trimJobs(ingest.jobs());
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);

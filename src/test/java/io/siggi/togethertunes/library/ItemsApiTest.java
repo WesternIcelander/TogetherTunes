@@ -34,6 +34,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.PreparedStatement;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -78,6 +79,7 @@ class ItemsApiTest {
         MediaVersions versions = new MediaVersions(data, db, clock::millis, java.time.Duration.ofMinutes(5));
         versions.undoWindow(() -> 48 * 3_600_000L);
         items.mediaVersions(versions);
+        items.trimJobs(jobs);
         new ItemsApi(items, new Permissions(db, settings), youtube).register(router);
         new LibraryApi(new Library(db, youtube, clock), TestUploads.policy(new Permissions(db, settings), settings))
                 .register(router);
@@ -475,5 +477,109 @@ class ItemsApiTest {
         HttpResponse<String> nothing = call("POST", "/api/items/" + fresh + "/undo", alice, null);
         assertEquals(409, nothing.statusCode());
         assertEquals("nothing_to_undo", code(nothing));
+    }
+
+    /** A ready video item of alice's with a kept original 10 s long. */
+    private String trimmableVideo() throws Exception {
+        String id = item("video");
+        Path original = IngestPipeline.itemDir(data, id).resolve("original.mp4");
+        Files.createDirectories(original.getParent());
+        Files.writeString(original, "x");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET original_file = 'original.mp4',"
+                    + " duration_ms = 10000 WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    private String jobEditJson(String jobId) throws Exception {
+        return jobs.get(jobId).orElseThrow().editJson();
+    }
+
+    /** {@code POST /api/items/{id}/trim}: who may, the body rules, the page's {@code trim}, and the job. */
+    @Test
+    void trimQueuesATrimJob() throws Exception {
+        String id = trimmableVideo();
+        String path = "/api/items/" + id + "/trim";
+        JsonObject trim = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("trim");
+        assertEquals(0, trim.get("videoStartMs").getAsLong());
+        assertFalse(trim.has("videoEndMs"));
+        assertEquals(10000, trim.get("originalMs").getAsLong());
+        assertFalse(json(call("GET", "/api/items/" + id, bob, null)).has("trim"));
+        assertFalse(json(call("GET", "/api/items/" + id, null, null)).has("trim"));
+
+        String body = "{\"videoStartMs\": 2000, \"videoEndMs\": 8000}";
+        assertEquals(401, call("POST", path, null, body).statusCode());
+        assertEquals(403, call("POST", path, bob, body).statusCode());
+        assertEquals("item_not_found", code(call("POST", "/api/items/" + UuidV7.newId() + "/trim", alice, body)));
+        for (String bad : List.of("{}", "{\"videoStartMs\": -1}", "{\"videoStartMs\": \"1\"}",
+                "{\"videoStartMs\": 1.5}", "{\"videoStartMs\": 5000, \"videoEndMs\": 5000}",
+                "{\"videoStartMs\": 5000, \"videoEndMs\": 5999}", "{\"videoStartMs\": 9500}",
+                "{\"videoStartMs\": 0, \"videoEndMs\": \"x\"}")) {
+            HttpResponse<String> r = call("POST", path, alice, bad);
+            assertEquals(400, r.statusCode(), bad);
+            assertEquals("invalid_trim", code(r), bad);
+        }
+        assertEquals("unknown_field", code(call("POST", path, alice, "{\"videoStartMs\": 0, \"audioStartMs\": 1}")));
+        assertEquals("no_change", code(call("POST", path, alice, "{\"videoStartMs\": 0}")));
+        assertEquals("no_change", code(call("POST", path, alice, "{\"videoStartMs\": 0, \"videoEndMs\": 12000}")),
+                "an end at or after the original's end is no end");
+
+        HttpResponse<String> r = call("POST", path, alice, body);
+        assertEquals(202, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        io.siggi.togethertunes.ingest.IngestJob job = jobs.latestForItem(id).orElseThrow();
+        assertEquals(io.siggi.togethertunes.ingest.IngestJob.Kind.TRIM, job.kind());
+        assertEquals("{\"videoStartMs\":2000,\"videoEndMs\":8000}", jobEditJson(job.id()));
+        assertEquals("ready", json(r).get("status").getAsString(), "the item keeps playing meanwhile");
+        // a second trim while the first is queued: the latest wins, on the same job
+        HttpResponse<String> second = call("POST", path, admin, "{\"videoStartMs\": 4000, \"videoEndMs\": null}");
+        assertEquals(202, second.statusCode(), second.body() + " " +
+                "library.editAny");
+        assertEquals(job.id(), jobs.latestForItem(id).orElseThrow().id());
+        assertEquals("{\"videoStartMs\":4000}", jobEditJson(job.id()));
+        assertEquals(Integer.valueOf(2), db.<Integer>read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = 'item.trimmed' AND target = ?")) {
+                ps.setString(1, id);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }));
+        // running: busy
+        assertEquals(job.id(), jobs.claimNext().id());
+        HttpResponse<String> busy = call("POST", path, alice, body);
+        assertEquals(409, busy.statusCode());
+        assertEquals("item_busy", code(busy));
+
+        // a queued quality job gives way to the trim
+        String other = trimmableVideo();
+        io.siggi.togethertunes.ingest.IngestJob quality = jobs.enqueue(other,
+                io.siggi.togethertunes.ingest.IngestJob.Kind.QUALITY);
+        assertEquals(202, call("POST", "/api/items/" + other + "/trim", alice, body).statusCode());
+        assertEquals(io.siggi.togethertunes.ingest.IngestJob.State.DONE, jobs.get(quality.id()).orElseThrow().state());
+        assertEquals(io.siggi.togethertunes.ingest.IngestJob.Kind.TRIM, jobs.latestForItem(other).orElseThrow().kind());
+
+        // what can't be trimmed
+        String audio = item("audio");
+        assertEquals("not_a_video", code(call("POST", "/api/items/" + audio + "/trim", alice, body)));
+        String noOriginal = item("video");
+        assertEquals("no_original", code(call("POST", "/api/items/" + noOriginal + "/trim", alice, body)));
+        assertFalse(json(call("GET", "/api/items/" + noOriginal, alice, null)).has("trim"));
+        String processing = trimmableVideo();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'processing' WHERE id = ?")) {
+                ps.setString(1, processing);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals("item_not_ready", code(call("POST", "/api/items/" + processing + "/trim", alice, body)));
     }
 }

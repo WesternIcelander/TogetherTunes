@@ -66,8 +66,15 @@ public final class Loudness {
      * {@code out_time} is far too small (loudnorm's 192 kHz output), so the progress bar wouldn't move.
      */
     static List<String> measureArgs(String input, String map) {
-        return List.of("-i", input, "-map", map, "-vn", "-sn", "-dn",
-                "-af", BASE + ":print_format=json,aresample=48000", "-f", "null", "-");
+        return measureArgs(List.of(), input, map);
+    }
+
+    /** @param range input options before {@code -i} that select a part of the input (a trim), or none */
+    static List<String> measureArgs(List<String> range, String input, String map) {
+        List<String> args = new ArrayList<>(range);
+        args.addAll(List.of("-i", input, "-map", map, "-vn", "-sn", "-dn",
+                "-af", BASE + ":print_format=json,aresample=48000", "-f", "null", "-"));
+        return args;
     }
 
     /**
@@ -118,6 +125,16 @@ public final class Loudness {
     public static Measurement measure(Tools tools, String input, String map, JobLog log,
                                       Consumer<FfmpegProgress> progress)
             throws ToolException, InterruptedException, IngestFailure {
+        return measure(tools, List.of(), input, map, log, progress);
+    }
+
+    /**
+     * Runs pass 1 on the part of {@code input} that the input options {@code range} select (a
+     * trim: {@code -ss … -t …}; empty for the whole file).
+     */
+    public static Measurement measure(Tools tools, List<String> range, String input, String map, JobLog log,
+                                      Consumer<FfmpegProgress> progress)
+            throws ToolException, InterruptedException, IngestFailure {
         JsonCollector collector = new JsonCollector();
         JobLog tee = new JobLog(JobLog.DEFAULT_MAX_CHARS, line -> {
             collector.accept(line);
@@ -125,7 +142,7 @@ public final class Loudness {
                 log.append(line);
             }
         });
-        ToolCall call = tools.ffmpeg(measureArgs(input, map)).log(tee);
+        ToolCall call = tools.ffmpeg(measureArgs(range, input, map)).log(tee);
         if (progress != null) {
             call.ffmpegProgress(progress);
         }

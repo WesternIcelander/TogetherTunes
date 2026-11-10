@@ -101,6 +101,7 @@ public final class TestUploads {
                     data, db, clock::millis, io.siggi.togethertunes.ingest.MediaVersions.GRACE);
             versions.undoWindow(() -> 48 * 3_600_000L);
             items.mediaVersions(versions);
+            items.trimJobs(new io.siggi.togethertunes.ingest.IngestJobs(db, clock));
             return new ItemsApi(items, permissions);
         } catch (IOException e) {
             throw new UncheckedIOException(e);

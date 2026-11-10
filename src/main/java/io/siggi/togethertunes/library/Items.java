@@ -7,7 +7,9 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.EditSettings;
 import io.siggi.togethertunes.ingest.IngestJob;
+import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.JobList;
@@ -50,6 +52,8 @@ public final class Items {
     public static final String AUDIT_UPDATED = "item.updated";
     /** {@code audit_log} action of an undo of a media change ({@code docs/library-and-ingest.md#undo}). */
     public static final String AUDIT_MEDIA_UNDONE = "item.media_undone";
+    /** {@code audit_log} action of a video trim ({@code docs/library-and-ingest.md#trim}). */
+    public static final String AUDIT_TRIMMED = "item.trimmed";
     /** {@code audit_log} action of a purge by a person ({@code library.purge}). */
     public static final String AUDIT_PURGED = "item.purged";
 
@@ -61,6 +65,7 @@ public final class Items {
     private volatile JobList.Steps steps = JobList.Steps.NONE;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
     private volatile MediaVersions versions;
+    private volatile IngestJobs trimJobs;
 
     public Items(Database db, DataDir dataDir, Clock clock) {
         this.db = Objects.requireNonNull(db);
@@ -82,16 +87,28 @@ public final class Items {
      *                     {@code /media/{id}/v/{mediaVersion}/…}
      * @param you     the caller's relation to the item
      * @param undo    the change the caller can undo now ({@code POST /api/items/{id}/undo}), else null
+     * @param trim    the video trim, for callers who may edit a ready video item with its original
+     *                ({@code POST /api/items/{id}/trim}), else null
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
-                           String error, int mediaVersion, You you, UndoView undo) {
+                           String error, int mediaVersion, You you, UndoView undo, TrimView trim) {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
                         String error, int mediaVersion, You you) {
             this(id, kind, title, artist, album, durationMs, source, youtubeId, status, presentAsAudio, addedAt, error,
-                    mediaVersion, you, null);
+                    mediaVersion, you, null, null);
         }
+    }
+
+    /**
+     * The current video trim ({@code docs/library-and-ingest.md#trim}), on the original's timeline.
+     *
+     * @param videoStartMs where the current encode starts
+     * @param videoEndMs   where it ends, or null for the end of the original
+     * @param originalMs   how long the original is (the timeline's length)
+     */
+    public record TrimView(long videoStartMs, Long videoEndMs, long originalMs) {
     }
 
     /**
@@ -222,9 +239,130 @@ public final class Items {
                 undo = new UndoView(since.getAsLong());
             }
         }
+        TrimView trim = null;
+        if (you.canEdit() && trimmable(c, r) == null) {
+            EditSettings edit = EditSettings.parse(MediaVersions.editJson(c, r.id(), r.mediaVersion()));
+            trim = new TrimView(edit.videoStartMs(), edit.videoEndMs(), originalMs(edit, r));
+        }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
-                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo);
+                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim);
+    }
+
+    /**
+     * The original's length: as recorded by the encode that applied the trim, else (never trimmed)
+     * the item's duration, which is the original's.
+     */
+    private static long originalMs(EditSettings edit, Row r) {
+        if (edit.originalMs() != null) {
+            return edit.originalMs();
+        }
+        long duration = r.durationMs() == null ? 0 : r.durationMs();
+        return edit.videoTrimmed() ? edit.videoStartMs() + duration : duration;
+    }
+
+    /** Why the item can't be trimmed now ({@code 409} code), or null if it can. */
+    private String trimmable(Connection c, Row r) throws SQLException {
+        if (!"video".equals(r.kind())) {
+            return "not_a_video";
+        }
+        if (!"ready".equals(r.status())) {
+            return "item_not_ready";
+        }
+        String original;
+        try (PreparedStatement ps = c.prepareStatement("SELECT original_file FROM items WHERE id = ?")) {
+            ps.setString(1, r.id());
+            try (ResultSet rs = ps.executeQuery()) {
+                original = rs.next() ? rs.getString(1) : null;
+            }
+        }
+        if (original == null || original.isEmpty() || original.startsWith(".") || original.contains("/")
+                || original.contains("\\")
+                || !java.nio.file.Files.isRegularFile(IngestPipeline.itemDir(dataDir, r.id()).resolve(original))) {
+            return "no_original";
+        }
+        return null;
+    }
+
+    /** Where trim jobs are queued ({@code POST /api/items/{id}/trim}); no trims until set. */
+    public void trimJobs(IngestJobs jobs) {
+        this.trimJobs = jobs;
+    }
+
+    /**
+     * A new video trim ({@code docs/library-and-ingest.md#trim}) on the original's timeline.
+     *
+     * @param videoStartMs where the encode starts, ≥ 0
+     * @param videoEndMs   where it ends, or null for the end of the original
+     */
+    public record Trim(long videoStartMs, Long videoEndMs) {
+    }
+
+    /**
+     * Queues a trim job for the item ({@link IngestJobs#enqueueTrim}) and returns the item page.
+     * For users who may edit the item. Audited ({@value #AUDIT_TRIMMED}).
+     *
+     * @throws HttpError {@code 404 item_not_found}, {@code 403 forbidden}, {@code 400 invalid_trim},
+     *                   {@code 409 not_a_video}, {@code item_not_ready}, {@code no_original},
+     *                   {@code no_change}, {@code item_busy}, {@code trim_unavailable}
+     */
+    public ItemPage trim(Actor.User actor, String itemId, Trim trim, Rights rights, String clientIp)
+            throws SQLException {
+        Objects.requireNonNull(trim);
+        IngestJobs jobs = trimJobs;
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            Row row = lockedRow(c, itemId);
+            if (row == null) {
+                throw notFound();
+            }
+            You you = you(c, actor, row, rights);
+            if (!you.canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can trim it");
+            }
+            String why = trimmable(c, row);
+            if (why != null) {
+                throw new HttpError(409, why, switch (why) {
+                    case "not_a_video" -> "Only video items can be trimmed";
+                    case "item_not_ready" -> "The item isn't ready";
+                    default -> "The item's original file isn't kept, so it can't be trimmed";
+                });
+            }
+            if (jobs == null) {
+                throw new HttpError(409, "trim_unavailable", "Trimming isn't available on this server");
+            }
+            String currentJson = MediaVersions.editJson(c, itemId, row.mediaVersion());
+            EditSettings current = EditSettings.parse(currentJson);
+            long originalMs = originalMs(current, row);
+            long start = trim.videoStartMs();
+            Long end = trim.videoEndMs();
+            if (end != null && originalMs > 0 && end >= originalMs) {
+                end = null; // to the end of the original
+            }
+            long effectiveEnd = end != null ? end : originalMs;
+            if (start < 0 || (end != null && end <= start)
+                    || effectiveEnd - start < IngestPipeline.MIN_TRIM_MS) {
+                throw new HttpError(400, "invalid_trim", "The trim must keep at least "
+                        + IngestPipeline.MIN_TRIM_MS / 1000 + " s of the original, with the start before the end");
+            }
+            if (start == current.videoStartMs() && Objects.equals(end, current.videoEndMs())) {
+                throw new HttpError(409, "no_change", "The item already has this trim");
+            }
+            String targetJson = EditSettings.withVideoTrim(currentJson, start, end, null);
+            IngestJob job;
+            try {
+                job = jobs.enqueueTrim(itemId, targetJson == null ? "{}" : targetJson);
+            } catch (IngestJobs.ItemBusy e) {
+                throw new HttpError(409, "item_busy", e.getMessage());
+            }
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("videoStartMs", start);
+            details.put("videoEndMs", end);
+            details.put("jobId", job.id());
+            AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_TRIMMED, itemId, details);
+            return page(c, row, you);
+        });
     }
 
     /** The media versions, for undo ({@code docs/library-and-ingest.md#undo}); no undo until set. */

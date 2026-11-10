@@ -94,6 +94,12 @@ import java.util.regex.Pattern;
  * downloaded again; an item with neither is left as it is, since re-encoding its quick encode
  * would only lose quality). The preset used and whether it was the quality encode are recorded
  * on the item ({@code encode_preset}, {@code encode_quality}).
+ *
+ * <p><b>Trims</b> ({@code docs/library-and-ingest.md#trim}). A video trim (the edit settings,
+ * {@link EditSettings}) is applied by every encode from an original or a download
+ * ({@code -ss}/{@code -t}); a {@code trim} job first tries a smart re-encode ({@link TrimPlan},
+ * {@link #smartTrim}) that keeps the current version's GOPs where it can, and falls back to a full
+ * re-encode from the original. A trim's publish can be undone.
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -274,6 +280,19 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 return;
             }
         }
+        if (job.kind() == Kind.TRIM) {
+            if (!"ready".equals(item.status())) {
+                log.append("[ingest] the item is " + item.status() + "; nothing to trim");
+                return;
+            }
+            if (!"video".equals(item.kind())) {
+                throw new IngestFailure("Only video items can be trimmed");
+            }
+            String original = item.originalFile();
+            if (original == null || !isPlainName(original) || !Files.isRegularFile(itemDir(dataDir, item.id()).resolve(original))) {
+                throw new IngestFailure("The item has no original file to trim from");
+            }
+        }
         Path scratch = scratchDir(dataDir, job.id());
         Path work = dataDir.media().resolve(WORK_PREFIX + job.id());
         deleteTree(scratch);
@@ -281,7 +300,19 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Files.createDirectories(scratch);
         Files.createDirectories(work);
         try {
-            run(ctx, item, scratch, work, reference);
+            String currentJson = items.editJson(item.id(), item.mediaVersion());
+            if (job.kind() == Kind.TRIM) {
+                // the trim asked for, on top of the current settings (an undo meanwhile may have changed them)
+                EditSettings asked = EditSettings.parse(job.editJson());
+                String targetJson = EditSettings.withVideoTrim(currentJson, asked.videoStartMs(), asked.videoEndMs(), null);
+                if (smartTrim(ctx, item, scratch, work, reference, EditSettings.parse(currentJson),
+                        EditSettings.parse(targetJson), targetJson)) {
+                    return;
+                }
+                run(ctx, item, scratch, work, reference, targetJson, true);
+            } else {
+                run(ctx, item, scratch, work, reference, currentJson, false);
+            }
         } finally {
             deleteQuietly(scratch);
             deleteQuietly(work);
@@ -309,7 +340,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         return switch (kind) {
             case UPLOAD -> SourceKind.STAGED;
             case YOUTUBE, REFETCH -> SourceKind.DOWNLOAD;
-            case REENCODE, QUALITY -> {
+            case REENCODE, QUALITY, TRIM -> {
                 String original = item.originalFile();
                 if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))) {
                     yield SourceKind.ORIGINAL;
@@ -351,12 +382,20 @@ public final class IngestPipeline implements IngestQueue.Handler {
     Tier tier(IngestJob job, IngestItems.Item item) throws java.sql.SQLException {
         return switch (job.kind()) {
             case QUALITY -> Tier.QUALITY;
-            case REENCODE -> items.inLibrary(item.id()) && !items.wantedInRoom(item.id()) ? Tier.QUALITY : Tier.QUICK;
+            case REENCODE, TRIM -> items.inLibrary(item.id()) && !items.wantedInRoom(item.id()) ? Tier.QUALITY : Tier.QUICK;
             default -> job.tier() == Tier.QUALITY && !items.wantedInRoom(item.id()) ? Tier.QUALITY : Tier.QUICK;
         };
     }
 
-    private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work, ReferenceCard reference)
+    /**
+     * The full encode.
+     *
+     * @param editJson the edit settings the new version is made with (a video trim is applied when
+     *                 encoding from an original or a download; a previous encode already has it)
+     * @param undoable whether the switch is a person's change (a trim), which Undo can take back
+     */
+    private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work, ReferenceCard reference,
+                     String editJson, boolean undoable)
             throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
@@ -372,7 +411,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
         SourceKind sourceKind = sourceKind(job.kind(), item, itemDir);
         if (reencode) {
-            log.append("[ingest] " + (job.kind() == Kind.QUALITY ? "quality re-encode" : "re-encoding")
+            log.append("[ingest] " + (job.kind() == Kind.QUALITY ? "quality re-encode"
+                    : job.kind() == Kind.TRIM ? "trim: full re-encode" : "re-encoding")
                     + " for " + profile.id() + " (was " + item.outputProfile() + ", preset "
                     + (item.encodePreset() == null ? "unknown" : item.encodePreset()) + ") from "
                     + switch (sourceKind) {
@@ -431,6 +471,21 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 + probe.video().codec() + ")" : "") + (probe.cover() != null ? ", cover stream " + probe.cover().index() : "")
                 + ", duration " + seconds(probe.durationUs()));
         long expectedUs = probe.durationUs() > 0 ? probe.durationUs() : probe.audioEndUs();
+        long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
+        // the video trim, on the original's timeline (not for a previous encode: it already has it)
+        EditSettings edit = EditSettings.parse(editJson);
+        List<String> range = List.of();
+        String publishJson = editJson;
+        if (video && !fromPrevious && edit.videoTrimmed()) {
+            long[] r = trimRange(edit, probe, sourceAudioEndUs);
+            range = rangeArgs(r[0], r[1]);
+            expectedUs = r[1] - r[0];
+            sourceAudioEndUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
+            publishJson = EditSettings.withOriginalMs(editJson, r[2] / 1000);
+            log.append("[ingest] video trim: " + seconds(r[0]) + " to " + seconds(r[1]) + " of the original ("
+                    + seconds(r[2]) + ")");
+        }
+        long lengthUs = expectedUs;
 
         // loudnorm pass 1 (not for a previous encode: its audio was normalised when first ingested)
         double measureFrom = base;
@@ -443,11 +498,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
             log.append("[ingest] the previous encode is already normalised; encoding without loudnorm");
         } else {
             step(log, "loudnorm pass 1");
-            loudness = Loudness.measure(tools, source.toString(), probe.audio().map(), log, p -> {
+            loudness = Loudness.measure(tools, range, source.toString(), probe.audio().map(), log, p -> {
                 if (p.outTimeUs() > decodedUs[0]) {
                     decodedUs[0] = p.outTimeUs();
                 }
-                measureProgress.accept(p.fraction(expectedUs));
+                measureProgress.accept(p.fraction(lengthUs));
             });
         }
         if (fromPrevious) {
@@ -458,7 +513,6 @@ public final class IngestPipeline implements IngestQueue.Handler {
         } else {
             log.append("[ingest] the loudness could not be measured (silence?); encoding without normalisation");
         }
-        long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
 
         // encode
         step(log, "encode");
@@ -467,9 +521,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path mezz = work.resolve(MEZZ);
         Path audio = work.resolve(AUDIO);
         List<String> encode = video
-                ? videoEncodeArgs(source, probe, loudness, profile, preset, mezz)
+                ? videoEncodeArgs(range, source, probe, loudness, profile, preset, mezz)
                 : audioEncodeArgs(source, probe, loudness, audio);
-        tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(expectedUs))).run();
+        tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(lengthUs))).run();
         double after = encodeTo;
         double stepShare = (1 - encodeTo) / 5;
         ctx.stage(STEP_FINISH, encodeTo, 1);
@@ -544,9 +598,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         // A re-encode made by the system keeps the previous version for the undo window too, but
         // without Undo (docs/library-and-ingest.md#undo); it is made with the current edit settings.
-        // TODO(trim steps): an edit job publishes with undoable = true and its new edit settings.
+        // A trim is a person's change: undoable, with its new settings.
         IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null,
-                false, items.editJson(item.id(), item.mediaVersion()), System.currentTimeMillis());
+                undoable, publishJson, System.currentTimeMillis());
         // an audio item has no video, so its files are as good as they get with any preset
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
@@ -558,6 +612,306 @@ public final class IngestPipeline implements IngestQueue.Handler {
             deleteQuietly(staging);
         }
         ctx.progress(1);
+    }
+
+    // ------------------------------------------------------------------ trim
+
+    /** The shortest trim: 1 s of the original. */
+    public static final long MIN_TRIM_MS = 1000;
+
+    /**
+     * Where a video trim cuts the original, in microseconds: {@code {start, end, originalLength}},
+     * the end clamped to the original's length (its container duration, or where its audio ends).
+     *
+     * @throws IngestFailure if less than {@link #MIN_TRIM_MS} would be left
+     */
+    static long[] trimRange(EditSettings edit, MediaProbe probe, long sourceAudioEndUs) throws IngestFailure {
+        long originalUs = Math.max(probe.durationUs(), sourceAudioEndUs);
+        if (originalUs <= 0) {
+            throw new IngestFailure("The length of the original is unknown, so it can't be trimmed");
+        }
+        long startUs = edit.videoStartMs() * 1000;
+        long endUs = edit.videoEndMs() == null ? originalUs : Math.min(edit.videoEndMs() * 1000, originalUs);
+        if (endUs - startUs < MIN_TRIM_MS * 1000) {
+            throw new IngestFailure("The trim leaves less than " + MIN_TRIM_MS / 1000 + " s of the original (which is "
+                    + seconds(originalUs) + " long)");
+        }
+        return new long[] {startUs, endUs, originalUs};
+    }
+
+    /** The input options that read {@code [startUs, endUs)} of a file (accurate seek). */
+    static List<String> rangeArgs(long startUs, long endUs) {
+        return List.of("-ss", secondsArg(startUs), "-t", secondsArg(endUs - startUs));
+    }
+
+    private static String secondsArg(long us) {
+        return String.format(Locale.ROOT, "%d.%06d", us / 1_000_000, us % 1_000_000);
+    }
+
+    /**
+     * A smart trim ({@code docs/library-and-ingest.md#trim}, {@link TrimPlan}): keeps the current
+     * version's GOPs where the new range allows it, encodes only what is new from the original,
+     * re-encodes the whole audio track from the original for the new range (loudness measured on
+     * it), splices, indexes, verifies and publishes. Returns false (nothing published, the work
+     * and scratch directories emptied) when a full re-encode is needed instead: the new start is
+     * off the current grid, the current version is for another encoding or unreadable, or anything
+     * about the splice fails.
+     *
+     * @throws IngestFailure if the trim itself is impossible (too short); a full re-encode would fail too
+     */
+    private boolean smartTrim(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work,
+                              ReferenceCard reference, EditSettings current, EditSettings target, String targetJson)
+            throws Exception {
+        JobLog log = ctx.log();
+        OutputEncoding profile = reference.encoding();
+        Path itemDir = itemDir(dataDir, item.id());
+        Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
+        Path source = itemDir.resolve(item.originalFile());
+        step(log, "probe");
+        MediaProbe probe = MediaProbe.probe(tools, source, log);
+        checkProbe(probe, false);
+        if (!probe.isVideo()) {
+            throw new IngestFailure("The original has no video to trim");
+        }
+        long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
+        long[] r = trimRange(target, probe, sourceAudioEndUs);
+        long startMs = r[0] / 1000;
+        long endMs = r[1] / 1000;
+        log.append("[ingest] trim: " + seconds(r[0]) + " to " + seconds(r[1]) + " of the original (" + seconds(r[2])
+                + "); the current encode starts at " + seconds(current.videoStartMs() * 1000));
+
+        // what the current version offers
+        String why = null;
+        SampleIndex currentIndex = null;
+        X264Preset preset = item.encodePreset() == null ? X264Preset.REFERENCE : X264Preset.byId(item.encodePreset());
+        if (!profile.id().equals(item.outputProfile())) {
+            why = "the current version was made for another output encoding";
+        } else if (preset == null) {
+            why = "the current version's preset " + item.encodePreset() + " is unknown";
+        } else if (!Files.isRegularFile(currentDir.resolve(MEZZ)) || !Files.isRegularFile(currentDir.resolve(CARD))) {
+            why = "the current version's files are missing";
+        } else {
+            try {
+                currentIndex = SampleIndex.read(currentDir.resolve(SampleIndex.FILE_NAME));
+                if (!profile.equals(currentIndex.encoding()) || currentIndex.track(SampleIndex.Kind.VIDEO) == null) {
+                    why = "the current version's index is for another encoding";
+                }
+            } catch (IOException e) {
+                why = "the current version's index can't be read (" + e.getMessage() + ")";
+            }
+        }
+        TrimPlan.Plan plan = null;
+        if (why == null) {
+            plan = TrimPlan.plan(current.videoStartMs(), currentIndex.track(SampleIndex.Kind.VIDEO).sampleCount(),
+                    startMs, endMs);
+            if (plan.mode() == TrimPlan.Mode.FULL) {
+                why = plan.reason();
+            }
+        }
+        if (why != null) {
+            log.append("[ingest] full re-encode from the original: " + why);
+            return false;
+        }
+        log.append("[ingest] smart trim: " + describe(plan, current.videoStartMs()));
+
+        Path original = null;
+        int[] expectedSizes;
+        Loudness.Measurement loudness;
+        long[] decodedUs = {-1};
+        Originals.Original kept;
+        try {
+            ctx.stage(STEP_ENCODE, 0, 0.85);
+            List<String> range = rangeArgs(r[0], r[1]);
+            long lengthUs = r[1] - r[0];
+            step(log, "loudnorm pass 1");
+            loudness = Loudness.measure(tools, range, source.toString(), probe.audio().map(), log, p -> {
+                if (p.outTimeUs() > decodedUs[0]) {
+                    decodedUs[0] = p.outTimeUs();
+                }
+                ctx.progress(0.25 * p.fraction(lengthUs));
+            });
+            if (loudness.usable()) {
+                log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
+                        loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
+            }
+            step(log, "encode audio");
+            Path trimmedAudio = scratch.resolve("trim-audio.m4a");
+            List<String> audioArgs = new ArrayList<>(range);
+            audioArgs.addAll(List.of("-i", source.toString(), "-map", probe.audio().map(), "-vn", "-sn", "-dn",
+                    "-map_metadata", "-1", "-map_chapters", "-1", "-af", loudness.filter()));
+            audioArgs.addAll(EncodeProfile.AUDIO_ARGS);
+            audioArgs.addAll(List.of("-movflags", "+faststart", "-f", "mp4", trimmedAudio.toString()));
+            tools.ffmpeg(prepend("-y", audioArgs)).log(log).run();
+            ctx.progress(0.35);
+
+            // the video pieces
+            SampleIndex.Track currentVideo = currentIndex.track(SampleIndex.Kind.VIDEO);
+            List<Integer> sizes = new ArrayList<>();
+            StringBuilder list = new StringBuilder();
+            int encodeTotal = Math.max(1, plan.encodedFrames());
+            int encodedSoFar = 0;
+            for (int i = 0; i < plan.pieces().size(); i++) {
+                TrimPlan.Piece piece = plan.pieces().get(i);
+                Path file = scratch.resolve("piece-" + i + ".mp4");
+                if (piece.source() == TrimPlan.Source.REUSE) {
+                    step(log, "copy frames " + piece.from() + ".." + (piece.to() - 1) + " of the current version");
+                    tools.ffmpeg(List.of("-y", "-ss", secondsArg((long) piece.from() * 1_000_000 / TrimPlan.FPS),
+                            "-i", currentDir.resolve(MEZZ).toString(), "-map", "0:v:0", "-c", "copy",
+                            "-frames:v", Integer.toString(piece.frames()), "-map_metadata", "-1",
+                            "-f", "mp4", file.toString())).log(log).run();
+                    SampleIndex pieceIndex = videoIndex(file, profile, log);
+                    SampleIndex.Track t = pieceIndex.track(SampleIndex.Kind.VIDEO);
+                    if (t.sampleCount() != piece.frames()) {
+                        throw new IngestFailure("the copied piece has " + t.sampleCount() + " frames instead of "
+                                + piece.frames());
+                    }
+                    for (int k = 0; k < t.sampleCount(); k++) {
+                        if (t.size(k) != currentVideo.size(piece.from() + k)) {
+                            throw new IngestFailure("the copied piece's frame " + k + " isn't frame "
+                                    + (piece.from() + k) + " of the current version");
+                        }
+                        sizes.add(t.size(k));
+                    }
+                } else {
+                    long fromMs = piece.originalStartMs(current.videoStartMs());
+                    step(log, "encode frames " + piece.from() + ".." + (piece.to() - 1) + " from the original at "
+                            + seconds(fromMs * 1000));
+                    List<String> args = new ArrayList<>(List.of("-y", "-ss", secondsArg(fromMs * 1000),
+                            "-i", source.toString(), "-map", probe.video().map(), "-an", "-sn", "-dn",
+                            "-map_metadata", "-1", "-map_chapters", "-1", "-vf", EncodeProfile.scaleFilter(profile)));
+                    args.addAll(EncodeProfile.videoArgs(profile, preset));
+                    args.addAll(List.of("-frames:v", Integer.toString(piece.frames()), "-movflags", "+faststart",
+                            "-f", "mp4", file.toString()));
+                    double from = 0.35 + 0.5 * encodedSoFar / encodeTotal;
+                    double to = 0.35 + 0.5 * (encodedSoFar + piece.frames()) / encodeTotal;
+                    long pieceUs = (long) piece.frames() * 1_000_000 / TrimPlan.FPS;
+                    tools.ffmpeg(args).log(log).ffmpegProgress(p -> ctx.progress(from + (to - from)
+                            * Math.max(0, Math.min(1, p.fraction(pieceUs))))).run();
+                    encodedSoFar += piece.frames();
+                    SampleIndex pieceIndex = videoIndex(file, profile, log);
+                    reference.verify(pieceIndex.avcC(), "the encoded piece " + i);
+                    IngestVerifier.checkKeyframes(pieceIndex, "the encoded piece " + i);
+                    SampleIndex.Track t = pieceIndex.track(SampleIndex.Kind.VIDEO);
+                    boolean last = i == plan.pieces().size() - 1;
+                    // only the last piece may come out short (the original's video ends there)
+                    if (t.sampleCount() > piece.frames() || (!last && t.sampleCount() != piece.frames())) {
+                        throw new IngestFailure("the encoded piece " + i + " has " + t.sampleCount()
+                                + " frames instead of " + piece.frames());
+                    }
+                    for (int k = 0; k < t.sampleCount(); k++) {
+                        sizes.add(t.size(k));
+                    }
+                }
+                list.append("file '").append(file.toAbsolutePath().toString().replace("'", "'\\''")).append("'\n");
+            }
+            expectedSizes = sizes.stream().mapToInt(Integer::intValue).toArray();
+            ctx.stage(STEP_FINISH, 0.85, 1);
+
+            // splice: the pieces' video and the new audio
+            step(log, "splice");
+            Path listFile = scratch.resolve("pieces.txt");
+            Files.writeString(listFile, list.toString());
+            Path mezz = work.resolve(MEZZ);
+            Path audio = work.resolve(AUDIO);
+            tools.ffmpeg(List.of("-y", "-f", "concat", "-safe", "0", "-i", listFile.toString(),
+                    "-i", trimmedAudio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
+                    "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart",
+                    "-f", "mp4", mezz.toString())).log(log).run();
+            tools.ffmpeg(extractAudioArgs(mezz, audio)).log(log).run();
+            linkOrCopy(currentDir.resolve(CARD), work.resolve(CARD));
+            Path cover = currentDir.resolve(COVER);
+            if (Files.isRegularFile(cover)) {
+                linkOrCopy(cover, work.resolve(COVER));
+            }
+            ctx.progress(0.9);
+
+            step(log, "index");
+            SampleIndex index = IndexBuilder.build(tools, profile, mezz, audio, work.resolve(SampleIndex.FILE_NAME), log);
+            step(log, "verify");
+            long expectedAudioUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
+            IngestVerifier.verify(index, reference, expectedAudioUs, decodedUs[0], MEZZ);
+            SampleIndex.Track video = index.track(SampleIndex.Kind.VIDEO);
+            if (video.sampleCount() != expectedSizes.length) {
+                throw new IngestFailure("the spliced video has " + video.sampleCount() + " frames instead of "
+                        + expectedSizes.length);
+            }
+            for (int k = 0; k < expectedSizes.length; k++) {
+                if (video.size(k) != expectedSizes[k]) {
+                    throw new IngestFailure("the spliced video's frame " + k + " isn't the frame it was made from");
+                }
+            }
+            kept = Originals.keptOnly(probe, source.getFileName().toString());
+            original = work.resolve(kept.file());
+            linkOrCopy(source, original);
+            log.append("[ingest] verified: audio " + seconds(IngestVerifier.audioDurationUs(index)) + ", avcC matches the "
+                    + profile.id() + " reference, " + video.sampleCount() + " frames with an IDR every 2 s");
+        } catch (Exception e) {
+            if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
+                throw e;
+            }
+            log.append("[ingest] the smart trim failed (" + e.getMessage() + "); full re-encode from the original instead");
+            emptyDirectory(work);
+            emptyDirectory(scratch);
+            return false;
+        }
+
+        step(log, "publish");
+        long durationMs;
+        {
+            SampleIndex index = SampleIndex.read(work.resolve(SampleIndex.FILE_NAME));
+            durationMs = IngestVerifier.audioDurationUs(index) / 1000;
+        }
+        Double lufs = loudness.usable() ? round2(loudness.inputI()) : null;
+        boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
+        IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null, true,
+                EditSettings.withOriginalMs(targetJson, r[2] / 1000), System.currentTimeMillis());
+        X264Preset usedPreset = preset;
+        Originals.Original keptOriginal = kept;
+        int version = publish(work, itemDir, item.mediaVersion(), kept.file(),
+                v -> items.published(item.id(), true, durationMs, profile, usedPreset, item.encodeQuality(), lufs,
+                        keptOriginal, v, change));
+        log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
+                + " is kept for undo" : ""));
+        retire(item, itemDir, hadOld, kept, durationMs);
+        ctx.progress(1);
+        return true;
+    }
+
+    /** The plan in words, for the job log. */
+    static String describe(TrimPlan.Plan plan, long curStartMs) {
+        StringBuilder sb = new StringBuilder();
+        for (TrimPlan.Piece p : plan.pieces()) {
+            if (sb.length() > 0) {
+                sb.append(", then ");
+            }
+            sb.append(p.source() == TrimPlan.Source.REUSE ? "keep" : "encode").append(" frames ").append(p.from())
+                    .append("..").append(p.to() - 1).append(" (").append(p.frames()).append(")");
+        }
+        return sb.append(plan.cutOnly() ? "; no video is encoded" : "").toString();
+    }
+
+    private SampleIndex videoIndex(Path file, OutputEncoding profile, JobLog log) throws Exception {
+        return IndexBuilder.build(tools, profile, List.of(new IndexBuilder.Source(file, SampleIndex.Kind.VIDEO)), log);
+    }
+
+    private static List<String> prepend(String first, List<String> rest) {
+        List<String> all = new ArrayList<>(rest.size() + 1);
+        all.add(first);
+        all.addAll(rest);
+        return all;
+    }
+
+    /** Deletes what is in {@code dir}, keeping the directory. */
+    private static void emptyDirectory(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) {
+            Files.createDirectories(dir);
+            return;
+        }
+        try (DirectoryStream<Path> files = Files.newDirectoryStream(dir)) {
+            for (Path f : files) {
+                deleteTree(f);
+            }
+        }
     }
 
     /**
@@ -664,13 +1018,27 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     static List<String> videoEncodeArgs(Path source, MediaProbe probe, Loudness.Measurement loudness,
                                         OutputEncoding profile, X264Preset preset, Path out) {
-        List<String> args = new ArrayList<>(List.of("-y", "-i", source.toString(),
+        return videoEncodeArgs(List.of(), source, probe, loudness, profile, preset, out);
+    }
+
+    /** @param range input options before {@code -i} that select a trim ({@link #rangeArgs}), or none */
+    static List<String> videoEncodeArgs(List<String> range, Path source, MediaProbe probe, Loudness.Measurement loudness,
+                                        OutputEncoding profile, X264Preset preset, Path out) {
+        List<String> args = new ArrayList<>(List.of("-y"));
+        args.addAll(range);
+        args.addAll(List.of("-i", source.toString(),
                 "-map", probe.video().map(), "-map", probe.audio().map(),
                 "-map_metadata", "-1", "-map_chapters", "-1",
                 "-vf", EncodeProfile.scaleFilter(profile)));
         args.addAll(EncodeProfile.videoArgs(profile, preset));
         args.addAll(List.of("-af", loudness.filter()));
         args.addAll(EncodeProfile.AUDIO_ARGS);
+        int t = range.indexOf("-t");
+        if (t >= 0) {
+            // also as an output option: the fps filter would otherwise fill up to the end of the last
+            // source frame read; this keeps exactly the frames with k / 30 s < length (TrimPlan.frames)
+            args.addAll(List.of("-t", range.get(t + 1)));
+        }
         args.addAll(List.of("-movflags", "+faststart", "-f", "mp4", out.toString()));
         return args;
     }
