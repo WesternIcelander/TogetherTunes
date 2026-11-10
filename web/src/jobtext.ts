@@ -171,6 +171,17 @@ export function ingestText(s: IngestStatus | undefined): string {
   }
 }
 
+/**
+ * Whether a room entry gets a Retry button (`queue.retry`): a failed YouTube entry, for the owner
+ * and moderators, and for whoever requested it while they may still add YouTube links in the room.
+ * A failed upload never does: its file isn't kept, so there's nothing to retry.
+ */
+export function canRetryEntry(status: string, source: string | undefined, canModerate: boolean, mine: boolean,
+  canYoutube: boolean): boolean {
+  if (status !== "failed" || source !== "youtube") return false;
+  return canModerate || (mine && canYoutube);
+}
+
 /** An item's latest job (`GET /api/items/{id}/job`) as an {@link IngestStatus}; undefined once it is done. */
 export function jobIngestStatus(job: { kind: string; state: string; step?: IngestStep; stepProgress?: number },
   itemError?: string): IngestStatus | undefined {

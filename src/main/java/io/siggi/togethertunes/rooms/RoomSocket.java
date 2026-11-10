@@ -23,6 +23,7 @@ import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.IngestProgress;
+import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeLookupStage;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
@@ -57,8 +58,9 @@ import java.util.concurrent.Semaphore;
  * guest capabilities). A message with a {@code rid} is answered with {@code ack} (plus the result)
  * or {@code error} ({@code status}, {@code code}, {@code message}), echoing the {@code rid}; one
  * without gets only an {@code error} if it fails. Actions that need an identity fail with
- * {@code identity_required} on an anonymous socket. {@code queue.add} and
- * {@code queue.addPlaylist} may import or resolve media first, so they run on a thread of their
+ * {@code identity_required} on an anonymous socket. {@code queue.add},
+ * {@code queue.addPlaylist} and {@code queue.retry} may import or resolve media first (or wait for
+ * an import of the same video), so they run on a thread of their
  * own (at most {@value #MAX_SLOW_ACTIONS} at a time per socket) and the socket keeps answering
  * {@code time} meanwhile. {@code time} is answered at once, at any point. Unknown message types are
  * ignored.
@@ -351,6 +353,13 @@ public final class RoomSocket {
                 case "queue.remove" -> handle(rid, () -> room((j, a) -> {
                     queue.remove(j.roomId(), a, string(msg, "entryId"));
                     return null;
+                }));
+                case "queue.retry" -> slow(rid, () -> room((j, a) -> {
+                    YoutubeImports.Retried r = queue.retry(j.roomId(), actor, a, string(msg, "entryId"), clientIp);
+                    JsonObject o = new JsonObject();
+                    o.addProperty("itemId", r.itemId());
+                    o.addProperty("status", r.status());
+                    return o;
                 }));
                 case "queue.move" -> handle(rid, () -> room((j, a) -> result("moved",
                         queue.move(j.roomId(), a, string(msg, "entryId"), optionalString(msg, "beforeEntryId")))));

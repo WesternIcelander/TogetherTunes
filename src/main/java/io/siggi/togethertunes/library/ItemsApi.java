@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorResolver;
+import io.siggi.togethertunes.auth.Feature;
 import io.siggi.togethertunes.auth.Permission;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.http.HttpError;
@@ -22,7 +23,7 @@ import java.util.Set;
  * <ul>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
- *       "addedAt", "error"?, "you": {"inLibrary", "canEdit", "canPurge"}}}. {@code error} only for
+ *       "addedAt", "error"?, "you": {"inLibrary", "canEdit", "canPurge", "canRetry"}}}. {@code error} only for
  *       a failed item. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
  *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "presentAsAudio"?}} →
@@ -41,6 +42,11 @@ import java.util.Set;
  *       "state", "progress", "attempts", "createdAt", "startedAt"?, "finishedAt"?, "log"?}};
  *       {@code log} only for callers who may edit the item. {@code 404 item_not_found},
  *       {@code 404 job_not_found}.</li>
+ *   <li>{@code POST /api/items/{id}/retry} → {@code 202 {"itemId", "jobId", "status": "pending"}}:
+ *       fetch a failed YouTube item again now ({@link YoutubeImports#retry}). Users who may edit the
+ *       item, or hold {@code admin.jobs} ({@code 401 not_authenticated} for guests and anonymous
+ *       callers, {@code 403 forbidden} for other users); {@code 403 feature_disabled} while
+ *       {@code ytdlp.enabled} is off; and {@link YoutubeImports#retry}'s errors.</li>
  * </ul>
  */
 public final class ItemsApi {
@@ -48,10 +54,18 @@ public final class ItemsApi {
 
     private final Items items;
     private final Permissions permissions;
+    private final YoutubeImports youtube;
 
+    /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
+        this(items, permissions, null);
+    }
+
+    /** @param youtube retries of failed YouTube items ({@code POST /api/items/{id}/retry}) */
+    public ItemsApi(Items items, Permissions permissions, YoutubeImports youtube) {
         this.items = Objects.requireNonNull(items);
         this.permissions = Objects.requireNonNull(permissions);
+        this.youtube = youtube;
     }
 
     public void register(Router router) {
@@ -59,6 +73,9 @@ public final class ItemsApi {
         router.patch("/api/items/{id}", this::update);
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
         router.get("/api/items/{id}/job", this::job);
+        if (youtube != null) {
+            router.post("/api/items/{id}/retry", this::retry);
+        }
     }
 
     private Items.Rights rights(Actor actor) throws SQLException {
@@ -66,7 +83,25 @@ public final class ItemsApi {
             return new Items.Rights(false, false);
         }
         return new Items.Rights(permissions.allowed(actor, Permission.LIBRARY_EDIT_ANY),
-                permissions.allowed(actor, Permission.LIBRARY_PURGE));
+                permissions.allowed(actor, Permission.LIBRARY_PURGE), permissions.allowed(actor, Permission.ADMIN_JOBS),
+                youtube != null && permissions.enabled(Feature.YOUTUBE));
+    }
+
+    private void retry(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        if (!(actor instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        permissions.requireFeature(Feature.YOUTUBE);
+        String itemId = request.pathParam("id");
+        items.requireRetry(user, itemId, rights(user));
+        YoutubeImports.Retried retried = youtube.retry(itemId, user, request.clientIp(), null);
+        response.header("Cache-Control", "no-store");
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        out.put("itemId", retried.itemId());
+        out.put("jobId", retried.jobId());
+        out.put("status", retried.status());
+        response.json(202, out);
     }
 
     private void get(Request request, Response response) throws Exception {

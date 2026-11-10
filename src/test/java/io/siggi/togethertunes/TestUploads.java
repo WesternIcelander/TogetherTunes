@@ -124,7 +124,11 @@ public final class TestUploads {
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
         io.siggi.togethertunes.rooms.RoomGuests guests = new io.siggi.togethertunes.rooms.RoomGuests(db, settings,
                 permissions, rooms, registry);
-        YoutubeImports youtube = youtube(db, config, Tools.from(config), clock);
+        // the rooms hear about status changes of the jobs imports and retries queue, as in Main
+        IngestJobs youtubeJobs = new IngestJobs(db, clock);
+        youtubeJobs.statusListener(registry);
+        YoutubeImports youtube = new YoutubeImports(db, Tools.from(config), youtubeJobs, () -> {
+        }, config.outputEncoding(), config.ingestMaxDurationSeconds(), () -> null, clock);
         Library library = new Library(db, youtube, clock);
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, guests);
         io.siggi.togethertunes.rooms.RoomsApi api = new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry,

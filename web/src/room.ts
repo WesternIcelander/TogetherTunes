@@ -35,7 +35,7 @@ import {
 } from "./remote.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
-import { ingestText, lookupText } from "./jobtext.js";
+import { canRetryEntry, ingestText, lookupText } from "./jobtext.js";
 import {
   positionAt, RoomConnection, type CurrentEntry, type HistoryEntry, type NewRequest, type RoomItem, type RoomState,
   type Timeline, type WaitingEntry,
@@ -257,7 +257,8 @@ function ingestBadgeText(status: string, itemId: string): string {
   if (status === "failed") {
     return ingestText({ state: "failed", error: known?.state === "failed" ? known.error : undefined });
   }
-  return ingestText(known);
+  // Just retried: the entry waits again before the next `ingest` message says so.
+  return ingestText(known?.state === "failed" ? undefined : known);
 }
 
 /** An `ingest` message arrived: the badges of entries that wait for ingest show the news. */
@@ -513,6 +514,16 @@ function canRemove(s: RoomState, e: WaitingEntry): boolean {
   return you.canModerate || isMine(e) || (s.room.controlMode === "open" && you.canRequest && you.identified);
 }
 
+/** Whether you may fetch this failed entry again (`queue.retry`); see {@link canRetryEntry}. */
+function canRetry(s: RoomState, e: WaitingEntry): boolean {
+  const you = s.room.you;
+  return canRetryEntry(e.status, e.item.source, you.canModerate, isMine(e), you.canYoutube);
+}
+
+function retryButton(e: WaitingEntry): HTMLButtonElement {
+  return actionButton("Retry", () => ({ type: "queue.retry", entryId: e.entryId }));
+}
+
 function canMove(s: RoomState): boolean {
   const you = s.room.you;
   if (s.room.controlMode === "owner") return you.canModerate;
@@ -523,6 +534,7 @@ function canMove(s: RoomState): boolean {
 function queueRow(s: RoomState, e: WaitingEntry, i: number, list: WaitingEntry[]): HTMLLIElement {
   const you = s.room.you;
   const actions = h("span", { class: "row entry-actions" });
+  if (canRetry(s, e)) actions.append(retryButton(e));
   if (s.room.controlMode === "vote" && you.canModerate) {
     actions.append(actionButton(e.pinned ? "Unpin" : "Pin",
       () => ({ type: "queue.pin", entryId: e.entryId, pinned: !e.pinned })));
@@ -582,6 +594,7 @@ function renderSuggestions(s: RoomState): void {
   const list = h("ul", { class: "entries" });
   for (const e of s.suggestions) {
     const actions = h("span", { class: "row entry-actions" });
+    if (canRetry(s, e)) actions.append(retryButton(e));
     if (s.room.you.canModerate) {
       actions.append(actionButton("Accept", () => ({ type: "suggest.accept", entryId: e.entryId })),
         actionButton("Reject", () => ({ type: "suggest.reject", entryId: e.entryId })));

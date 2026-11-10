@@ -28,7 +28,8 @@ export interface ItemPage extends ItemSummary {
   error?: string;
   /** The current version of its files: play `/media/{id}/v/{mediaVersion}/…` (docs/api.md#media-files). */
   mediaVersion: number;
-  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean };
+  /** `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`). */
+  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
 }
 
 export interface LibraryEntry {

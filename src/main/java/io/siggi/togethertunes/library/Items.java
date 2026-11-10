@@ -84,8 +84,14 @@ public final class Items {
      * @param inLibrary whether the item is in the caller's library (always false for guests)
      * @param canEdit   whether the caller may edit its metadata
      * @param canPurge  whether the caller holds {@code library.purge}
+     * @param canRetry  whether the caller may retry the item's failed ingest now
+     *                  ({@code POST /api/items/{id}/retry}): a failed YouTube item, YouTube imports
+     *                  on, and the caller may edit the item or holds {@code admin.jobs}
      */
-    public record You(boolean inLibrary, boolean canEdit, boolean canPurge) {
+    public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry) {
+        public You(boolean inLibrary, boolean canEdit, boolean canPurge) {
+            this(inLibrary, canEdit, canPurge, false);
+        }
     }
 
     /**
@@ -113,8 +119,16 @@ public final class Items {
         }
     }
 
-    /** What a caller is allowed beyond being the adder. */
-    public record Rights(boolean editAny, boolean purge) {
+    /**
+     * What a caller is allowed beyond being the adder.
+     *
+     * @param retryAny holds {@code admin.jobs}: may retry any failed YouTube item
+     * @param youtube  YouTube imports are on ({@code ytdlp.enabled}); retries need it
+     */
+    public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube) {
+        public Rights(boolean editAny, boolean purge) {
+            this(editAny, purge, false, false);
+        }
     }
 
     /** The columns {@link #page} and the checks need. */
@@ -169,13 +183,36 @@ public final class Items {
         boolean inLibrary = inLibrary(c, actor, row.id());
         boolean adder = actor instanceof Actor.User user && user.userId().equals(row.addedByUserId());
         boolean user = actor instanceof Actor.User;
-        return new You(inLibrary, user && (rights.editAny() || adder && inLibrary), user && rights.purge());
+        boolean canEdit = user && (rights.editAny() || adder && inLibrary);
+        boolean retryable = "youtube".equals(row.source()) && "failed".equals(row.status());
+        return new You(inLibrary, canEdit, user && rights.purge(),
+                retryable && rights.youtube() && (canEdit || user && rights.retryAny()));
     }
 
     private static ItemPage page(Row r, You you) {
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you);
+    }
+
+    /**
+     * Throws unless {@code actor} may retry the item's failed ingest from its page: a user who may
+     * edit it or holds {@code admin.jobs} ({@code 403 forbidden}); {@code 404 item_not_found}.
+     * Whether the item can be retried at all is {@code YoutubeImports.retry}'s check.
+     */
+    public void requireRetry(Actor.User actor, String itemId, Rights rights) throws SQLException {
+        db.read(c -> {
+            Row row = row(c, itemId, false);
+            if (row == null) {
+                throw notFound();
+            }
+            You you = you(c, actor, row, rights);
+            if (!you.canEdit() && !rights.retryAny()) {
+                throw HttpError.forbidden("Only someone who may edit this item, or an administrator with"
+                        + " admin.jobs, can retry it");
+            }
+            return null;
+        });
     }
 
     /** The item page for {@code actor} (any actor: items are visible by direct link). {@code 404 item_not_found}. */

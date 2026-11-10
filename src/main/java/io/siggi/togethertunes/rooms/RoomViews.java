@@ -191,6 +191,7 @@ final class RoomViews {
             o.addProperty("durationMs", r.durationMs());
         }
         o.addProperty("status", r.status());
+        o.addProperty("source", r.source());
         if ("ready".equals(r.status())) {
             String base = "/media/" + r.id() + "/";
             o.addProperty("coverUrl", MediaApi.url(r.id(), r.mediaVersion(), "cover.jpg"));

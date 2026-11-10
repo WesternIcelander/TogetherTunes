@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.auth.Actor;
+import io.siggi.togethertunes.auth.AuditLog;
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
@@ -68,6 +69,12 @@ import java.util.function.Supplier;
 public final class YoutubeImports {
     /** A failed item is fetched again only once its last attempt is at least this old. */
     public static final Duration RETRY_FAILED_AFTER = Duration.ofMinutes(10);
+    /** After a {@linkplain #retry retry}, the next retry of the same item waits this long. */
+    public static final Duration RETRY_INTERVAL = Duration.ofSeconds(30);
+    /** {@code audit_log} action of a {@linkplain #retry retry}. */
+    public static final String AUDIT_RETRIED = "item.ingest_retried";
+    /** Recent retries remembered before old ones are dropped. */
+    private static final int RETRY_MEMORY = 1024;
     static final Duration METADATA_TIMEOUT = Duration.ofMinutes(2);
     static final Duration METADATA_IDLE_TIMEOUT = Duration.ofSeconds(90);
     /** {@code -J} output with every format listed is a few hundred KiB; this is plenty. */
@@ -89,6 +96,9 @@ public final class YoutubeImports {
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
+    /** When each item was last {@linkplain #retry retried} (epoch ms); in memory only. */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> lastRetry =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /**
      * What an import produced.
@@ -300,6 +310,114 @@ public final class YoutubeImports {
                 return new Imported(itemId, false, "pending");
             }
             default -> throw new IllegalStateException("Unknown item status " + existing.status());
+        }
+    }
+
+    /** A retried item and the job that now fetches it ({@link #retry}). */
+    public record Retried(String itemId, String jobId, String status) {
+    }
+
+    /**
+     * Retries the failed ingest of a YouTube item now ({@code POST /api/items/{id}/retry}, the room's
+     * {@code queue.retry}; {@code docs/library-and-ingest.md#retrying-a-failed-youtube-item}): a new
+     * {@code youtube} job (a {@code refetch} if the failed job was one) on the same row, which turns
+     * the item {@code pending} again. Unlike an import of the link, it doesn't wait
+     * {@link #RETRY_FAILED_AFTER}; instead a successful retry blocks the next one of the same item for
+     * {@link #RETRY_INTERVAL}, so a button can't hammer YouTube. The preset tier is decided when the
+     * job starts (quick while a room waits for the item). Who may retry is the caller's check
+     * ({@code ytdlp.enabled} included); this checks the item, the free space and the rate limit.
+     * Audited ({@value #AUDIT_RETRIED}, target the item, details {@code jobId}, {@code kind} and
+     * {@code roomId} for a retry from a room).
+     *
+     * @param actor    who retries: a user or a guest
+     * @param clientIp for the audit row
+     * @param roomId   the room it was retried from, or null (the item page)
+     * @throws HttpError {@code 404 item_not_found}, {@code 409 not_youtube} (only YouTube items: a
+     *                   failed upload's file isn't kept), {@code 409 item_purged},
+     *                   {@code 409 ingest_in_progress} (a job is queued or running),
+     *                   {@code 409 item_not_failed}, {@code 429 retry_too_soon} (with
+     *                   {@code Retry-After}), {@code 507 insufficient_storage}
+     */
+    public Retried retry(String itemId, Actor actor, String clientIp, String roomId)
+            throws SQLException, InterruptedException {
+        Objects.requireNonNull(itemId);
+        String userId = actor instanceof Actor.User u ? u.userId() : null;
+        String guestId = actor instanceof Actor.Guest g ? g.guestId() : null;
+        if (userId == null && guestId == null) {
+            throw new IllegalArgumentException("Retries are made by a user or a guest");
+        }
+        String[] row = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT source, youtube_id FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? new String[] {rs.getString(1), rs.getString(2)} : null;
+                }
+            }
+        });
+        if (row == null) {
+            throw new HttpError(404, "item_not_found", "No such item");
+        }
+        if (!"youtube".equals(row[0]) || row[1] == null) {
+            throw new HttpError(409, "not_youtube", "Only YouTube items can be retried; a failed upload's file"
+                    + " isn't kept, so upload it again");
+        }
+        ReentrantLock lock = locks[Math.floorMod(row[1].hashCode(), locks.length)];
+        lock.lockInterruptibly();
+        try {
+            // Status checks first: a second click while the retry runs is a 409, not a 429.
+            String status = db.read(c -> status(c, itemId));
+            if ("purged".equals(status)) {
+                throw new HttpError(409, "item_purged", "The item was purged; add it again to fetch it");
+            }
+            IngestJob last = jobs.latestForItem(itemId).orElse(null);
+            if (last != null && (last.state() == IngestJob.State.QUEUED || last.state() == IngestJob.State.RUNNING)) {
+                throw new HttpError(409, "ingest_in_progress", "The item is already being fetched");
+            }
+            if (!"failed".equals(status)) {
+                throw new HttpError(409, "item_not_failed", "Only a failed item can be retried");
+            }
+            long now = EpochMs.now(clock);
+            Long previous = lastRetry.get(itemId);
+            if (previous != null && now - previous < RETRY_INTERVAL.toMillis()) {
+                long waitMs = previous + RETRY_INTERVAL.toMillis() - now;
+                throw new HttpError(429, "retry_too_soon", "This item was retried a moment ago; try again in "
+                        + Math.max(1, (waitMs + 999) / 1000) + " s", Math.max(1, (waitMs + 999) / 1000));
+            }
+            diskSpace.requireRoomFor(0);
+            IngestJob.Kind kind = last != null && last.kind() == IngestJob.Kind.REFETCH
+                    ? IngestJob.Kind.REFETCH : IngestJob.Kind.YOUTUBE;
+            IngestJob queued = db.write(c -> {
+                References.touch(c, itemId, now);
+                IngestJob job = jobs.enqueue(itemId, kind, null);
+                java.util.Map<String, Object> details = new java.util.LinkedHashMap<>();
+                details.put("jobId", job.id());
+                details.put("kind", kind.wire());
+                if (roomId != null) {
+                    details.put("roomId", roomId);
+                }
+                AuditLog.write(c, now, userId, guestId, clientIp, AUDIT_RETRIED, itemId, details);
+                return job;
+            });
+            lastRetry.put(itemId, now);
+            if (lastRetry.size() > RETRY_MEMORY) {
+                lastRetry.entrySet().removeIf(e -> now - e.getValue() >= RETRY_INTERVAL.toMillis());
+            }
+            wake.run();
+            return new Retried(itemId, queued.id(), "pending");
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private static String status(Connection c, String itemId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT status FROM items WHERE id = ?")) {
+            ps.setString(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    throw new HttpError(404, "item_not_found", "No such item");
+                }
+                return rs.getString(1);
+            }
         }
     }
 

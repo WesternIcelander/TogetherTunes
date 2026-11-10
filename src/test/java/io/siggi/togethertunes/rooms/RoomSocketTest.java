@@ -85,6 +85,7 @@ class RoomSocketTest {
     private String bobId;
     private String alice;
     private String bob;
+    private Accounts accounts;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -115,7 +116,7 @@ class RoomSocketTest {
         Router router = new Router(actors.hook());
         Permissions permissions = new Permissions(db, settings);
         Passwords passwords = new Passwords(new Passwords.Params(64, 1, 1));
-        Accounts accounts = new Accounts(db, passwords, clock);
+        accounts = new Accounts(db, passwords, clock);
         IdentityTickets tickets = new IdentityTickets(clock);
         wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock);
         wiring.api().register(router);
@@ -1209,5 +1210,185 @@ class RoomSocketTest {
             }
         }
         return n;
+    }
+
+    // ------------------------------------------------------------------ retrying failed YouTube entries
+
+    /** A YouTube item in alice's library whose download is queued (item {@code pending}). */
+    private String youtubePending(String title) throws Exception {
+        String id = UuidV7.newId();
+        String hex = id.replace("-", "");
+        sql("INSERT INTO items (id, kind, title, source, youtube_id, added_by_user_id, added_at, status,"
+                + " output_profile, last_referenced_at) VALUES (?, 'video', ?, 'youtube', ?, ?, 1, 'pending', '720p30', 1)",
+                id, title, hex.substring(hex.length() - 11), aliceId);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'youtube')", aliceId, id);
+        jobs.enqueue(id, IngestJob.Kind.YOUTUBE);
+        return id;
+    }
+
+    /** The item's download starts and fails; returns the job. */
+    private IngestJob failDownload(String itemId) throws Exception {
+        IngestJob job = jobs.claimNext();
+        assertEquals(itemId, job.itemId());
+        assertTrue(jobs.fail(job.id(), "HTTP Error 429: Too Many Requests", "failed"));
+        return job;
+    }
+
+    private static JsonObject entryIn(JsonObject state, String list, String entryId) {
+        if (!state.has(list)) {
+            return null;
+        }
+        for (JsonElement e : state.getAsJsonArray(list)) {
+            if (e.getAsJsonObject().get("entryId").getAsString().equals(entryId)) {
+                return e.getAsJsonObject();
+            }
+        }
+        return null;
+    }
+
+    /** Each client's newest state version seen by {@link #entryWithStatus}. */
+    private final Map<Client, Long> stateSeen = new java.util.HashMap<>();
+
+    /**
+     * The first state newer than the last one this returned for {@code c} in which the entry
+     * (queued or suggested) has {@code status}.
+     */
+    private JsonObject entryWithStatus(Client c, String list, String entryId, String status)
+            throws InterruptedException {
+        long after = stateSeen.getOrDefault(c, -1L);
+        JsonObject found = c.await(m -> {
+            if (!m.get("type").getAsString().equals("state") || version(m) <= after) {
+                return false;
+            }
+            JsonObject e = entryIn(m, list, entryId);
+            return e != null && e.get("status").getAsString().equals(status);
+        });
+        stateSeen.put(c, version(found));
+        return found;
+    }
+
+    private int retryAudits(String roomId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT details_json FROM audit_log"
+                    + " WHERE action = 'item.ingest_retried'")) {
+                int n = 0;
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        if (rs.getString(1).contains(roomId)) {
+                            n++;
+                        }
+                    }
+                }
+                return n;
+            }
+        });
+    }
+
+    @Test
+    void aFailedYoutubeEntryIsRetriedFromTheRoomKeepsItsPlaceAndPlaysOnceReady() throws Exception {
+        String roomId = room("retry", "public", "vote");
+        String clip = youtubePending("Clip");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"retry\",\"mode\":\"listen\"}");
+        Client member = connect(bob, null);
+        member.ok("{\"type\":\"join\",\"room\":\"retry\"}");
+        String entry = member.ok("{\"type\":\"queue.add\",\"itemId\":\"" + clip + "\"}").get("entryId").getAsString();
+        String now = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Now") + "\"}").get("entryId").getAsString();
+        String later = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Later") + "\"}")
+                .get("entryId").getAsString();
+        failDownload(clip);
+        JsonObject state = entryWithStatus(owner, "queue", entry, "failed");
+        assertEquals(now, state.getAsJsonObject("current").get("entryId").getAsString());
+        assertEquals("youtube", entryIn(state, "queue", entry).getAsJsonObject("item").get("source").getAsString());
+
+        // refused: a member who didn't request it, an anonymous visitor, a guest
+        String carolId = accounts.createLocal("carol", "Carol", "carol-password", false, null, "account.register").id();
+        Client carol = connect(sessions.create(carolId, Actor.Via.BEARER, "test", null).token(), null);
+        carol.ok("{\"type\":\"join\",\"room\":\"retry\"}");
+        carol.error("forbidden", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        Client anonymous = connect(null, null);
+        anonymous.ok("{\"type\":\"join\",\"room\":\"retry\"}");
+        anonymous.error("identity_required", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        member.error("entry_not_found", "{\"type\":\"queue.retry\",\"entryId\":\"" + UuidV7.newId() + "\"}");
+        // an upload can't be retried (its file isn't kept on failure)
+        owner.error("not_youtube", "{\"type\":\"queue.retry\",\"entryId\":\"" + later + "\"}");
+
+        // the requester retries: the entry stays where it was and waits again
+        JsonObject ack = member.ok("{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        assertEquals(clip, ack.get("itemId").getAsString());
+        assertEquals("pending", ack.get("status").getAsString());
+        state = entryWithStatus(owner, "queue", entry, "processing");
+        JsonArray queue = state.getAsJsonArray("queue");
+        assertEquals(entry, queue.get(0).getAsJsonObject().get("entryId").getAsString(), state.toString());
+        assertEquals(2, queue.size(), state.toString());
+        assertEquals(later, queue.get(1).getAsJsonObject().get("entryId").getAsString());
+        assertEquals(1, retryAudits(roomId));
+        // a second click while it is queued, and while it runs
+        member.error("ingest_in_progress", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+
+        // it fails again at once: the next retry waits 30 s (per item, whoever asks)
+        failDownload(clip);
+        entryWithStatus(owner, "queue", entry, "failed");
+        owner.error("retry_too_soon", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        clock.advance(30_000);
+
+        // the owner retries
+        owner.ok("{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        entryWithStatus(owner, "queue", entry, "processing");
+        failDownload(clip);
+        entryWithStatus(owner, "queue", entry, "failed");
+        clock.advance(30_000);
+
+        // a moderator retries
+        assertEquals(201, call(alice, "PUT", "/api/rooms/retry/members/" + carolId, "{\"role\":\"moderator\"}")
+                .statusCode());
+        carol.ok("{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        failDownload(clip);
+        entryWithStatus(owner, "queue", entry, "failed");
+        clock.advance(30_000);
+        assertEquals(3, retryAudits(roomId));
+
+        // ytdlp.enabled off: nobody
+        settings.set(Settings.YTDLP_ENABLED, false);
+        owner.error("feature_disabled", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        // and the requester also lost the right to add YouTube links
+        member.error("forbidden", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        settings.set(Settings.YTDLP_ENABLED, true);
+
+        // retried once more, it finishes this time: still in its place, and it plays next
+        member.ok("{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        IngestJob job = jobs.claimNext();
+        finishIngest(new String[] {clip, job.id()});
+        state = entryWithStatus(owner, "queue", entry, "ready");
+        assertEquals(entry, state.getAsJsonArray("queue").get(0).getAsJsonObject().get("entryId").getAsString());
+        owner.ok("{\"type\":\"next\"}");
+        owner.await(m -> m.get("type").getAsString().equals("state") && m.has("current")
+                && m.getAsJsonObject("current").get("entryId").getAsString().equals(entry));
+    }
+
+    @Test
+    void aGuestRetriesItsOwnSuggestionWhileTheRoomLetsItAddYoutubeLinks() throws Exception {
+        String roomId = room("guestretry", "public", "owner");
+        String clip = youtubePending("Guest Clip");
+        HttpResponse<String> created = call(null, "POST", "/api/me/guest", null);
+        assertEquals(201, created.statusCode(), created.body());
+        String cookie = created.headers().allValues("Set-Cookie").stream().filter(v -> v.startsWith("gid="))
+                .map(v -> v.substring(0, v.indexOf(';'))).findFirst().orElseThrow();
+        Client guest = connect(null, cookie);
+        guest.next("identity");
+        guest.ok("{\"type\":\"join\",\"room\":\"guestretry\"}");
+        String entry = guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + clip + "\"}").get("entryId").getAsString();
+        failDownload(clip);
+        entryWithStatus(guest, "suggestions", entry, "failed");
+
+        // guests may not add YouTube links (the default): no retry either
+        guest.error("forbidden", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        settings.set(Settings.GUESTS_CAN_YOUTUBE, true);
+        roomSettings("guestretry", "{\"guests\":{\"canYoutube\":false}}");
+        guest.error("forbidden", "{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        roomSettings("guestretry", "{\"guests\":{\"canYoutube\":true}}");
+        guest.ok("{\"type\":\"queue.retry\",\"entryId\":\"" + entry + "\"}");
+        entryWithStatus(guest, "suggestions", entry, "processing");
+        assertEquals(1, retryAudits(roomId));
     }
 }

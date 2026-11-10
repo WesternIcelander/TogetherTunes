@@ -61,6 +61,11 @@ public final class AddMediaPolicy {
         requireGuest(actor, roomId, RoomGuestRules.Capability.UPLOAD);
     }
 
+    /** Throws {@code 403 feature_disabled} unless YouTube imports are on ({@code ytdlp.enabled}). */
+    public void requireYoutubeFeature() throws SQLException {
+        permissions.requireFeature(Feature.YOUTUBE);
+    }
+
     /**
      * Throws unless {@code actor} may import a YouTube link: {@code ytdlp.enabled} first, then as
      * {@link #requireUpload} with {@code library.youtube} and {@code guests.canYoutube}.

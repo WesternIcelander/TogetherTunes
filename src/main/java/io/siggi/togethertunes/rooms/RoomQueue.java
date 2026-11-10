@@ -173,6 +173,29 @@ public final class RoomQueue {
         });
     }
 
+    /**
+     * {@code queue.retry}: fetches the failed YouTube item of a queued entry or suggestion again
+     * ({@link YoutubeImports#retry}). The entry keeps its place; its item turns {@code pending} and
+     * plays once ready like any entry that isn't ready yet.
+     *
+     * @throws HttpError {@code 404 entry_not_found}, as {@link ControlPolicy#requireRetry},
+     *                   {@code 403 feature_disabled} ({@code ytdlp.enabled} off), and
+     *                   {@link YoutubeImports#retry}'s errors
+     */
+    public YoutubeImports.Retried retry(String roomId, Actor actor, RoomActor a, String entryId, String clientIp)
+            throws Exception {
+        String itemId = registry.call(roomId, tx -> {
+            QueueEntry e = entryId == null ? null : tx.state().waitingEntry(entryId);
+            if (e == null) {
+                throw new HttpError(404, "entry_not_found", "No such entry in the queue");
+            }
+            ControlPolicy.requireRetry(a, e);
+            return e.itemId();
+        });
+        addMedia.requireYoutubeFeature();
+        return youtube.retry(itemId, actor, clientIp, roomId);
+    }
+
     /** {@code queue.move}: see {@link QueueOps#move}. */
     public boolean move(String roomId, RoomActor a, String entryId, String beforeEntryId) throws Exception {
         return registry.call(roomId, tx -> QueueOps.move(tx, a, entryId, beforeEntryId));

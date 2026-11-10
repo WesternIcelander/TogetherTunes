@@ -186,6 +186,14 @@ function render(item: ItemPage, job: JobView | undefined): void {
       showNotice(url);
     }
   }, showError));
+  if (item.you.canRetry === true) {
+    // A YouTube fetch that failed is often temporary (network, throttling, an outdated yt-dlp).
+    actions.append(button("Retry", async () => {
+      await api("POST", "/api/items/" + encodeURIComponent(item.id) + "/retry");
+      showNotice("Fetching it again.");
+      await refresh();
+    }, showError));
+  }
   if (item.you.canPurge && item.status !== "purged") {
     actions.append(button("Purge media", async () => {
       if (!confirm("Delete this item's media files from the server now? Its entry stays, as \"media expired\".")) return;
@@ -207,6 +215,9 @@ function render(item: ItemPage, job: JobView | undefined): void {
           field("Source", source),
           field("Added", formatTime(item.addedAt))))),
     item.status === "failed" && item.error !== undefined ? h("p", { class: "error", text: "Ingest failed: " + item.error }) : null,
+    item.status === "failed" && item.source !== "youtube"
+      ? h("p", { class: "muted", text: "A failed upload's file isn't kept, so it can't be retried: upload the file again." })
+      : null,
     item.status === "purged"
       ? h("p", { class: "muted", text: item.source === "youtube"
           ? "Media expired. Adding it to your library fetches it from YouTube again."

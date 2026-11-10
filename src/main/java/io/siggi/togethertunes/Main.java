@@ -283,7 +283,7 @@ public final class Main {
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
         Items items = new Items(database, dataDir, Clock.systemUTC());
         items.jobSteps(ingest::liveStep);
-        ItemsApi itemsApi = new ItemsApi(items, permissions);
+        ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),

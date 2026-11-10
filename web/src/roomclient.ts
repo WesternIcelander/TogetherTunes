@@ -37,6 +37,8 @@ export interface RoomItem {
   artist?: string;
   durationMs?: number;
   status?: "pending" | "processing" | "ready" | "failed" | "purged" | string;
+  /** `youtube` or `upload`: only a failed YouTube item can be retried. */
+  source?: "youtube" | "upload" | string;
   coverUrl?: string;
   audioUrl?: string;
   videoUrl?: string;

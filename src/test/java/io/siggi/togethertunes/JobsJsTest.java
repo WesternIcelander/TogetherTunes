@@ -53,6 +53,14 @@ class JobsJsTest {
                 "data-ingest-item", "ingestText(", "window.clearInterval(ticker)")) {
             assertTrue(room.contains(s) || (s.equals("data-ingest-item") && room.contains("dataset[\"ingestItem\"]")), s);
         }
+        // a failed YouTube entry has a Retry button (queue.retry); the item page retries over REST
+        for (String s : List.of("canRetryEntry(", "type: \"queue.retry\"", "actions.append(retryButton(e))")) {
+            assertTrue(room.contains(s), s);
+        }
+        String item = read("web/js/item.js");
+        for (String s : List.of("item.you.canRetry === true", "\"/retry\"", "can't be retried: upload the file again")) {
+            assertTrue(item.contains(s), s);
+        }
         String roomclient = read("web/js/roomclient.js");
         for (String s : List.of("case \"request.progress\"", "case \"ingest\"", "p.progress(")) {
             assertTrue(roomclient.contains(s), s);

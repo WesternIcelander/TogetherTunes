@@ -99,3 +99,16 @@ test("streamed JSON lines split across chunks", () => {
   assert.deepEqual(lines.end(), [{ type: "result", itemId: "x" }]);
   assert.deepEqual(lines.end(), []);
 });
+
+test("who gets a Retry button on a room entry", () => {
+  // owner/moderator, or the requester who may still add YouTube links
+  assert.equal(J.canRetryEntry("failed", "youtube", true, false, false), true);
+  assert.equal(J.canRetryEntry("failed", "youtube", false, true, true), true);
+  assert.equal(J.canRetryEntry("failed", "youtube", false, true, false), false);
+  assert.equal(J.canRetryEntry("failed", "youtube", false, false, true), false);
+  // only failed YouTube entries: a failed upload's file isn't kept
+  assert.equal(J.canRetryEntry("failed", "upload", true, true, true), false);
+  assert.equal(J.canRetryEntry("failed", undefined, true, true, true), false);
+  assert.equal(J.canRetryEntry("processing", "youtube", true, true, true), false);
+  assert.equal(J.canRetryEntry("ready", "youtube", true, true, true), false);
+});

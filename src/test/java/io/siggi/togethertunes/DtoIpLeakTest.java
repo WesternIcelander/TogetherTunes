@@ -276,6 +276,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.UploadsApi$CompleteRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.library.YoutubeImports$Imported", "import result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.YoutubeImports$Existing", "youtube_id lookup"),
+            Map.entry("io.siggi.togethertunes.library.YoutubeImports$Retried", "retry result; the APIs build their own maps"),
             Map.entry("io.siggi.togethertunes.library.YoutubeImportsApi$ImportRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.library.YoutubeMetadata", "parsed yt-dlp -J output; stored as items columns"),
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Edit", "PATCH body, parsed"),

@@ -143,6 +143,19 @@ public final class ControlPolicy {
         throw HttpError.forbidden("You can't remove this entry");
     }
 
+    /**
+     * {@code queue.retry} (a failed YouTube entry fetched again): the owner and moderators, and
+     * whoever requested the entry while they may still add YouTube links here (for a guest the
+     * room's and the server's guest rules, for a user {@code library.youtube}).
+     */
+    public static void requireRetry(RoomActor a, QueueEntry entry) {
+        a.requireIdentity();
+        if (a.moderates() || a.added(entry) && a.canYoutube()) {
+            return;
+        }
+        throw HttpError.forbidden("Only the room's owner and moderators, or whoever requested it, can retry this");
+    }
+
     /** {@code move}: {@code owner} mode: owner and moderators; {@code open}: request rights; not in {@code vote}. */
     public static void requireMove(RoomState s, RoomActor a) {
         a.requireIdentity();

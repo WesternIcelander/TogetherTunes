@@ -49,6 +49,10 @@ class ItemsApiTest {
     private String aliceId;
     private String alice;
     private String admin;
+    private String bob;
+    private Settings settings;
+    private io.siggi.togethertunes.ingest.IngestJobs jobs;
+    private final java.util.concurrent.atomic.AtomicLong free = new java.util.concurrent.atomic.AtomicLong(50L << 30);
 
     @BeforeEach
     void setUp() throws Exception {
@@ -59,7 +63,14 @@ class ItemsApiTest {
         BuiltinRoles.ensure(db);
         Settings settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        TestUploads.itemsApi(db, dir, new Permissions(db, settings), clock).register(router);
+        this.settings = settings;
+        jobs = new io.siggi.togethertunes.ingest.IngestJobs(db, clock);
+        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
+        youtube.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
+                () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(free.get(), 100L << 30), () -> 5L << 30,
+                java.time.Duration.ZERO, System::nanoTime));
+        new ItemsApi(new Items(db, io.siggi.togethertunes.DataDir.create(dir.resolve("data")), clock),
+                new Permissions(db, settings), youtube).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(db, clock);
@@ -68,6 +79,8 @@ class ItemsApiTest {
         aliceId = accounts.createLocal("alice", null, "alice-password", false, null, "account.register").id();
         alice = sessions.create(aliceId, Actor.Via.BEARER, "test", null).token();
         admin = sessions.create(adminId, Actor.Via.BEARER, "test", null).token();
+        String bobId = accounts.createLocal("bob", null, "bob-password", false, null, "account.register").id();
+        bob = sessions.create(bobId, Actor.Via.BEARER, "test", null).token();
     }
 
     @AfterEach
@@ -128,7 +141,8 @@ class ItemsApiTest {
         JsonObject page = json(r);
         assertEquals(JsonParser.parseString("{\"id\":\"" + id + "\",\"kind\":\"video\",\"title\":\"Song\","
                 + "\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\",\"presentAsAudio\":false,"
-                + "\"addedAt\":3,\"mediaVersion\":0,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false}}"), page);
+                + "\"addedAt\":3,\"mediaVersion\":0,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
+                + "\"canRetry\":false}}"), page);
         JsonObject mine = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you");
         assertTrue(mine.get("inLibrary").getAsBoolean() && mine.get("canEdit").getAsBoolean());
         assertFalse(mine.get("canPurge").getAsBoolean());
@@ -214,5 +228,171 @@ class ItemsApiTest {
         HttpError e = org.junit.jupiter.api.Assertions.assertThrows(HttpError.class,
                 () -> ItemsApi.parse(JsonParser.parseString("{\"presentAsAudio\":null}").getAsJsonObject()));
         assertEquals("invalid_present_as_audio", e.code());
+    }
+
+    /** A YouTube item alice added (in her library) whose download job failed. */
+    private String failedYoutubeItem() throws Exception {
+        String id = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source, youtube_id,"
+                    + " added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                    + " VALUES (?, 'video', 'Clip', 'youtube', ?, ?, 3, 'pending', '720p30', 1)")) {
+                ps.setString(1, id);
+                String hex = id.replace("-", ""); ps.setString(2, hex.substring(hex.length() - 11));
+                ps.setString(3, aliceId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at,"
+                    + " via) VALUES (?, ?, 3, 'youtube')")) {
+                ps.setString(1, aliceId);
+                ps.setString(2, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        jobs.enqueue(id, io.siggi.togethertunes.ingest.IngestJob.Kind.YOUTUBE);
+        failRunning(id);
+        return id;
+    }
+
+    /** Claims the item's queued job and fails it, as a download that went wrong. */
+    private void failRunning(String itemId) throws Exception {
+        io.siggi.togethertunes.ingest.IngestJob job = jobs.claimNext();
+        assertEquals(itemId, job.itemId());
+        assertTrue(jobs.fail(job.id(), "HTTP Error 429: Too Many Requests", "failed"));
+    }
+
+    private int audits(String itemId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = 'item.ingest_retried' AND target = ?")) {
+                ps.setString(1, itemId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        });
+    }
+
+    @Test
+    void retryFetchesAFailedYoutubeItemAgain() throws Exception {
+        String id = failedYoutubeItem();
+        String path = "/api/items/" + id + "/retry";
+        assertTrue(json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean(), "the adder, while it is in her library");
+        assertFalse(json(call("GET", "/api/items/" + id, bob, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean());
+        assertFalse(json(call("GET", "/api/items/" + id, null, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean());
+
+        // refused: anonymous (and guests), another user
+        HttpResponse<String> anonymous = call("POST", path, null, null);
+        assertEquals(401, anonymous.statusCode());
+        assertEquals("not_authenticated", code(anonymous));
+        HttpResponse<String> other = call("POST", path, bob, null);
+        assertEquals(403, other.statusCode(), other.body());
+        assertEquals("forbidden", code(other));
+        assertEquals(0, audits(id));
+
+        // the adder retries: a new job, the item pending again, audited
+        HttpResponse<String> r = call("POST", path, alice, null);
+        assertEquals(202, r.statusCode(), r.body());
+        JsonObject retried = json(r);
+        assertEquals(id, retried.get("itemId").getAsString());
+        assertEquals("pending", retried.get("status").getAsString());
+        assertEquals("pending", json(call("GET", "/api/items/" + id, null, null)).get("status").getAsString());
+        io.siggi.togethertunes.ingest.IngestJob job = jobs.latestForItem(id).orElseThrow();
+        assertEquals(retried.get("jobId").getAsString(), job.id());
+        assertEquals(io.siggi.togethertunes.ingest.IngestJob.Kind.YOUTUBE, job.kind());
+        assertEquals(1, audits(id));
+        assertFalse(json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean(), "not while it is fetched");
+
+        // a second click while queued, and while running → 409
+        HttpResponse<String> again = call("POST", path, alice, null);
+        assertEquals(409, again.statusCode());
+        assertEquals("ingest_in_progress", code(again));
+        io.siggi.togethertunes.ingest.IngestJob running = jobs.claimNext();
+        assertEquals("ingest_in_progress", code(call("POST", path, admin, null)));
+
+        // it fails again at once: the rate limit holds the next retry for 30 s
+        assertTrue(jobs.fail(running.id(), "still throttled", "failed"));
+        HttpResponse<String> soon = call("POST", path, alice, null);
+        assertEquals(429, soon.statusCode(), soon.body());
+        assertEquals("retry_too_soon", code(soon));
+        assertTrue(soon.headers().firstValue("Retry-After").isPresent());
+        clock.advance(29_000);
+        assertEquals("retry_too_soon", code(call("POST", path, admin, null)), "per item, whoever asks");
+        clock.advance(1_000);
+
+        // ytdlp.enabled off → refused for everyone
+        settings.set(Settings.YTDLP_ENABLED, false);
+        HttpResponse<String> off = call("POST", path, admin, null);
+        assertEquals(403, off.statusCode());
+        assertEquals("feature_disabled", code(off));
+        assertFalse(json(call("GET", "/api/items/" + id, admin, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean());
+        settings.set(Settings.YTDLP_ENABLED, true);
+
+        // below the free-space minimum → 507
+        free.set(1L << 30);
+        HttpResponse<String> full = call("POST", path, admin, null);
+        assertEquals(507, full.statusCode());
+        assertEquals("insufficient_storage", code(full));
+        free.set(50L << 30);
+
+        // an administrator (admin.jobs) retries it too
+        assertEquals(202, call("POST", path, admin, null).statusCode());
+        assertEquals(2, audits(id));
+        failRunning(id);
+
+        // out of alice's library she may no longer edit it, so no retry either
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM library_entries WHERE item_id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        clock.advance(30_000);
+        assertEquals("forbidden", code(call("POST", path, alice, null)));
+    }
+
+    @Test
+    void retryIsOnlyForFailedYoutubeItems() throws Exception {
+        String upload = item("audio");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'failed', error = 'x' WHERE id = ?")) {
+                ps.setString(1, upload);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        HttpResponse<String> notYoutube = call("POST", "/api/items/" + upload + "/retry", alice, null);
+        assertEquals(409, notYoutube.statusCode());
+        assertEquals("not_youtube", code(notYoutube));
+        assertFalse(json(call("GET", "/api/items/" + upload, alice, null)).getAsJsonObject("you").get("canRetry")
+                .getAsBoolean(), "a failed upload's file isn't kept");
+
+        String ready = failedYoutubeItem();
+        assertEquals(202, call("POST", "/api/items/" + ready + "/retry", alice, null).statusCode());
+        io.siggi.togethertunes.ingest.IngestJob job = jobs.claimNext();
+        assertTrue(jobs.complete(job.id(), "done"));
+        clock.advance(60_000);
+        assertEquals("item_not_failed", code(call("POST", "/api/items/" + ready + "/retry", alice, null)));
+
+        String purged = failedYoutubeItem();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'purged' WHERE id = ?")) {
+                ps.setString(1, purged);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals("item_purged", code(call("POST", "/api/items/" + purged + "/retry", admin, null)));
+        HttpResponse<String> missing = call("POST", "/api/items/" + UuidV7.newId() + "/retry", admin, null);
+        assertEquals(404, missing.statusCode());
+        assertEquals("item_not_found", code(missing));
     }
 }
