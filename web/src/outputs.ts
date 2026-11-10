@@ -39,6 +39,15 @@ export interface OutputRow {
   playbackUrl?: string;
   rtmpAvailable?: boolean;
   status?: PushStatus;
+  /** RTMP, the owner only: why the server turned it off (`idle`: the room was idle too long). */
+  stopped?: { reason: string; at: number; idleMinutes: number };
+}
+
+/** The RTMP line after the server's idle stop turned the output off, or undefined. */
+export function idleStopLine(row: OutputRow): string | undefined {
+  if (row.enabled || row.stopped === undefined || row.stopped.reason !== "idle") return undefined;
+  const n = row.stopped.idleMinutes;
+  return "Stopped after " + n + (n === 1 ? " minute" : " minutes") + " with an empty queue. Turn on to start again.";
 }
 
 /**
@@ -96,7 +105,10 @@ export function statusLabel(status: string | undefined): string {
  * how many seconds.
  */
 export function pushLine(live: OutputView | undefined, row: OutputRow, nowMs: number): string {
-  if (!row.active) return row.serverEnabled ? "Off" : "Off (disabled by the server admin)";
+  if (!row.active) {
+    if (!row.serverEnabled) return "Off (disabled by the server admin)";
+    return idleStopLine(row) ?? "Off";
+  }
   if (row.rtmpAvailable === false) return "Error: this server can't push RTMP (ffmpeg isn't configured)";
   const state = live?.status ?? row.status?.state ?? "connecting";
   let text = statusLabel(state);

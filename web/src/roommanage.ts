@@ -13,7 +13,8 @@ import { navigate, pageSignal, reloadPage } from "./nav.js";
 import { button, formatTime, h } from "./dom.js";
 import { itemPath, statusBadge, type ItemSummary, type Page } from "./media.js";
 import {
-  assignableRoles, buildPatch, canManageMember, describeDefault, getPath, GROUPS, parseInput, serverDisabledReason,
+  assignableRoles, buildPatch, canManageMember, describeDefault, getPath, GROUPS, parseInput, serverCapNote,
+  serverDisabledReason,
   SETTINGS, thresholdToPercent, type ServerSwitches, type SettingDef,
 } from "./roomsettings.js";
 import {
@@ -183,6 +184,7 @@ function renderSettings(): void {
     for (const def of SETTINGS) {
       if (def.group !== group) continue;
       const reason = serverDisabledReason(def.key, switches);
+      const cap = reason === null ? serverCapNote(def.key, getPath(room.settings, def.key), switches) : null;
       const input = settingInput(def, getPath(room.settings, def.key), readOnly || reason !== null);
       inputs.set(def.key, input);
       const label = h("label", { for: input.id, text: def.label });
@@ -190,6 +192,7 @@ function renderSettings(): void {
         label, input,
         h("span", { class: "muted small", text: "default: " + describeDefault(def) }),
         reason !== null ? h("span", { class: "small server-disabled-note", text: reason }) : null,
+        cap !== null ? h("span", { class: "muted small setting-help", text: cap }) : null,
         def.help !== undefined ? h("span", { class: "muted small setting-help", text: def.help }) : null);
       if (reason !== null) row.title = reason;
       fieldset.append(row);
