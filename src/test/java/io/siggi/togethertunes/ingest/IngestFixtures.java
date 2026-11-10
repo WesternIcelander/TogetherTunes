@@ -69,6 +69,50 @@ final class IngestFixtures {
         });
     }
 
+    /** A new user with this username; returns its id. */
+    String newUser(String username) throws SQLException {
+        String id = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO users (id, username, display_name, created_at, disabled) VALUES (?, ?, ?, ?, 0)")) {
+                ps.setString(1, id);
+                ps.setString(2, username);
+                ps.setString(3, username);
+                ps.setLong(4, 1_700_000_000_000L);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    /** Puts the item into {@code userId}'s library with {@code via}. */
+    void addToLibrary(String itemId, String userId, String via) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at, via)"
+                    + " VALUES (?, ?, ?, ?)")) {
+                ps.setString(1, userId);
+                ps.setString(2, itemId);
+                ps.setLong(3, 1_700_000_000_000L);
+                ps.setString(4, via);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Sets an item's status. */
+    void status(String itemId, String status) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = ? WHERE id = ?")) {
+                ps.setString(1, status);
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
     /** Puts the item into the fixture user's library. */
     void addToLibrary(String itemId) throws SQLException {
         String user = user();

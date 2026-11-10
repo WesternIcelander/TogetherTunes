@@ -20,6 +20,7 @@ public enum Permission {
     ADMIN_USERS("admin.users", null, "Manage user accounts"),
     ADMIN_ROLES("admin.roles", null, "Manage roles and their permissions"),
     ADMIN_PROVIDERS("admin.providers", null, "Manage OIDC login providers"),
+    ADMIN_JOBS("admin.jobs", null, "See every encode job with its log; retry failed jobs and cancel queued ones"),
     IP_VIEW("ip.view", null, "See IP addresses anywhere: guests, sessions, audit log, room member lists"),
     LIBRARY_UPLOAD("library.upload", null, "Upload files"),
     LIBRARY_YOUTUBE("library.youtube", Feature.YOUTUBE, "Import from YouTube"),

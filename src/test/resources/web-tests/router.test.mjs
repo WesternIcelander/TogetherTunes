@@ -15,7 +15,7 @@ function click(over = {}) {
 }
 
 test("routes: the pages the shell shows, rooms, and everything else", () => {
-  for (const p of ["/", "/index.html", "/rooms/", "/library/", "/playlists/", "/account/", "/admin/",
+  for (const p of ["/", "/index.html", "/rooms/", "/library/", "/playlists/", "/encodes/", "/account/", "/admin/",
     "/items/0190abcd-ef01-7000-8000-000000000001", "/rooms/lounge/manage", "/rooms/lounge/manage/"]) {
     assert.deepEqual(R.routeOf(p), { kind: "page" }, p);
   }

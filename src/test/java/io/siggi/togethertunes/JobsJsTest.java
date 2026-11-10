@@ -1,0 +1,54 @@
+package io.siggi.togethertunes;
+
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
+/**
+ * The encode jobs page in the web UI ({@code docs/library-and-ingest.md#encode-jobs-page}): runs
+ * {@code src/test/resources/web-tests/jobs.test.mjs} against the compiled {@code web/js/jobtext.js},
+ * and checks that the admin page's Jobs tab and the Encodes page are wired to their APIs (the admin
+ * one with Retry, Cancel and logs, the user one read only) and that the nav links the Encodes page.
+ */
+class JobsJsTest {
+    private static String read(String path) throws Exception {
+        return Files.readString(NodeTests.resource(path), StandardCharsets.UTF_8);
+    }
+
+    @Test
+    void jobTextUnitTestsPass() throws Exception {
+        NodeTests.run("jobs.test.mjs", Map.of("JOBTEXT_JS", "web/js/jobtext.js"));
+    }
+
+    @Test
+    void adminTabAndEncodesPageUseTheirApis() throws Exception {
+        String admin = read("web/js/admin.js");
+        for (String s : List.of("from \"./jobs.js\"", "\"/api/admin/jobs\"", "admin: true", "\"jobs\"")) {
+            assertTrue(admin.contains(s), s);
+        }
+        String adminPage = read("web/admin/index.html");
+        assertTrue(adminPage.contains("data-tab=\"jobs\""), adminPage);
+        assertTrue(adminPage.contains("id=\"tab-jobs\""), adminPage);
+        assertTrue(adminPage.contains("id=\"jobs-root\""), adminPage);
+
+        String encodes = read("web/js/encodes.js");
+        for (String s : List.of("\"/api/jobs\"", "admin: false", "requireUser")) {
+            assertTrue(encodes.contains(s), s);
+        }
+        String jobs = read("web/js/jobs.js");
+        for (String s : List.of("/retry`", "/cancel`", "opts.admin ? actions(row, s) : null", "visibilityState",
+                "signal: pageSignal()")) {
+            assertTrue(jobs.contains(s), s);
+        }
+        assertFalse(jobs.contains("innerHTML"), "text only, never parsed as HTML");
+
+        String session = read("web/js/session.js");
+        assertTrue(session.contains("\"/encodes/\"") && session.contains("\"Encodes\""), session);
+        assertTrue(read("web/library/index.html").contains("href=\"/encodes/\""));
+    }
+}

@@ -14,7 +14,8 @@ class PermissionTest {
     @Test
     void theFullListFromTheDocs() {
         // docs/auth.md#roles-and-permissions
-        assertEquals(List.of("admin.settings", "admin.users", "admin.roles", "admin.providers", "ip.view",
+        assertEquals(List.of("admin.settings", "admin.users", "admin.roles", "admin.providers", "admin.jobs",
+                        "ip.view",
                         "library.upload", "library.youtube", "library.viewAll", "library.editAny", "library.purge",
                         "rooms.create", "rooms.moderateAny", "output.overlayVideo"),
                 Arrays.stream(Permission.values()).map(Permission::wireName).toList());

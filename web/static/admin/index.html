@@ -14,6 +14,7 @@
     <a href="#users" data-tab="users">Users</a>
     <a href="#roles" data-tab="roles">Roles</a>
     <a href="#settings" data-tab="settings">Settings</a>
+    <a href="#jobs" data-tab="jobs">Jobs</a>
   </nav>
   <p id="admin-status" role="status"></p>
 
@@ -76,6 +77,15 @@
       <button type="submit">Save settings</button>
       <p class="error" role="alert"></p>
     </form>
+  </section>
+
+  <section id="tab-jobs" hidden>
+    <h2>Encode jobs</h2>
+    <p>Every ingest job: uploads, YouTube downloads, re-encodes for a new output profile and quality
+      re-encodes. The queue is listed in the order the workers take it. A failed job can be retried; a queued
+      one can be cancelled (a new item's ingest then leaves the item failed, a re-encode is only dropped).
+      The lists update every few seconds.</p>
+    <div id="jobs-root"></div>
   </section>
 </body>
 </html>

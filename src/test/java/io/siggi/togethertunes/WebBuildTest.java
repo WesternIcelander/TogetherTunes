@@ -113,6 +113,7 @@ class WebBuildTest {
         Map<String, String> pages = Map.of(
                 "web/library/index.html", "library",
                 "web/playlists/index.html", "playlists",
+                "web/encodes/index.html", "encodes",
                 "web/item.html", "item",
                 "web/room.html", "room",
                 "web/rooms/index.html", "rooms");
@@ -125,6 +126,7 @@ class WebBuildTest {
         // Library and playlists need an account; the item page is open to anyone with the link.
         assertTrue(read("web/js/library.js").contains("requireUser"));
         assertTrue(read("web/js/playlists.js").contains("requireUser"));
+        assertTrue(read("web/js/encodes.js").contains("requireUser"));
         assertFalse(read("web/js/item.js").contains("requireUser"));
         assertTrue(read("web/js/library.js").contains("\"/api/library?\""));
         assertTrue(read("web/js/item.js").contains("/api/items/"));

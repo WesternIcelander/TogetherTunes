@@ -303,6 +303,15 @@ public final class IngestJobs {
     }
 
     /**
+     * The order in which workers take queued jobs ({@link #claimNext}), as an SQL {@code ORDER BY}
+     * list over {@code ingest_jobs} columns (unqualified): new-item jobs, then {@code reencode},
+     * then {@code quality}; oldest first within each. The jobs page lists the queue in this order
+     * ({@link JobList}), so whatever changes the claim order must change both.
+     */
+    static final String CLAIM_ORDER = "CASE WHEN kind = '" + Kind.QUALITY.wire() + "' THEN 2 WHEN kind = '"
+            + Kind.REENCODE.wire() + "' THEN 1 ELSE 0 END, created_at, id";
+
+    /**
      * Takes the oldest queued job: sets it {@code running}, counts the attempt, resets its
      * progress and marks its item {@code processing}. Returns null if nothing is queued. Safe
      * to call from several workers (and processes): a job is handed to exactly one of them.
@@ -315,10 +324,8 @@ public final class IngestJobs {
             IngestJob candidate = db.read(c -> {
                 try (PreparedStatement ps = c.prepareStatement("SELECT " + COLUMNS
                         + " FROM ingest_jobs WHERE state = ?"
-                        + " ORDER BY CASE WHEN kind = ? THEN 2 WHEN kind = ? THEN 1 ELSE 0 END, created_at, id LIMIT 1")) {
+                        + " ORDER BY " + CLAIM_ORDER + " LIMIT 1")) {
                     ps.setString(1, State.QUEUED.wire());
-                    ps.setString(2, Kind.QUALITY.wire());
-                    ps.setString(3, Kind.REENCODE.wire());
                     try (ResultSet rs = ps.executeQuery()) {
                         return rs.next() ? row(rs) : null;
                     }
@@ -428,6 +435,124 @@ public final class IngestJobs {
                 ps.setString(4, State.RUNNING.wire());
                 return ps.executeUpdate() == 1;
             }
+        });
+    }
+
+    /** Writes the audit row of an admin's job action, in the action's transaction. */
+    @FunctionalInterface
+    public interface AuditHook {
+        void write(Connection c, IngestJob job) throws SQLException;
+    }
+
+    /** What {@link #retry} did. */
+    public enum RetryOutcome {
+        /** A new job was queued (or the item's unfinished job returned). */
+        QUEUED,
+        /** No job with this id. */
+        NOT_FOUND,
+        /** The job isn't {@code failed}. */
+        NOT_FAILED,
+        /** The item has a newer job than this one (retried already, or queued again another way). */
+        SUPERSEDED,
+        /** The item was purged since; a YouTube item comes back by adding it to a library again. */
+        ITEM_PURGED
+    }
+
+    /** {@link #retry}'s outcome and, for {@link RetryOutcome#QUEUED}, the new job. */
+    public record Retry(RetryOutcome outcome, IngestJob job) {
+    }
+
+    /**
+     * Retries a failed job ({@code docs/library-and-ingest.md#encode-jobs-page}): queues a new job of
+     * the same kind and tier for its item, which (for kinds that own it) sets the item
+     * {@code pending} again. Only the item's latest job can be retried, and not once the item is
+     * purged. An upload retries from its staging directory, which a failed job leaves in place;
+     * a YouTube job downloads again. {@code audit} runs in the same transaction when a job is queued.
+     */
+    public Retry retry(String jobId, AuditHook audit) throws SQLException {
+        Objects.requireNonNull(jobId);
+        return db.write(c -> {
+            IngestJob job = lock(c, jobId);
+            if (job == null) {
+                return new Retry(RetryOutcome.NOT_FOUND, null);
+            }
+            if (job.state() != State.FAILED) {
+                return new Retry(RetryOutcome.NOT_FAILED, null);
+            }
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM ingest_jobs WHERE item_id = ?"
+                    + " ORDER BY created_at DESC, id DESC LIMIT 1")) {
+                ps.setString(1, job.itemId());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next() || !job.id().equals(rs.getString(1))) {
+                        return new Retry(RetryOutcome.SUPERSEDED, null);
+                    }
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement("SELECT status FROM items WHERE id = ?")) {
+                ps.setString(1, job.itemId());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next() || "purged".equals(rs.getString(1))) {
+                        return new Retry(RetryOutcome.ITEM_PURGED, null);
+                    }
+                }
+            }
+            IngestJob queued = enqueue(job.itemId(), job.kind(), job.tier());
+            if (audit != null) {
+                audit.write(c, job);
+            }
+            return new Retry(RetryOutcome.QUEUED, queued);
+        });
+    }
+
+    /** What {@link #cancel} did. */
+    public enum CancelOutcome {
+        CANCELLED, NOT_FOUND,
+        /** The job is running or finished: only a queued job can be cancelled. */
+        NOT_QUEUED
+    }
+
+    /** {@code items.error} of an item whose ingest an admin cancelled. */
+    public static final String CANCELLED_ERROR = "Cancelled by an administrator";
+
+    /**
+     * Cancels a queued job: it becomes {@code failed} (with a log line saying so), so it can be
+     * {@linkplain #retry retried} like any failed job. For a kind that owns the item's status (a new
+     * item's ingest) the item becomes {@code failed} with {@link #CANCELLED_ERROR}; a
+     * {@code reencode} or {@code quality} job is only dropped and the item stays {@code ready}
+     * (both come back at the next start, like failed ones, while the item still needs them).
+     * {@code audit} runs in the same transaction.
+     */
+    public CancelOutcome cancel(String jobId, AuditHook audit) throws SQLException {
+        Objects.requireNonNull(jobId);
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            IngestJob job = lock(c, jobId);
+            if (job == null) {
+                return CancelOutcome.NOT_FOUND;
+            }
+            if (job.state() != State.QUEUED) {
+                return CancelOutcome.NOT_QUEUED;
+            }
+            JobLog log = JobLog.resume(job.log());
+            log.append("[ingest] Cancelled by an administrator at " + EpochMs.format(now));
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE ingest_jobs SET state = ?, finished_at = ?, log = ? WHERE id = ? AND state = ?")) {
+                ps.setString(1, State.FAILED.wire());
+                ps.setLong(2, now);
+                ps.setString(3, log.tail());
+                ps.setString(4, jobId);
+                ps.setString(5, State.QUEUED.wire());
+                if (ps.executeUpdate() != 1) {
+                    return CancelOutcome.NOT_QUEUED;
+                }
+            }
+            if (job.kind().ownsItemStatus()) {
+                setItemStatus(c, job.itemId(), "failed", CANCELLED_ERROR);
+            }
+            if (audit != null) {
+                audit.write(c, job);
+            }
+            return CancelOutcome.CANCELLED;
         });
     }
 

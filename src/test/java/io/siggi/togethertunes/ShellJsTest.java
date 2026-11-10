@@ -29,6 +29,7 @@ class ShellJsTest {
             "web/rooms/index.html", "web/js/rooms.js",
             "web/library/index.html", "web/js/library.js",
             "web/playlists/index.html", "web/js/playlists.js",
+            "web/encodes/index.html", "web/js/encodes.js",
             "web/account/index.html", "web/js/account.js",
             "web/admin/index.html", "web/js/admin.js",
             "web/item.html", "web/js/item.js",

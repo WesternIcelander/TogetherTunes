@@ -40,7 +40,7 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 /** `GET /api/items/{id}/job`. */
 export interface JobView {
   id: string;
-  kind: "upload" | "youtube" | "reencode" | "refetch";
+  kind: "upload" | "youtube" | "reencode" | "refetch" | "quality";
   state: "queued" | "running" | "done" | "failed";
   progress: number;
   attempts: number;
@@ -150,7 +150,8 @@ export function watchItem(itemId: string, onUpdate: (w: Watched) => void,
 
 /** A short line about a job: "Processing 42%", "Queued", "Failed after 2 attempts"… */
 export function jobSummary(job: JobView): string {
-  const kind = { upload: "Upload", youtube: "YouTube download", reencode: "Re-encode", refetch: "Refetch" }[job.kind]
+  const kind = { upload: "Upload", youtube: "YouTube download", reencode: "Re-encode", refetch: "Refetch",
+    quality: "Quality re-encode" }[job.kind]
     ?? job.kind;
   switch (job.state) {
     case "queued": return kind + ": queued";

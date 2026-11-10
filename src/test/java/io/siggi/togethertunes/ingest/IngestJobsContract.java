@@ -597,4 +597,192 @@ abstract class IngestJobsContract {
             assertEquals(1, job.attempts());
         }
     }
+
+    // ------------------------------------------------------------------ encode jobs page
+
+    private static List<String> ids(JobList.Page page) {
+        List<String> out = new ArrayList<>();
+        for (JobList.Row r : page.rows()) {
+            out.add(r.job().id());
+        }
+        return out;
+    }
+
+    /** The active list: running first, then the queue in claim order with its positions. */
+    @Test
+    void activeListShowsRunningThenTheQueueInClaimOrder() throws SQLException {
+        JobList list = new JobList(db, clock);
+        IngestJob quality = jobs.enqueue(fixtures.item("ready"), Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        IngestJob reencode = jobs.enqueue(fixtures.item("ready"), Kind.REENCODE);
+        clock.advance(1);
+        IngestJob running = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        clock.advance(1);
+        IngestJob youtube = jobs.enqueue(fixtures.item("pending"), Kind.YOUTUBE);
+        clock.advance(1);
+        IngestJob upload = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+        assertEquals(running.id(), jobs.claimNext().id());
+
+        JobList.Page page = list.list(JobList.View.ACTIVE, null, 0, 50);
+        assertEquals(List.of(running.id(), youtube.id(), upload.id(), reencode.id(), quality.id()), ids(page));
+        assertNull(page.nextOffset());
+        List<Integer> positions = new ArrayList<>();
+        for (JobList.Row r : page.rows()) {
+            positions.add(r.position());
+        }
+        assertEquals(java.util.Arrays.asList(null, 1, 2, 3, 4), positions);
+        JobList.Row first = page.rows().get(0);
+        assertEquals(State.RUNNING, first.job().state());
+        assertEquals("Song", first.item().title());
+        assertEquals("processing", first.item().status());
+        assertNull(first.job().log(), "lists never carry the log");
+        assertEquals(Tier.QUALITY, page.rows().get(4).job().tier());
+
+        // paging, and the list matches what the workers take next
+        JobList.Page one = list.list(JobList.View.ACTIVE, null, 0, 2);
+        assertEquals(List.of(running.id(), youtube.id()), ids(one));
+        assertEquals(2, one.nextOffset());
+        assertEquals(List.of(upload.id(), reencode.id()), ids(list.list(JobList.View.ACTIVE, null, 2, 2)));
+        for (String next : List.of(youtube.id(), upload.id(), reencode.id(), quality.id())) {
+            assertEquals(next, jobs.claimNext().id());
+        }
+    }
+
+    /** A user's lists hold only items in their library (shares count); positions stay global. */
+    @Test
+    void aUsersListHoldsOnlyTheirLibrarysItems() throws SQLException {
+        JobList list = new JobList(db, clock);
+        String bob = fixtures.newUser("bob");
+        String carol = fixtures.newUser("carol");
+        String others = fixtures.item("pending");
+        fixtures.addToLibrary(others, carol, "upload");
+        IngestJob othersJob = jobs.enqueue(others, Kind.UPLOAD);
+        clock.advance(1);
+        String own = fixtures.item("pending");
+        fixtures.addToLibrary(own, bob, "youtube");
+        IngestJob ownJob = jobs.enqueue(own, Kind.YOUTUBE);
+        clock.advance(1);
+        String shared = fixtures.item("ready");
+        fixtures.addToLibrary(shared, carol, "upload");
+        fixtures.addToLibrary(shared, bob, "share");
+        IngestJob sharedJob = jobs.enqueue(shared, Kind.QUALITY, Tier.QUALITY);
+        clock.advance(1);
+        IngestJob nobodys = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);
+
+        JobList.Page bobs = list.list(JobList.View.ACTIVE, bob, 0, 50);
+        assertEquals(List.of(ownJob.id(), sharedJob.id()), ids(bobs));
+        assertEquals(2, bobs.rows().get(0).position(), "the place in the whole queue");
+        assertEquals(4, bobs.rows().get(1).position());
+        assertEquals(List.of(othersJob.id(), sharedJob.id()), ids(list.list(JobList.View.ACTIVE, carol, 0, 50)));
+        assertEquals(4, ids(list.list(JobList.View.ACTIVE, null, 0, 50)).size());
+        assertTrue(ids(list.list(JobList.View.ACTIVE, fixtures.newUser("dave"), 0, 50)).isEmpty());
+        assertTrue(ids(list.list(JobList.View.ACTIVE, null, 0, 50)).contains(nobodys.id()));
+    }
+
+    /** Failed: only unresolved failures of items that aren't purged; done: the last 24 h. */
+    @Test
+    void failedAndDoneLists() throws SQLException {
+        JobList list = new JobList(db, clock);
+        String a = fixtures.item("pending");
+        IngestJob aJob = jobs.enqueue(a, Kind.UPLOAD);
+        jobs.claimNext();
+        jobs.fail(aJob.id(), "broken", "log\n");
+        clock.advance(1);
+        String b = fixtures.item("pending");
+        IngestJob bFirst = jobs.enqueue(b, Kind.YOUTUBE);
+        jobs.claimNext();
+        jobs.fail(bFirst.id(), "gone", null);
+        clock.advance(1);
+        IngestJob bSecond = jobs.enqueue(b, Kind.YOUTUBE);
+        jobs.claimNext();
+        jobs.complete(bSecond.id(), null);
+        clock.advance(1);
+        String purged = fixtures.item("pending");
+        IngestJob pJob = jobs.enqueue(purged, Kind.UPLOAD);
+        jobs.claimNext();
+        jobs.fail(pJob.id(), "x", null);
+        fixtures.status(purged, "purged");
+
+        JobList.Page failed = list.list(JobList.View.FAILED, null, 0, 50);
+        assertEquals(List.of(aJob.id()), ids(failed), "b's failure was replaced; the purged item's isn't actionable");
+        assertEquals("broken", failed.rows().get(0).item().error());
+        assertEquals(List.of(bSecond.id()), ids(list.list(JobList.View.DONE, null, 0, 50)));
+        clock.advance(JobList.RECENT.toMillis() + 1);
+        assertTrue(ids(list.list(JobList.View.DONE, null, 0, 50)).isEmpty());
+        assertEquals(aJob.id(), list.get(aJob.id()).orElseThrow().job().id());
+        assertTrue(list.get("nope").isEmpty());
+    }
+
+    @Test
+    void retryQueuesTheSameKindAndTierAgain() throws SQLException {
+        String item = fixtures.item("pending");
+        IngestJob job = jobs.enqueue(item, Kind.UPLOAD, Tier.QUALITY);
+        assertEquals(IngestJobs.RetryOutcome.NOT_FAILED, jobs.retry(job.id(), null).outcome());
+        jobs.claimNext();
+        assertEquals(IngestJobs.RetryOutcome.NOT_FAILED, jobs.retry(job.id(), null).outcome());
+        jobs.fail(job.id(), "broken", null);
+        assertEquals("failed", fixtures.itemStatus(item)[0]);
+        clock.advance(10);
+
+        List<String> audited = new ArrayList<>();
+        IngestJobs.Retry retry = jobs.retry(job.id(), (c, j) -> audited.add(j.id()));
+        assertEquals(IngestJobs.RetryOutcome.QUEUED, retry.outcome());
+        assertNotEquals(job.id(), retry.job().id());
+        assertEquals(Kind.UPLOAD, retry.job().kind());
+        assertEquals(Tier.QUALITY, retry.job().tier());
+        assertEquals(State.QUEUED, retry.job().state());
+        assertEquals(List.of(job.id()), audited);
+        assertArrayEquals(new String[] {"pending", null}, fixtures.itemStatus(item));
+        // the old job is superseded now
+        assertEquals(IngestJobs.RetryOutcome.SUPERSEDED, jobs.retry(job.id(), null).outcome());
+        assertEquals(IngestJobs.RetryOutcome.NOT_FOUND, jobs.retry("nope", null).outcome());
+
+        // a re-encode leaves the item ready; a purged item can't be retried
+        String ready = fixtures.item("ready");
+        IngestJob re = jobs.enqueue(ready, Kind.REENCODE);
+        while (true) {
+            IngestJob claimed = jobs.claimNext();
+            if (claimed.id().equals(re.id())) {
+                break;
+            }
+        }
+        jobs.fail(re.id(), "x", null);
+        IngestJobs.Retry again = jobs.retry(re.id(), null);
+        assertEquals(Kind.REENCODE, again.job().kind());
+        assertEquals("ready", fixtures.itemStatus(ready)[0]);
+        String gone = fixtures.item("pending");
+        IngestJob g = jobs.enqueue(gone, Kind.YOUTUBE);
+        assertEquals(IngestJobs.CancelOutcome.CANCELLED, jobs.cancel(g.id(), null));
+        fixtures.status(gone, "purged");
+        assertEquals(IngestJobs.RetryOutcome.ITEM_PURGED, jobs.retry(g.id(), null).outcome());
+    }
+
+    @Test
+    void cancelDropsAQueuedJob() throws SQLException {
+        String item = fixtures.item("pending");
+        IngestJob job = jobs.enqueue(item, Kind.YOUTUBE);
+        List<String> audited = new ArrayList<>();
+        assertEquals(IngestJobs.CancelOutcome.CANCELLED, jobs.cancel(job.id(), (c, j) -> audited.add(j.id())));
+        assertEquals(List.of(job.id()), audited);
+        IngestJob cancelled = jobs.get(job.id()).orElseThrow();
+        assertEquals(State.FAILED, cancelled.state());
+        assertEquals(NOW, cancelled.finishedAt());
+        assertTrue(cancelled.log().contains("Cancelled by an administrator"), cancelled.log());
+        assertArrayEquals(new String[] {"failed", IngestJobs.CANCELLED_ERROR}, fixtures.itemStatus(item));
+        assertNull(jobs.claimNext(), "a cancelled job never runs");
+        assertEquals(IngestJobs.CancelOutcome.NOT_QUEUED, jobs.cancel(job.id(), null));
+        assertEquals(IngestJobs.CancelOutcome.NOT_FOUND, jobs.cancel("nope", null));
+
+        // a quality job only drops the job; the item stays ready
+        String ready = fixtures.item("ready");
+        IngestJob quality = jobs.enqueue(ready, Kind.QUALITY, Tier.QUALITY);
+        assertEquals(IngestJobs.CancelOutcome.CANCELLED, jobs.cancel(quality.id(), null));
+        assertArrayEquals(new String[] {"ready", null}, fixtures.itemStatus(ready));
+
+        // a running job can't be cancelled
+        String busy = fixtures.item("pending");
+        IngestJob running = jobs.enqueue(busy, Kind.UPLOAD);
+        jobs.claimNext();
+        assertEquals(IngestJobs.CancelOutcome.NOT_QUEUED, jobs.cancel(running.id(), null));
+    }
 }

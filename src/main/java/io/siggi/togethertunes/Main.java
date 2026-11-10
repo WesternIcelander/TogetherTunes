@@ -33,6 +33,8 @@ import io.siggi.togethertunes.ingest.EncodePresets;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
+import io.siggi.togethertunes.ingest.JobList;
+import io.siggi.togethertunes.ingest.JobsApi;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.ReferenceCard;
@@ -321,6 +323,9 @@ public final class Main {
         programOutputs.idleListener(rtmpIdleStop::idle);
         outputControl.idleStop(rtmpIdleStop);
         new StreamOutputsApi(rooms, streamOutputs, outputControl, config.publicBaseUrl()).register(appRouter);
+        // The encode jobs page: /api/admin/jobs... (admin.jobs) and /api/jobs (a user's own library's items).
+        new JobsApi(ingest.jobs(), new JobList(database, Clock.systemUTC()), permissions, ingest::paused,
+                Clock.systemUTC()).register(appRouter);
         admin.settingsListener(() -> Thread.ofVirtual().start(outputControl::reconcile));
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.
         OutputStatusFeed outputStatus = new OutputStatusFeed(streamOutputs, outputControl, roomSocket::outputStatus);

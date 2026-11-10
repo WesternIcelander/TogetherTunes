@@ -3,7 +3,7 @@
 // it runs under Node in the tests (src/test/resources/web-tests/router.test.mjs).
 //
 // While a room plays in listen mode, links to the site's own pages (front page, rooms list,
-// library, playlists, account, administration, item pages, room management) are fetched and
+// library, playlists, encodes, account, administration, item pages, room management) are fetched and
 // swapped into the page; a link back to the playing room shows its view again. Everything else
 // goes to the browser: another room (leave this one, join that one), the login / register /
 // password / setup pages (they change who is listening), the API, media and downloads, test pages,
@@ -13,7 +13,8 @@
 export type Route = { kind: "page" } | { kind: "room"; ref: string } | { kind: "other" };
 
 /** The site pages the shell may show in place (each is a static HTML page with one module). */
-const PAGE_PATHS = new Set(["/", "/index.html", "/rooms/", "/library/", "/playlists/", "/account/", "/admin/"]);
+const PAGE_PATHS = new Set(["/", "/index.html", "/rooms/", "/library/", "/playlists/", "/encodes/",
+  "/account/", "/admin/"]);
 
 function decodeSegment(s: string): string | undefined {
   try {

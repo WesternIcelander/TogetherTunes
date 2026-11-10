@@ -1,6 +1,8 @@
-// The admin pages (/admin/): users, roles and server settings, on top of /api/admin/... (docs/api.md#admin).
+// The admin pages (/admin/): users, roles, server settings and encode jobs, on top of /api/admin/...
+// (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
 import { api, ApiError } from "./api.js";
+import { mountJobs, type JobsView } from "./jobs.js";
 import { pageSignal } from "./nav.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
@@ -116,7 +118,7 @@ function formValue(form: HTMLFormElement, name: string): string {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["users", "roles", "settings"] as const;
+const TABS = ["users", "roles", "settings", "jobs"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -142,6 +144,8 @@ async function showTab(): Promise<void> {
       await loadUsers(true);
     } else if (tab === "roles") {
       await loadRoles();
+    } else if (tab === "jobs") {
+      await loadJobs();
     } else {
       await loadSettings();
     }
@@ -539,6 +543,23 @@ function setUpSettings(): void {
       await loadStorage();
     });
   });
+}
+
+// ------------------------------------------------------------------ jobs
+
+let jobsView: JobsView | undefined;
+
+/** The Jobs tab (admin.jobs): every encode job, with logs, Retry and Cancel (jobs.ts). */
+async function loadJobs(): Promise<void> {
+  if (jobsView === undefined) {
+    jobsView = mountJobs(element("jobs-root"), {
+      base: "/api/admin/jobs",
+      admin: true,
+      onError: (e) => status(message(e)),
+      onDone: (text) => status(text),
+    });
+  }
+  await jobsView.refresh();
 }
 
 // ------------------------------------------------------------------ start

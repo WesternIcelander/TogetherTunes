@@ -42,6 +42,7 @@ export const PASSWORD_PAGE = "/password.html";
 export const ACCOUNT_PAGE = "/account/";
 export const ADMIN_PAGE = "/admin/";
 export const LIBRARY_PAGE = "/library/";
+export const ENCODES_PAGE = "/encodes/";
 export const PLAYLISTS_PAGE = "/playlists/";
 export const ROOMS_PAGE = "/rooms/";
 
@@ -123,7 +124,7 @@ function link(href: string, text: string): HTMLAnchorElement {
 }
 
 /**
- * Fills `<nav id="site-nav">`: the front page and Rooms (for everyone), then Library / Playlists / Account /
+ * Fills `<nav id="site-nav">`: the front page and Rooms (for everyone), then Library / Playlists / Encodes / Account /
  * Administration / Log out for a user, or Log in / Register otherwise. Names are set as text, never parsed as HTML.
  */
 export function renderNav(me: Me): void {
@@ -131,7 +132,8 @@ export function renderNav(me: Me): void {
   if (nav === null) return;
   const items: Node[] = [link("/", "TogetherTunes"), link(ROOMS_PAGE, "Rooms")];
   if (me.kind === "user") {
-    items.push(link(LIBRARY_PAGE, "Library"), link(PLAYLISTS_PAGE, "Playlists"), link(ACCOUNT_PAGE, "Account"));
+    items.push(link(LIBRARY_PAGE, "Library"), link(PLAYLISTS_PAGE, "Playlists"), link(ENCODES_PAGE, "Encodes"),
+      link(ACCOUNT_PAGE, "Account"));
     if (isAdmin(me)) {
       items.push(link(ADMIN_PAGE, "Administration"));
     }

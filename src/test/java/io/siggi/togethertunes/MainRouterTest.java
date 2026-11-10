@@ -219,6 +219,7 @@ class MainRouterTest {
         pages.put("/library/", "/js/library.js");
         pages.put("/playlists/", "/js/playlists.js");
         pages.put("/playlists/?id=0190abcd-ef01-7000-8000-000000000001", "/js/playlists.js");
+        pages.put("/encodes/", "/js/encodes.js");
         pages.put("/account/", "/js/account.js");
         pages.put("/admin/", "/js/admin.js");
         pages.put("/items/0190abcd-ef01-7000-8000-000000000001", "/js/item.js");
