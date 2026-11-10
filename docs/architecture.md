@@ -70,6 +70,7 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 |---|---|---|
 | `http.bind`, `http.port` | `0.0.0.0`, `8080` | TLS is terminated by a reverse proxy, or by the own stack if it supports TLS |
 | `http.publicBaseUrl` | — | **Required.** Used to build stream URLs and OIDC redirect URIs |
+| `http.insecureBaseUrl` | unset (off) | Optional `http://` address of the same server (env `TOGETHERTUNES_HTTP_INSECURE_BASE_URL`; anything but `http://` stops startup with exit code 1). When set and `http.publicBaseUrl` is `https://`, plain HTTP serves only public and unlisted rooms' stream URLs and redirects everything else ([Plain HTTP](#plain-http)). No effect (a startup warning) while `http.publicBaseUrl` is itself `http://` |
 | `data.dir` | `./data` | |
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
 | `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
@@ -92,7 +93,16 @@ Runtime settings live in the DB and are edited in the admin UI: registration mod
 - **Reachability:** web users, and VRChat clients using the `.ts` or HLS outputs, fetch **directly** from the server, so it must be publicly reachable over **HTTPS**. VRChat on Android/Quest refuses plain HTTP. If the host has no public IPv4 address (for example behind CGNAT), run the server on a VPS, or reverse-proxy or tunnel from one. RTMP push only needs outbound connectivity, because viewers fetch the stream from the RTMP service, not from this server. Plain-HTTP deployments are not a supported use case for the upload **pre-check**: it is on only when `http.publicBaseUrl` is `https://` (browsers hash with `crypto.subtle`, which needs a secure context); over HTTP uploads always send every byte ([library-and-ingest.md](library-and-ingest.md#pre-check)).
 - **VRChat allowlist:** a self-hosted domain is not on VRChat's video allowlist. Viewers must enable "Allow Untrusted URLs". In public and group-public instances, the world must also list the domain in its "Video Player Allowed Domains". The UI that shows stream URLs says so generically ("Some players only play URLs from an allowlist…", no product names); the VRChat specifics are in [user-guide.md](user-guide.md#in-vrchat).
 - **Packaging:** ship a Docker image that bundles ffmpeg and yt-dlp, plus a plain jar for running without Docker.
-- **Reverse proxy:** turn off response buffering for `/live/` paths (in nginx: `proxy_buffering off`). Otherwise `.ts` streams stall.
+- **Reverse proxy:** turn off response buffering for `/live/` paths (in nginx: `proxy_buffering off`). Otherwise `.ts` streams stall. The proxy must send `X-Forwarded-Proto` (`https` or `http`) and be in `http.trustedProxies` (loopback always is): that is how the server knows a request came over plain HTTP.
+
+### Plain HTTP
+
+(Siggi, 2026-11-10, found in the manual MP3 check: the trucking games' audio library has no TLS and, given an `https://` URL, connects to port 80 over plain HTTP.) Some players can't use HTTPS at all. With `http.insecureBaseUrl` set (and the reverse proxy forwarding port 80 to the server as well), a request that arrived over plain HTTP (the connection itself, or `X-Forwarded-Proto: http` from a trusted proxy; an untrusted client's `X-Forwarded-Proto` is ignored) is handled like this (`http/PlainHttpRedirect`, a `Router` filter that runs before routing, `output/PlainHttpStreams` for the exemption):
+
+- **Served as normal:** `GET`/`HEAD` of a **public or unlisted room's stream URL by slug**: `/live/{slug}.mp3`, `/live/{slug}.ts`, `/live/{slug}/index.m3u8` and `/live/{slug}/seg/{file}` (the key is the slug of a non-private room; whether the output is on is left to the stream handler, as over HTTPS).
+- **`301`** to the same path and query on `http.publicBaseUrl` (`Location`, empty body) for everything else: pages, `/api/*`, `/media/*`, WebSocket upgrades, unknown paths, other methods on stream URLs, and **private rooms' token URLs** (a token is a capability and must not travel unencrypted, invariant 6; nothing ever offers a token URL as `http://`).
+- The outputs API gives public and unlisted rooms' pull outputs an extra `insecureUrl` (the slug URL on `http.insecureBaseUrl`), shown under the normal URL with Copy ("For players that can't use HTTPS").
+- **Unset (default):** plain HTTP behaves as before, with no redirect. Decided 2026-11-10: the server can't tell a deliberate plain-HTTP setup from a proxy that only forwards HTTPS, and redirecting would add nothing for the latter (its port 80 never reaches the server), so redirects come only with the key. With an `http://` `http.publicBaseUrl` (local testing) nothing is ever redirected, key or not.
 
 ## HTTP stack requirements
 
