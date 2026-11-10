@@ -102,13 +102,23 @@ public final class Items {
     }
 
     /**
-     * The current video trim ({@code docs/library-and-ingest.md#trim}), on the original's timeline.
+     * The current trims ({@code docs/library-and-ingest.md#trim}, {@code #audio-trim}), on the
+     * original's timeline.
      *
-     * @param videoStartMs where the current encode starts
+     * @param videoStartMs where the current encode starts (a video item; 0 for an audio item)
      * @param videoEndMs   where it ends, or null for the end of the original
      * @param originalMs   how long the original is (the timeline's length)
+     * @param audioStartMs the audio trim's start, or null for none (an audio item plays the whole
+     *                     original; a video's audio-only file is its {@code audio.m4a})
+     * @param audioEndMs   the audio trim's end, or null for the end of the original
+     * @param audioOnlyMs  a video's audio-only file's length, or null when it has none (it is then
+     *                     {@code audio.m4a}, as long as the item)
      */
-    public record TrimView(long videoStartMs, Long videoEndMs, long originalMs) {
+    public record TrimView(long videoStartMs, Long videoEndMs, long originalMs, Long audioStartMs, Long audioEndMs,
+                           Long audioOnlyMs) {
+        public TrimView(long videoStartMs, Long videoEndMs, long originalMs) {
+            this(videoStartMs, videoEndMs, originalMs, null, null, null);
+        }
     }
 
     /**
@@ -242,7 +252,19 @@ public final class Items {
         TrimView trim = null;
         if (you.canEdit() && trimmable(c, r) == null) {
             EditSettings edit = EditSettings.parse(MediaVersions.editJson(c, r.id(), r.mediaVersion()));
-            trim = new TrimView(edit.videoStartMs(), edit.videoEndMs(), originalMs(edit, r));
+            Long audioOnlyMs = null;
+            try (PreparedStatement ps = c.prepareStatement("SELECT audio_only_ms FROM items WHERE id = ?")) {
+                ps.setString(1, r.id());
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        long ms = rs.getLong(1);
+                        audioOnlyMs = rs.wasNull() ? null : ms;
+                    }
+                }
+            }
+            boolean video = "video".equals(r.kind());
+            trim = new TrimView(video ? edit.videoStartMs() : 0, video ? edit.videoEndMs() : null, originalMs(edit, r),
+                    edit.audioStartMs(), edit.audioEndMs(), video ? audioOnlyMs : null);
         }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
@@ -258,13 +280,16 @@ public final class Items {
             return edit.originalMs();
         }
         long duration = r.durationMs() == null ? 0 : r.durationMs();
-        return edit.videoTrimmed() ? edit.videoStartMs() + duration : duration;
+        if ("video".equals(r.kind())) {
+            return edit.videoTrimmed() ? edit.videoStartMs() + duration : duration;
+        }
+        return edit.audioTrimmed() ? edit.audioStartMs() + duration : duration;
     }
 
     /** Why the item can't be trimmed now ({@code 409} code), or null if it can. */
     private String trimmable(Connection c, Row r) throws SQLException {
-        if (!"video".equals(r.kind())) {
-            return "not_a_video";
+        if (!"video".equals(r.kind()) && !"audio".equals(r.kind())) {
+            return "item_not_ready";
         }
         if (!"ready".equals(r.status())) {
             return "item_not_ready";
@@ -284,18 +309,52 @@ public final class Items {
         return null;
     }
 
+    /**
+     * A trim range's end as stored: null for the end of the original (also for an end at or after
+     * it).
+     *
+     * @throws HttpError {@code 400 invalid_trim} if less than {@link IngestPipeline#MIN_TRIM_MS} is
+     *                   left or the start isn't before the end
+     */
+    private static Long checkRange(long start, Long end, long originalMs) {
+        if (end != null && originalMs > 0 && end >= originalMs) {
+            end = null; // to the end of the original
+        }
+        long effectiveEnd = end != null ? end : originalMs;
+        if (start < 0 || (end != null && end <= start) || effectiveEnd - start < IngestPipeline.MIN_TRIM_MS) {
+            throw new HttpError(400, "invalid_trim", "The trim must keep at least "
+                    + IngestPipeline.MIN_TRIM_MS / 1000 + " s of the original, with the start before the end");
+        }
+        return end;
+    }
+
     /** Where trim jobs are queued ({@code POST /api/items/{id}/trim}); no trims until set. */
     public void trimJobs(IngestJobs jobs) {
         this.trimJobs = jobs;
     }
 
     /**
-     * A new video trim ({@code docs/library-and-ingest.md#trim}) on the original's timeline.
+     * A new trim ({@code docs/library-and-ingest.md#trim}, {@code #audio-trim}) on the original's
+     * timeline: the video trim, the audio trim, or both.
      *
+     * @param video        whether the video trim is set
      * @param videoStartMs where the encode starts, ≥ 0
      * @param videoEndMs   where it ends, or null for the end of the original
+     * @param audio        whether the audio trim is set
+     * @param audioStartMs where the audio trim starts, or null to remove it
+     * @param audioEndMs   where it ends, or null for the end of the original
      */
-    public record Trim(long videoStartMs, Long videoEndMs) {
+    public record Trim(boolean video, long videoStartMs, Long videoEndMs, boolean audio, Long audioStartMs,
+                       Long audioEndMs) {
+        /** A video trim only. */
+        public Trim(long videoStartMs, Long videoEndMs) {
+            this(true, videoStartMs, videoEndMs, false, null, null);
+        }
+
+        /** An audio trim only ({@code startMs} null: remove it). */
+        public static Trim audio(Long startMs, Long endMs) {
+            return new Trim(false, 0, null, true, startMs, endMs);
+        }
     }
 
     /**
@@ -321,10 +380,10 @@ public final class Items {
                 throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
                         + " someone with library.editAny can trim it");
             }
-            String why = trimmable(c, row);
+            String why = trim.video() && !"video".equals(row.kind()) ? "not_a_video" : trimmable(c, row);
             if (why != null) {
                 throw new HttpError(409, why, switch (why) {
-                    case "not_a_video" -> "Only video items can be trimmed";
+                    case "not_a_video" -> "Only video items have a video trim";
                     case "item_not_ready" -> "The item isn't ready";
                     default -> "The item's original file isn't kept, so it can't be trimmed";
                 });
@@ -335,30 +394,43 @@ public final class Items {
             String currentJson = MediaVersions.editJson(c, itemId, row.mediaVersion());
             EditSettings current = EditSettings.parse(currentJson);
             long originalMs = originalMs(current, row);
-            long start = trim.videoStartMs();
-            Long end = trim.videoEndMs();
-            if (end != null && originalMs > 0 && end >= originalMs) {
-                end = null; // to the end of the original
+            boolean changed = false;
+            long start = current.videoStartMs();
+            Long end = current.videoEndMs();
+            if (trim.video()) {
+                start = trim.videoStartMs();
+                end = checkRange(start, trim.videoEndMs(), originalMs);
+                changed = start != current.videoStartMs() || !Objects.equals(end, current.videoEndMs());
             }
-            long effectiveEnd = end != null ? end : originalMs;
-            if (start < 0 || (end != null && end <= start)
-                    || effectiveEnd - start < IngestPipeline.MIN_TRIM_MS) {
-                throw new HttpError(400, "invalid_trim", "The trim must keep at least "
-                        + IngestPipeline.MIN_TRIM_MS / 1000 + " s of the original, with the start before the end");
+            Long audioStart = current.audioStartMs();
+            Long audioEnd = current.audioEndMs();
+            if (trim.audio()) {
+                audioStart = trim.audioStartMs();
+                audioEnd = audioStart == null ? null : checkRange(audioStart, trim.audioEndMs(), originalMs);
+                if (audioStart != null && audioStart == 0 && audioEnd == null && !"video".equals(row.kind())) {
+                    audioStart = null; // an audio item's whole original is no trim
+                }
+                changed |= !Objects.equals(audioStart, current.audioStartMs())
+                        || !Objects.equals(audioEnd, current.audioEndMs());
             }
-            if (start == current.videoStartMs() && Objects.equals(end, current.videoEndMs())) {
+            if (!changed) {
                 throw new HttpError(409, "no_change", "The item already has this trim");
             }
-            String targetJson = EditSettings.withVideoTrim(currentJson, start, end, null);
             IngestJob job;
             try {
-                job = jobs.enqueueTrim(itemId, targetJson == null ? "{}" : targetJson);
+                job = jobs.enqueueTrim(itemId, EditSettings.job(trim.video(), start, end, trim.audio(), audioStart, audioEnd));
             } catch (IngestJobs.ItemBusy e) {
                 throw new HttpError(409, "item_busy", e.getMessage());
             }
             Map<String, Object> details = new LinkedHashMap<>();
-            details.put("videoStartMs", start);
-            details.put("videoEndMs", end);
+            if (trim.video()) {
+                details.put("videoStartMs", start);
+                details.put("videoEndMs", end);
+            }
+            if (trim.audio()) {
+                details.put("audioStartMs", audioStart);
+                details.put("audioEndMs", audioEnd);
+            }
             details.put("jobId", job.id());
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_TRIMMED, itemId, details);
             return page(c, row, you);

@@ -48,14 +48,17 @@ import java.util.Set;
  *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
  *       forbidden} for other users); {@code 404 item_not_found}, {@code 409 nothing_to_undo},
  *       {@code 409 item_busy}.</li>
- *   <li>{@code POST /api/items/{id}/trim} {@code {"videoStartMs", "videoEndMs"?}} → {@code 202}, the
- *       item page: trim a video item ({@code docs/library-and-ingest.md#trim}, {@link Items#trim}):
- *       queues a {@code trim} job. Times in ms on the original's timeline; {@code videoEndMs} null or
- *       absent (or at/after the original's end) = to the end. Users who may edit the item ({@code 401
+ *   <li>{@code POST /api/items/{id}/trim} {@code {"videoStartMs", "videoEndMs"?}} and/or
+ *       {@code {"audioStartMs", "audioEndMs"?}} → {@code 202}, the item page: trim an item
+ *       ({@code docs/library-and-ingest.md#trim}, {@code #audio-trim}, {@link Items#trim}): queues a
+ *       {@code trim} job. Times in ms on the original's timeline; an end null or absent (or at/after
+ *       the original's end) = to the end; {@code audioStartMs: null} removes the audio trim. The video
+ *       trim is for video items only ({@code 409 not_a_video}). Users who may edit the item ({@code 401
  *       not_authenticated}, {@code 403 forbidden}); {@code 404 item_not_found}; {@code 400
  *       invalid_trim} / {@code unknown_field}; {@code 409 not_a_video}, {@code item_not_ready},
  *       {@code no_original}, {@code no_change}, {@code item_busy}. The item page carries the current
- *       trim as {@code trim: {"videoStartMs", "videoEndMs"?, "originalMs"}} for those who may trim it.</li>
+ *       trims as {@code trim: {"videoStartMs", "videoEndMs"?, "originalMs", "audioStartMs"?, "audioEndMs"?,
+ *       "audioOnlyMs"?}} for those who may trim it.</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
  *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",
@@ -202,25 +205,64 @@ public final class ItemsApi {
         response.json(202, page);
     }
 
-    /** The body of {@code POST /api/items/{id}/trim}: {@code {"videoStartMs", "videoEndMs"?}}. */
+    /**
+     * The body of {@code POST /api/items/{id}/trim}: the video trim {@code {"videoStartMs",
+     * "videoEndMs"?}}, the audio trim {@code {"audioStartMs", "audioEndMs"?}} ({@code audioStartMs}
+     * null: remove it), or both.
+     */
     static Items.Trim parseTrim(JsonObject body) {
         if (body == null) {
-            throw new HttpError(400, "invalid_trim", "Expected {\"videoStartMs\", \"videoEndMs\"}");
+            throw new HttpError(400, "invalid_trim", "Expected {\"videoStartMs\", \"videoEndMs\"} and/or"
+                    + " {\"audioStartMs\", \"audioEndMs\"}");
         }
         for (String key : body.keySet()) {
-            if (!key.equals("videoStartMs") && !key.equals("videoEndMs")) {
+            if (!key.equals("videoStartMs") && !key.equals("videoEndMs") && !key.equals("audioStartMs")
+                    && !key.equals("audioEndMs")) {
                 throw new HttpError(400, "unknown_field", "Unknown field: " + key);
             }
         }
-        Long start = millis(body.get("videoStartMs"));
-        if (start == null) {
-            throw new HttpError(400, "invalid_trim", "videoStartMs must be a whole number of milliseconds ≥ 0");
+        boolean video = body.has("videoStartMs") || body.has("videoEndMs");
+        boolean audio = body.has("audioStartMs") || body.has("audioEndMs");
+        if (!video && !audio) {
+            throw new HttpError(400, "invalid_trim", "Expected videoStartMs or audioStartMs");
         }
-        Long end = millis(body.get("videoEndMs"));
-        if (end == null && body.has("videoEndMs") && !body.get("videoEndMs").isJsonNull()) {
-            throw new HttpError(400, "invalid_trim", "videoEndMs must be a whole number of milliseconds, or null");
+        long start = 0;
+        Long end = null;
+        if (video) {
+            Long s = millis(body.get("videoStartMs"));
+            if (s == null) {
+                throw new HttpError(400, "invalid_trim", "videoStartMs must be a whole number of milliseconds ≥ 0");
+            }
+            start = s;
+            end = end(body, "videoEndMs");
         }
-        return new Items.Trim(start, end);
+        Long audioStart = null;
+        Long audioEnd = null;
+        if (audio) {
+            JsonElement a = body.get("audioStartMs");
+            if (a == null) {
+                throw new HttpError(400, "invalid_trim", "audioStartMs must be given with audioEndMs");
+            }
+            if (!a.isJsonNull()) {
+                audioStart = millis(a);
+                if (audioStart == null) {
+                    throw new HttpError(400, "invalid_trim",
+                            "audioStartMs must be a whole number of milliseconds ≥ 0, or null to remove the audio trim");
+                }
+                audioEnd = end(body, "audioEndMs");
+            } else if (body.has("audioEndMs") && !body.get("audioEndMs").isJsonNull()) {
+                throw new HttpError(400, "invalid_trim", "audioEndMs needs an audioStartMs");
+            }
+        }
+        return new Items.Trim(video, start, end, audio, audioStart, audioEnd);
+    }
+
+    private static Long end(JsonObject body, String key) {
+        Long end = millis(body.get(key));
+        if (end == null && body.has(key) && !body.get(key).isJsonNull()) {
+            throw new HttpError(400, "invalid_trim", key + " must be a whole number of milliseconds, or null");
+        }
+        return end;
     }
 
     /** A whole, non-negative number of milliseconds (at most 30 days), or null. */

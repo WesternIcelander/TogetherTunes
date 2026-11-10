@@ -130,7 +130,7 @@ public final class IngestJobs {
     /**
      * Queues a {@code trim} job applying {@code editJson} ({@code docs/library-and-ingest.md#trim}).
      * The item's unfinished job decides: none → a new trim job; a queued {@code trim} job takes the
-     * new settings (the latest edit wins); a queued {@code reencode} or {@code quality} job is
+     * new settings ({@link EditSettings#mergeJobs}: the latest edit of each part wins); a queued {@code reencode} or {@code quality} job is
      * dropped (marked done with a log line; the trim encodes from the original anyway, and the
      * item gets those jobs again afterwards if it still needs them); a running job, or a queued
      * new-item job, → {@link ItemBusy}. Joins the caller's transaction.
@@ -145,16 +145,18 @@ public final class IngestJobs {
                     throw new ItemBusy("This item is being processed right now; try again when its job has ended");
                 }
                 if (active.kind() == Kind.TRIM) {
+                    // the latest change of each part wins; a part only the queued job changes stays
+                    String merged = EditSettings.mergeJobs(active.editJson(), editJson);
                     try (PreparedStatement ps = c.prepareStatement(
                             "UPDATE ingest_jobs SET edit_json = ? WHERE id = ? AND state = ?")) {
-                        ps.setString(1, editJson);
+                        ps.setString(1, merged);
                         ps.setString(2, active.id());
                         ps.setString(3, State.QUEUED.wire());
                         ps.executeUpdate();
                     }
                     return new IngestJob(active.id(), itemId, active.kind(), active.state(), active.attempts(),
                             active.progress(), active.createdAt(), active.startedAt(), active.finishedAt(),
-                            active.log(), active.tier(), editJson);
+                            active.log(), active.tier(), merged);
                 }
                 JobLog log = JobLog.resume(active.log());
                 log.append("[ingest] Dropped at " + EpochMs.format(now) + ": a trim re-encodes the item from its original");

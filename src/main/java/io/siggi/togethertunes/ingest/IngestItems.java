@@ -169,13 +169,25 @@ public final class IngestItems {
     public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
                           boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
                           VersionChange change) throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, mediaVersion, change, null);
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, X264Preset, boolean, Double, Originals.Original, int, VersionChange)};
+     * also records the length of a video item's audio-only file ({@code audio_only_ms},
+     * {@code docs/library-and-ingest.md#audio-trim}; null: it has none, its audio-only file is
+     * {@code audio.m4a}).
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
+                          VersionChange change, Long audioOnlyMs) throws SQLException {
         db.write(c -> {
             if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
                 MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
             }
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
-                    + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?,"
+                    + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?, audio_only_ms = ?,"
                     + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")
                     + " purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
@@ -188,7 +200,12 @@ public final class IngestItems {
                 setDouble(ps, 8, original == null ? null : original.gainDb());
                 ps.setString(9, preset.id());
                 ps.setInt(10, quality ? 1 : 0);
-                ps.setString(11, id);
+                if (audioOnlyMs == null) {
+                    ps.setNull(11, Types.BIGINT);
+                } else {
+                    ps.setLong(11, audioOnlyMs);
+                }
+                ps.setString(12, id);
                 if (ps.executeUpdate() != 1) {
                     throw new SQLException("item " + id + " no longer exists");
                 }

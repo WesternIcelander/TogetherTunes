@@ -99,7 +99,11 @@ import java.util.regex.Pattern;
  * {@link EditSettings}) is applied by every encode from an original or a download
  * ({@code -ss}/{@code -t}); a {@code trim} job first tries a smart re-encode ({@link TrimPlan},
  * {@link #smartTrim}) that keeps the current version's GOPs where it can, and falls back to a full
- * re-encode from the original. A trim's publish can be undone.
+ * re-encode from the original. A trim's publish can be undone. An audio trim
+ * ({@code docs/library-and-ingest.md#audio-trim}) is applied to an audio item's {@code audio.m4a}
+ * (the original then isn't played in browsers); for a video it makes the separate audio-only file
+ * {@link #AUDIO_ONLY} with its index ({@link #audioOnlyVariant}), and a trim job changing only that
+ * keeps the rest of the current version ({@link #audioOnlyTrim}).
  */
 public final class IngestPipeline implements IngestQueue.Handler {
     private static final System.Logger LOG = System.getLogger(IngestPipeline.class.getName());
@@ -108,6 +112,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
     public static final String AUDIO = "audio.m4a";
     public static final String CARD = "card.mp4";
     public static final String COVER = "cover.jpg";
+    /**
+     * A video item's audio-only file, made from its audio trim and played only in audio-only rooms
+     * ({@code docs/library-and-ingest.md#audio-trim}); without an audio trim there is none and
+     * {@link #AUDIO} is used.
+     */
+    public static final String AUDIO_ONLY = "audio-only.m4a";
+    /** The index of {@link #AUDIO_ONLY} with {@link #CARD} as its video, as an audio item's {@code index.bin}. */
+    public static final String AUDIO_ONLY_INDEX = "index-audio-only.bin";
 
     /** Base name of the staged source file of an upload ({@code source} or {@code source.<ext>}). */
     public static final String SOURCE_NAME = "source";
@@ -285,8 +297,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append("[ingest] the item is " + item.status() + "; nothing to trim");
                 return;
             }
-            if (!"video".equals(item.kind())) {
-                throw new IngestFailure("Only video items can be trimmed");
+            if (!"video".equals(item.kind()) && EditSettings.parts(job.editJson()).contains(EditSettings.PART_VIDEO)) {
+                throw new IngestFailure("Only video items have a video trim");
             }
             String original = item.originalFile();
             if (original == null || !isPlainName(original) || !Files.isRegularFile(itemDir(dataDir, item.id()).resolve(original))) {
@@ -303,11 +315,19 @@ public final class IngestPipeline implements IngestQueue.Handler {
             String currentJson = items.editJson(item.id(), item.mediaVersion());
             if (job.kind() == Kind.TRIM) {
                 // the trim asked for, on top of the current settings (an undo meanwhile may have changed them)
-                EditSettings asked = EditSettings.parse(job.editJson());
-                String targetJson = EditSettings.withVideoTrim(currentJson, asked.videoStartMs(), asked.videoEndMs(), null);
-                if (smartTrim(ctx, item, scratch, work, reference, EditSettings.parse(currentJson),
-                        EditSettings.parse(targetJson), targetJson)) {
+                String targetJson = EditSettings.applyJob(currentJson, job.editJson());
+                EditSettings current = EditSettings.parse(currentJson);
+                EditSettings target = EditSettings.parse(targetJson);
+                if (current.sameVideoTrim(target) && current.sameAudioTrim(target)) {
+                    log.append("[ingest] the item already has these trims; nothing to do");
                     return;
+                }
+                if ("video".equals(item.kind())) {
+                    if (current.sameVideoTrim(target)
+                            ? audioOnlyTrim(ctx, item, work, reference, target, targetJson)
+                            : smartTrim(ctx, item, scratch, work, reference, current, target, targetJson)) {
+                        return;
+                    }
                 }
                 run(ctx, item, scratch, work, reference, targetJson, true);
             } else {
@@ -476,14 +496,18 @@ public final class IngestPipeline implements IngestQueue.Handler {
         EditSettings edit = EditSettings.parse(editJson);
         List<String> range = List.of();
         String publishJson = editJson;
-        if (video && !fromPrevious && edit.videoTrimmed()) {
-            long[] r = trimRange(edit, probe, sourceAudioEndUs);
+        long originalAudioEndUs = sourceAudioEndUs;
+        // an audio item's audio trim applies to its audio.m4a; a video's makes its audio-only file (below)
+        boolean audioTrimApplied = !video && !fromPrevious && edit.audioTrimmed();
+        if (!fromPrevious && (video ? edit.videoTrimmed() : edit.audioTrimmed())) {
+            long[] r = video ? trimRange(edit, probe, sourceAudioEndUs)
+                    : trimRange(edit.audioStartMs(), edit.audioEndMs(), probe, sourceAudioEndUs);
             range = rangeArgs(r[0], r[1]);
             expectedUs = r[1] - r[0];
             sourceAudioEndUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
             publishJson = EditSettings.withOriginalMs(editJson, r[2] / 1000);
-            log.append("[ingest] video trim: " + seconds(r[0]) + " to " + seconds(r[1]) + " of the original ("
-                    + seconds(r[2]) + ")");
+            log.append("[ingest] " + (video ? "video" : "audio") + " trim: " + seconds(r[0]) + " to " + seconds(r[1])
+                    + " of the original (" + seconds(r[2]) + ")");
         }
         long lengthUs = expectedUs;
 
@@ -522,7 +546,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path audio = work.resolve(AUDIO);
         List<String> encode = video
                 ? videoEncodeArgs(range, source, probe, loudness, profile, preset, mezz)
-                : audioEncodeArgs(source, probe, loudness, audio);
+                : audioEncodeArgs(range, source, probe, loudness, audio);
         tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(lengthUs))).run();
         double after = encodeTo;
         double stepShare = (1 - encodeTo) / 5;
@@ -560,6 +584,20 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 + (matchedUs != sourceAudioEndUs ? ", decoded " + seconds(matchedUs) : "")
                 + "), avcC matches the " + profile.id() + " reference, " + index.track(SampleIndex.Kind.VIDEO).sampleCount()
                 + " frames with an IDR every 2 s");
+
+        // a video's audio-only file, from its audio trim (docs/library-and-ingest.md#audio-trim)
+        Long audioOnlyMs = null;
+        if (video && edit.audioTrimmed()) {
+            if (fromPrevious) {
+                log.append("[ingest] the audio trim can't be applied without the original; the audio-only file is"
+                        + " audio.m4a now");
+                publishJson = EditSettings.withAudioTrim(publishJson, null, null);
+            } else {
+                audioOnlyMs = audioOnlyVariant(log, source, probe, originalAudioEndUs, edit, work, reference);
+                publishJson = EditSettings.withOriginalMs(publishJson,
+                        Math.max(probe.durationUs(), originalAudioEndUs) / 1000);
+            }
+        }
         ctx.progress(after += stepShare);
 
         // original: every source except a previous encode is kept; only an audio upload's may be played
@@ -573,6 +611,12 @@ public final class IngestPipeline implements IngestQueue.Handler {
             }
             log.append("[ingest] kept the original as " + original.file() + " (" + original.codec()
                     + ", " + Files.size(work.resolve(original.file())) + " bytes) for re-encodes");
+        } else if (sourceKind != SourceKind.PREVIOUS && audioTrimApplied) {
+            // a trimmed audio upload plays its audio.m4a, not the original (docs/library-and-ingest.md#audio-trim)
+            original = Originals.keptOnly(probe, source.getFileName().toString());
+            linkOrCopy(source, work.resolve(original.file()));
+            log.append("[ingest] kept the original as " + original.file() + " (" + original.codec()
+                    + "); not played in browsers while the item is trimmed");
         } else if (sourceKind != SourceKind.PREVIOUS) {
             long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
             // the original is played at the loudness audio.m4a actually has (loudnorm may have compressed it)
@@ -602,9 +646,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
         IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null,
                 undoable, publishJson, System.currentTimeMillis());
         // an audio item has no video, so its files are as good as they get with any preset
+        Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
-                        lufs, kept, v, change));
+                        lufs, kept, v, change, variantMs));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, original, durationUs / 1000);
@@ -626,12 +671,17 @@ public final class IngestPipeline implements IngestQueue.Handler {
      * @throws IngestFailure if less than {@link #MIN_TRIM_MS} would be left
      */
     static long[] trimRange(EditSettings edit, MediaProbe probe, long sourceAudioEndUs) throws IngestFailure {
+        return trimRange(edit.videoStartMs(), edit.videoEndMs(), probe, sourceAudioEndUs);
+    }
+
+    /** {@link #trimRange(EditSettings, MediaProbe, long)} for any range (the video or the audio trim). */
+    static long[] trimRange(long startMs, Long endMs, MediaProbe probe, long sourceAudioEndUs) throws IngestFailure {
         long originalUs = Math.max(probe.durationUs(), sourceAudioEndUs);
         if (originalUs <= 0) {
             throw new IngestFailure("The length of the original is unknown, so it can't be trimmed");
         }
-        long startUs = edit.videoStartMs() * 1000;
-        long endUs = edit.videoEndMs() == null ? originalUs : Math.min(edit.videoEndMs() * 1000, originalUs);
+        long startUs = startMs * 1000;
+        long endUs = endMs == null ? originalUs : Math.min(endMs * 1000, originalUs);
         if (endUs - startUs < MIN_TRIM_MS * 1000) {
             throw new IngestFailure("The trim leaves less than " + MIN_TRIM_MS / 1000 + " s of the original (which is "
                     + seconds(originalUs) + " long)");
@@ -719,6 +769,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Loudness.Measurement loudness;
         long[] decodedUs = {-1};
         Originals.Original kept;
+        Long audioOnlyMs = null;
         try {
             ctx.stage(STEP_ENCODE, 0, 0.85);
             List<String> range = rangeArgs(r[0], r[1]);
@@ -845,6 +896,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
             linkOrCopy(source, original);
             log.append("[ingest] verified: audio " + seconds(IngestVerifier.audioDurationUs(index)) + ", avcC matches the "
                     + profile.id() + " reference, " + video.sampleCount() + " frames with an IDR every 2 s");
+            if (target.audioTrimmed()) {
+                audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference);
+            }
         } catch (Exception e) {
             if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
                 throw e;
@@ -867,14 +921,120 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 EditSettings.withOriginalMs(targetJson, r[2] / 1000), System.currentTimeMillis());
         X264Preset usedPreset = preset;
         Originals.Original keptOriginal = kept;
+        Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), kept.file(),
                 v -> items.published(item.id(), true, durationMs, profile, usedPreset, item.encodeQuality(), lufs,
-                        keptOriginal, v, change));
+                        keptOriginal, v, change, variantMs));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept for undo" : ""));
         retire(item, itemDir, hadOld, kept, durationMs);
         ctx.progress(1);
         return true;
+    }
+
+    /**
+     * A trim job of a video that changes only its audio trim ({@code docs/library-and-ingest.md#audio-trim}):
+     * the video, {@code audio.m4a}, card and index stay as they are (linked from the current version),
+     * only the audio-only file is made again from the original (or left out when the audio trim is
+     * removed), and the result is published as an undoable version. Returns false (nothing done) when
+     * the current version can't be reused (another encoding, files missing): then a full re-encode.
+     */
+    private boolean audioOnlyTrim(IngestQueue.Context ctx, IngestItems.Item item, Path work, ReferenceCard reference,
+                                  EditSettings target, String targetJson) throws Exception {
+        JobLog log = ctx.log();
+        OutputEncoding profile = reference.encoding();
+        Path itemDir = itemDir(dataDir, item.id());
+        Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
+        String why = null;
+        if (!profile.id().equals(item.outputProfile())) {
+            why = "the current version was made for another output encoding";
+        } else {
+            for (String f : List.of(MEZZ, AUDIO, CARD, SampleIndex.FILE_NAME)) {
+                if (!Files.isRegularFile(currentDir.resolve(f))) {
+                    why = "the current version's " + f + " is missing";
+                    break;
+                }
+            }
+        }
+        if (why != null) {
+            log.append("[ingest] full re-encode from the original: " + why);
+            return false;
+        }
+        log.append("[ingest] audio trim only: the video and audio.m4a of version " + item.mediaVersion() + " are kept");
+        Path source = itemDir.resolve(item.originalFile());
+        ctx.stage(STEP_ENCODE, 0, 0.9);
+        step(log, "probe");
+        MediaProbe probe = MediaProbe.probe(tools, source, log);
+        checkProbe(probe, false);
+        long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
+        for (String f : List.of(MEZZ, AUDIO, CARD, COVER, SampleIndex.FILE_NAME)) {
+            if (Files.isRegularFile(currentDir.resolve(f))) {
+                linkOrCopy(currentDir.resolve(f), work.resolve(f));
+            }
+        }
+        Long audioOnlyMs = null;
+        if (target.audioTrimmed()) {
+            audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference);
+        } else {
+            log.append("[ingest] no audio trim: the audio-only file is audio.m4a again");
+        }
+        ctx.stage(STEP_FINISH, 0.9, 1);
+        long durationMs = IngestVerifier.audioDurationUs(SampleIndex.read(work.resolve(SampleIndex.FILE_NAME))) / 1000;
+        Originals.Original kept = Originals.keptOnly(probe, source.getFileName().toString());
+        linkOrCopy(source, work.resolve(kept.file()));
+        step(log, "publish");
+        boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
+        IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null, true,
+                EditSettings.withOriginalMs(targetJson, Math.max(probe.durationUs(), sourceAudioEndUs) / 1000),
+                System.currentTimeMillis());
+        X264Preset preset = item.encodePreset() == null ? X264Preset.REFERENCE : X264Preset.byId(item.encodePreset());
+        X264Preset usedPreset = preset == null ? X264Preset.REFERENCE : preset;
+        Long variantMs = audioOnlyMs;
+        int version = publish(work, itemDir, item.mediaVersion(), kept.file(),
+                v -> items.published(item.id(), true, durationMs, profile, usedPreset, item.encodeQuality(),
+                        item.loudnessLufs(), kept, v, change, variantMs));
+        log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
+                + " is kept for undo" : ""));
+        retire(item, itemDir, hadOld, kept, durationMs);
+        ctx.progress(1);
+        return true;
+    }
+
+    /**
+     * Makes a video's audio-only file ({@link #AUDIO_ONLY}) in {@code work} from the original for
+     * the audio trim of {@code edit}, loudness measured on that range, and its index
+     * ({@link #AUDIO_ONLY_INDEX}, with {@code work}'s {@link #CARD} as the video, which must be
+     * there), verified like an audio item's files.
+     *
+     * @return its length in ms
+     */
+    private long audioOnlyVariant(JobLog log, Path source, MediaProbe probe, long sourceAudioEndUs, EditSettings edit,
+                                  Path work, ReferenceCard reference) throws Exception {
+        long[] r = trimRange(edit.audioStartMs(), edit.audioEndMs(), probe, sourceAudioEndUs);
+        log.append("[ingest] audio trim (audio-only rooms): " + seconds(r[0]) + " to " + seconds(r[1])
+                + " of the original (" + seconds(r[2]) + ")");
+        List<String> range = rangeArgs(r[0], r[1]);
+        step(log, "audio-only file: loudnorm pass 1");
+        long[] decodedUs = {-1};
+        Loudness.Measurement loudness = Loudness.measure(tools, range, source.toString(), probe.audio().map(), log, p -> {
+            if (p.outTimeUs() > decodedUs[0]) {
+                decodedUs[0] = p.outTimeUs();
+            }
+        });
+        if (loudness.usable()) {
+            log.append(String.format(Locale.ROOT, "[ingest] audio-only range measured %.2f LUFS, %.2f dBTP",
+                    loudness.inputI(), loudness.inputTp()));
+        }
+        step(log, "audio-only file: encode");
+        Path out = work.resolve(AUDIO_ONLY);
+        tools.ffmpeg(audioEncodeArgs(range, source, probe, loudness, out)).log(log).run();
+        step(log, "audio-only file: index");
+        OutputEncoding profile = reference.encoding();
+        SampleIndex index = IndexBuilder.build(tools, profile, work.resolve(CARD), out, work.resolve(AUDIO_ONLY_INDEX), log);
+        IngestVerifier.verify(index, reference, Math.min(sourceAudioEndUs, r[1]) - r[0], decodedUs[0], CARD);
+        long us = IngestVerifier.audioDurationUs(index);
+        log.append("[ingest] verified the audio-only file: " + seconds(us));
+        return us / 1000;
     }
 
     /** The plan in words, for the job log. */
@@ -1044,7 +1204,15 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     static List<String> audioEncodeArgs(Path source, MediaProbe probe, Loudness.Measurement loudness, Path out) {
-        List<String> args = new ArrayList<>(List.of("-y", "-i", source.toString(),
+        return audioEncodeArgs(List.of(), source, probe, loudness, out);
+    }
+
+    /** @param range input options before {@code -i} that select a trim ({@link #rangeArgs}), or none */
+    static List<String> audioEncodeArgs(List<String> range, Path source, MediaProbe probe, Loudness.Measurement loudness,
+                                        Path out) {
+        List<String> args = new ArrayList<>(List.of("-y"));
+        args.addAll(range);
+        args.addAll(List.of("-i", source.toString(),
                 "-map", probe.audio().map(), "-vn", "-map_metadata", "-1", "-map_chapters", "-1",
                 "-af", loudness.filter()));
         args.addAll(EncodeProfile.AUDIO_ARGS);

@@ -82,10 +82,55 @@ class TrimPlanTest {
         assertNull(EditSettings.withVideoTrim(null, 0, null, null));
         String json = EditSettings.withVideoTrim("{\"audioStartMs\":5,\"videoStartMs\":9}", 2000, 8000L, null);
         assertEquals("{\"audioStartMs\":5,\"videoStartMs\":2000,\"videoEndMs\":8000}", json);
-        assertEquals(new EditSettings(2000, 8000L, 13_000L),
+        assertEquals(new EditSettings(2000, 8000L, 13_000L, 5L, null),
                 EditSettings.parse(EditSettings.withOriginalMs(json, 13_000)));
         assertTrue(EditSettings.parse(json).videoTrimmed());
         assertEquals("{\"audioStartMs\":5}", EditSettings.withVideoTrim(json, 0, null, null));
         assertEquals(new EditSettings(0, null, null), EditSettings.parse("{\"videoStartMs\":-5,\"videoEndMs\":-1}"));
+    }
+
+    @Test
+    void audioTrimSettings() {
+        assertFalse(EditSettings.NONE.audioTrimmed());
+        String json = EditSettings.withAudioTrim("{\"videoStartMs\":2000}", 0L, null);
+        assertEquals("{\"videoStartMs\":2000,\"audioStartMs\":0}", json);
+        EditSettings e = EditSettings.parse(json);
+        assertTrue(e.audioTrimmed(), "a start at 0 is an audio trim (a video's whole original)");
+        assertEquals(new EditSettings(2000, null, null, 0L, null), e);
+        assertEquals(new EditSettings(0, null, null, 1000L, 5000L),
+                EditSettings.parse(EditSettings.withAudioTrim(null, 1000L, 5000L)));
+        assertNull(EditSettings.withAudioTrim("{\"audioStartMs\":1,\"audioEndMs\":9}", null, 5000L), "removed");
+        assertNull(EditSettings.parse("{\"audioEndMs\":9}").audioEndMs(), "no end without a start");
+        assertTrue(e.sameVideoTrim(new EditSettings(2000, null, 1L)));
+        assertFalse(e.sameAudioTrim(new EditSettings(2000, null, 1L)));
+    }
+
+    @Test
+    void trimJobsCarryTheirParts() {
+        assertEquals(java.util.Set.of(EditSettings.PART_VIDEO), EditSettings.parts("{\"videoStartMs\":2000}"),
+                "jobs from before the audio trim");
+        String video = EditSettings.job(true, 2000, 8000L, false, 7L, 8L);
+        assertEquals("{\"videoStartMs\":2000,\"videoEndMs\":8000,\"parts\":[\"video\"]}", video);
+        String audio = EditSettings.job(false, 0, null, true, 1000L, null);
+        assertEquals("{\"audioStartMs\":1000,\"parts\":[\"audio\"]}", audio);
+        String current = "{\"videoStartMs\":4000,\"audioStartMs\":500,\"audioEndMs\":900,\"originalMs\":13000}";
+        // each part replaces only its own keys
+        EditSettings v = EditSettings.parse(EditSettings.applyJob(current, video));
+        assertEquals(new EditSettings(2000, 8000L, 13_000L, 500L, 900L), v);
+        EditSettings a = EditSettings.parse(EditSettings.applyJob(current, audio));
+        assertEquals(new EditSettings(4000, null, 13_000L, 1000L, null), a);
+        String remove = EditSettings.job(false, 0, null, true, null, null);
+        assertEquals(new EditSettings(4000, null, 13_000L),
+                EditSettings.parse(EditSettings.applyJob(current, remove)));
+        // a newer change merges into a queued job by part
+        String merged = EditSettings.mergeJobs(video, audio);
+        assertEquals(java.util.Set.of(EditSettings.PART_VIDEO, EditSettings.PART_AUDIO), EditSettings.parts(merged));
+        assertEquals(new EditSettings(2000, 8000L, 13_000L, 1000L, null),
+                EditSettings.parse(EditSettings.applyJob(current, merged)));
+        String newer = EditSettings.mergeJobs(merged, EditSettings.job(true, 0, null, false, null, null));
+        assertEquals(new EditSettings(0, null, 13_000L, 1000L, null),
+                EditSettings.parse(EditSettings.applyJob(current, newer)));
+        assertEquals(new EditSettings(0, null, 13_000L, null, null),
+                EditSettings.parse(EditSettings.applyJob(current, EditSettings.mergeJobs(newer, remove))));
     }
 }

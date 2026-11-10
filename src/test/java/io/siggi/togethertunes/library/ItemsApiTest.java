@@ -524,7 +524,7 @@ class ItemsApiTest {
             assertEquals(400, r.statusCode(), bad);
             assertEquals("invalid_trim", code(r), bad);
         }
-        assertEquals("unknown_field", code(call("POST", path, alice, "{\"videoStartMs\": 0, \"audioStartMs\": 1}")));
+        assertEquals("unknown_field", code(call("POST", path, alice, "{\"videoStartMs\": 0, \"foo\": 1}")));
         assertEquals("no_change", code(call("POST", path, alice, "{\"videoStartMs\": 0}")));
         assertEquals("no_change", code(call("POST", path, alice, "{\"videoStartMs\": 0, \"videoEndMs\": 12000}")),
                 "an end at or after the original's end is no end");
@@ -534,14 +534,14 @@ class ItemsApiTest {
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
         io.siggi.togethertunes.ingest.IngestJob job = jobs.latestForItem(id).orElseThrow();
         assertEquals(io.siggi.togethertunes.ingest.IngestJob.Kind.TRIM, job.kind());
-        assertEquals("{\"videoStartMs\":2000,\"videoEndMs\":8000}", jobEditJson(job.id()));
+        assertEquals("{\"videoStartMs\":2000,\"videoEndMs\":8000,\"parts\":[\"video\"]}", jobEditJson(job.id()));
         assertEquals("ready", json(r).get("status").getAsString(), "the item keeps playing meanwhile");
         // a second trim while the first is queued: the latest wins, on the same job
         HttpResponse<String> second = call("POST", path, admin, "{\"videoStartMs\": 4000, \"videoEndMs\": null}");
         assertEquals(202, second.statusCode(), second.body() + " " +
                 "library.editAny");
         assertEquals(job.id(), jobs.latestForItem(id).orElseThrow().id());
-        assertEquals("{\"videoStartMs\":4000}", jobEditJson(job.id()));
+        assertEquals("{\"videoStartMs\":4000,\"parts\":[\"video\"]}", jobEditJson(job.id()));
         assertEquals(Integer.valueOf(2), db.<Integer>read(c -> {
             try (PreparedStatement ps = c.prepareStatement(
                     "SELECT COUNT(*) FROM audit_log WHERE action = 'item.trimmed' AND target = ?")) {
@@ -581,5 +581,74 @@ class ItemsApiTest {
             return null;
         });
         assertEquals("item_not_ready", code(call("POST", "/api/items/" + processing + "/trim", alice, body)));
+    }
+
+    /** A ready audio item of alice's with a kept original 10 s long. */
+    private String trimmableAudio() throws Exception {
+        String id = trimmableVideo();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'audio' WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    /**
+     * The audio trim through {@code POST /api/items/{id}/trim} ({@code docs/library-and-ingest.md#audio-trim}):
+     * an audio item's, a video's for audio-only rooms (with its video trim on the same queued job),
+     * removing it, and the body rules.
+     */
+    @Test
+    void audioTrimQueuesATrimJob() throws Exception {
+        String audio = trimmableAudio();
+        String path = "/api/items/" + audio + "/trim";
+        JsonObject trim = json(call("GET", "/api/items/" + audio, alice, null)).getAsJsonObject("trim");
+        assertEquals(10000, trim.get("originalMs").getAsLong());
+        assertFalse(trim.has("audioStartMs"));
+        assertEquals("not_a_video", code(call("POST", path, alice, "{\"videoStartMs\": 1000}")));
+        for (String bad : List.of("{\"audioEndMs\": 5000}", "{\"audioStartMs\": -1}", "{\"audioStartMs\": 9500}",
+                "{\"audioStartMs\": 5000, \"audioEndMs\": 5500}", "{\"audioStartMs\": null, \"audioEndMs\": 5000}")) {
+            HttpResponse<String> r = call("POST", path, alice, bad);
+            assertEquals(400, r.statusCode(), bad);
+            assertEquals("invalid_trim", code(r), bad);
+        }
+        assertEquals("no_change", code(call("POST", path, alice, "{\"audioStartMs\": null}")));
+        assertEquals("no_change", code(call("POST", path, alice, "{\"audioStartMs\": 0, \"audioEndMs\": null}")),
+                "an audio item's whole original is no trim");
+        assertEquals(403, call("POST", path, bob, "{\"audioStartMs\": 1000}").statusCode());
+        HttpResponse<String> r = call("POST", path, alice, "{\"audioStartMs\": 1000, \"audioEndMs\": 7000}");
+        assertEquals(202, r.statusCode(), r.body());
+        io.siggi.togethertunes.ingest.IngestJob job = jobs.latestForItem(audio).orElseThrow();
+        assertEquals(io.siggi.togethertunes.ingest.IngestJob.Kind.TRIM, job.kind());
+        assertEquals("{\"audioStartMs\":1000,\"audioEndMs\":7000,\"parts\":[\"audio\"]}", jobEditJson(job.id()));
+        assertEquals(Integer.valueOf(1), db.<Integer>read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM audit_log WHERE action = 'item.trimmed'"
+                    + " AND target = ? AND details_json LIKE '%audioStartMs%'")) {
+                ps.setString(1, audio);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        }));
+
+        // a video: the audio-only rooms' range, then the video trim on the same queued job
+        String video = trimmableVideo();
+        String vpath = "/api/items/" + video + "/trim";
+        assertEquals("no_change", code(call("POST", vpath, alice, "{\"audioStartMs\": null}")),
+                "a video without an audio trim follows its video trim already");
+        assertEquals(202, call("POST", vpath, alice, "{\"audioStartMs\": 0}").statusCode(),
+                "the whole original is an audio trim of a video");
+        String jobId = jobs.latestForItem(video).orElseThrow().id();
+        assertEquals("{\"audioStartMs\":0,\"parts\":[\"audio\"]}", jobEditJson(jobId));
+        assertEquals(202, call("POST", vpath, alice, "{\"videoStartMs\": 2000}").statusCode());
+        assertEquals(jobId, jobs.latestForItem(video).orElseThrow().id());
+        assertEquals("{\"videoStartMs\":2000,\"audioStartMs\":0,\"parts\":[\"video\",\"audio\"]}", jobEditJson(jobId));
+        assertEquals(202, call("POST", vpath, alice, "{\"audioStartMs\": 3000, \"audioEndMs\": 9000}").statusCode());
+        assertEquals("{\"videoStartMs\":2000,\"audioStartMs\":3000,\"audioEndMs\":9000,\"parts\":[\"video\",\"audio\"]}",
+                jobEditJson(jobId));
     }
 }

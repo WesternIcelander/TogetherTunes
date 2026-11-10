@@ -968,18 +968,23 @@ abstract class IngestJobsContract {
         assertEquals("{\"videoStartMs\":2000}", jobs.get(trim.id()).orElseThrow().editJson());
         IngestJob again = jobs.enqueueTrim(item, "{\"videoStartMs\":4000}");
         assertEquals(trim.id(), again.id());
-        assertEquals("{\"videoStartMs\":4000}", jobs.get(trim.id()).orElseThrow().editJson());
+        assertEquals("{\"videoStartMs\":4000,\"parts\":[\"video\"]}", jobs.get(trim.id()).orElseThrow().editJson());
+        // a part only the queued job changes stays (the latest of each part wins)
+        jobs.enqueueTrim(item, "{\"audioStartMs\":1000,\"parts\":[\"audio\"]}");
+        assertEquals("{\"videoStartMs\":4000,\"audioStartMs\":1000,\"parts\":[\"video\",\"audio\"]}",
+                jobs.get(trim.id()).orElseThrow().editJson());
+        jobs.enqueueTrim(item, "{\"videoStartMs\":4000,\"parts\":[\"video\"]}");
 
         IngestJob running = jobs.claimNext();
         assertEquals(trim.id(), running.id());
-        assertEquals("{\"videoStartMs\":4000}", running.editJson());
+        assertEquals("{\"videoStartMs\":4000,\"audioStartMs\":1000,\"parts\":[\"video\",\"audio\"]}", running.editJson());
         assertEquals("ready", new IngestItems(db).get(item).orElseThrow().status());
         assertThrows(IngestJobs.ItemBusy.class, () -> jobs.enqueueTrim(item, "{}"));
         assertTrue(jobs.fail(running.id(), "x", null));
         assertEquals("ready", new IngestItems(db).get(item).orElseThrow().status(), "a failed trim leaves the item as it was");
         IngestJobs.Retry retry = jobs.retry(running.id(), null);
         assertEquals(IngestJobs.RetryOutcome.QUEUED, retry.outcome());
-        assertEquals("{\"videoStartMs\":4000}", jobs.get(retry.job().id()).orElseThrow().editJson());
+        assertEquals(running.editJson(), jobs.get(retry.job().id()).orElseThrow().editJson());
 
         String other = fixtures.item("ready");
         IngestJob quality = jobs.enqueue(other, Kind.QUALITY);

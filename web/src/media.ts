@@ -32,8 +32,11 @@ export interface ItemPage extends ItemSummary {
   you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
   /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */
   undo?: { changedAt: number };
-  /** The video trim on the original's timeline, for those who may trim it (`POST /api/items/{id}/trim`). */
-  trim?: { videoStartMs: number; videoEndMs?: number; originalMs: number };
+  /** The trims on the original's timeline, for those who may trim it (`POST /api/items/{id}/trim`). */
+  trim?: {
+    videoStartMs: number; videoEndMs?: number; originalMs: number;
+    audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number;
+  };
 }
 
 export interface LibraryEntry {

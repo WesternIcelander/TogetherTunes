@@ -1,4 +1,4 @@
-// The video trim timeline's logic (docs/library-and-ingest.md#trim), without the DOM so Node tests
+// The trim timelines' logic (docs/library-and-ingest.md#trim, #audio-trim), without the DOM so Node tests
 // can import it: time parsing and formatting (m:ss.mmm), the handles (clamping, snapping to the
 // current encode's 2 s keyframe grid), and which kind of re-encode a choice needs. The server
 // decides for real (TrimPlan.java); this mirrors it for the page's hint.
@@ -11,8 +11,15 @@ export const GOP_FRAMES = 60;
 /** The shortest trim the server accepts. */
 export const MIN_TRIM_MS = 1000;
 
-/** The item page's `trim`: the current trim on the original's timeline. */
-export interface TrimView { videoStartMs: number; videoEndMs?: number; originalMs: number }
+/**
+ * The item page's `trim`: the current trims on the original's timeline. `audioStartMs` absent: no
+ * audio trim (an audio item plays its whole original; a video's audio-only file is its audio.m4a,
+ * following the video trim). `audioOnlyMs`: a video's audio-only file's length, if it has one.
+ */
+export interface TrimView {
+  videoStartMs: number; videoEndMs?: number; originalMs: number;
+  audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number;
+}
 
 /** A selection on the original's timeline (end exclusive). */
 export interface Range { startMs: number; endMs: number }
@@ -84,8 +91,8 @@ export function frames(ms: number): number {
   return Math.max(0, Math.ceil((ms * FPS) / 1000 - 1e-9));
 }
 
-/** What saving the selection does. */
-export type TrimKind = "none" | "cut" | "smart" | "full";
+/** What saving the selection does ("audio": only audio is encoded again, from the original). */
+export type TrimKind = "none" | "cut" | "smart" | "full" | "audio";
 
 export interface TrimEstimate {
   kind: TrimKind;
@@ -128,6 +135,7 @@ export function estimateText(e: TrimEstimate): string {
     case "cut": return "No video re-encode: whole keyframe groups are dropped or the end is cut.";
     case "smart": return "Smart re-encode: about " + secs + " s of video is encoded again, the rest is kept.";
     case "full": return "Full re-encode: about " + secs + " s of video (the start isn't on a keyframe of the current encode).";
+    case "audio": return "Audio re-encode: about " + secs + " s of audio from the original; the video isn't touched.";
   }
 }
 
@@ -163,4 +171,49 @@ export function previewSpan(view: TrimView, range: Range): { fromS: number; toS:
   const to = Math.min(range.endMs, cur.endMs);
   if (to <= from) return undefined;
   return { fromS: (from - cur.startMs) / 1000, toS: (to - cur.startMs) / 1000 };
+}
+
+// ------------------------------------------------------------------ audio trim
+
+/**
+ * The current audio selection: the audio trim; without one, a video's audio-only file follows its
+ * video trim and an audio item has the whole original.
+ */
+export function audioRange(view: TrimView, video: boolean): Range {
+  if (view.audioStartMs !== undefined) return { startMs: view.audioStartMs, endMs: view.audioEndMs ?? view.originalMs };
+  return video ? currentRange(view) : { startMs: 0, endMs: view.originalMs };
+}
+
+/**
+ * What the item page's player plays, as a view whose video range is the player's span on the
+ * original's timeline: a video's current version (its video trim), or an audio item's audio.m4a
+ * (its audio trim). For `previewSpan` and `playheadMs`.
+ */
+export function playerView(view: TrimView, video: boolean): TrimView {
+  if (video) return view;
+  const r = audioRange(view, false);
+  return { videoStartMs: r.startMs, videoEndMs: r.endMs >= view.originalMs ? undefined : r.endMs, originalMs: view.originalMs };
+}
+
+/** What saving an audio selection does: nothing, or an audio encode of its length from the original. */
+export function audioEstimate(view: TrimView, video: boolean, range: Range): TrimEstimate {
+  const cur = audioRange(view, video);
+  const endSame = range.endMs === cur.endMs || (range.endMs >= view.originalMs && cur.endMs >= view.originalMs);
+  // a video without an audio trim follows its video trim: choosing that same range still sets one
+  if (range.startMs === cur.startMs && endSame && (view.audioStartMs !== undefined || !video)) {
+    return { kind: "none", encodeSeconds: 0 };
+  }
+  return { kind: "audio", encodeSeconds: Math.max(0, range.endMs - range.startMs) / 1000 };
+}
+
+/**
+ * The body of `POST /api/items/{id}/trim` for an audio selection (an end at the original's end is
+ * sent as null: to the end); `range` undefined removes the audio trim.
+ */
+export function audioTrimBody(view: TrimView, range: Range | undefined): { audioStartMs: number | null; audioEndMs?: number | null } {
+  if (range === undefined) return { audioStartMs: null };
+  return {
+    audioStartMs: Math.round(range.startMs),
+    audioEndMs: range.endMs >= view.originalMs ? null : Math.round(range.endMs),
+  };
 }

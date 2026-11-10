@@ -9,8 +9,9 @@ import {
 } from "./media.js";
 import { checkPasswordChange, element, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
-  currentRange, estimate, estimateText, formatTime as formatTrimTime, fractionToMs, moveEnd, moveStart, msToFraction,
-  parseTime, playheadMs, previewSpan, trimBody, type Range, type TrimView,
+  audioEstimate, audioRange, audioTrimBody, currentRange, estimate, estimateText, formatTime as formatTrimTime,
+  fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan, trimBody, type Range,
+  type TrimEstimate, type TrimView,
 } from "./trim.js";
 
 let me: Me;
@@ -135,17 +136,34 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
   return h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
 }
 
-/** Stops the trim panel's playhead and preview timers when the panel is replaced. */
-let stopTrimPanel: (() => void) | undefined;
+/** Stops the trim panels' playhead and preview timers when the panels are replaced. */
+let stopTrimPanels: (() => void)[] = [];
+
+/** What one trim timeline edits (the video trim, or an audio trim). */
+interface TimelineSpec {
+  title: string;
+  note: string;
+  /** The timeline's length and, while snapping, the keyframe grid (`videoStartMs`). */
+  view: TrimView;
+  current: Range;
+  /** The player's span on the original's timeline (`playerView`). */
+  player: TrimView;
+  /** Whether "Snap to keyframes" is offered (the video trim). */
+  snapToKeyframes: boolean;
+  estimate: (range: Range) => TrimEstimate;
+  body: (range: Range) => unknown;
+  /** Extra controls (e.g. "Follow the video trim"). */
+  extra?: HTMLElement | null;
+}
 
 /**
- * The video trim (docs/library-and-ingest.md#trim): a timeline of the original with start and end
- * handles, the playhead, typed timestamps, "Snap to keyframes", what Save will do, Preview (plays
- * the selection from the current version, no encode) and Save (queues the trim job).
+ * A trim timeline (docs/library-and-ingest.md#trim): a timeline of the original with start and end
+ * handles, the playhead, typed timestamps, "Snap to keyframes" for the video, what Save will do,
+ * Preview (plays the selection from the current version, no encode) and Save (queues the trim job).
  */
-function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
-  stopTrimPanel?.();
-  let range: Range = currentRange(view);
+function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
+  const view = spec.view;
+  let range: Range = spec.current;
   const selection = h("div", { class: "trim-selection" });
   const startHandle = h("div", { class: "trim-handle", role: "slider", tabindex: "0", "aria-label": "Start" });
   const endHandle = h("div", { class: "trim-handle", role: "slider", tabindex: "0", "aria-label": "End" });
@@ -153,7 +171,8 @@ function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
   const bar = h("div", { class: "trim-bar" }, selection, playhead, startHandle, endHandle);
   const startInput = h("input", { name: "start", inputmode: "decimal", size: "10", "aria-label": "Start (m:ss.mmm)" });
   const endInput = h("input", { name: "end", inputmode: "decimal", size: "10", "aria-label": "End (m:ss.mmm)" });
-  const snap = h("input", { type: "checkbox", checked: true });
+  const snap = h("input", { type: "checkbox", checked: spec.snapToKeyframes });
+  const snapping = (): boolean => spec.snapToKeyframes && snap.checked;
   const hint = h("p", { class: "muted small" });
   const error = h("p", { class: "error", role: "alert" });
   const save = h("button", { type: "button", text: "Save" });
@@ -167,7 +186,7 @@ function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
     selection.style.width = Math.max(0, b - a) + "%";
     startInput.value = formatTrimTime(range.startMs);
     endInput.value = formatTrimTime(range.endMs);
-    const e = estimate(view, range);
+    const e = spec.estimate(range);
     hint.textContent = estimateText(e);
     save.disabled = e.kind === "none";
   };
@@ -190,11 +209,11 @@ function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
       handle.addEventListener("pointercancel", onUp);
     });
   };
-  drag(startHandle, (ms) => { range = moveStart(range, ms, view, snap.checked); });
+  drag(startHandle, (ms) => { range = moveStart(range, ms, view, snapping()); });
   drag(endHandle, (ms) => { range = moveEnd(range, ms, view); });
   // arrow keys: a keyframe (2 s) for the start while snapping, else 1/30 s
   const step = (handle: "start" | "end", dir: number): void => {
-    if (handle === "start") range = moveStart(range, range.startMs + dir * (snap.checked ? 2000 : 1000 / 30), view, snap.checked);
+    if (handle === "start") range = moveStart(range, range.startMs + dir * (snapping() ? 2000 : 1000 / 30), view, snapping());
     else range = moveEnd(range, range.endMs + dir * (1000 / 30), view);
     draw();
   };
@@ -214,28 +233,28 @@ function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
       draw();
     });
   };
-  typed(startInput, (ms) => { range = moveStart(range, ms, view, snap.checked); });
+  typed(startInput, (ms) => { range = moveStart(range, ms, view, snapping()); });
   typed(endInput, (ms) => { range = moveEnd(range, ms, view); });
   snap.addEventListener("change", () => {
-    if (snap.checked) range = moveStart(range, range.startMs, view, true);
+    if (snapping()) range = moveStart(range, range.startMs, view, true);
     draw();
   });
 
-  // the playhead follows the player (its time is on the current version, which starts at videoStartMs)
+  // the playhead follows the player (its time is on the current version)
   let previewEnd: number | undefined;
   const timer = window.setInterval(() => {
     const p = player;
     if (p === undefined) return;
-    playhead.style.left = msToFraction(playheadMs(view, p.currentTime), view) * 100 + "%";
+    playhead.style.left = msToFraction(playheadMs(spec.player, p.currentTime), view) * 100 + "%";
     if (previewEnd !== undefined && p.currentTime >= previewEnd) {
       p.pause();
       previewEnd = undefined;
     }
   }, 100);
-  stopTrimPanel = () => window.clearInterval(timer);
+  stopTrimPanels.push(() => window.clearInterval(timer));
 
   const preview = button("Preview", async () => {
-    const span = previewSpan(view, range);
+    const span = previewSpan(spec.player, range);
     const p = player;
     if (span === undefined || p === undefined) {
       error.textContent = "The current version has none of the selection to preview; Save makes it.";
@@ -249,24 +268,64 @@ function trimPanel(item: ItemPage, view: TrimView): HTMLElement {
   save.addEventListener("click", () => {
     error.textContent = "";
     save.disabled = true;
-    api<ItemPage>("POST", "/api/items/" + encodeURIComponent(item.id) + "/trim", trimBody(view, range))
-      .then(async () => {
-        showNotice("Trim saved: the item is being encoded. It keeps playing the current version until then.");
-        await refresh();
-      })
-      .catch((e: unknown) => { error.textContent = message(e); save.disabled = false; });
+    postTrim(item, spec.body(range)).catch((e: unknown) => { error.textContent = message(e); save.disabled = false; });
   });
 
   draw();
-  return h("details", { class: "panel" }, h("summary", { text: "Trim video" }),
-    h("p", { class: "muted small", text: "Times are on the original file (" + formatTrimTime(view.originalMs) + " long)." }),
+  return h("details", { class: "panel" }, h("summary", { text: spec.title }),
+    h("p", { class: "muted small", text: (spec.note === "" ? "" : spec.note + " ") + "Times are on the original file (" + formatTrimTime(view.originalMs) + " long)." }),
     bar,
     h("div", { class: "row" },
       h("label", {}, "Start ", startInput), h("label", {}, "End ", endInput),
-      h("label", { class: "check" }, snap, " Snap to keyframes")),
+      spec.snapToKeyframes ? h("label", { class: "check" }, snap, " Snap to keyframes") : null),
     hint,
-    h("div", { class: "row" }, preview, save),
+    h("div", { class: "row" }, preview, save, spec.extra ?? null),
     error);
+}
+
+async function postTrim(item: ItemPage, body: unknown): Promise<void> {
+  await api<ItemPage>("POST", "/api/items/" + encodeURIComponent(item.id) + "/trim", body);
+  showNotice("Trim saved: the item is being encoded. It keeps playing the current version until then.");
+  await refresh();
+}
+
+/**
+ * The trim panels: for a video, "Trim video" and the audio-only rooms' range (docs/library-and-ingest.md#audio-trim);
+ * for an audio item, "Trim audio".
+ */
+function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
+  for (const stop of stopTrimPanels) stop();
+  stopTrimPanels = [];
+  const video = item.kind === "video";
+  const audioPanel = timelinePanel(item, {
+    title: video ? "Trim audio for audio-only rooms" : "Trim audio",
+    note: video
+      ? "Audio-only rooms play this range of the video's audio (" + (view.audioStartMs === undefined
+        ? "now the same as the video" : "now " + formatTrimTime(view.audioOnlyMs ?? 0) + " long")
+        + "); other rooms play the video's own audio."
+      : "The audio is encoded again from the original for this range; the original is kept.",
+    view: { ...view, videoStartMs: 0 },
+    current: audioRange(view, video),
+    player: playerView(view, video),
+    snapToKeyframes: false,
+    estimate: (range) => audioEstimate(view, video, range),
+    body: (range) => audioTrimBody(view, range),
+    extra: view.audioStartMs !== undefined
+      ? button(video ? "Follow the video trim" : "Remove the trim",
+        async () => { await postTrim(item, audioTrimBody(view, undefined)); }, (e) => { showNotice(message(e)); })
+      : null,
+  });
+  if (!video) return [audioPanel];
+  return [timelinePanel(item, {
+    title: "Trim video",
+    note: "",
+    view,
+    current: currentRange(view),
+    player: view,
+    snapToKeyframes: true,
+    estimate: (range) => estimate(view, range),
+    body: (range) => trimBody(view, range),
+  }), audioPanel];
 }
 
 function shareForm(item: ItemPage): HTMLElement {
@@ -391,8 +450,8 @@ function render(item: ItemPage, job: JobView | undefined): void {
 function renderForms(item: ItemPage, job: JobView | undefined): void {
   element("item-forms").replaceChildren(
     ...nodes(item.you.canEdit ? editForm(item, (updated) => { render(updated, job); renderForms(updated, job); }) : null,
-      item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
-        ? trimPanel(item, item.trim) : null,
+      ...(item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
+        ? trimPanels(item, item.trim) : []),
       me.kind === "user" && item.status !== "failed" ? shareForm(item) : null));
 }
 

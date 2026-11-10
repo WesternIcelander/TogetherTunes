@@ -74,3 +74,34 @@ test("the request body and the preview", () => {
   assert.equal(T.frames(6500), 195);
   assert.equal(T.frames(6513), 196);
 });
+
+test("the audio trim: current range, player view, estimate and body", () => {
+  // an audio item without a trim: the whole original; its player is audio.m4a from 0
+  const a = view({ originalMs: 10000 });
+  assert.deepEqual(T.audioRange(a, false), { startMs: 0, endMs: 10000 });
+  assert.deepEqual(T.playerView(a, false), { videoStartMs: 0, videoEndMs: undefined, originalMs: 10000 });
+  assert.equal(T.audioEstimate(a, false, { startMs: 0, endMs: 10000 }).kind, "none");
+  const e = T.audioEstimate(a, false, { startMs: 2000, endMs: 7000 });
+  assert.deepEqual(e, { kind: "audio", encodeSeconds: 5 });
+  assert.match(T.estimateText(e), /Audio re-encode: about 5 s/);
+  assert.deepEqual(T.audioTrimBody(a, { startMs: 2000, endMs: 10000 }), { audioStartMs: 2000, audioEndMs: null });
+  assert.deepEqual(T.audioTrimBody(a, undefined), { audioStartMs: null });
+
+  // a trimmed audio item: its player's 0 is the trim's start (preview and playhead)
+  const t = view({ originalMs: 10000, audioStartMs: 2000, audioEndMs: 7000 });
+  const pv = T.playerView(t, false);
+  assert.deepEqual(T.audioRange(t, false), { startMs: 2000, endMs: 7000 });
+  assert.equal(T.playheadMs(pv, 1), 3000);
+  assert.deepEqual(T.previewSpan(pv, { startMs: 1000, endMs: 4000 }), { fromS: 0, toS: 2 });
+
+  // a video without an audio trim: the audio-only range follows the video trim; saving that same range sets one
+  const v = view({ videoStartMs: 2000, videoEndMs: 9000, originalMs: 13000 });
+  assert.deepEqual(T.audioRange(v, true), { startMs: 2000, endMs: 9000 });
+  assert.equal(T.playerView(v, true), v);
+  assert.equal(T.audioEstimate(v, true, { startMs: 2000, endMs: 9000 }).kind, "audio");
+  const va = view({ videoStartMs: 2000, videoEndMs: 9000, originalMs: 13000, audioStartMs: 0, audioOnlyMs: 13000 });
+  assert.deepEqual(T.audioRange(va, true), { startMs: 0, endMs: 13000 });
+  assert.equal(T.audioEstimate(va, true, { startMs: 0, endMs: 13000 }).kind, "none");
+  // preview of an audio range on a video plays the part the current video version has
+  assert.deepEqual(T.previewSpan(va, { startMs: 0, endMs: 5000 }), { fromS: 0, toS: 3 });
+});
