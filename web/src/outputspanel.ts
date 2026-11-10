@@ -1,8 +1,8 @@
 // The room page's outputs panel (docs/rooms.md#outputs). Everyone sees the RTMP playback URL
 // (the room setting `outputs.rtmp.playbackUrl`) while the RTMP output is active, with a copy
 // button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
-// the `.ts` and HLS URLs with copy buttons, the RTMP target, key (the owner: in a password field with
-// Reveal and Copy; moderators: last 4 only) and live push status
+// the `.ts` and HLS URLs with copy buttons, the RTMP push status and, for the owner only, the RTMP
+// target and key (in a password field with Reveal and Copy), live push status
 // (from the room state, which `output.status` keeps current), the VRChat allowlist note and, with
 // HLS on, the HLS desync note. The owner turns outputs on and off, rotates the URLs' tokens, sets
 // the RTMP target and key, and removes outputs. The decisions are in outputs.ts.
@@ -270,7 +270,7 @@ export class OutputsPanel {
     return h("div", { class: "output-block" }, ...parts);
   }
 
-  /** RTMP: target, key (owner: Reveal/Copy; moderators: last 4), live status, playback URL, the target form, on/off, remove. */
+  /** RTMP: target and key (owner only; the key with Reveal/Copy), live status, playback URL, the target form, on/off, remove. */
   #rtmpBlock(row: OutputRow | undefined, rows: OutputRow[]): HTMLElement {
     const fail = (e: unknown): void => this.#fail(e);
     const title = h("h4", { text: OUTPUT_LABELS["rtmp"] ?? "RTMP" });
@@ -287,9 +287,6 @@ export class OutputsPanel {
     }
     this.#pushStatus = h("span", { class: "output-status" });
     this.#pushDetail = h("p", { class: "muted small output-detail" });
-    // The owner gets the full key (in a password field); moderators only its last 4.
-    const ownerKey = this.#owner && row.rtmpKey !== undefined ? row.rtmpKey : undefined;
-    const key = row.hasRtmpKey === true ? (row.rtmpKeyLast4 !== undefined ? "…" + row.rtmpKeyLast4 : "set") : "none";
     // The room setting as the state has it now (the API's copy is from the last load).
     const playback = this.#state !== undefined ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings)
       : row.playbackUrl;
@@ -298,11 +295,15 @@ export class OutputsPanel {
       title,
       h("p", { class: "small" }, "Status: ", this.#pushStatus),
       this.#pushDetail,
-      ownerKey !== undefined ? h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }))
-        : h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl ?? "" }), " · Stream key: ", key),
     ];
-    if (ownerKey !== undefined) {
-      parts.push(h("p", { class: "small", text: "Stream key:" }), secretField(ownerKey, "RTMP stream key"));
+    // The target and key are the owner's (the API sends them to the owner only); moderators see neither.
+    if (this.#owner && row.rtmpUrl !== undefined) {
+      parts.push(h("p", { class: "small" }, "Target: ", h("code", { text: row.rtmpUrl })));
+      if (row.rtmpKey !== undefined) {
+        parts.push(h("p", { class: "small", text: "Stream key:" }), secretField(row.rtmpKey, "RTMP stream key"));
+      } else {
+        parts.push(h("p", { class: "small muted", text: "No stream key." }));
+      }
     }
     if (playback !== undefined) {
       parts.push(h("p", { class: "small", text: "Viewer URL (for VRChat):" }), copyField(playback, "RTMP viewer URL"));
@@ -325,7 +326,7 @@ export class OutputsPanel {
     const url = h("input", { type: "url", placeholder: "rtmp://ingest.example/live",
       value: row?.rtmpUrl ?? "", autocomplete: "off", "aria-label": "RTMP ingest URL" });
     const key = h("input", { type: "password", autocomplete: "new-password",
-      placeholder: row === undefined ? "Stream key (optional)" : (row.hasRtmpKey === true ? "Leave empty to keep the key" : "Stream key (optional)"),
+      placeholder: row?.hasRtmpKey === true ? "Leave empty to keep the key" : "Stream key (if needed)",
       "aria-label": "Stream key" });
     const removeKey = h("input", { type: "checkbox" });
     const status = h("p", { class: "error", role: "alert" });

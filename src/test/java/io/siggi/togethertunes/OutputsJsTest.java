@@ -39,8 +39,13 @@ class OutputsJsTest {
         String panel = read("web/js/outputspanel.js");
         for (String s : List.of("navigator.clipboard", "execCommand(\"copy\")", "/rotate", "\"Rotate URL\"",
                 "\"Turn off\"", "\"Turn on\"", "rtmpKey", "outputNotes(", "pushLine(", "rtmpPlaybackUrl(",
-                "/server-switches", "type: \"password\"")) {
+                "/server-switches", "type: \"password\"", "secretField(", "\"Reveal\"", "\"Hide\"",
+                "\"Stream key (if needed)\"")) {
             assertTrue(panel.contains(s), s);
+        }
+        // moderators never see the key or its last 4; the old "stored encrypted" text is gone
+        for (String s : List.of("rtmpKeyLast4", "stored encrypted")) {
+            assertFalse(panel.contains(s), s);
         }
         String room = read("web/js/room.js");
         for (String s : List.of("from \"./outputspanel.js\"", "new OutputsPanel(", "outputsPanel.update(")) {

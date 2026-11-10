@@ -9,6 +9,7 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.rooms.RoomOutputs;
 import io.siggi.togethertunes.rooms.Rooms;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -39,12 +40,14 @@ import java.util.Set;
  * </ul>
  *
  * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt"}} plus,
- * for ts/HLS, {@code "url"} (the tokenised URL), and for RTMP {@code "rtmpUrl"}, {@code
- * "hasRtmpKey"}, {@code "rtmpKeyLast4"?}, {@code "rtmpKey"?} (the full key, for the room's owner
- * only; moderators get the last 4 at most), {@code "playbackUrl"?} (the room
+ * for ts/HLS, {@code "url"} (the tokenised URL), and for RTMP, to the room's owner only, {@code
+ * "rtmpUrl"}, {@code "hasRtmpKey"} and {@code "rtmpKey"?} (the full key; moderators get nothing
+ * about the key or the ingest URL, which can carry credentials too), then for everyone {@code
+ * "playbackUrl"?} (the room
  * setting {@code outputs.rtmp.playbackUrl}), {@code "rtmpAvailable"} (false if the server has no
  * ffmpeg) and {@code "status"?: {"state": "connecting"|"connected"|"retrying"|"error", "detail"?,
- * "failures", "since", "retryAt"?}} while a push runs. {@code active} = enabled AND the server
+ * "failures", "since", "retryAt"?}} while a push runs (moderators get the detail without URLs or
+ * key hints, {@link RoomOutputs#moderatorDetail}). {@code active} = enabled AND the server
  * switch. Errors: {@code 401 not_authenticated} (not a user), {@code 403 forbidden}, {@code 404
  * room_not_found} / {@code output_not_found}, {@code 400 invalid_kind} / {@code invalid_enabled} /
  * {@code invalid_rtmp_url} / {@code invalid_rtmp_key} / {@code invalid_field} (RTMP fields on a
@@ -226,6 +229,7 @@ public final class StreamOutputsApi {
     }
 
     private Map<String, Object> view(Rooms.Access a, StreamOutputs.Output o) throws Exception {
+        boolean owner = a.role() == Rooms.Role.OWNER;
         boolean serverEnabled = control.serverEnabled(o.kind());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", o.id());
@@ -237,15 +241,13 @@ public final class StreamOutputsApi {
         if (o.kind().hasToken()) {
             m.put("url", url(o.kind(), o.token()));
         } else {
-            m.put("rtmpUrl", o.rtmpUrl());
-            m.put("hasRtmpKey", o.hasRtmpKey());
-            String last4 = StreamOutputs.keyLast4(o);
-            if (last4 != null) {
-                m.put("rtmpKeyLast4", last4);
-            }
-            // The full key only for the owner: it opens the owner's account at the RTMP service.
-            if (a.role() == Rooms.Role.OWNER && o.rtmpKey() != null) {
-                m.put("rtmpKey", o.rtmpKey());
+            // The target and key only for the owner: they open the owner's account at the RTMP service.
+            if (owner) {
+                m.put("rtmpUrl", o.rtmpUrl());
+                m.put("hasRtmpKey", o.hasRtmpKey());
+                if (o.rtmpKey() != null) {
+                    m.put("rtmpKey", o.rtmpKey());
+                }
             }
             String playback = a.room().settings().rtmpPlaybackUrl();
             if (playback != null) {
@@ -257,7 +259,7 @@ public final class StreamOutputsApi {
                 Map<String, Object> st = new LinkedHashMap<>();
                 st.put("state", s.state().name().toLowerCase(Locale.ROOT));
                 if (s.detail() != null) {
-                    st.put("detail", s.detail());
+                    st.put("detail", owner ? s.detail() : RoomOutputs.moderatorDetail(s.detail()));
                 }
                 st.put("failures", s.failures());
                 st.put("since", s.sinceMs());

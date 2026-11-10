@@ -58,7 +58,7 @@ test("RTMP playback URL: the room setting, only while RTMP is active", () => {
 });
 
 const row = (over) => ({ id: "o1", kind: "rtmp", enabled: true, serverEnabled: true, active: true, createdAt: 1,
-  rtmpUrl: "rtmp://ingest.example/live", hasRtmpKey: true, rtmpKeyLast4: "WXYZ", rtmpAvailable: true, ...over });
+  rtmpUrl: "rtmp://ingest.example/live", hasRtmpKey: true, rtmpKey: "live_123456789_abcdWXYZ", rtmpAvailable: true, ...over });
 
 test("push line: live status first, failures and next try for retrying/error, off and no ffmpeg", () => {
   assert.equal(O.pushLine(undefined, row({}), 0), "Connecting…");

@@ -105,7 +105,6 @@ abstract class LegacyRtmpKeysContract {
         StreamOutputs outputs = new StreamOutputs(db, new SecureRandom(), java.time.Clock.systemUTC());
         StreamOutputs.Output o1 = outputs.get("r1", "o1");
         assertEquals(KEY, o1.rtmpKey());
-        assertEquals("WXYZ", StreamOutputs.keyLast4(o1));
         assertFalse(o1.toString().contains(KEY), o1.toString());
         assertFalse(outputs.get("r2", "o2").hasRtmpKey());
     }

@@ -390,7 +390,7 @@ final class RoomBroadcaster implements RoomListener {
         List<RoomOutputs.Status> active = activeOutputs();
         for (Member m : to) {
             JsonObject msg = base.deepCopy();
-            msg.add("outputs", outputsJson(active, s.settings(), m.actor.moderates()));
+            msg.add("outputs", outputsJson(active, s.settings(), m.actor));
             msg.getAsJsonObject("room").add("you", you(s, m.actor));
             yourVotes(msg.getAsJsonArray("queue"), s, m.actor);
             yourVotes(msg.getAsJsonArray("suggestions"), s, m.actor);
@@ -459,25 +459,29 @@ final class RoomBroadcaster implements RoomListener {
         }
     }
 
-    private static JsonArray outputsJson(List<RoomOutputs.Status> active, JsonObject settings, boolean moderator) {
+    private static JsonArray outputsJson(List<RoomOutputs.Status> active, JsonObject settings, RoomActor actor) {
         JsonArray a = new JsonArray();
         for (RoomOutputs.Status st : active) {
-            a.add(outputJson(new JsonObject(), st, settings, moderator));
+            a.add(outputJson(new JsonObject(), st, settings, actor));
         }
         return a;
     }
 
-    /** {@code kind}, {@code status}, {@code estimatedDelayMs} (unless off) and, for moderators, {@code detail}. */
+    /**
+     * {@code kind}, {@code status}, {@code estimatedDelayMs} (unless off) and, for the owner and
+     * moderators, {@code detail} (moderators: without URLs or key hints, {@link RoomOutputs#moderatorDetail}).
+     */
     private static JsonObject outputJson(JsonObject o, RoomOutputs.Status st, JsonObject settings,
-                                         boolean moderator) {
+                                         RoomActor actor) {
         o.addProperty("kind", st.kind());
         o.addProperty("status", st.status());
         Integer delay = "off".equals(st.status()) ? null : estimatedDelayMs(settings, st.kind());
         if (delay != null) {
             o.addProperty("estimatedDelayMs", delay);
         }
-        if (moderator && st.detail() != null) {
-            o.addProperty("detail", st.detail());
+        if (actor.moderates() && st.detail() != null) {
+            o.addProperty("detail", actor.role() == Rooms.Role.OWNER ? st.detail()
+                    : RoomOutputs.moderatorDetail(st.detail()));
         }
         return o;
     }
@@ -499,7 +503,7 @@ final class RoomBroadcaster implements RoomListener {
         for (Member m : members.values()) {
             JsonObject msg = new JsonObject();
             msg.addProperty("type", "output.status");
-            m.conn.send(outputJson(msg, st, m.base == null ? null : m.base.settings(), m.actor.moderates()));
+            m.conn.send(outputJson(msg, st, m.base == null ? null : m.base.settings(), m.actor));
         }
     }
 

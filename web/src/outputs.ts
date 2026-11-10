@@ -32,10 +32,9 @@ export interface OutputRow {
   createdAt: number;
   /** `.ts` / HLS: the tokenised URL. */
   url?: string;
+  /** RTMP, the room's owner only: the ingest URL, whether there is a key, and the key. */
   rtmpUrl?: string;
   hasRtmpKey?: boolean;
-  rtmpKeyLast4?: string;
-  /** The full stream key: only for the room's owner. */
   rtmpKey?: string;
   playbackUrl?: string;
   rtmpAvailable?: boolean;

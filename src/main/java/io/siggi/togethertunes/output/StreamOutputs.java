@@ -30,8 +30,8 @@ import java.util.Objects;
  *       characters), stored in plaintext (they are shown to the owner again); {@link #rotate}
  *       replaces one. They are capabilities: never logged, never in an audit entry (invariant 6).</li>
  *   <li><b>RTMP stream keys</b> are stored in plain text ({@code rtmp_key}; RTMP sends them in
- *       plain text anyway). The API shows the full key to the room's owner only, moderators get
- *       its last 4 characters ({@link #keyLast4}). Keys are never logged or audited (invariant 6).
+ *       plain text anyway). The API shows the key (and the ingest URL) to the room's owner only;
+ *       moderators get nothing about either. Keys are never logged or audited (invariant 6).
  *       Keys encrypted by older versions are converted by {@link LegacyRtmpKeys}. The RTMP ingest
  *       URL is not secret, but is left out of audit entries too (some services put the key in it).</li>
  * </ul>
@@ -49,8 +49,6 @@ public final class StreamOutputs {
     public static final int RTMP_KEY_MAX = 512;
     /** Token entropy in bytes (128 bits). */
     public static final int TOKEN_BYTES = 16;
-    /** Keys shorter than this show nothing, not even the last 4 (as {@link RtmpPusher#maskKey}). */
-    static final int KEY_HINT_MIN_LENGTH = 8;
 
     private static final Base64.Encoder TOKEN_ENCODER = Base64.getUrlEncoder().withoutPadding();
 
@@ -382,18 +380,6 @@ public final class StreamOutputs {
             return new Output(o.id(), roomId, o.kind(), token, o.rtmpUrl(), o.rtmpKey(), o.enabled(),
                     o.createdAt());
         });
-    }
-
-    /**
-     * The last 4 characters of the output's stream key (what moderators see); null without a key
-     * or for keys shorter than {@value #KEY_HINT_MIN_LENGTH} characters.
-     */
-    public static String keyLast4(Output o) {
-        String key = o.rtmpKey();
-        if (key == null || key.length() < KEY_HINT_MIN_LENGTH) {
-            return null;
-        }
-        return key.substring(key.length() - 4);
     }
 
     private static final String SELECT =

@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.output;
 
+import io.siggi.togethertunes.rooms.RoomOutputs;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -12,6 +13,7 @@ import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.util.regex.Matcher;
 
 /**
  * One room's RTMP push, v1 ({@code docs/program-output.md#rtmp-push-vrcdn-etc}): a supervised
@@ -24,7 +26,8 @@ import java.util.function.LongSupplier;
  *
  * <p>"Connected" means ffmpeg reported progress ({@code -progress pipe:1}), which it only does once
  * the RTMP output is open. The stream key is a capability (invariant 6): it never appears in a log
- * or in the status; stderr lines have it replaced by {@link #maskKey}. (It is on ffmpeg's command
+ * or in the status; stderr lines have it replaced by {@link #maskKey}, and URL credentials masked
+ * ({@link #maskUrlCredentials}). (It is on ffmpeg's command
  * line, so local users who can list processes can see it; ffmpeg has no other way to take it.)
  */
 public final class RtmpPusher implements AutoCloseable {
@@ -161,12 +164,46 @@ public final class RtmpPusher implements AutoCloseable {
         return "…" + key.substring(key.length() - 4);
     }
 
-    /** {@code line} with every occurrence of the key masked. */
+    /**
+     * {@code line} with every occurrence of the key masked, and the credentials of every URL in it
+     * (user info, query, fragment) masked by {@link #maskUrlCredentials}: some services take
+     * credentials in the ingest URL instead of a key.
+     */
     String redact(String line) {
-        if (key.isEmpty()) {
-            return line;
+        String l = key.isEmpty() ? line : line.replace(key, maskKey(key));
+        return maskUrlCredentials(l);
+    }
+
+    /**
+     * Every URL in {@code text} with its user info replaced by {@code ***@} and its query and
+     * fragment by {@code ?…} / {@code #…}.
+     */
+    static String maskUrlCredentials(String text) {
+        Matcher m = RoomOutputs.URL_IN_TEXT.matcher(text);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String url = m.group();
+            int start = url.indexOf("://") + 3;
+            int pathAt = start;
+            while (pathAt < url.length() && "/?#".indexOf(url.charAt(pathAt)) < 0) {
+                pathAt++;
+            }
+            String authority = url.substring(start, pathAt);
+            int at = authority.lastIndexOf('@');
+            if (at >= 0) {
+                authority = "***@" + authority.substring(at + 1);
+            }
+            String rest = url.substring(pathAt);
+            int q = rest.indexOf('?');
+            int h = rest.indexOf('#');
+            int cut = q < 0 ? h : (h < 0 ? q : Math.min(q, h));
+            if (cut >= 0) {
+                rest = rest.substring(0, cut) + rest.charAt(cut) + "…";
+            }
+            m.appendReplacement(sb, Matcher.quoteReplacement(url.substring(0, start) + authority + rest));
         }
-        return line.replace(key, maskKey(key));
+        m.appendTail(sb);
+        return sb.toString();
     }
 
     /** The target URL as it may be logged. */

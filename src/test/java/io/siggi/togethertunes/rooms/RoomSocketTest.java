@@ -847,6 +847,22 @@ class RoomSocketTest {
         assertFalse(off.has("estimatedDelayMs"));
         wiring.socket().outputStatus("no-such-room", new RoomOutputs.Status("ts", "ready", null));
         member.quiet("output.status");
+
+        // a moderator gets the detail without the ingest URL or the key's last 4 (the owner's only)
+        String detail = "Error opening output rtmp://***@ingest.example/live/…WXYZ: Connection refused";
+        active.set(List.of(new RoomOutputs.Status("rtmp", "retrying", detail)));
+        assertEquals(201, call(alice, "PUT", "/api/rooms/outs/members/" + bobId, "{\"role\":\"moderator\"}")
+                .statusCode());
+        JsonObject modState = member.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonArray("outputs").size() == 1
+                && m.getAsJsonArray("outputs").get(0).getAsJsonObject().has("detail"));
+        assertEquals("Error opening output (ingest URL): Connection refused",
+                modState.getAsJsonArray("outputs").get(0).getAsJsonObject().get("detail").getAsString());
+        wiring.socket().outputStatus(roomId, new RoomOutputs.Status("rtmp", "retrying", detail));
+        assertEquals(detail, owner.await(m -> m.get("type").getAsString().equals("output.status")
+                && m.has("detail") && m.get("detail").getAsString().equals(detail)).get("detail").getAsString());
+        assertEquals("Error opening output (ingest URL): Connection refused",
+                member.await("output.status").get("detail").getAsString());
     }
 
     @Test

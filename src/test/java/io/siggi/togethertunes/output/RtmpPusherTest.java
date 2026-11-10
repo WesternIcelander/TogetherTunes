@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import io.siggi.togethertunes.ingest.ToolResult;
+import io.siggi.togethertunes.rooms.RoomOutputs;
 import io.siggi.togethertunes.ingest.Tools;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -174,6 +175,22 @@ class RtmpPusherTest {
         assertEquals("Error opening output rtmp://ingest.example/live/…WXYZ: Connection refused",
                 p.redact("Error opening output rtmp://ingest.example/live/" + KEY + ": Connection refused"));
         assertFalse(p.maskedTarget().contains(KEY));
+    }
+
+    @Test
+    void urlCredentialsAreMaskedInLogsAndDetail() {
+        assertEquals("Cannot open rtmp://***@ingest.example:1935/live?…: refused",
+                RtmpPusher.maskUrlCredentials("Cannot open rtmp://user:pa55@ingest.example:1935/live?token=s3cret: refused"));
+        assertEquals("rtmps://ingest.example/app/x#…", RtmpPusher.maskUrlCredentials("rtmps://ingest.example/app/x#frag"));
+        assertEquals("no url here", RtmpPusher.maskUrlCredentials("no url here"));
+        assertEquals("rtmp://h/live", RtmpPusher.maskUrlCredentials("rtmp://h/live"));
+        RtmpPusher p = pusher(feed(4), scripts(n -> "true"), recordingSleeper(null));
+        String line = p.redact("Error opening output rtmp://bob:pw@ingest.example/live/" + KEY + "?auth=zz: refused");
+        assertEquals("Error opening output rtmp://***@ingest.example/live/…WXYZ?…: refused", line);
+        // what moderators see of it: no URL, no key hint
+        assertEquals("Error opening output (ingest URL): refused", RoomOutputs.moderatorDetail(line));
+        assertEquals("key …: refused", RoomOutputs.moderatorDetail("key …WXYZ: refused"));
+        assertNull(RoomOutputs.moderatorDetail(null));
     }
 
     @Test
