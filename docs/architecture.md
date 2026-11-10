@@ -52,7 +52,7 @@
       card.mp4            2 s still-card GOP (audio-only items; also used as transition card)
       index.bin           packager sample index (see library-and-ingest.md)
       cover.jpg           artwork (embedded, from YouTube thumbnail, or generated)
-  cards/<encoding>/       (e.g. cards/720p30-3000k-v2/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
+  cards/<encoding>/       (e.g. cards/720p30-3000k-v3/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     cards/<key>.mp4       per-room cards: idle (room name), filler cards and item cards with the overlay
@@ -74,7 +74,8 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
 | `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
 | `output.profile` | `720p30` | *admin*. `720p30` \| `1080p30`. Changing it re-encodes every item ([library-and-ingest.md](library-and-ingest.md#re-encodes)) |
-| `output.videoBitrateKbps` | 3000 (720p30), 6000 (1080p30) | *admin* (unset = the profile's default). Constant video bitrate of every encode (mezzanines and cards), 500–25000. Part of the SPS, so changing it re-encodes every item like a profile change ([library-and-ingest.md](library-and-ingest.md#the-mezzanine-profile)) |
+| `output.videoBitrateKbps` | 3000 (720p30), 6000 (1080p30) | *admin* (unset = the profile's default). Video bitrate cap of every encode (mezzanines and cards), and the constant rate the packager pads normal rooms' program output to, 500–25000. Changing it re-encodes every item like a profile change ([library-and-ingest.md](library-and-ingest.md#the-mezzanine-profile)) |
+| `output.audioOnlyBitrateKbps` | 800 | *admin*. Constant video stream rate of audio-only rooms' program output (cards only, so it may be below the cap), 500–25000. Re-encodes nothing ([program-output.md](program-output.md#constant-rate-padding)) |
 | `ingest.workers` | cores/2 | *admin*. 1..256 |
 | `ingest.maxUploadBytes` | 4 GiB | *admin* |
 | `ingest.maxDurationSeconds` | 1800 | *admin*. Applies to both uploads and yt-dlp |
