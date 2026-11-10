@@ -400,8 +400,6 @@ class LiveTsApiTest {
     }
 
     @Test
-    @org.junit.jupiter.api.Disabled("needs a SiggiHTTP abort for a response whose writer is blocked"
-            + " (requested from the SiggiHTTP session 2026-11-10); fails today: the lease stays held")
     void stalledClientIsDisconnectedWhenItsQueueOverflows() throws Exception {
         unitBytes = 4 * 1024 * 1024; // far more than the socket buffers hold
         try (Socket s = new Socket()) {
@@ -415,16 +413,32 @@ class LiveTsApiTest {
             await(() -> packager().consumerCount() == 0); // dropped by the packager
             // the connection is ended although its writer was blocked: lease freed, body ends
             await(() -> outputs.leases("room-next") == 0);
+            // The server reset the connection. On loopback the client doesn't always see that RST
+            // (macOS ignores one outside its receive window and rate-limits challenge ACKs), so on
+            // a quiet read poke the server: the kernel answers a write to a closed socket with a
+            // reset. A connection still open on the server would just keep sending.
             InputStream in = s.getInputStream();
-            try {
-                while (in.read(new byte[65536]) != -1) {
-                    // drain what was in flight
+            s.setSoTimeout(1000);
+            boolean ended = false;
+            for (int quiet = 0; quiet < 10 && !ended; ) {
+                try {
+                    ended = in.read(new byte[65536]) == -1; // drain what was in flight
+                } catch (java.net.SocketTimeoutException e) {
+                    quiet++;
+                    try {
+                        s.getOutputStream().write('x');
+                    } catch (java.io.IOException reset) {
+                        ended = true;
+                    }
+                } catch (java.net.SocketException reset) {
+                    ended = true;
                 }
-            } catch (java.net.SocketException reset) {
-                // a reset is fine too
             }
+            assertTrue(ended, "the connection ends on the server side");
         }
         assertEquals(0, api.viewers("room-next"));
+        String err = output();
+        assertFalse(err.contains("Exception"), "the abort logged an exception: " + err);
     }
 
     /** Copies everything to two streams (so a test can read stderr). */

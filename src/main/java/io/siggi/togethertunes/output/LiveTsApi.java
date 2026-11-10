@@ -165,17 +165,24 @@ public final class LiveTsApi {
      * blocked writing to a stalled client.
      */
     private static Abort abortFor(Response response) {
-        // TODO(SiggiHTTP): needs an abort that works while another thread is blocked in write
-        // (reported to the SiggiHTTP session 2026-11-10). Until then the writer notices the closed
-        // queue after its current write returns.
-        return () -> {
-        };
+        // resets the socket without flushing; a write blocked on a stalled client throws, and the
+        // server treats that like the client leaving (logs nothing)
+        return response.raw()::abort;
     }
 
     /** Sends units until the client leaves or its queue closes (overflow, output stopped). */
     void stream(Response response, Packager packager, Target target, Abort abort) throws IOException {
         ConsumerQueue queue = packager.subscribe(target.joinLatest());
-        queue.onClose(abort::abort);
+        java.util.concurrent.atomic.AtomicBoolean writing = new java.util.concurrent.atomic.AtomicBoolean();
+        queue.onClose(() -> {
+            // Overflow: the client is too slow (maybe stalled, its writer blocked), so end the
+            // connection at once. Output stopped: let the body end cleanly after the unit being
+            // sent, unless that write is in progress (it may be blocked on a stalled client); a
+            // reset would make the client discard bytes it hasn't read yet.
+            if (queue.closeReason() == ConsumerQueue.CloseReason.OVERFLOW || writing.get()) {
+                abort.abort();
+            }
+        });
         boolean viewer = false;
         try {
             StreamBody body = response.stream(CONTENT_TYPE, StreamBody.Framing.CLOSE_DELIMITED);
@@ -192,7 +199,12 @@ public final class LiveTsApi {
                 if (unit == null) {
                     return; // overflow or output stopped: the body ends with the connection
                 }
-                body.write(unit.ts());
+                writing.set(true);
+                try {
+                    body.write(unit.ts());
+                } finally {
+                    writing.set(false);
+                }
                 if (++sent == VIEWER_AFTER_UNITS) {
                     viewers.computeIfAbsent(target.roomId(), k -> new AtomicInteger()).incrementAndGet();
                     viewer = true;
