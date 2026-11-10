@@ -71,15 +71,16 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
 
 media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the current and the kept undo version were made with
       published_at BIGINT, kind, duration_ms, output_profile, loudness_lufs, encode_preset, encode_quality,  -- the items publish columns
-      edit_json TEXT NULL)                  -- edit settings (trims) as JSON (library-and-ingest.md#undo)
+      edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, originalMs? (library-and-ingest.md#trim)
 
 media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)
       switched_at BIGINT,                   -- when the item switched away from it; kept for media.undoHours from then
       undoable INTEGER)                     -- 1: that switch was a person's change (edit or undo); 0: a system re-encode (no Undo)
 
-ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch' | 'quality'
+ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch' | 'quality' | 'trim'
       state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL,
-      tier TEXT NULL)                       -- preset tier asked for when queued: 'quick' | 'quality' (NULL: decided at start)
+      tier TEXT NULL,                       -- preset tier asked for when queued: 'quick' | 'quality' (NULL: decided at start)
+      edit_json TEXT NULL)                  -- a 'trim' job's target edit settings (library-and-ingest.md#trim); NULL otherwise
 
 uploads(id PK, user_id NULL, guest_id NULL,  -- exactly one owner
       room_id NULL,                         -- set when the upload is a room request (M3)
