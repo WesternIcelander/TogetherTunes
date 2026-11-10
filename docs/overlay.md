@@ -19,8 +19,8 @@ The decision is recorded per queue entry when the overlay job is planned, so a c
 `rooms/<roomId>/overlay.png` (RGBA, at the output resolution's scale) is rendered with Java2D. It contains:
 
 - A QR code for `{publicBaseUrl}/r/{slug}` (short path; it redirects to the room page in remote mode). Error correction level **M**, 4-module quiet zone, black on white. Generated with ZXing core (`QRCodeWriter`), or a hand-written encoder.
-- The same URL as text underneath (without `https://`), in a large, high-contrast font. This is for people who would rather type it.
-- A rounded, semi-opaque dark panel behind both, so the overlay stays readable on any video.
+- A text line **"Requests at {url}"** (the same short URL, without `https://`), in a large, high-contrast font, for people who would rather type it. It goes on the side of the QR code that faces the middle of the frame: **below** the QR code in the bottom corners (`bl`, `br`), **above** it in the top corners (`tl`, `tr`), aligned to the same edge as the QR code (left for `bl`/`tl`, right for `br`/`tr`). The text is part of the overlay image and of `overlayHash`.
+- A rounded, semi-opaque dark panel behind the QR code and the text, so the overlay stays readable on any video.
 
 Room settings:
 
@@ -28,7 +28,7 @@ Room settings:
 - `overlay.heightPct`: default 22% of the frame height. A VRChat screen is often viewed small and at an angle, so the QR code must be big.
 - `overlay.margin`.
 
-Test that the code scans from a phone pointed at a desktop VRChat screen at a typical viewing distance before choosing the defaults.
+Test that the code scans from a phone pointed at the stream on a screen at a typical viewing distance before choosing the defaults. Any player works for that (e.g. VLC playing the `.ts` or HLS URL); it doesn't have to be VRChat.
 
 The image is regenerated when the slug, the overlay settings or `publicBaseUrl` change. Its content hash (`overlayHash`) is part of every cache key below, so stale renders are never used.
 

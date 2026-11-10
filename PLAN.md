@@ -417,6 +417,12 @@ Web client:
 
 - [x] H.264/AAC helpers: AVCC → Annex B (with AUD, SPS/PPS before IDR), ADTS header writer; unit tests.
   - Done 2026-11-10 at main `3aaa2c2`. `media/AnnexB` (built from the avcC: NAL length size 1/2/4, SPS/PPS lists; `accessUnit(sample, off, len)` → AUD `00 00 00 01 09 F0`, then SPS+PPS from the avcC if the sample holds an IDR NAL (type 5, detected from the NALs, not the index flag), then the sample's NALs with 4-byte start codes; `isIdr(...)`) and `media/Adts` (`writeHeader`/`header`/`wrap`, fields from `EncodeProfile`'s 48 kHz stereo, AAC-LC, fullness 0x7FF, max payload 8184). **Decision:** in-band AUD, SPS and PPS NALs in a sample are dropped (as the overlay re-encoder will do), so every access unit has exactly one AUD and parameter sets appear only before IDRs, always from the avcC (identical across encodes per invariant 1). Malformed avcC or samples throw `AnnexB.H264FormatException` (an `IOException`). Tests: `AnnexBTest` (synthetic samples incl. offsets, 1/2-byte prefixes, multiple SPS/PPS, malformed input; plus a real 5 s profile encode converted sample by sample whose Annex B stream decodes to framemd5-identical frames, with SPS/PPS before exactly the 3 IDRs) and `AdtsTest` (bit fields, known bytes, limits; headers byte-identical to ffmpeg's ADTS muxer on every frame of a real `audio.m4a`). `mvn -DskipITs verify` passes (942 unit tests).
+- [ ] Playback survives navigation (added 2026-11-10, Siggi's request; belongs with M3's web playback, placed here so it lands before M4/M5 add more pages): **navigating to another page of the site must not interrupt listen-mode playback, unless it's to another room.** Today every page is a separate HTML document, so following a link from the room page (library, playlists, account, admin, item page, rooms list, room management) unloads the player. Build it without a framework or bundler (CLAUDE.md):
+  - **A persistent shell:** once a room is playing in listen mode, same-origin navigation to non-room pages happens client-side: intercept link clicks and form-driven navigations to site pages, fetch the target page, swap the page's main content and title, run the target page's module (pages need a mount/unmount entry point instead of running on load; refactor them so each page module exports e.g. `mount(root, params)` / `unmount()`), and update the URL with `history.pushState`; handle back/forward (`popstate`), scroll position and focus. The room's WebSocket, clock sync and the media elements (and the "Click to listen" unlock) stay alive.
+  - **A mini player** shown on every page while a room plays: room name (link back to the room page), current item, play state, "Audio only" toggle and a stop/leave button. Going back to the room page reattaches the full player view without restarting playback.
+  - **What still interrupts:** navigating to a *different* room (leave the old one, join the new one), logging out, a full reload (the browser needs a new "Click to listen" tap; say so in the mini player if the page is reloaded), and links to other sites / downloads. Remote mode is unaffected (nothing plays).
+  - Keep plain multi-page loading working when JavaScript isn't playing anything (deep links, reloads); the shell only takes over while something plays (or always, if that's simpler and every page works both ways).
+  Tests: JS (Node) tests for the router/link interception rules (same-origin, other room, downloads, modifier keys, `target`), `WebBuildTest`/`MainRouterTest` updates, and a headless-Chrome smoke test: start playing in a room, navigate library → playlists → account → back, check the media element never paused or reloaded (no new `load` events, drift stays steady) and the WebSocket stayed open; then navigate to another room and check the old one was left. Run only the tests that cover the change (CLAUDE.md). Siggi's server on 8080 stays untouched.
 - [ ] Sources: `VideoItemSource`, `AudioItemSource` (incl. `presentAsAudio`), `FillerSource` (Paused / Idle / Loading). Source abstraction must not assume file-backed or known-duration sources (future live input).
 - [ ] Unit builder + timestamp rules: audio-driven boundaries (1920-tick frames), video follows audio, card GOP repetition and truncation, fillers in whole units, clock start at 900000, 33-bit wrap, DTS = PTS.
 - [ ] Applying timeline changes at unit boundaries; natural end mid-unit; >3 s drift re-sync at item boundaries; unknown state → Paused.
@@ -443,7 +449,7 @@ Web client:
 
 ## M5 — QR overlay
 
-- [ ] Overlay renderer: ZXing QR (level M, quiet zone 4) for `{publicBaseUrl}/r/{slug}`, URL text, rounded semi-opaque panel; corner / heightPct / margin settings; `overlayHash`; regenerate on slug, settings or base URL change.
+- [ ] Overlay renderer: ZXing QR (level M, quiet zone 4) for `{publicBaseUrl}/r/{slug}`, the text "Requests at {url}" below the QR code in the bottom corners and above it in the top corners (see `docs/overlay.md#the-overlay-image`), rounded semi-opaque panel; corner / heightPct / margin settings; `overlayHash`; regenerate on slug, settings or base URL change.
 - [ ] Permission gating: server `overlay.enabled` AND room `overlay.enabled` AND (for videos) owner holds `output.overlayVideo`; decision recorded per queue entry.
 - [ ] Overlay cards: per-room filler cards and item cards (on current/next), keyed `(itemId, overlayHash, profile)`; packager uses them.
 - [ ] Overlay encoder pool (`overlay.workers`), separate from ingest, not persisted.
@@ -456,7 +462,7 @@ Web client:
 
 **Done when:**
 
-- [ ] *(manual)* A QR code on an audio item scans from a phone pointed at a VRChat screen.
+- [ ] *(manual)* A QR code on an audio item scans from a phone pointed at a screen playing the stream (VLC or any player is fine; VRChat isn't needed), and the "Requests at …" text is readable.
 - [ ] A music video started from "next" shows the overlay from its first frame (verify with the harness and frame extraction).
 - [ ] A music video skipped to mid-item gains the overlay within 4 s with no stream glitch (ffmpeg/ffprobe).
 - [ ] *(manual)* Visual check of the mid-item overlay switch: no visible glitch.
