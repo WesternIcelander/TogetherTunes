@@ -33,6 +33,7 @@ import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.EncodePresets;
 import io.siggi.togethertunes.ingest.FillerCards;
+import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestProgress;
@@ -398,7 +399,16 @@ public final class Main {
         outputControl.autoOff(autoOff);
         // A new slug or visibility changes the stream URLs at once (docs/program-output.md#stream-urls):
         // a room that becomes private gets fresh tokens; connections on URLs that stopped working end.
+        // The rooms' QR overlay images (docs/overlay.md#the-overlay-image): rendered on demand for the
+        // current slug, overlay settings, public URL and profile, and right away when an edit changes them.
+        Overlays overlays = new Overlays(dataDir.rooms(), config.publicBaseUrl(),
+                () -> outputAssets.encoding().profile());
         roomsApi.editListener((before, after) -> {
+            try {
+                overlays.roomEdited(after.id(), after.slug(), after.settings(), settings.overlayEnabled());
+            } catch (IOException | SQLException e) {
+                System.err.println("WARNING: could not render the overlay of room " + after.id() + ": " + e);
+            }
             if (before.visibility() == after.visibility() && before.slug().equals(after.slug())) {
                 return;
             }
