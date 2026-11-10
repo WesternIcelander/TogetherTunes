@@ -25,12 +25,14 @@ The decision is recorded per queue entry when the overlay job is planned, so a c
 Room settings:
 
 - `overlay.corner`: `br` (default), `bl`, `tr` or `tl`.
-- `overlay.heightPct`: default 22% of the frame height. A VRChat screen is often viewed small and at an angle, so the QR code must be big.
-- `overlay.margin`.
+- `overlay.heightPct`: default 22% of the frame height (5–50). It is the side of the QR code's white square, quiet zone included, rounded down to whole pixels per module (at least 2, so the smallest setting still survives scaling and compression). A VRChat screen is often viewed small and at an angle, so the QR code must be big. The text line is sized from the QR code (16% of its side, at least 3% of the frame height) and shrunk to fit the frame width if the URL is long; it is never cut.
+- `overlay.margin`: default 3% of the frame height (0–20): the panel's distance from the two frame edges of its corner.
+
+`overlay.png` holds only the panel (transparent outside its rounded corners); its position in the frame (even `x`, `y`, and even width and height, for 4:2:0 chroma) is stored next to it in `rooms/<roomId>/overlay.json`, together with the spec it was rendered from (render version, frame size, corner, size, margin, URL) and its `overlayHash`. Cards draw the panel at that position, and the music-video encode uses it as `overlay=<x>:<y>`. Code: `overlay/OverlayRenderer` (drawing, hash) and `overlay/Overlays` (the stored images).
 
 Test that the code scans from a phone pointed at the stream on a screen at a typical viewing distance before choosing the defaults. Any player works for that (e.g. VLC playing the `.ts` or HLS URL); it doesn't have to be VRChat.
 
-The image is regenerated when the slug, the overlay settings or `publicBaseUrl` change. Its content hash (`overlayHash`) is part of every cache key below, so stale renders are never used.
+The image is regenerated when the slug, the overlay settings or `publicBaseUrl` change (also the output profile, or a new `OverlayRenderer.RENDER_VERSION` when the drawing code changes): whoever needs the overlay asks `Overlays.current(room)`, which compares the stored spec with the current one and re-renders on a mismatch (so a new `publicBaseUrl` after a restart takes effect on first use), and a room edit that changes the slug or overlay settings re-renders at once while the overlay is on. Its content hash (`overlayHash`: SHA-256 over the frame size, position and ARGB pixels, 16 hex digits) is part of every cache key below, so stale renders are never used; settings that produce the same pixels keep the same hash and caches.
 
 ## Cards (cheap path)
 
