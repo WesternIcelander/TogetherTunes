@@ -37,10 +37,11 @@ SiggiHTTP and SimpleWebsocket are separate projects, each with its own Claude se
 ## PLAN.md conventions
 
 - Every `- [ ]` line in `PLAN.md` is one step. Do only the step you were given.
-- `[x]`: done, tests pass, committed and pushed.
+- `[x]`: done, the tests for what changed pass, committed and pushed.
+- **Tests while iterating:** a step runs only the tests that cover what it changed, not the full suite: e.g. `mvn package -DskipTests` (compiles the Java and the TypeScript) plus the affected test classes (`mvn test -Dtest='ListenJsTest,RoomSocketTest'`), and the affected integration tests (`-Dit.test=...`) only when the change touches what they cover (database, migrations, ingest/ffmpeg, PostgreSQL). Name the tests you ran in the step's notes. The full `mvn verify` runs at the milestone gate.
 - `[?]`: **implemented, awaiting manual verification.** Used for steps marked *(manual)* (real browsers, phones, VRChat, real OIDC providers). Do everything an agent can (test pages, scripts, written test instructions under the step), then mark it `[?]`; this counts as success for the run. Siggi flips it to `[x]` after checking.
 - If a step can't be finished, leave it `[ ]`, add an indented note explaining why, and stop.
-- **Gates:** each milestone ends with a gate step. It ticks itself only if every step in the milestone is `[x]` (otherwise it lists what's left), except for steps that PLAN.md explicitly says don't block the gate. A ticked gate doesn't stop the run: it continues with the next milestone. A gate that can't be ticked stops the run for review.
+- **Gates:** each milestone ends with a gate step. It first checks the milestone's steps: if any isn't `[x]` (apart from steps PLAN.md explicitly says don't block the gate), it lists what's left and stops **without running the tests**. Only when all are done does it run the full `mvn verify`, and it ticks itself only if that passes (a failure is noted under the gate and stops the run). A ticked gate doesn't stop the run: it continues with the next milestone. A gate that can't be ticked stops the run for review.
 - **When a run stops** (a gate can't be ticked yet, the run hit its step limit, a step failed, or it is waiting on upstream), the session that started the run sends Siggi a push notification (`PushNotification`) saying which milestone or step it stopped at and why.
 
 ## Repository layout and git workflow
