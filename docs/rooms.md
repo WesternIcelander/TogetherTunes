@@ -25,6 +25,8 @@ Every timeline change (play, pause, seek, skip, advance) **re-anchors** the time
 
 **Entries that aren't ready:** an entry whose item is still being ingested (for example a YouTube request that is still downloading) stays in the queue, marked "processing", and is **skipped over** when choosing the next entry. It becomes eligible as soon as its item is ready: every status change of an item (ingest done or failed, a re-ingest starting, a purge) is announced to each room that has it queued, suggested or current, which refreshes the entry for its clients and, if the room is idle, starts the next eligible entry. A failed entry stays in the queue, marked failed, and is skipped; a current entry whose item failed or was purged is skipped.
 
+**What a waiting entry shows** (added 2026-11-10, Siggi: "Having additional feedback can alleviate issues with patience."): while an entry's item isn't ready, the room tells its sockets what the item's ingest job is doing, with the room state but outside its versions (the `ingest` message, [api.md](api.md#websocket)): "Waiting to download" (queued, with its place in the ingest queue: "Waiting to download (3rd in line)"; uploads say "Waiting to encode"), "Downloading 45 %", "Encoding 30 %" (probe, loudness measurement and encode), "Finishing…" (audio extraction, card, index, verify, publish), or "Failed: <short reason>". The job's step and the step's own progress are live from the ingest queue ([library-and-ingest.md](library-and-ingest.md#ingest-job-states)). A room looks it up at most once a second, only while it has such an entry, and sends it only when it changed. The Library page, the item page and the jobs page use the same words.
+
 **Restart:** the timeline is persisted. On startup, a room that was playing resumes from its computed position, or from the start of the entry if the server was down for longer than the entry's remaining time.
 
 ## Control modes
@@ -117,7 +119,7 @@ A **request** is any attempt to add an item to a room's queue (or to suggest one
 
 - **Library:** search within `requestScope`.
 - **Upload:** the file is ingested into a new item (or deduplicated). The queue entry is "processing" until the item is ready.
-- **YouTube:** the link is normalised to a video ID and served from the cache when possible ([library-and-ingest.md](library-and-ingest.md#youtube-caching)).
+- **YouTube:** the link is normalised to a video ID and served from the cache when possible ([library-and-ingest.md](library-and-ingest.md#youtube-caching)). See [Adding a YouTube link](#adding-a-youtube-link) for the feedback while a new one is looked up.
 
 Each request writes a `room_requests` row. The owner reviews them in the request history and can add items to their library from there ([libraries.md](libraries.md#room-owners-request-history)). Items that nobody adds to a library are deleted by retention after the configured period.
 
@@ -249,6 +251,19 @@ Details (as implemented):
 - Uploads and YouTube links are turned into items before the entry is made, outside the room's executor; the cheap checks (identity, request rights, `requestsPerActor`) run first, so a refused request starts no import. A YouTube request doesn't add the item to the requester's library.
 - `remove` works on queued entries and suggestions; the current entry is skipped with `next` instead.
 - `previous`: more than 3 s into the current entry restarts it. Otherwise the last played (or skipped) entry plays again from the start, and the current entry goes back to the front of the queue (in `vote` mode as the top pin). A paused room stays paused; an idle room replays the last entry.
+
+### Adding a YouTube link
+
+Added 2026-11-10 (Siggi: "When I paste a YouTube link in, it says \"Looking up the video\" but does not seem to update its status until it's added to the queue."). A new video's `yt-dlp -J` lookup runs inside the request and can take 15 s or more, so the page shows what it is doing and how long it has been at it: "Looking up the video… 6 s" until the first stage, then the stage's text with the seconds so far ("Reading the video page… 9 s"), counted by the client every second so it visibly moves even when yt-dlp is quiet. The stages come from yt-dlp's own progress lines (`-J --verbose` prints them to stderr; `YoutubeLookupStage`):
+
+| Stage | Text | yt-dlp line |
+|---|---|---|
+| `contacting` | Contacting YouTube… | `[youtube] Extracting URL: …` |
+| `page` | Reading the video page… | `[youtube] <id>: Downloading webpage` |
+| `details` | Getting the video details… | `[youtube] <id>: Downloading … player API JSON` (and player / client config downloads) |
+| `formats` | Checking formats… | `[youtube] <id>: Downloading m3u8 information`, `[info] <id>: Downloading 1 format(s): …` |
+
+Stages only move forward and each is reported once; any other line (`[debug]`, warnings, unknown wording) is ignored, so a wording change in yt-dlp means fewer stages shown, never a failed lookup. In a room they go to the requesting socket only (`request.progress`, tied to the request's `rid`); the Library page gets them by streaming `POST /api/imports/youtube` ([api.md](api.md#adding-media)). A video the server already knows answers at once, without stages. Once queued, the entry shows its ingest progress ([What a waiting entry shows](#room-state)).
 
 ## Broadcasting
 
