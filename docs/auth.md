@@ -133,7 +133,7 @@ These are all stored in the `settings` table and edited in the admin UI.
 | Guests | see the table above |
 | Library | `ytdlp.enabled`, `ytdlp.cookiesFile`, `retention.unreferencedDays` (default 14; 0 = never delete), `ingest.maxDurationSeconds`, `ingest.quickPreset` / `ingest.qualityPreset` (x264 presets, defaults from the config; a preset that doesn't give the reference avcC is refused, [library-and-ingest.md](library-and-ingest.md#presets)) |
 | Rooms | `rooms.requestHistoryDays` (default 90; 0 = never trim): how long rooms keep their request history |
-| Outputs | `outputs.rtmp.enabled`, `outputs.ts.enabled`, `outputs.hls.enabled` (all default true) |
+| Outputs | `outputs.rtmp.enabled`, `outputs.ts.enabled`, `outputs.hls.enabled` (all default true); `outputs.rtmp.maxIdleStopMinutes` (default 60, 1..1440): the longest a room's RTMP push keeps running while the room is idle; the room setting `outputs.rtmp.idleStopMinutes` applies up to it ([program-output.md](program-output.md#idle-stop)) |
 | Overlay | `overlay.enabled` (default false). Re-encoding music videos also needs the room owner to hold `output.overlayVideo` |
 
 ## Stream URL tokens
