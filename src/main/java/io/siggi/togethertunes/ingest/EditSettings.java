@@ -6,6 +6,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import io.siggi.togethertunes.http.Json;
+import io.siggi.togethertunes.media.EncodeProfile;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
@@ -25,6 +26,10 @@ import java.util.Set;
  *   <li>{@code originalMs}: how long the original is, as probed by the encode that applied a trim
  *       (informational, for the trim timeline; absent while there is no trim, when the item's
  *       duration is the original's).</li>
+ *   <li>{@code firstGopFrames}: how many frames the version's first GOP has (1..59), when a smart
+ *       trim made it shorter than 2 s (invariant 2); absent: 60. Not an edit setting but a fact about
+ *       the encode, kept here so it travels with the version (undo) and the trim page can plan with
+ *       it ({@link #firstGopFrames}, {@link #withFirstGop}); a full encode removes it.</li>
  * </ul>
  *
  * <p>Other keys are kept as they are by the {@code with…} methods.
@@ -134,6 +139,27 @@ public record EditSettings(long videoStartMs, Long videoEndMs, Long originalMs, 
         JsonObject o = object(json);
         o.addProperty("originalMs", originalMs);
         return Json.GSON.toJson(o);
+    }
+
+    /** The version's first GOP in frames ({@code firstGopFrames}; 60 when absent or out of range). */
+    public static int firstGopFrames(String json) {
+        long f = number(object(json), "firstGopFrames", EncodeProfile.GOP_FRAMES);
+        return f >= 1 && f < EncodeProfile.GOP_FRAMES ? (int) f : EncodeProfile.GOP_FRAMES;
+    }
+
+    /**
+     * {@code json} with {@code firstGopFrames} set (left out when it is 60, a normal encode); other
+     * keys kept.
+     *
+     * @return the JSON, or null if nothing is left
+     */
+    public static String withFirstGop(String json, int firstGopFrames) {
+        JsonObject o = object(json);
+        o.remove("firstGopFrames");
+        if (firstGopFrames >= 1 && firstGopFrames < EncodeProfile.GOP_FRAMES) {
+            o.addProperty("firstGopFrames", firstGopFrames);
+        }
+        return o.size() == 0 ? null : Json.GSON.toJson(o);
     }
 
     // ------------------------------------------------------------------ trim jobs

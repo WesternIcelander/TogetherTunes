@@ -14,7 +14,8 @@ import java.util.List;
  * <p>Every list gives: libx264, the chosen preset (with its {@code chroma-qp-offset} and
  * {@code ref=4} pinned, so all presets write the same SPS and PPS), High profile, yuv420p, no B-frames (so PTS =
  * DTS), closed 60-frame GOPs with an IDR forced every 2 s from t = 0 and no scene-cut keyframes
- * (invariant 2), and a bitrate <em>capped</em> at the configured rate (a VBV-constrained
+ * (invariant 2; a smart trim's head encode moves the grid with
+ * {@link #videoArgs(OutputEncoding, X264Preset, int)} so its first GOP is shorter), and a bitrate <em>capped</em> at the configured rate (a VBV-constrained
  * average, not CBR: nothing on disk is padded; the packager pads the program output to a constant
  * rate with filler NAL units while it sends, {@code docs/program-output.md#constant-rate-padding}).
  * No HRD parameters go into the SPS, so the bitrate is not part of the avcC
@@ -93,6 +94,27 @@ public final class EncodeProfile {
      * packager pads the output instead. Equal encodings and presets give equal lists.
      */
     public static List<String> videoArgs(OutputEncoding encoding, X264Preset preset) {
+        return videoArgs(encoding, preset, GOP_FRAMES);
+    }
+
+    /**
+     * {@link #videoArgs(OutputEncoding, X264Preset)} with a first GOP of {@code firstGopFrames}
+     * (1..60) frames: an IDR at frame 0, then at {@code firstGopFrames + 60·k} (invariant 2: only
+     * the first GOP may be short, and the last). Only the keyframe expression differs, so the
+     * avcC stays the same; 60 gives exactly the normal list. Used by smart trims
+     * ({@code docs/library-and-ingest.md#trim}) for the frames encoded before the kept GOPs.
+     *
+     * @throws IllegalArgumentException if {@code firstGopFrames} is outside 1..60
+     */
+    public static List<String> videoArgs(OutputEncoding encoding, X264Preset preset, int firstGopFrames) {
+        if (firstGopFrames < 1 || firstGopFrames > GOP_FRAMES) {
+            throw new IllegalArgumentException("first GOP of " + firstGopFrames + " frames");
+        }
+        // frame-number form for a short first GOP: frame n is forced when n + (60 − f) reaches the
+        // next multiple of 60 (exact integers, no rounding of t)
+        String keyframes = firstGopFrames == GOP_FRAMES
+                ? "expr:gte(t,n_forced*" + (GOP_MS / 1000) + ")"
+                : "expr:gte(n+" + (GOP_FRAMES - firstGopFrames) + ",n_forced*" + GOP_FRAMES + ")";
         String level = switch (encoding.profile()) {
             case P720_30 -> "4.0";
             case P1080_30 -> "4.1";
@@ -114,7 +136,7 @@ public final class EncodeProfile {
                 "-g", Integer.toString(GOP_FRAMES),
                 "-keyint_min", Integer.toString(GOP_FRAMES),
                 "-sc_threshold", "0",
-                "-force_key_frames", "expr:gte(t,n_forced*" + (GOP_MS / 1000) + ")",
+                "-force_key_frames", keyframes,
                 "-x264-params", "open-gop=0:ref=" + REF_FRAMES
                         + ":chroma-qp-offset=" + preset.chromaQpOffset(),
                 "-b:v", rate,

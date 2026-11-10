@@ -70,10 +70,15 @@ class SourcesTest {
         final List<Track> tracks = new ArrayList<>();
 
         Track.Builder add(String name, Kind kind, long ts, List<byte[]> samples, long duration, int keyEvery) {
+            return add(name, kind, ts, samples, duration, i -> keyEvery > 0 && i % keyEvery == 0);
+        }
+
+        Track.Builder add(String name, Kind kind, long ts, List<byte[]> samples, long duration,
+                          java.util.function.IntPredicate key) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             Track.Builder b = new Track.Builder(kind, ts, names.size());
             for (int i = 0; i < samples.size(); i++) {
-                int flags = keyEvery > 0 && i % keyEvery == 0 ? SampleIndex.FLAG_KEYFRAME : 0;
+                int flags = key.test(i) ? SampleIndex.FLAG_KEYFRAME : 0;
                 b.add(out.size(), samples.get(i).length, i * duration, duration, flags);
                 out.writeBytes(samples.get(i));
             }
@@ -106,6 +111,30 @@ class SourcesTest {
             v.add(frame(i % 60 == 0, i));
         }
         m.add("mezz.mp4", Kind.VIDEO, VIDEO_TS, v, 512, 60);
+        List<byte[]> a = new ArrayList<>();
+        for (int i = 0; i < 469; i++) {
+            a.add(audioFrame(i));
+        }
+        m.add("audio.m4a", Kind.AUDIO, AUDIO_TS, a, 1024, 1);
+        return m;
+    }
+
+    /** Whether frame {@code i} is an IDR when the first GOP has {@code firstGop} frames (then every 60). */
+    static boolean idrAt(int i, int firstGop) {
+        return i == 0 || (i >= firstGop && (i - firstGop) % 60 == 0);
+    }
+
+    /**
+     * A 10 s video item whose first GOP is {@code firstGop} frames (a smart trim's): 300 frames,
+     * IDRs at 0 and {@code firstGop + 60·k}, 469 AAC frames.
+     */
+    static Media videoItem(int firstGop) {
+        Media m = new Media();
+        List<byte[]> v = new ArrayList<>();
+        for (int i = 0; i < 300; i++) {
+            v.add(frame(idrAt(i, firstGop), i));
+        }
+        m.add("mezz.mp4", Kind.VIDEO, VIDEO_TS, v, 512, i -> idrAt(i, firstGop));
         List<byte[]> a = new ArrayList<>();
         for (int i = 0; i < 469; i++) {
             a.add(audioFrame(i));

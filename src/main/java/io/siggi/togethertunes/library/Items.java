@@ -113,11 +113,13 @@ public final class Items {
      * @param audioEndMs   the audio trim's end, or null for the end of the original
      * @param audioOnlyMs  a video's audio-only file's length, or null when it has none (it is then
      *                     {@code audio.m4a}, as long as the item)
+     * @param firstGopFrames a video's current encode's first GOP in frames (1..60; less than 60
+     *                     after a smart trim), which the page's trim plan needs; null for an audio item
      */
     public record TrimView(long videoStartMs, Long videoEndMs, long originalMs, Long audioStartMs, Long audioEndMs,
-                           Long audioOnlyMs) {
+                           Long audioOnlyMs, Integer firstGopFrames) {
         public TrimView(long videoStartMs, Long videoEndMs, long originalMs) {
-            this(videoStartMs, videoEndMs, originalMs, null, null, null);
+            this(videoStartMs, videoEndMs, originalMs, null, null, null, 60);
         }
     }
 
@@ -251,7 +253,8 @@ public final class Items {
         }
         TrimView trim = null;
         if (you.canEdit() && trimmable(c, r) == null) {
-            EditSettings edit = EditSettings.parse(MediaVersions.editJson(c, r.id(), r.mediaVersion()));
+            String editJson = MediaVersions.editJson(c, r.id(), r.mediaVersion());
+            EditSettings edit = EditSettings.parse(editJson);
             Long audioOnlyMs = null;
             try (PreparedStatement ps = c.prepareStatement("SELECT audio_only_ms FROM items WHERE id = ?")) {
                 ps.setString(1, r.id());
@@ -264,7 +267,8 @@ public final class Items {
             }
             boolean video = "video".equals(r.kind());
             trim = new TrimView(video ? edit.videoStartMs() : 0, video ? edit.videoEndMs() : null, originalMs(edit, r),
-                    edit.audioStartMs(), edit.audioEndMs(), video ? audioOnlyMs : null);
+                    edit.audioStartMs(), edit.audioEndMs(), video ? audioOnlyMs : null,
+                    video ? EditSettings.firstGopFrames(editJson) : null);
         }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),

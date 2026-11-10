@@ -143,13 +143,11 @@ let stopTrimPanels: (() => void)[] = [];
 interface TimelineSpec {
   title: string;
   note: string;
-  /** The timeline's length and, while snapping, the keyframe grid (`videoStartMs`). */
+  /** The timeline's length. */
   view: TrimView;
   current: Range;
   /** The player's span on the original's timeline (`playerView`). */
   player: TrimView;
-  /** Whether "Snap to keyframes" is offered (the video trim). */
-  snapToKeyframes: boolean;
   estimate: (range: Range) => TrimEstimate;
   body: (range: Range) => unknown;
   /** Extra controls (e.g. "Follow the video trim"). */
@@ -158,7 +156,7 @@ interface TimelineSpec {
 
 /**
  * A trim timeline (docs/library-and-ingest.md#trim): a timeline of the original with start and end
- * handles, the playhead, typed timestamps, "Snap to keyframes" for the video, what Save will do,
+ * handles (they move freely, frame-accurate), the playhead, typed timestamps, what Save will do,
  * Preview (plays the selection from the current version, no encode) and Save (queues the trim job).
  */
 function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
@@ -171,8 +169,6 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
   const bar = h("div", { class: "trim-bar" }, selection, playhead, startHandle, endHandle);
   const startInput = h("input", { name: "start", inputmode: "decimal", size: "10", "aria-label": "Start (m:ss.mmm)" });
   const endInput = h("input", { name: "end", inputmode: "decimal", size: "10", "aria-label": "End (m:ss.mmm)" });
-  const snap = h("input", { type: "checkbox", checked: spec.snapToKeyframes });
-  const snapping = (): boolean => spec.snapToKeyframes && snap.checked;
   const hint = h("p", { class: "muted small" });
   const error = h("p", { class: "error", role: "alert" });
   const save = h("button", { type: "button", text: "Save" });
@@ -209,11 +205,11 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
       handle.addEventListener("pointercancel", onUp);
     });
   };
-  drag(startHandle, (ms) => { range = moveStart(range, ms, view, snapping()); });
+  drag(startHandle, (ms) => { range = moveStart(range, ms); });
   drag(endHandle, (ms) => { range = moveEnd(range, ms, view); });
-  // arrow keys: a keyframe (2 s) for the start while snapping, else 1/30 s
+  // arrow keys: one frame (1/30 s)
   const step = (handle: "start" | "end", dir: number): void => {
-    if (handle === "start") range = moveStart(range, range.startMs + dir * (snapping() ? 2000 : 1000 / 30), view, snapping());
+    if (handle === "start") range = moveStart(range, range.startMs + dir * (1000 / 30));
     else range = moveEnd(range, range.endMs + dir * (1000 / 30), view);
     draw();
   };
@@ -233,12 +229,8 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
       draw();
     });
   };
-  typed(startInput, (ms) => { range = moveStart(range, ms, view, snapping()); });
+  typed(startInput, (ms) => { range = moveStart(range, ms); });
   typed(endInput, (ms) => { range = moveEnd(range, ms, view); });
-  snap.addEventListener("change", () => {
-    if (snapping()) range = moveStart(range, range.startMs, view, true);
-    draw();
-  });
 
   // the playhead follows the player (its time is on the current version)
   let previewEnd: number | undefined;
@@ -276,8 +268,7 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
     h("p", { class: "muted small", text: (spec.note === "" ? "" : spec.note + " ") + "Times are on the original file (" + formatTrimTime(view.originalMs) + " long)." }),
     bar,
     h("div", { class: "row" },
-      h("label", {}, "Start ", startInput), h("label", {}, "End ", endInput),
-      spec.snapToKeyframes ? h("label", { class: "check" }, snap, " Snap to keyframes") : null),
+      h("label", {}, "Start ", startInput), h("label", {}, "End ", endInput)),
     hint,
     h("div", { class: "row" }, preview, save, spec.extra ?? null),
     error);
@@ -307,7 +298,6 @@ function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
     view: { ...view, videoStartMs: 0 },
     current: audioRange(view, video),
     player: playerView(view, video),
-    snapToKeyframes: false,
     estimate: (range) => audioEstimate(view, video, range),
     body: (range) => audioTrimBody(view, range),
     extra: view.audioStartMs !== undefined
@@ -322,7 +312,6 @@ function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
     view,
     current: currentRange(view),
     player: view,
-    snapToKeyframes: true,
     estimate: (range) => estimate(view, range),
     body: (range) => trimBody(view, range),
   }), audioPanel];

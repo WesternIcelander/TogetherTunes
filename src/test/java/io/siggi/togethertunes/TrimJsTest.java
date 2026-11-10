@@ -22,9 +22,11 @@ class TrimJsTest {
     @Test
     void itemPageUsesTheTrimModule() throws Exception {
         String item = Files.readString(NodeTests.resource("web/js/item.js"), StandardCharsets.UTF_8);
-        for (String s : List.of("from \"./trim.js\"", "\"/trim\"", "estimateText", "previewSpan", "Snap to keyframes",
+        for (String s : List.of("from \"./trim.js\"", "\"/trim\"", "estimateText", "previewSpan",
                 "audioTrimBody", "Trim audio for audio-only rooms", "Follow the video trim")) {
             assertTrue(item.contains(s), s);
         }
+        // the handles move freely: no snapping to keyframes any more (every start change is smart)
+        assertTrue(!item.contains("Snap to keyframes") && !item.contains("snapToGrid"), "no snapping");
     }
 }

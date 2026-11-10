@@ -189,9 +189,14 @@ class IngestStepsTest {
 
     /** A synthetic index: {@code frames} video frames at 30 fps (timescale 15360), IDR every {@code gop}. */
     private static SampleIndex index(int frames, int gop, long audioEndUs, long videoStartTicks) {
+        return index(frames, i -> i % gop == 0, audioEndUs, videoStartTicks);
+    }
+
+    private static SampleIndex index(int frames, java.util.function.IntPredicate key, long audioEndUs,
+                                     long videoStartTicks) {
         Track.Builder v = new Track.Builder(Kind.VIDEO, 15360, 0);
         for (int i = 0; i < frames; i++) {
-            v.add(i * 1000L, 100, videoStartTicks + i * 512L, 512, i % gop == 0 ? SampleIndex.FLAG_KEYFRAME : 0);
+            v.add(i * 1000L, 100, videoStartTicks + i * 512L, 512, key.test(i) ? SampleIndex.FLAG_KEYFRAME : 0);
         }
         Track.Builder a = new Track.Builder(Kind.AUDIO, 48000, 1);
         long samples = audioEndUs * 48 / 1000;
@@ -251,7 +256,58 @@ class IngestStepsTest {
         assertTrue(longGop.getMessage().contains("frame 60 should be an IDR"), longGop.getMessage());
         IngestFailure late = assertThrows(IngestFailure.class,
                 () -> IngestVerifier.checkKeyframes(index(150, 60, 5_000_000, 512), "card.mp4"));
-        assertTrue(late.getMessage().contains("card.mp4 IDR 0 is at 512/15360"), late.getMessage());
+        assertTrue(late.getMessage().contains("card.mp4 IDR at frame 0 is at 512/15360"), late.getMessage());
+    }
+
+    /**
+     * Invariant 2 as relaxed for smart trims: the first GOP may be short (IDRs at 0, then at
+     * {@code f + 60·k}), the last one too (where the video ends); a short GOP anywhere else is
+     * rejected, and so is a first GOP that isn't the one expected.
+     */
+    @Test
+    void verifyAcceptsAShortFirstGopOnly() throws Exception {
+        java.util.function.IntPredicate short7 = i -> IngestVerifier.isGopStart(i, 7);
+        SampleIndex good = index(150, short7, 5_000_000, 0); // IDRs at 0, 7, 67, 127; the last GOP 23 frames
+        IngestVerifier.checkKeyframes(good, "mezz.mp4", 7);
+        IngestVerifier.checkKeyframes(index(1, short7, 5_000_000, 0), "mezz.mp4", 7);
+        // the same encode isn't a normal one
+        IngestFailure normal = assertThrows(IngestFailure.class, () -> IngestVerifier.checkKeyframes(good, "mezz.mp4"));
+        assertTrue(normal.getMessage().contains("frame 7 is a keyframe outside the 2 s grid"), normal.getMessage());
+        // a short GOP in the middle: IDRs at 0, 60, 70, 130
+        IngestFailure middle = assertThrows(IngestFailure.class, () -> IngestVerifier.checkKeyframes(
+                index(150, i -> i == 0 || i == 60 || i == 70 || i == 130, 5_000_000, 0), "mezz.mp4", 60));
+        assertTrue(middle.getMessage().contains("frame 70 is a keyframe outside the 2 s grid"), middle.getMessage());
+        IngestFailure middle2 = assertThrows(IngestFailure.class, () -> IngestVerifier.checkKeyframes(
+                index(150, i -> i == 0 || i == 7 || i == 57 || i == 117, 5_000_000, 0), "mezz.mp4", 7));
+        assertTrue(middle2.getMessage().contains("frame 57 is a keyframe outside"), middle2.getMessage());
+        // an IDR at frame 7 that isn't at 7/30 s
+        IngestFailure late = assertThrows(IngestFailure.class, () -> {
+            Track.Builder v = new Track.Builder(Kind.VIDEO, 15360, 0);
+            for (int i = 0; i < 70; i++) {
+                v.add(i * 1000L, 100, i * 512L + (i >= 7 ? 100 : 0), 512, short7.test(i) ? SampleIndex.FLAG_KEYFRAME : 0);
+            }
+            IngestVerifier.checkKeyframes(new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30),
+                    List.of("mezz.mp4"), List.of(v.build()), AVCC), "mezz.mp4", 7);
+        });
+        assertTrue(late.getMessage().contains("IDR at frame 7 is at 3684/15360"), late.getMessage());
+        assertThrows(IngestFailure.class, () -> IngestVerifier.checkKeyframes(good, "mezz.mp4", 0));
+        assertThrows(IngestFailure.class, () -> IngestVerifier.checkKeyframes(good, "mezz.mp4", 61));
+    }
+
+    @Test
+    void aShortFirstGopChangesOnlyTheKeyframeExpression() {
+        OutputEncoding enc = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        List<String> normal = EncodeProfile.videoArgs(enc, io.siggi.togethertunes.config.X264Preset.REFERENCE);
+        assertEquals(normal, EncodeProfile.videoArgs(enc, io.siggi.togethertunes.config.X264Preset.REFERENCE, 60));
+        List<String> short7 = EncodeProfile.videoArgs(enc, io.siggi.togethertunes.config.X264Preset.REFERENCE, 7);
+        int k = normal.indexOf("-force_key_frames");
+        assertEquals("expr:gte(t,n_forced*2)", normal.get(k + 1));
+        assertEquals("expr:gte(n+53,n_forced*60)", short7.get(k + 1));
+        List<String> rest = new java.util.ArrayList<>(short7);
+        rest.set(k + 1, normal.get(k + 1));
+        assertEquals(normal, rest, "nothing else differs");
+        assertThrows(IllegalArgumentException.class,
+                () -> EncodeProfile.videoArgs(enc, io.siggi.togethertunes.config.X264Preset.REFERENCE, 0));
     }
 
     // ------------------------------------------------------------------ commands

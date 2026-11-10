@@ -19,8 +19,9 @@ import java.util.Locale;
  *       more than the container declares, and the encode then rightly has that length;</li>
  *   <li>the video track's avcC (the mezzanine's, or the card's for an audio item) is
  *       byte-identical to the reference card's (invariant 1);</li>
- *   <li>the video track starts at 0 and has an IDR exactly every 2 s and nowhere else, every 60th
- *       frame (invariant 2).</li>
+ *   <li>the video track starts at 0 with an IDR, then has one every 2 s (every 60th frame) after
+ *       its first GOP and nowhere else; the first GOP is 60 frames for a full encode and may be
+ *       shorter (1..60) only after a smart trim (invariant 2, {@link #checkKeyframes(SampleIndex, String, int)}).</li>
  * </ul>
  */
 public final class IngestVerifier {
@@ -45,9 +46,19 @@ public final class IngestVerifier {
      */
     public static long verify(SampleIndex index, ReferenceCard reference, long sourceAudioUs, long decodedAudioUs,
                               String videoFile) throws IngestFailure, ReferenceCard.AvcCMismatchException {
+        return verify(index, reference, sourceAudioUs, decodedAudioUs, videoFile, EncodeProfile.GOP_FRAMES);
+    }
+
+    /**
+     * {@link #verify(SampleIndex, ReferenceCard, long, long, String)} for an encode whose first GOP
+     * has {@code firstGopFrames} frames (a smart trim's, 1..60).
+     */
+    public static long verify(SampleIndex index, ReferenceCard reference, long sourceAudioUs, long decodedAudioUs,
+                              String videoFile, int firstGopFrames)
+            throws IngestFailure, ReferenceCard.AvcCMismatchException {
         long matched = checkAudioDuration(index, sourceAudioUs, decodedAudioUs);
         reference.verify(index.avcC(), videoFile);
-        checkKeyframes(index, videoFile);
+        checkKeyframes(index, videoFile, firstGopFrames);
         return matched;
     }
 
@@ -85,30 +96,67 @@ public final class IngestVerifier {
                 encoded / 1e6, source, decoded, MAX_AUDIO_DRIFT_US / 1000));
     }
 
+    /** {@link #checkKeyframes(SampleIndex, String, int)} for a normal encode: IDRs every 2 s from 0. */
     static void checkKeyframes(SampleIndex index, String videoFile) throws IngestFailure {
+        checkKeyframes(index, videoFile, EncodeProfile.GOP_FRAMES);
+    }
+
+    /**
+     * Checks the GOP structure (invariant 2): an IDR at frame 0, then at frames
+     * {@code firstGopFrames + 60·k} and nowhere else, each at its frame's time ({@code i / 30 s}),
+     * so only the first GOP may be shorter than 2 s (a smart trim's, {@code firstGopFrames < 60})
+     * and the last one (where the video ends).
+     *
+     * @param firstGopFrames the first GOP's length in frames, 1..60
+     */
+    static void checkKeyframes(SampleIndex index, String videoFile, int firstGopFrames) throws IngestFailure {
         Track video = index.track(Kind.VIDEO);
         if (video == null || video.sampleCount() == 0) {
             throw new IngestFailure("Verify: " + videoFile + " has no video frames");
         }
-        long gopTicks = video.timescale() * EncodeProfile.GOP_MS / 1000;
-        if (video.timescale() * EncodeProfile.GOP_MS % 1000 != 0) {
-            throw new IngestFailure("Verify: " + videoFile + " has a time base (1/" + video.timescale()
+        if (firstGopFrames < 1 || firstGopFrames > EncodeProfile.GOP_FRAMES) {
+            throw new IngestFailure("Verify: a first GOP of " + firstGopFrames + " frames isn't allowed");
+        }
+        long ts = video.timescale();
+        if (ts * EncodeProfile.GOP_MS % 1000 != 0) {
+            throw new IngestFailure("Verify: " + videoFile + " has a time base (1/" + ts
                     + ") that can't express 2 s exactly");
         }
+        long gopTicks = ts * EncodeProfile.GOP_MS / 1000;
+        long firstIdrPts = -1;
         for (int i = 0; i < video.sampleCount(); i++) {
-            boolean gopStart = i % EncodeProfile.GOP_FRAMES == 0;
+            boolean gopStart = isGopStart(i, firstGopFrames);
             if (video.isKeyframe(i) != gopStart) {
                 throw new IngestFailure("Verify: " + videoFile + " frame " + i
                         + (gopStart ? " should be an IDR but isn't" : " is a keyframe outside the 2 s grid"));
             }
-            if (gopStart) {
-                long expected = (long) (i / EncodeProfile.GOP_FRAMES) * gopTicks;
-                if (video.pts(i) != expected) {
-                    throw new IngestFailure("Verify: " + videoFile + " IDR " + (i / EncodeProfile.GOP_FRAMES)
-                            + " is at " + video.pts(i) + "/" + video.timescale() + " s instead of " + expected
-                            + "/" + video.timescale() + " s");
+            if (!gopStart) {
+                continue;
+            }
+            long expected;
+            if (i == 0) {
+                expected = 0;
+            } else if (i == firstGopFrames) {
+                // where the first GOP ends: i / 30 s (exact for a time base that is a multiple of 30,
+                // else the encoder's rounding, within a tick)
+                long num = (long) i * ts;
+                expected = num % 30 == 0 ? num / 30 : Math.round(num / 30.0);
+                if (num % 30 != 0 && Math.abs(video.pts(i) - expected) <= 1) {
+                    expected = video.pts(i);
                 }
+                firstIdrPts = expected;
+            } else {
+                expected = firstIdrPts + (long) ((i - firstGopFrames) / EncodeProfile.GOP_FRAMES) * gopTicks;
+            }
+            if (video.pts(i) != expected) {
+                throw new IngestFailure("Verify: " + videoFile + " IDR at frame " + i
+                        + " is at " + video.pts(i) + "/" + ts + " s instead of " + expected + "/" + ts + " s");
             }
         }
+    }
+
+    /** Whether frame {@code i} starts a GOP when the first GOP has {@code firstGopFrames} frames. */
+    static boolean isGopStart(int i, int firstGopFrames) {
+        return i == 0 || (i >= firstGopFrames && (i - firstGopFrames) % EncodeProfile.GOP_FRAMES == 0);
     }
 }

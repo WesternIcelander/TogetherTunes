@@ -172,6 +172,30 @@ class CbrPadderTest {
         assertEquals(3_000_000L * (end - start) / (8 * OutputClock.HZ), videoBytes(out));
     }
 
+    /**
+     * A video with a short first GOP (a smart trim's): its short first unit (7 frames, the source
+     * continues) is padded to its own length, and the 2 s units after it to theirs, so the output
+     * is at exactly the rate at every unit boundary.
+     */
+    @Test
+    void aShortFirstUnitKeepsTheRate() {
+        CbrPadder p = new CbrPadder(4, 3_000_000);
+        long first = OutputClock.START;
+        List<Unit.Video> v = new ArrayList<>();
+        for (int i = 0; i < 7; i++) {
+            v.add(new Unit.Video(sample(4, i == 0 ? 20_000 : 1_000, i == 0), first + i * FRAME, i == 0));
+        }
+        long boundary = first + 7 * FRAME;
+        p.pad(new Unit(first, boundary, boundary + 1200, v, List.of(), null, false));
+        assertEquals(3_000_000L * (boundary - first) / (8 * OutputClock.HZ), p.sentBytes());
+        long start = boundary;
+        for (int n = 0; n < 3; n++) {
+            p.pad(unit(4, start, 60_000, 3_000));
+            start += UNIT;
+            assertEquals(3_000_000L * (start - first) / (8 * OutputClock.HZ), p.sentBytes(), "after unit " + n);
+        }
+    }
+
     @Test
     void budgetDoesNotOverflow() {
         CbrPadder p = new CbrPadder(4, 25_000_000);

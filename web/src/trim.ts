@@ -1,11 +1,11 @@
 // The trim timelines' logic (docs/library-and-ingest.md#trim, #audio-trim), without the DOM so Node tests
-// can import it: time parsing and formatting (m:ss.mmm), the handles (clamping, snapping to the
-// current encode's 2 s keyframe grid), and which kind of re-encode a choice needs. The server
-// decides for real (TrimPlan.java); this mirrors it for the page's hint.
+// can import it: time parsing and formatting (m:ss.mmm), the handles (clamping; they move freely,
+// frame-accurate), and which kind of re-encode a choice needs. The server decides for real
+// (TrimPlan.java); this mirrors it for the page's hint.
 
 /** Frames per second of every encode. */
 export const FPS = 30;
-/** GOP length: the current encode has a keyframe every 2 s from its start. */
+/** GOP length: after its first GOP (60 frames, or fewer after a smart trim), an encode has a keyframe every 2 s. */
 export const GOP_MS = 2000;
 export const GOP_FRAMES = 60;
 /** The shortest trim the server accepts. */
@@ -15,10 +15,11 @@ export const MIN_TRIM_MS = 1000;
  * The item page's `trim`: the current trims on the original's timeline. `audioStartMs` absent: no
  * audio trim (an audio item plays its whole original; a video's audio-only file is its audio.m4a,
  * following the video trim). `audioOnlyMs`: a video's audio-only file's length, if it has one.
+ * `firstGopFrames`: the current encode's first GOP in frames (absent: 60).
  */
 export interface TrimView {
   videoStartMs: number; videoEndMs?: number; originalMs: number;
-  audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number;
+  audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number; firstGopFrames?: number;
 }
 
 /** A selection on the original's timeline (end exclusive). */
@@ -55,28 +56,10 @@ export function currentRange(view: TrimView): Range {
   return { startMs: view.videoStartMs, endMs: view.videoEndMs ?? view.originalMs };
 }
 
-/** `ms` snapped to the nearest keyframe of the current encode (`curStart + 2 s × k`), within [0, max]. */
-export function snapToGrid(ms: number, curStartMs: number, maxMs: number): number {
-  const k = Math.round((ms - curStartMs) / GOP_MS);
-  let v = curStartMs + k * GOP_MS;
-  while (v < 0) v += GOP_MS;
-  while (v > maxMs && v - GOP_MS >= 0) v -= GOP_MS;
-  return v;
-}
-
-/** Whether `ms` is on the current encode's keyframe grid. */
-export function onGrid(ms: number, curStartMs: number): boolean {
-  return (ms - curStartMs) % GOP_MS === 0;
-}
-
-/**
- * Moves the start handle to `ms`: whole milliseconds, within [0, end − 1 s]; with `snap`, onto the
- * current encode's grid (the nearest keyframe that still leaves 1 s).
- */
-export function moveStart(range: Range, ms: number, view: TrimView, snap: boolean): Range {
+/** Moves the start handle to `ms`: whole milliseconds, within [0, end − 1 s]. */
+export function moveStart(range: Range, ms: number): Range {
   const max = range.endMs - MIN_TRIM_MS;
-  let v = Math.max(0, Math.min(max, Math.round(ms)));
-  if (snap) v = snapToGrid(v, view.videoStartMs, Math.max(0, max));
+  const v = Math.max(0, Math.min(max, Math.round(ms)));
   return { startMs: Math.max(0, v), endMs: range.endMs };
 }
 
@@ -101,10 +84,11 @@ export interface TrimEstimate {
 }
 
 /**
- * Which kind of re-encode `range` needs from the current encode (`view`), like the server's plan:
- * "none" (unchanged), "cut" (only GOPs dropped or frames cut at the end), "smart" (some GOPs
- * encoded again), "full" (the start is off the current grid, or nothing can be kept). The audio is
- * always encoded again, which is quick and not counted.
+ * Which kind of re-encode `range` needs from the current encode (`view`), like the server's plan
+ * (TrimPlan.java): "none" (unchanged), "cut" (only frames dropped at the front or cut at the end),
+ * "smart" (frames before the first kept keyframe, or after the last, encoded again), "full"
+ * (nothing of the current encode can be kept). The audio is always encoded again, which is quick
+ * and not counted.
  */
 export function estimate(view: TrimView, range: Range): TrimEstimate {
   const cur = currentRange(view);
@@ -112,18 +96,30 @@ export function estimate(view: TrimView, range: Range): TrimEstimate {
   if (range.startMs === cur.startMs && endSame) return { kind: "none", encodeSeconds: 0 };
   const n = frames(range.endMs - range.startMs);
   const full: TrimEstimate = { kind: "full", encodeSeconds: n / FPS };
-  const delta = range.startMs - cur.startMs;
-  if (delta % GOP_MS !== 0) return full;
   const curFrames = frames(cur.endMs - cur.startMs);
   if (curFrames <= 0) return full;
-  const d = (delta / GOP_MS) * GOP_FRAMES;
-  const end = d + n;
-  const lastGopStart = Math.floor((curFrames - 1) / GOP_FRAMES) * GOP_FRAMES;
+  const f = view.firstGopFrames !== undefined && view.firstGopFrames >= 1 && view.firstGopFrames < GOP_FRAMES
+    ? view.firstGopFrames : GOP_FRAMES;
+  const delta = range.startMs - cur.startMs;
+  // b: the first keyframe after the current first GOP (or frame 0 for a normal one) at or after
+  // the new start, within half a frame; h: the frames encoded before it
+  let b = -1;
+  let h = 0;
+  if (delta === 0) {
+    b = 0;
+  } else {
+    for (let k = f === GOP_FRAMES ? 0 : f; k < curFrames; k += GOP_FRAMES) {
+      const x = 100 * k - 3 * delta + 50;
+      if (x >= 0) { b = k; h = Math.floor(x / 100); break; }
+    }
+  }
+  if (b < 0) return full;
+  const end = b + n - h;
+  const lastGopStart = curFrames - 1 < f ? 0 : f + Math.floor((curFrames - 1 - f) / GOP_FRAMES) * GOP_FRAMES;
   const reuseEnd = end <= curFrames ? end : lastGopStart;
-  const midFrom = Math.max(d, 0);
   const midTo = Math.min(end, reuseEnd);
-  if (midTo <= midFrom) return full;
-  const encoded = (d < 0 ? -d : 0) + (end > midTo ? end - midTo : 0);
+  if (midTo <= b) return full;
+  const encoded = h + (end > midTo ? end - midTo : 0);
   return encoded === 0 ? { kind: "cut", encodeSeconds: 0 } : { kind: "smart", encodeSeconds: encoded / FPS };
 }
 
@@ -132,9 +128,9 @@ export function estimateText(e: TrimEstimate): string {
   const secs = Math.max(1, Math.round(e.encodeSeconds));
   switch (e.kind) {
     case "none": return "No change.";
-    case "cut": return "No video re-encode: whole keyframe groups are dropped or the end is cut.";
+    case "cut": return "No video re-encode: frames are only dropped at the start or cut at the end.";
     case "smart": return "Smart re-encode: about " + secs + " s of video is encoded again, the rest is kept.";
-    case "full": return "Full re-encode: about " + secs + " s of video (the start isn't on a keyframe of the current encode).";
+    case "full": return "Full re-encode: about " + secs + " s of video (nothing of the current encode can be kept).";
     case "audio": return "Audio re-encode: about " + secs + " s of audio from the original; the video isn't touched.";
   }
 }

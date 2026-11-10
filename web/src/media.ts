@@ -35,7 +35,7 @@ export interface ItemPage extends ItemSummary {
   /** The trims on the original's timeline, for those who may trim it (`POST /api/items/{id}/trim`). */
   trim?: {
     videoStartMs: number; videoEndMs?: number; originalMs: number;
-    audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number;
+    audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number; firstGopFrames?: number;
   };
 }
 

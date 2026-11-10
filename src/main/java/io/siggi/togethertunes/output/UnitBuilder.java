@@ -30,7 +30,9 @@ import java.util.List;
  * <li><b>Units</b> run from one of the source's IDRs to its next (2 s for the profile's closed
  * 60-frame GOPs) and carry the audio frames whose PTS falls in that span, so a filler, which never
  * ends by itself, is always emitted in whole 2 s units. A unit ends early where its source
- * ends. Since audio frames don't divide 2 s (93.75 frames), a unit's last audio frame usually
+ * ends, and a video whose first GOP is short (a smart trim's, invariant 2) gives a short first
+ * unit when played from its start: its next IDR comes sooner, nothing else changes (the audio
+ * frames still follow each other 1920 ticks apart across the boundary). Since audio frames don't divide 2 s (93.75 frames), a unit's last audio frame usually
  * straddles its boundary; when the source ends there or the next unit is a new source, the unit
  * runs on to that frame's end, so it can last up to 1919 ticks (21.3 ms) longer than 2 s.</li>
  * <li>If a source's video runs out before its audio, the last frame stays on screen to the end of

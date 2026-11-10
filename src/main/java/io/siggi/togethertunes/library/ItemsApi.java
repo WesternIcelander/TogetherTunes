@@ -58,7 +58,8 @@ import java.util.Set;
  *       invalid_trim} / {@code unknown_field}; {@code 409 not_a_video}, {@code item_not_ready},
  *       {@code no_original}, {@code no_change}, {@code item_busy}. The item page carries the current
  *       trims as {@code trim: {"videoStartMs", "videoEndMs"?, "originalMs", "audioStartMs"?, "audioEndMs"?,
- *       "audioOnlyMs"?}} for those who may trim it.</li>
+ *       "audioOnlyMs"?, "firstGopFrames"?}} for those who may trim it ({@code firstGopFrames}: a video's
+ *       current encode's first GOP, 1..60).</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
  *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",

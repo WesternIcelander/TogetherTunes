@@ -24,23 +24,17 @@ test("times format as m:ss.mmm and parse back", () => {
   for (const ms of [0, 1, 999, 59999, 60000, 754321]) assert.equal(T.parseTime(T.formatTime(ms)), ms);
 });
 
-test("handles clamp and snap to the current grid", () => {
+test("handles clamp and move freely", () => {
   const v = view({ videoStartMs: 1500, videoEndMs: 9000 });
   const r = T.currentRange(v);
   assert.deepEqual(r, { startMs: 1500, endMs: 9000 });
-  assert.equal(T.snapToGrid(4400, 1500, 13000), 3500);
-  assert.equal(T.snapToGrid(4600, 1500, 13000), 5500);
-  assert.equal(T.snapToGrid(200, 1500, 13000), 1500);
-  assert.equal(T.snapToGrid(0, 1500, 13000), 1500, "0 is off the grid: the nearest keyframe at or after 0");
-  assert.deepEqual(T.moveStart(r, 4600, v, true), { startMs: 5500, endMs: 9000 });
-  assert.deepEqual(T.moveStart(r, 4600, v, false), { startMs: 4600, endMs: 9000 });
-  assert.deepEqual(T.moveStart(r, 8800, v, false), { startMs: 8000, endMs: 9000 }, "1 s stays");
-  assert.deepEqual(T.moveStart(r, 8800, v, true), { startMs: 7500, endMs: 9000 }, "snapped below the limit");
-  assert.deepEqual(T.moveStart(r, -50, v, true), { startMs: 1500, endMs: 9000 });
+  assert.equal(T.snapToGrid, undefined, "no snapping any more");
+  assert.deepEqual(T.moveStart(r, 4600), { startMs: 4600, endMs: 9000 });
+  assert.deepEqual(T.moveStart(r, 4600.4), { startMs: 4600, endMs: 9000 });
+  assert.deepEqual(T.moveStart(r, 8800), { startMs: 8000, endMs: 9000 }, "1 s stays");
+  assert.deepEqual(T.moveStart(r, -50), { startMs: 0, endMs: 9000 });
   assert.deepEqual(T.moveEnd(r, 20000, v), { startMs: 1500, endMs: 13000 });
   assert.deepEqual(T.moveEnd(r, 1000, v), { startMs: 1500, endMs: 2500 });
-  assert.equal(T.onGrid(5500, 1500), true);
-  assert.equal(T.onGrid(5000, 1500), false);
 });
 
 test("which kind of re-encode a choice needs", () => {
@@ -53,12 +47,28 @@ test("which kind of re-encode a choice needs", () => {
     "end later: from the last GOP (frame 300)");
   const started = view({ videoStartMs: 4000 });
   assert.deepEqual(T.estimate(started, { startMs: 2000, endMs: 13000 }), { kind: "smart", encodeSeconds: 2 });
-  assert.equal(T.estimate(v, { startMs: 2500, endMs: 9000 }).kind, "full");
-  assert.equal(T.estimate(v, { startMs: 2500, endMs: 9000 }).encodeSeconds, 6.5);
+  // a start off the grid: only [S, next keyframe) is encoded (here 2.5 s → the keyframe at 4 s)
+  assert.deepEqual(T.estimate(v, { startMs: 2500, endMs: 9000 }), { kind: "smart", encodeSeconds: 1.5 });
+  // earlier and off the grid on a current start of 4 s: [3.5 s, 4 s) is encoded, all of the current kept
+  assert.deepEqual(T.estimate(started, { startMs: 3500, endMs: 13000 }), { kind: "smart", encodeSeconds: 0.5 });
+  // a current encode with a short first GOP (45 frames: keyframes at 2.5 s, 4 s, 6 s, ...)
+  const short = view({ videoStartMs: 2500, videoEndMs: 9000, firstGopFrames: 45 });
+  assert.deepEqual(T.estimate(short, { startMs: 4000, endMs: 9000 }), { kind: "cut", encodeSeconds: 0 },
+    "onto a later keyframe");
+  assert.deepEqual(T.estimate(short, { startMs: 3000, endMs: 9000 }), { kind: "smart", encodeSeconds: 1 },
+    "later, off the grid: up to 4 s");
+  assert.deepEqual(T.estimate(short, { startMs: 2000, endMs: 9000 }), { kind: "smart", encodeSeconds: 2 },
+    "earlier: the short first GOP is encoded again, never kept mid-stream");
+  assert.deepEqual(T.estimate(short, { startMs: 2500, endMs: 8000 }), { kind: "cut", encodeSeconds: 0 },
+    "same start: the short first GOP stays at the front");
   assert.equal(T.estimate(view({ videoStartMs: 10000 }), { startMs: 2000, endMs: 6000 }).kind, "full",
     "nothing of the current encode is left");
+  assert.equal(T.estimate(view({ videoEndMs: 11500 }), { startMs: 11000, endMs: 13000 }).kind, "full",
+    "past the current encode's last keyframe");
+  assert.equal(T.estimate(view({ videoStartMs: 10000 }), { startMs: 2000, endMs: 6000 }).encodeSeconds, 4);
   assert.match(T.estimateText({ kind: "full", encodeSeconds: 6.5 }), /^Full re-encode: about 7 s/);
-  assert.match(T.estimateText({ kind: "smart", encodeSeconds: 2 }), /about 2 s/);
+  assert.match(T.estimateText({ kind: "smart", encodeSeconds: 2 }), /^Smart re-encode: about 2 s/);
+  assert.match(T.estimateText({ kind: "cut", encodeSeconds: 0 }), /^No video re-encode/);
 });
 
 test("the request body and the preview", () => {

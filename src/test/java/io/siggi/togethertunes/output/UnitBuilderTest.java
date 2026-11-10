@@ -218,6 +218,55 @@ class UnitBuilderTest {
         }
     }
 
+    /**
+     * A video with a short first GOP (a smart trim's, invariant 2): its first unit is that GOP
+     * (7 frames, with the audio frames that start in it), the rest are 2 s units; timestamps stay
+     * continuous and audio frames 1920 apart, from the start and when joined mid-item.
+     */
+    @Test
+    void aShortFirstGopGivesAShortFirstUnit() throws Exception {
+        Media m = SourcesTest.videoItem(7);
+        for (long joinMs : new long[] {0, 100, 1000, 5000}) {
+            Checker c = new Checker();
+            try (UnitBuilder b = new UnitBuilder()) {
+                b.play(filler(Filler.LOADING));
+                c.add(b.next());
+                long s = b.switchPoint();
+                c.switched();
+                VideoItemSource src = new VideoItemSource("v", m.index(), m.data(), joinMs);
+                b.play(src);
+                // the keyframe at or before the join: frame 0 (up to 7/30 s), else 7 + 60·k
+                int first = joinMs * 30 / 1000 < 7 ? 0 : 7 + (int) ((joinMs * 30 / 1000 - 7) / 60) * 60;
+                int frames = 0;
+                int expectedFrame = first;
+                List<Integer> unitFrames = new ArrayList<>();
+                Unit u;
+                do {
+                    u = c.add(b.next());
+                    unitFrames.add(u.video().size());
+                    for (Unit.Video v : u.video()) {
+                        int n = frameNumber(v.data());
+                        assertEquals(expectedFrame++, n, "every frame once, in order");
+                        assertEquals(s + (n - first) * 3000L, v.pts(), "video PTS = S + relative PTS");
+                        assertEquals(SourcesTest.idrAt(n, 7), v.idr());
+                        frames++;
+                    }
+                } while (!u.sourceEnded());
+                assertEquals(300 - first, frames, "join at " + joinMs);
+                if (first == 0) {
+                    assertEquals(7, unitFrames.get(0), "the first unit is the short first GOP");
+                    Unit firstUnit = c.units.get(1);
+                    assertEquals(s + 7 * 3000L, firstUnit.boundaryPts());
+                    assertEquals(11, firstUnit.audio().size(), "the audio frames that start in its 7 frames");
+                    assertEquals(s, firstUnit.audio().get(0).pts());
+                }
+                for (int i = first == 0 ? 1 : 0; i < unitFrames.size() - 1; i++) {
+                    assertEquals(60, unitFrames.get(i), "2 s units after it");
+                }
+            }
+        }
+    }
+
     @Test
     void videoLongerThanAudioIsDroppedAtTheEnd() throws Exception {
         Media m = new Media();

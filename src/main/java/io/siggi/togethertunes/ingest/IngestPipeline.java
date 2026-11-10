@@ -495,7 +495,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         // the video trim, on the original's timeline (not for a previous encode: it already has it)
         EditSettings edit = EditSettings.parse(editJson);
         List<String> range = List.of();
-        String publishJson = editJson;
+        // a full encode has the normal 60-frame first GOP, whatever the version it replaces had
+        String publishJson = EditSettings.withFirstGop(editJson, EncodeProfile.GOP_FRAMES);
         long originalAudioEndUs = sourceAudioEndUs;
         // an audio item's audio trim applies to its audio.m4a; a video's makes its audio-only file (below)
         boolean audioTrimApplied = !video && !fromPrevious && edit.audioTrimmed();
@@ -505,7 +506,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
             range = rangeArgs(r[0], r[1]);
             expectedUs = r[1] - r[0];
             sourceAudioEndUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
-            publishJson = EditSettings.withOriginalMs(editJson, r[2] / 1000);
+            publishJson = EditSettings.withOriginalMs(publishJson, r[2] / 1000);
             log.append("[ingest] " + (video ? "video" : "audio") + " trim: " + seconds(r[0]) + " to " + seconds(r[1])
                     + " of the original (" + seconds(r[2]) + ")");
         }
@@ -703,9 +704,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
      * version's GOPs where the new range allows it, encodes only what is new from the original,
      * re-encodes the whole audio track from the original for the new range (loudness measured on
      * it), splices, indexes, verifies and publishes. Returns false (nothing published, the work
-     * and scratch directories emptied) when a full re-encode is needed instead: the new start is
-     * off the current grid, the current version is for another encoding or unreadable, or anything
-     * about the splice fails.
+     * and scratch directories emptied) when a full re-encode is needed instead: nothing of the
+     * current encode can be kept, the current version is for another encoding or unreadable, or
+     * anything about the splice fails. A new start off the current keyframes is encoded from the
+     * original up to the next one as a short first GOP (invariant 2); the published version records
+     * its first GOP in its edit settings ({@link EditSettings#withFirstGop}).
      *
      * @throws IngestFailure if the trim itself is impossible (too short); a full re-encode would fail too
      */
@@ -752,8 +755,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         TrimPlan.Plan plan = null;
         if (why == null) {
-            plan = TrimPlan.plan(current.videoStartMs(), currentIndex.track(SampleIndex.Kind.VIDEO).sampleCount(),
-                    startMs, endMs);
+            SampleIndex.Track v = currentIndex.track(SampleIndex.Kind.VIDEO);
+            plan = TrimPlan.plan(current.videoStartMs(), v.sampleCount(), firstGop(v), startMs, endMs);
             if (plan.mode() == TrimPlan.Mode.FULL) {
                 why = plan.reason();
             }
@@ -762,7 +765,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
             log.append("[ingest] full re-encode from the original: " + why);
             return false;
         }
-        log.append("[ingest] smart trim: " + describe(plan, current.videoStartMs()));
+        log.append("[ingest] smart trim: " + describe(plan));
 
         Path original = null;
         int[] expectedSizes;
@@ -806,7 +809,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 Path file = scratch.resolve("piece-" + i + ".mp4");
                 if (piece.source() == TrimPlan.Source.REUSE) {
                     step(log, "copy frames " + piece.from() + ".." + (piece.to() - 1) + " of the current version");
-                    tools.ffmpeg(List.of("-y", "-ss", secondsArg((long) piece.from() * 1_000_000 / TrimPlan.FPS),
+                    // the IDR's time in the current version, rounded up so the seek lands on it, not the one before
+                    long atUs = ((long) piece.from() * 1_000_000 + TrimPlan.FPS - 1) / TrimPlan.FPS;
+                    tools.ffmpeg(List.of("-y", "-ss", secondsArg(atUs),
                             "-i", currentDir.resolve(MEZZ).toString(), "-map", "0:v:0", "-c", "copy",
                             "-frames:v", Integer.toString(piece.frames()), "-map_metadata", "-1",
                             "-f", "mp4", file.toString())).log(log).run();
@@ -824,13 +829,12 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         sizes.add(t.size(k));
                     }
                 } else {
-                    long fromMs = piece.originalStartMs(current.videoStartMs());
-                    step(log, "encode frames " + piece.from() + ".." + (piece.to() - 1) + " from the original at "
-                            + seconds(fromMs * 1000));
-                    List<String> args = new ArrayList<>(List.of("-y", "-ss", secondsArg(fromMs * 1000),
+                    step(log, "encode " + piece.frames() + " frames from the original at " + seconds(piece.startUs())
+                            + (piece.firstGop() < TrimPlan.GOP ? ", first GOP " + piece.firstGop() + " frames" : ""));
+                    List<String> args = new ArrayList<>(List.of("-y", "-ss", secondsArg(piece.startUs()),
                             "-i", source.toString(), "-map", probe.video().map(), "-an", "-sn", "-dn",
                             "-map_metadata", "-1", "-map_chapters", "-1", "-vf", EncodeProfile.scaleFilter(profile)));
-                    args.addAll(EncodeProfile.videoArgs(profile, preset));
+                    args.addAll(EncodeProfile.videoArgs(profile, preset, piece.firstGop()));
                     args.addAll(List.of("-frames:v", Integer.toString(piece.frames()), "-movflags", "+faststart",
                             "-f", "mp4", file.toString()));
                     double from = 0.35 + 0.5 * encodedSoFar / encodeTotal;
@@ -841,7 +845,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     encodedSoFar += piece.frames();
                     SampleIndex pieceIndex = videoIndex(file, profile, log);
                     reference.verify(pieceIndex.avcC(), "the encoded piece " + i);
-                    IngestVerifier.checkKeyframes(pieceIndex, "the encoded piece " + i);
+                    IngestVerifier.checkKeyframes(pieceIndex, "the encoded piece " + i, piece.firstGop());
                     SampleIndex.Track t = pieceIndex.track(SampleIndex.Kind.VIDEO);
                     boolean last = i == plan.pieces().size() - 1;
                     // only the last piece may come out short (the original's video ends there)
@@ -864,7 +868,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
             Files.writeString(listFile, list.toString());
             Path mezz = work.resolve(MEZZ);
             Path audio = work.resolve(AUDIO);
-            tools.ffmpeg(List.of("-y", "-f", "concat", "-safe", "0", "-i", listFile.toString(),
+            // -auto_convert 0: the concat demuxer would otherwise put the SPS/PPS in-band into the
+            // first frame of every piece (measured with ffmpeg 6.1.1), so no frame would match its
+            // piece and every smart trim fell back to a full re-encode
+            tools.ffmpeg(List.of("-y", "-auto_convert", "0", "-f", "concat", "-safe", "0", "-i", listFile.toString(),
                     "-i", trimmedAudio.toString(), "-map", "0:v:0", "-map", "1:a:0", "-c", "copy",
                     "-map_metadata", "-1", "-map_chapters", "-1", "-movflags", "+faststart",
                     "-f", "mp4", mezz.toString())).log(log).run();
@@ -880,7 +887,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
             SampleIndex index = IndexBuilder.build(tools, profile, mezz, audio, work.resolve(SampleIndex.FILE_NAME), log);
             step(log, "verify");
             long expectedAudioUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
-            IngestVerifier.verify(index, reference, expectedAudioUs, decodedUs[0], MEZZ);
+            IngestVerifier.verify(index, reference, expectedAudioUs, decodedUs[0], MEZZ, plan.firstGop());
             SampleIndex.Track video = index.track(SampleIndex.Kind.VIDEO);
             if (video.sampleCount() != expectedSizes.length) {
                 throw new IngestFailure("the spliced video has " + video.sampleCount() + " frames instead of "
@@ -895,7 +902,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
             original = work.resolve(kept.file());
             linkOrCopy(source, original);
             log.append("[ingest] verified: audio " + seconds(IngestVerifier.audioDurationUs(index)) + ", avcC matches the "
-                    + profile.id() + " reference, " + video.sampleCount() + " frames with an IDR every 2 s");
+                    + profile.id() + " reference, " + video.sampleCount() + " frames with an IDR every 2 s"
+                    + (plan.firstGop() < TrimPlan.GOP ? " after a first GOP of " + plan.firstGop() + " frames" : ""));
             if (target.audioTrimmed()) {
                 audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference);
             }
@@ -918,7 +926,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Double lufs = loudness.usable() ? round2(loudness.inputI()) : null;
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null, true,
-                EditSettings.withOriginalMs(targetJson, r[2] / 1000), System.currentTimeMillis());
+                EditSettings.withFirstGop(EditSettings.withOriginalMs(targetJson, r[2] / 1000), plan.firstGop()),
+                System.currentTimeMillis());
         X264Preset usedPreset = preset;
         Originals.Original keptOriginal = kept;
         Long variantMs = audioOnlyMs;
@@ -1038,16 +1047,32 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     /** The plan in words, for the job log. */
-    static String describe(TrimPlan.Plan plan, long curStartMs) {
+    static String describe(TrimPlan.Plan plan) {
         StringBuilder sb = new StringBuilder();
         for (TrimPlan.Piece p : plan.pieces()) {
             if (sb.length() > 0) {
                 sb.append(", then ");
             }
-            sb.append(p.source() == TrimPlan.Source.REUSE ? "keep" : "encode").append(" frames ").append(p.from())
-                    .append("..").append(p.to() - 1).append(" (").append(p.frames()).append(")");
+            if (p.source() == TrimPlan.Source.REUSE) {
+                sb.append("keep frames ").append(p.from()).append("..").append(p.to() - 1)
+                        .append(" (").append(p.frames()).append(")");
+            } else {
+                sb.append("encode ").append(p.frames()).append(" frames from ").append(seconds(p.startUs()));
+                if (p.firstGop() < TrimPlan.GOP) {
+                    sb.append(" (first GOP ").append(p.firstGop()).append(")");
+                }
+            }
         }
         return sb.append(plan.cutOnly() ? "; no video is encoded" : "").toString();
+    }
+
+    /**
+     * The first GOP of an encode in frames: where its second IDR is; 60 when it has none (then the
+     * whole encode is shorter than a GOP, and a trim may only cut it).
+     */
+    static int firstGop(SampleIndex.Track video) {
+        int k = video.keyframeAtOrAfter(1);
+        return k > 0 && k < TrimPlan.GOP ? k : TrimPlan.GOP;
     }
 
     private SampleIndex videoIndex(Path file, OutputEncoding profile, JobLog log) throws Exception {

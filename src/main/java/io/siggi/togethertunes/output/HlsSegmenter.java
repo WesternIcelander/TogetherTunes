@@ -23,7 +23,8 @@ import java.util.Locale;
  *       {@code EXT-X-DISCONTINUITY} (with {@code EXT-X-DISCONTINUITY-SEQUENCE} once such a segment
  *       has left the playlist). When the packager stops, the ring is emptied (memory).</li>
  *   <li>{@code EXT-X-TARGETDURATION} is 2 (units are 2 s; at most 2.055 s after a switch or a
- *       natural end, which still rounds to 2). It never decreases; it only grows if a segment would
+ *       natural end, which still rounds to 2; a video's short first GOP and its last make shorter
+ *       segments). It never decreases; it only grows if a segment would
  *       round above it, which the timestamp rules don't allow.</li>
  * </ul>
  *

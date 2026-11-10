@@ -12,7 +12,7 @@ import java.util.List;
  *
  * @param startPts    where the unit starts: its first video frame (an IDR) is exactly here
  * @param boundaryPts where the next unit starts if this source keeps playing: the source's next
- *                    IDR (normally {@code startPts + 180000}). Every audio frame here has
+ *                    IDR (normally {@code startPts + 180000}; less for a video's short first GOP). Every audio frame here has
  *                    {@code pts < boundaryPts}, every video frame {@code pts < boundaryPts}.
  * @param audioEndPts where this unit's audio ends: the last audio frame's PTS + 1920, or
  *                    {@code startPts} if it has none. The last frame usually straddles
