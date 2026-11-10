@@ -39,6 +39,7 @@ import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.FillerSource.Filler;
+import io.siggi.togethertunes.output.LiveHlsApi;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
@@ -256,6 +257,9 @@ public final class Main {
                 roomsApi, roomSocket);
         // The direct MPEG-TS output: GET/HEAD /live/{token}.ts (docs/program-output.md#direct-mpeg-ts-ts).
         new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs).register(appRouter);
+        // HLS: GET /live/{token}/index.m3u8 and /live/{token}/seg/{seq}.ts (docs/program-output.md#hls).
+        new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs, System::currentTimeMillis)
+                .register(appRouter);
         WebServer web;
         try {
             web = WebServer.start(config.httpBind(), config.httpPort(), appRouter,

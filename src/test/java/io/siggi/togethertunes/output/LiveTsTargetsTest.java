@@ -15,7 +15,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** {@link LiveTsApi#targetsFrom}: token → room and join point, only for enabled {@code .ts} outputs behind the server switch. */
+/**
+ * {@link LiveTsApi#targetsFrom} (token → room and join point, only for enabled {@code .ts} outputs
+ * behind the server switch) and {@link LiveHlsApi#targetsFrom} (the same for HLS).
+ */
 class LiveTsTargetsTest {
     static final String ROOM = "0190a000-0000-7000-8000-000000000001";
     static final String LATEST_ROOM = "0190a000-0000-7000-8000-000000000002";
@@ -81,5 +84,19 @@ class LiveTsTargetsTest {
     void serverSwitchOffHidesEveryOutput() throws Exception {
         settings.set(Settings.OUTPUTS_TS_ENABLED, false);
         assertNull(targets.lookup("tokenNextJoin000000001"));
+    }
+
+    @Test
+    void hlsTargetsResolveEnabledHlsOutputsOnly() throws Exception {
+        LiveHlsApi.Targets hls = LiveHlsApi.targetsFrom(db, settings);
+        output("o5", LATEST_ROOM, "hls", "tokenHlsDisabled000001", 0);
+        assertEquals(ROOM, hls.lookup("tokenHlsOutput00000001"));
+        assertNull(hls.lookup("tokenNextJoin000000001"), "a .ts token doesn't open HLS");
+        assertNull(hls.lookup("tokenHlsDisabled000001"));
+        assertNull(hls.lookup("tokenUnknown0000000001"));
+        settings.set(Settings.OUTPUTS_HLS_ENABLED, false);
+        assertNull(hls.lookup("tokenHlsOutput00000001"));
+        assertEquals(new LiveTsApi.Target(ROOM, false), targets.lookup("tokenNextJoin000000001"),
+                "the HLS switch leaves .ts alone");
     }
 }
