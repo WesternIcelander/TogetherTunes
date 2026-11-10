@@ -21,7 +21,7 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 ## Invariants that must not be broken
 
 1. All x264 encodes that feed the packager (mezzanines, cards, overlay re-encodes) use **one shared argument constant** plus the **per-preset table** (`X264Preset`: preset name and its `chroma-qp-offset`; `ref=4` pinned in the constant; cards always veryfast, items the admin's quick or quality preset), and are **capped at the configured `output.videoBitrateKbps`** (no HRD in the SPS, so the bitrate isn't part of the avcC; nothing on disk is padded); the packager pads the program output to a constant rate with filler NALs while it sends (`CbrPadder`). Their H.264 extradata must be byte-identical; ingest and the overlay encoder verify this.
-2. Every video GOP is closed, has **no B-frames**, and starts with an IDR **every 2 s exactly**.
+2. Every video GOP is closed and has **no B-frames**. A video starts with an IDR at 0; its **first GOP** may be shorter than 2 s (1 to 60 frames; only smart trims make it shorter), after it an IDR comes **every 2 s exactly** (60 frames), and the last GOP may be short (where the video ends).
 3. Program-output timestamps increase smoothly forever. Audio frames are exactly 1920 ticks (90 kHz) apart. Never emit a discontinuity.
 4. The room timeline is the only source of truth. The program output follows it and never feeds back into it.
 5. **IP addresses are never exposed** to an actor without `ip.view`, in any response, message or export. Only `IpAccess` reads IP columns.

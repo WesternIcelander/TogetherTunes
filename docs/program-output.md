@@ -18,6 +18,8 @@ Unit {
 }
 ```
 
+A unit runs from one of its source's IDRs to the next, so a video whose **first GOP is short** (a smart trim's, invariant 2: 1 to 60 frames, then every 2 s; [library-and-ingest.md](library-and-ingest.md#trim)) gives a **short first unit** when played from its start, like the short last unit where an item ends. Nothing else changes: its audio frames are those whose PTS falls in its video span (the last one may straddle the boundary, as always), the next unit continues the 1920-tick cadence, timestamps stay continuous (invariant 3), the constant-rate padding pads it to its own length (frame-based), and HLS lists it as a shorter segment. A join or seek mid-item starts at the keyframe at or before the position from the index, wherever the keyframes are (`VideoItemSource`).
+
 Units are built by **sources**:
 
 | Source | Video | Audio |

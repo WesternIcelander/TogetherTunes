@@ -73,7 +73,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
 media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the current and the kept undo version were made with
       published_at BIGINT, kind, duration_ms, output_profile, loudness_lufs, encode_preset, encode_quality,  -- the items publish columns
       audio_only_ms, original_web, original_gain_db,  -- (migration 0015) also restored by an undo
-      edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs? (library-and-ingest.md#trim, #audio-trim)
+      edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs?, firstGopFrames? (the version's first GOP in frames when a smart trim made it shorter than 60; absent = 60) (library-and-ingest.md#trim, #audio-trim)
 
 media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)
       switched_at BIGINT,                   -- when the item switched away from it; kept for media.undoHours from then

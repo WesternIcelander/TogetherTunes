@@ -62,7 +62,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 - **Item**: one media object stored on the server (a track or a music video). Items are shared: many users' libraries can point to the same item.
 - **Library entry**: a user's reference to an item.
 - **Mezzanine**: the normalised encoding of an item. Every mezzanine uses the same codec parameters, so any two can be spliced together.
-- **GOP**: group of pictures — one IDR keyframe followed by P-frames. Every GOP is a closed 2 s unit.
+- **GOP**: group of pictures — one IDR keyframe followed by P-frames. Every GOP is closed and 2 s long, except that a video's first GOP may be shorter after a smart trim, and its last where it ends.
 - **Card**: a still image encoded as one 2 s GOP. Used as the "video" for audio-only items, for the paused/idle screen and for transitions.
 - **Timeline**: the server's authoritative record of what a room is playing and from where.
 - **Program output**: the continuous audio/video stream generated for a room.
