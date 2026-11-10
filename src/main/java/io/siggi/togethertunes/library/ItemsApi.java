@@ -29,8 +29,8 @@ import java.util.Set;
  *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
- *       "addedAt", "error"?, "mediaVersion", "you": {"inLibrary", "canEdit", "canPurge", "canRetry"},
- *       "undo"?: {"changedAt"}}}. {@code error} only for a failed item; {@code undo} only for callers
+ *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry"},
+ *       "undo"?: {"changedAt"}}}. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
  *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "presentAsAudio"?}} →

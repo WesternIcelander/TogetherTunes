@@ -61,6 +61,7 @@ public final class Items {
 
     private final Database db;
     private final DataDir dataDir;
+    private final Covers covers;
     private final Clock clock;
     private volatile JobList.Steps steps = JobList.Steps.NONE;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
@@ -70,6 +71,7 @@ public final class Items {
     public Items(Database db, DataDir dataDir, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.dataDir = Objects.requireNonNull(dataDir);
+        this.covers = new Covers(dataDir);
         this.clock = Objects.requireNonNull(clock);
     }
 
@@ -89,15 +91,17 @@ public final class Items {
      * @param undo    the change the caller can undo now ({@code POST /api/items/{id}/undo}), else null
      * @param trim    the video trim, for callers who may edit a ready video item with its original
      *                ({@code POST /api/items/{id}/trim}), else null
+     * @param hasCover whether the current version has a {@code cover.jpg} (not every item has one;
+     *                 the page asks for it only if so)
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
-                           String error, int mediaVersion, You you, UndoView undo, TrimView trim) {
+                           String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover) {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
                         String error, int mediaVersion, You you) {
             this(id, kind, title, artist, album, durationMs, source, youtubeId, status, presentAsAudio, addedAt, error,
-                    mediaVersion, you, null, null);
+                    mediaVersion, you, null, null, false);
         }
     }
 
@@ -272,7 +276,8 @@ public final class Items {
         }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
-                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim);
+                "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
+                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()));
     }
 
     /**

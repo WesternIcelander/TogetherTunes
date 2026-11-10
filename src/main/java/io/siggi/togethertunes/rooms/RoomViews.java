@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.library.Covers;
 import io.siggi.togethertunes.library.MediaApi;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -33,15 +34,29 @@ final class RoomViews {
     private static final int IN_CHUNK = 500;
 
     private final Database db;
+    private volatile Covers covers = Covers.ALWAYS;
 
     RoomViews(Database db) {
         this.db = Objects.requireNonNull(db);
     }
 
+    /** Which media versions have a {@code cover.jpg} ({@code coverUrl} is given only for those). */
+    void covers(Covers covers) {
+        this.covers = Objects.requireNonNull(covers);
+    }
+
     /** An item's columns as the room messages show it. */
     record ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                    boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
-                   int mediaVersion, Long audioOnlyMs) {
+                   int mediaVersion, Long audioOnlyMs, boolean hasCover) {
+        /** With a cover (tests). */
+        ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
+                boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
+                int mediaVersion, Long audioOnlyMs) {
+            this(id, kind, title, artist, durationMs, status, source, presentAsAudio, originalFile, originalWeb,
+                    originalGainDb, mediaVersion, audioOnlyMs, true);
+        }
+
         ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                 boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
                 int mediaVersion) {
@@ -105,6 +120,7 @@ final class RoomViews {
             add(userIds, h.addedByUserId());
             add(guestIds, h.addedByGuestId());
         }
+        Covers cv = covers;
         return db.read(c -> {
             Map<String, ItemRow> items = new HashMap<>();
             for (List<String> chunk : chunks(itemIds)) {
@@ -121,9 +137,13 @@ final class RoomViews {
                             Double gainDb = rs.wasNull() ? null : gain;
                             long audioOnly = rs.getLong(13);
                             Long audioOnlyMs = rs.wasNull() ? null : audioOnly;
-                            items.put(rs.getString(1), new ItemRow(rs.getString(1), rs.getString(2), rs.getString(3),
-                                    rs.getString(4), durationMs, rs.getString(6), rs.getString(7), rs.getInt(8) != 0,
-                                    rs.getString(9), rs.getInt(10) != 0, gainDb, rs.getInt(12), audioOnlyMs));
+                            String id = rs.getString(1);
+                            String status = rs.getString(6);
+                            int version = rs.getInt(12);
+                            boolean hasCover = "ready".equals(status) && cv.exists(id, version);
+                            items.put(id, new ItemRow(id, rs.getString(2), rs.getString(3),
+                                    rs.getString(4), durationMs, status, rs.getString(7), rs.getInt(8) != 0,
+                                    rs.getString(9), rs.getInt(10) != 0, gainDb, version, audioOnlyMs, hasCover));
                         }
                     }
                 }
@@ -182,7 +202,7 @@ final class RoomViews {
 
     /**
      * An item: {@code id, kind, presentAsAudio, title, artist?, durationMs?, status}, and once it
-     * is {@code ready} its media URLs: {@code coverUrl}, {@code audioUrl}, {@code videoUrl} (video
+     * is {@code ready} its media URLs: {@code coverUrl} (only if that version has a {@code cover.jpg}), {@code audioUrl}, {@code videoUrl} (video
      * items), all of the item's current media version ({@code /media/{id}/v/{N}/…}, so a play
      * that started on it stays on it after a re-encode), and for an audio upload whose original browsers can play, {@code originalUrl} with
      * {@code originalGainDb} (the gain that brings it to the loudness of {@code audio.m4a}) and
@@ -223,7 +243,9 @@ final class RoomViews {
         o.addProperty("source", r.source());
         if ("ready".equals(r.status())) {
             String base = "/media/" + r.id() + "/";
-            o.addProperty("coverUrl", MediaApi.url(r.id(), r.mediaVersion(), "cover.jpg"));
+            if (r.hasCover()) {
+                o.addProperty("coverUrl", MediaApi.url(r.id(), r.mediaVersion(), "cover.jpg"));
+            }
             o.addProperty("audioUrl", MediaApi.url(r.id(), r.mediaVersion(),
                     audioOnlyFile ? MediaApi.AUDIO_ONLY : "audio.m4a"));
             if (video && !audioOnly) {

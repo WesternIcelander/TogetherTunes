@@ -343,7 +343,10 @@ function shareForm(item: ItemPage): HTMLElement {
 function render(item: ItemPage, job: JobView | undefined): void {
   document.title = item.title + " · TogetherTunes";
   const body = element("item-body");
-  const cover = h("img", { class: "cover", alt: "", src: mediaPath(item.id, "cover.jpg", item.mediaVersion) });
+  // Only ask for a cover the item has (not every item has one).
+  const cover = h("img", { class: "cover", alt: "" });
+  cover.hidden = !item.hasCover;
+  if (item.hasCover) cover.setAttribute("src", mediaPath(item.id, "cover.jpg", item.mediaVersion));
   cover.addEventListener("error", () => { cover.hidden = true; });
   const badge = ingestBadge(item.status, job);
   const source = item.source === "youtube" && item.youtubeId !== undefined

@@ -6,8 +6,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.google.gson.JsonObject;
+import io.siggi.togethertunes.DataDir;
+import io.siggi.togethertunes.ingest.MediaVersions;
+import io.siggi.togethertunes.library.Covers;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class RoomViewsTest {
     private static final String ID = "01900000-0000-7000-8000-000000000001";
@@ -48,6 +54,31 @@ class RoomViewsTest {
         assertEquals("/media/" + ID + "/v/4/mezz.mp4", o.get("videoUrl").getAsString());
         assertEquals("/media/" + ID + "/v/4/audio.m4a", o.get("audioUrl").getAsString());
         assertEquals("/media/" + ID + "/v/4/cover.jpg", o.get("coverUrl").getAsString());
+    }
+
+    /** An item without a {@code cover.jpg} (e.g. an upload with no picture) gets no {@code coverUrl}. */
+    @Test
+    void coverUrlOnlyWhenTheVersionHasACover() {
+        RoomViews.ItemRow row = new RoomViews.ItemRow(ID, "video", "T", null, 1000L, "ready", "upload", false, null,
+                false, null, 3, null, false);
+        JsonObject o = RoomViews.item(new RoomViews.Lookup(Map.of(ID, row), Map.of()), ID);
+        assertFalse(o.has("coverUrl"));
+        assertEquals("/media/" + ID + "/v/3/audio.m4a", o.get("audioUrl").getAsString());
+    }
+
+    @Test
+    void coversChecksTheVersionsCoverFile(@TempDir Path dir) throws Exception {
+        DataDir data = DataDir.create(dir.resolve("data"));
+        Covers covers = new Covers(data);
+        Path v3 = MediaVersions.versionDir(data, ID, 3);
+        Files.createDirectories(v3);
+        Files.writeString(v3.resolve("audio.m4a"), "x");
+        assertFalse(covers.exists(ID, 3));
+        assertFalse(covers.exists(ID, 4), "a version that doesn't exist");
+        Files.writeString(v3.resolve("cover.jpg"), "x");
+        assertTrue(covers.exists(ID, 3));
+        assertFalse(covers.exists("../etc", 3), "not an item id");
+        assertTrue(Covers.ALWAYS.exists(ID, 3));
     }
 
     /**

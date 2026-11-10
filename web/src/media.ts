@@ -28,6 +28,8 @@ export interface ItemPage extends ItemSummary {
   error?: string;
   /** The current version of its files: play `/media/{id}/v/{mediaVersion}/…` (docs/api.md#media-files). */
   mediaVersion: number;
+  /** The current version has a `cover.jpg` (not every item has one). */
+  hasCover: boolean;
   /** `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`). */
   you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
   /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */

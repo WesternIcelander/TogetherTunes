@@ -190,6 +190,36 @@ abstract class ItemsContract {
 
     // ------------------------------------------------------------------ get
 
+    /**
+     * Not every item has a cover (an upload with no embedded picture has none), so the page says
+     * whether the current version has a {@code cover.jpg} and the item page asks for it only then.
+     */
+    @Test
+    void hasCoverFollowsTheCurrentVersionsCoverFile() throws Exception {
+        String id = aliceItem("audio");
+        assertFalse(items.get(alice, id, NONE).hasCover());
+        Path itemDir = IngestPipeline.itemDir(data, id);
+        Files.createDirectories(MediaVersions.versionDir(itemDir, 2));
+        Files.writeString(MediaVersions.versionDir(itemDir, 2).resolve(IngestPipeline.COVER), "jpeg");
+        assertFalse(items.get(alice, id, NONE).hasCover(), "version 0 still has none");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_version = 2 WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertTrue(items.get(alice, id, NONE).hasCover());
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'processing' WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertFalse(items.get(alice, id, NONE).hasCover(), "only a ready item offers its cover");
+    }
+
     @Test
     void pageShowsTheItemAndTheCallersRights() throws Exception {
         String id = aliceItem("audio");

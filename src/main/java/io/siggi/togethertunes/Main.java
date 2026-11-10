@@ -344,6 +344,7 @@ public final class Main {
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
                 roomRegistry, roomQueue, database, Clock.systemUTC());
+        roomSocket.covers(new io.siggi.togethertunes.library.Covers(dataDir));
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);

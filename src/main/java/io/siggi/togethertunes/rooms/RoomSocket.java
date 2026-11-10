@@ -157,6 +157,11 @@ public final class RoomSocket {
         this.ingestIntervalMs = intervalMs;
     }
 
+    /** Which media versions have a {@code cover.jpg}: items get a {@code coverUrl} only for those. */
+    public void covers(io.siggi.togethertunes.library.Covers covers) {
+        views.covers(covers);
+    }
+
     /** Where the rooms' program outputs come from (the {@code outputs} of {@code state}). */
     public void outputs(RoomOutputs outputs) {
         this.outputs = Objects.requireNonNull(outputs);
