@@ -146,5 +146,5 @@ VRChat players can't send cookies or headers, so `.ts` and HLS URLs carry a capa
 ```
 
 - Token: 128 random bits, base64url, one per `stream_outputs` row. The owner can rotate it or disable it. Never log it in full.
-- These endpoints need no session. Rate-limit them per IP, and cap concurrent connections per token (default 64).
-- RTMP stream keys are entered by the owner, stored encrypted, and never sent back in full (only the last 4 characters are shown).
+- These endpoints need no session. Rate-limit them per IP, and cap concurrent connections per token (default 64). As built (`output/LiveLimits`): per IP (IPv6 by /64) a burst of 60 requests, then 10/s, checked before the token lookup; 64 concurrent connections per token (`.ts` streams, HLS requests in flight); both answer `429`.
+- RTMP stream keys are entered by the owner, stored encrypted, and never sent back in full (only the last 4 characters are shown). As built (`output/StreamOutputs`): AES-GCM with the context `stream_outputs.rtmp_key_enc:<output id>`; keys shorter than 8 characters show nothing. Tokens and keys never go into the audit log (`room.output_created/updated/deleted/token_rotated` name the output, its kind and which fields changed); the RTMP URL is left out too.

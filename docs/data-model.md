@@ -126,6 +126,8 @@ stream_outputs(id PK, room_id FK, kind TEXT,      -- 'rtmp' | 'ts' | 'hls'
       rtmp_url NULL, rtmp_key_enc NULL, enabled INTEGER, created_at)
 ```
 
+`stream_outputs` has a unique index on `(room_id, kind)`: one output of each kind per room (migration 0006).
+
 ## Secrets and IP addresses at rest
 
 - `client_secret_enc` and `rtmp_key_enc` are encrypted with AES-GCM. The key comes from `<data>/secret.key`, generated on first start with permissions 0600, or from an environment variable.
