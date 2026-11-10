@@ -25,11 +25,20 @@ import java.util.Objects;
  *                         advance's (later cues for unrelated changes keep it). The output keeps
  *                         playing that entry to its own end instead of cutting it: drift isn't
  *                         corrected mid-item.
+ * @param audioOnly        the room's {@code audioOnly} setting now: the stream rate of fillers
+ *                         ({@code docs/program-output.md#constant-rate-padding}); entries carry
+ *                         their own mode ({@link Entry#audioOnly()})
  */
 public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs, long anchorPositionMs,
-                         Entry next, String playedOut) {
+                         Entry next, String playedOut, boolean audioOnly) {
     /** Nothing playing. */
     public static final ProgramCue IDLE = new ProgramCue(PlaybackState.IDLE, null, 0, 0, null, null);
+
+    /** A cue of a room that isn't audio-only. */
+    public ProgramCue(PlaybackState state, Entry current, long anchorServerMs, long anchorPositionMs, Entry next,
+                      String playedOut) {
+        this(state, current, anchorServerMs, anchorPositionMs, next, playedOut, false);
+    }
 
     public ProgramCue {
         if (state == PlaybackState.PLAYING || state == PlaybackState.PAUSED) {
@@ -46,12 +55,17 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
      * @param current the timeline's entry ({@link Timeline#entryId()}; ids must match), or null when idle
      */
     public static ProgramCue of(Timeline timeline, Entry current, Entry next, String playedOut) {
+        return of(timeline, current, next, playedOut, false);
+    }
+
+    /** {@link #of(Timeline, Entry, Entry, String)} for a room with this {@code audioOnly} setting. */
+    public static ProgramCue of(Timeline timeline, Entry current, Entry next, String playedOut, boolean audioOnly) {
         if (current != null && !current.entryId().equals(timeline.entryId())) {
             throw new IllegalArgumentException("current entry " + current.entryId() + " isn't the timeline's "
                     + timeline.entryId());
         }
         return new ProgramCue(timeline.state(), current, timeline.anchorServerMs(), timeline.anchorPositionMs(),
-                next, playedOut);
+                next, playedOut, audioOnly);
     }
 
     /**
@@ -72,12 +86,30 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
      *
      * @param videoItem      {@code items.kind = 'video'}
      * @param presentAsAudio {@code items.present_as_audio} (ignored for audio items)
-     * @param durationMs     the item's duration (what the room's timeline uses)
+     * @param durationMs     how long the entry plays (what the room's timeline uses: the audio-only
+     *                       file's length when it plays that)
+     * @param audioOnly      the entry plays audio-only ({@code docs/rooms.md#audio-only-rooms}): a
+     *                       video item as audio, and the stream padded to the audio-only rate
+     * @param audioOnlyFile  with {@code audioOnly}, a video item plays its separate audio-only file
+     *                       ({@code audio-only.m4a} with {@code index-audio-only.bin}) instead of
+     *                       its {@code audio.m4a}
      */
-    public record Entry(String entryId, String itemId, boolean videoItem, boolean presentAsAudio, long durationMs) {
+    public record Entry(String entryId, String itemId, boolean videoItem, boolean presentAsAudio, long durationMs,
+                        boolean audioOnly, boolean audioOnlyFile) {
         public Entry {
             Objects.requireNonNull(entryId, "entryId");
             Objects.requireNonNull(itemId, "itemId");
+            audioOnlyFile = audioOnlyFile && audioOnly && videoItem;
+        }
+
+        /** An entry that doesn't play audio-only. */
+        public Entry(String entryId, String itemId, boolean videoItem, boolean presentAsAudio, long durationMs) {
+            this(entryId, itemId, videoItem, presentAsAudio, durationMs, false, false);
+        }
+
+        /** Whether the item plays as audio: an audio item, or a video shown as audio or in audio-only mode. */
+        public boolean playsAsAudio() {
+            return !videoItem || presentAsAudio || audioOnly;
         }
     }
 }

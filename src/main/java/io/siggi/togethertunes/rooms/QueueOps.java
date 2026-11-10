@@ -398,7 +398,8 @@ public final class QueueOps {
         RoomState s = tx.state();
         long now = tx.now();
         QueueEntry e = new QueueEntry(UuidV7.newId(), item.id(), a.userId(), a.guestId(), now, state, position,
-                false, null, item.status(), item.durationMs(), tx.store().filesUsable(item));
+                false, null, item.status(), item.durationMs(), tx.store().filesUsable(item), item.audioOnlyMs(),
+                s.settings().audioOnly());
         String roomId = s.id();
         tx.persist(c -> {
             RoomStore.insertEntry(c, roomId, e, via);

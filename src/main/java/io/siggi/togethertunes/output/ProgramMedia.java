@@ -100,9 +100,18 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         return m;
     }
 
-    /** What is known about one item: its loaded index and data, or the load in progress or failed. */
+    /**
+     * What is known about one item (or a video's audio-only variant, which is a slot of its own):
+     * its loaded index and data, or the load in progress or failed.
+     */
     private static final class Slot {
+        final String key;
         final String itemId;
+        /**
+         * A video item's audio-only file ({@link IngestPipeline#AUDIO_ONLY} with
+         * {@link IngestPipeline#AUDIO_ONLY_INDEX}): loaded like an audio item, card in the index.
+         */
+        final boolean variant;
         /** The version directory {@link #data} was loaded from (null until loaded). */
         Path dir;
         boolean videoItem;
@@ -120,8 +129,10 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         long failedAtMs;
         String loggedFailure;
 
-        Slot(String itemId) {
+        Slot(String key, String itemId, boolean variant) {
+            this.key = key;
             this.itemId = itemId;
+            this.variant = variant;
         }
 
         boolean ready(ProgramCue.Entry e) {
@@ -139,10 +150,11 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     private final long waitMs;
     private final LongSupplier nowMs;
 
+    /** By {@link #key}: the item id, with a suffix for a video's audio-only variant. */
     private final Map<String, Slot> slots = new HashMap<>();
-    /** The items of the latest cue's current and next entries. */
+    /** The slot keys of the latest cue's current and next entries. */
     private Set<String> wanted = Set.of();
-    /** The item of the source last handed to the follower, until it switches to a filler. */
+    /** The slot key of the source last handed to the follower, until it switches to a filler. */
     private String playing;
     private boolean closed;
 
@@ -183,8 +195,14 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         this.nowMs = Objects.requireNonNull(nowMs, "nowMs");
     }
 
+    /** A video item played as audio with its {@code card.mp4} and the audio of its {@code index.bin}. */
     private static boolean asAudioVideo(ProgramCue.Entry e) {
-        return e.videoItem() && e.presentAsAudio();
+        return e.videoItem() && (e.presentAsAudio() || e.audioOnly()) && !e.audioOnlyFile();
+    }
+
+    /** The slot key for an entry: its item, or its item's audio-only variant. */
+    private static String key(ProgramCue.Entry e) {
+        return e.audioOnlyFile() ? e.itemId() + "#audio-only" : e.itemId();
     }
 
     /**
@@ -202,7 +220,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             for (ProgramCue.Entry e : entries) {
                 if (e != null) {
-                    w.add(e.itemId());
+                    w.add(key(e));
                 }
             }
             wanted = w;
@@ -222,7 +240,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             if (closed) {
                 throw new IOException("closed");
             }
-            evict(entry.itemId());
+            evict(key(entry));
             Slot s = ensure(entry);
             if (s.ready(entry)) {
                 return open(s, entry, startMs);
@@ -243,7 +261,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             if (closed) {
                 throw new IOException("closed");
             }
-            Slot s = slots.get(entry.itemId());
+            Slot s = slots.get(key(entry));
             if (s != null && s.ready(entry)) {
                 return open(s, entry, startMs);
             }
@@ -253,10 +271,15 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** Called with the lock held. */
     private ProgramSource open(Slot s, ProgramCue.Entry entry, long startMs) throws IOException {
-        CardGop card = asAudioVideo(entry) ? s.card : null;
-        ItemSource src = ItemSources.forItem(entry.itemId(), entry.videoItem(), entry.presentAsAudio(), s.index,
-                s.data, entry.videoItem() ? card : s.card, startMs);
-        playing = entry.itemId();
+        ItemSource src;
+        if (s.variant) {
+            src = new AudioItemSource(entry.itemId(), s.index, s.data, s.card, startMs, true);
+        } else {
+            CardGop card = asAudioVideo(entry) ? s.card : null;
+            src = ItemSources.forItem(entry.itemId(), entry.videoItem(), entry.playsAsAudio(), s.index,
+                    s.data, entry.videoItem() ? card : s.card, startMs);
+        }
+        playing = s.key;
         return src;
     }
 
@@ -279,7 +302,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     private void evict(String keep) {
         for (Iterator<Slot> it = slots.values().iterator(); it.hasNext(); ) {
             Slot s = it.next();
-            if (wanted.contains(s.itemId) || s.itemId.equals(playing) || s.itemId.equals(keep)) {
+            if (wanted.contains(s.key) || s.key.equals(playing) || s.key.equals(keep)) {
                 continue;
             }
             it.remove();
@@ -289,9 +312,10 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** The slot for {@code e}'s item, starting its load if needed (lock held). */
     private Slot ensure(ProgramCue.Entry e) {
-        Slot s = slots.computeIfAbsent(e.itemId(), Slot::new);
+        Slot s = slots.computeIfAbsent(key(e), k -> new Slot(k, e.itemId(), e.audioOnlyFile()));
         if (s.data == null) {
-            s.videoItem = e.videoItem();
+            // the audio-only variant is laid out like an audio item (its card is in its index)
+            s.videoItem = e.videoItem() && !s.variant;
         }
         if (asAudioVideo(e)) {
             s.cardWanted = true;
@@ -347,7 +371,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             try {
                 if (data == null) {
                     dir = dirs.dir(s.itemId);
-                    index = readIndex(s, dir);
+                    index = readIndex(s, dir, s.variant ? IngestPipeline.AUDIO_ONLY_INDEX : SampleIndex.FILE_NAME);
                     data = new FileSampleData(dir, index);
                     newData = true;
                     if (!videoItem) {
@@ -370,7 +394,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             synchronized (this) {
                 s.loading = null;
-                if (closed || slots.get(s.itemId) != s) {
+                if (closed || slots.get(s.key) != s) {
                     // dropped while loading
                     if (newData) {
                         data.close();
@@ -401,8 +425,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     }
 
     /** The item's index, if it passes the checks the rooms make too ({@link PlayableFiles#requireUsable}). */
-    private SampleIndex readIndex(Slot s, Path dir) throws IOException {
-        return PlayableFiles.requireUsable(SampleIndex.read(dir.resolve(SampleIndex.FILE_NAME)), profile,
+    private SampleIndex readIndex(Slot s, Path dir, String indexFile) throws IOException {
+        return PlayableFiles.requireUsable(SampleIndex.read(dir.resolve(indexFile)), profile,
                 referenceAvcC, s.videoItem);
     }
 
@@ -413,7 +437,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         String msg = String.valueOf(e.getMessage());
         if (!msg.equals(s.loggedFailure)) {
             s.loggedFailure = msg;
-            LOG.log(System.Logger.Level.WARNING, "Program output: can't load item " + s.itemId + ": " + e);
+            LOG.log(System.Logger.Level.WARNING, "Program output: can't load item " + s.itemId
+                    + (s.variant ? " (audio-only file)" : "") + ": " + e);
         }
     }
 

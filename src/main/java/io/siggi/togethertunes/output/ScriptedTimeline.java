@@ -48,6 +48,9 @@ public final class ScriptedTimeline {
     private record Unknown() implements Action {
     }
 
+    private record AudioOnly(boolean on) implements Action {
+    }
+
     private record Scheduled(long atMs, Action action) {
     }
 
@@ -74,6 +77,7 @@ public final class ScriptedTimeline {
     private long anchorServerMs;
     private long anchorPositionMs;
     private String playedOut;
+    private boolean audioOnly;
     private long simulatedToMs = Long.MIN_VALUE;
     private ProgramCue cue = ProgramCue.IDLE;
 
@@ -141,6 +145,15 @@ public final class ScriptedTimeline {
      */
     public ScriptedTimeline unknownState() {
         return schedule(new Unknown());
+    }
+
+    /**
+     * Sets the room's {@code audioOnly} setting ({@link ProgramCue#audioOnly()}: the fillers' rate).
+     * The entries carry their own mode, as the room gives it to them: add entries made with
+     * {@code audioOnly} for those that start after the switch.
+     */
+    public ScriptedTimeline audioOnly(boolean on) {
+        return schedule(new AudioOnly(on));
     }
 
     private ScriptedTimeline schedule(Action a) {
@@ -259,6 +272,13 @@ public final class ScriptedTimeline {
                 unknownState = true;
                 yield "unknown state";
             }
+            case AudioOnly o -> {
+                if (audioOnly == o.on()) {
+                    yield null;
+                }
+                audioOnly = o.on();
+                yield "audio-only room " + (o.on() ? "on" : "off");
+            }
         };
         if (what == null && wasUnknown) {
             what = "back from unknown state";
@@ -280,11 +300,12 @@ public final class ScriptedTimeline {
 
     private Change change(long atMs, String what) {
         if (unknownState) {
-            cue = new ProgramCue(null, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), null);
+            cue = new ProgramCue(null, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), null, audioOnly);
         } else if (state == PlaybackState.IDLE) {
-            cue = ProgramCue.IDLE;
+            cue = audioOnly ? new ProgramCue(PlaybackState.IDLE, null, 0, 0, null, null, true) : ProgramCue.IDLE;
         } else {
-            cue = new ProgramCue(state, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), playedOut);
+            cue = new ProgramCue(state, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), playedOut,
+                    audioOnly);
         }
         return new Change(atMs, startServerMs + atMs, cue, what);
     }

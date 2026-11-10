@@ -359,6 +359,32 @@ class ProgramOutputsTest {
         assertNull(c.state());
     }
 
+    /**
+     * Audio-only rooms: each entry carries its own mode (the current one the mode it started
+     * with, the next one the room's mode now), with the audio-only file's length and whether the
+     * video has one; the cue carries the room's setting for the fillers.
+     */
+    @Test
+    void resolvesAudioOnlyEntries() {
+        outputs();
+        QueueEntry video = entry("e1", "v1", 60_000); // started before the switch: stays video
+        QueueEntry trimmed = new QueueEntry("e2", "v2", "u", null, 1, QueueEntry.State.QUEUED, 1, false, null,
+                "ready", 60_000L, true, 20_000L, true);
+        QueueEntry plain = new QueueEntry("e3", "v3", "u", null, 1, QueueEntry.State.QUEUED, 1, false, null,
+                "ready", 45_000L, true, null, true);
+        ProgramCue c = outputs.resolve(new ProgramOutputs.Snapshot(5, Timeline.playing("e1", T0, 0), video, trimmed,
+                null, true));
+        assertTrue(c.audioOnly());
+        assertEquals(new ProgramCue.Entry("e1", "v1", true, false, 60_000), c.current());
+        assertEquals(new ProgramCue.Entry("e2", "v2", true, false, 20_000, true, true), c.next());
+        c = outputs.resolve(new ProgramOutputs.Snapshot(6, Timeline.playing("e2", T0, 0), trimmed, plain, null,
+                true));
+        assertEquals(new ProgramCue.Entry("e3", "v3", true, false, 45_000, true, false), c.next());
+        assertTrue(c.next().playsAsAudio());
+        assertTrue(outputs.resolve(new ProgramOutputs.Snapshot(7, Timeline.IDLE, null, null, null, true)).audioOnly());
+        assertFalse(outputs.resolve(snap(8, Timeline.IDLE, null, null, null)).audioOnly());
+    }
+
     @Test
     void startsFromTheRoomsStateAndFollowsIt() throws Exception {
         outputs();

@@ -27,7 +27,7 @@ import java.util.regex.Pattern;
 /**
  * An item's media files ({@code docs/api.md}, {@code docs/libraries.md#media-access-rules}):
  * {@code GET /media/{itemId}/{file}} with {@code file} one of {@code audio.m4a},
- * {@code mezz.mp4}, {@code original} (the kept original of an audio upload,
+ * {@code audio-only.m4a} (a video's audio-only file, for audio-only rooms), {@code mezz.mp4}, {@code original} (the kept original of an audio upload,
  * {@code items.original_file}; the originals of video and YouTube items only feed re-encodes and
  * are never served) and {@code cover.jpg}.
  *
@@ -64,9 +64,13 @@ import java.util.regex.Pattern;
  * </ul>
  */
 public final class MediaApi {
+    /** A video's audio-only file (its audio trim), played only in audio-only rooms. */
+    public static final String AUDIO_ONLY = "audio-only.m4a";
+
     /** The served file names that map 1:1 to a file in the item directory. */
     private static final Map<String, String> FIXED = Map.of(
             "audio.m4a", "audio/mp4",
+            AUDIO_ONLY, "audio/mp4",
             "mezz.mp4", "video/mp4",
             "cover.jpg", "image/jpeg");
 

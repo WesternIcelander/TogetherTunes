@@ -267,7 +267,7 @@ public final class Main {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
         // The rooms' program outputs follow the room timelines (the registry's packager hook).
-        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence);
+        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings);
         // A new output encoding: presets are checked against its reference card, every item re-encodes
         // and running program outputs restart on it (docs/library-and-ingest.md#changing-the-encoding-at-runtime).
         outputAssets.addListener(encodingChanged(presets, ingest, programOutputs, System.out, System.err));
@@ -725,7 +725,7 @@ public final class Main {
      * start fails (the warning about them was printed when they were made).
      */
     static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, OutputAssets assets,
-            SilenceFrame silence) {
+            SilenceFrame silence, Settings settings) {
         ProgramOutputs.ItemKinds kinds = ProgramOutputs.itemKindsFrom(database);
         if (silence == null) {
             return new ProgramOutputs((roomId, cue) -> {
@@ -766,10 +766,23 @@ public final class Main {
             ProgramMedia.ItemDirs dirs = id -> MediaVersions.versionDir(dataDir, id, currentVersion(database, id));
             return new ProgramPipeline.Opened(new ProgramMedia(dirs, current.encoding(), avcC, cardLoader,
                     cards, silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
-                    System::currentTimeMillis), avcC, current.encoding().videoBitrateBps());
+                    System::currentTimeMillis), avcC, current.encoding().videoBitrateBps(),
+                    audioOnlyBitrateBps(settings));
         };
         return new ProgramOutputs(new ProgramPipeline(opener, TimeSource.system(Clock.systemUTC())),
                 kinds, System::currentTimeMillis);
+    }
+
+    /**
+     * The stream rate of audio-only output ({@code output.audioOnlyBitrateKbps}) in b/s, read when
+     * an output starts (a change applies to outputs started afterwards).
+     */
+    static long audioOnlyBitrateBps(Settings settings) throws IOException {
+        try {
+            return settings.outputAudioOnlyBitrateKbps() * 1000L;
+        } catch (SQLException e) {
+            throw new IOException("can't read output.audioOnlyBitrateKbps", e);
+        }
     }
 
     /**

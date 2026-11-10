@@ -37,6 +37,8 @@ export interface ShellRoom {
   /** Why the room stopped playing here (kicked), or undefined. */
   stopped(): string | undefined;
   audioOnly(): boolean;
+  /** Whether the room is audio-only: then there is no video / audio-only switch. */
+  audioOnlyRoom?(): boolean;
   setAudioOnly(on: boolean): void;
   /** The room view is shown again (re-render the navigation etc.). */
   shown(): void;
@@ -63,6 +65,7 @@ export class Shell {
   readonly #miniTitle: HTMLElement;
   readonly #miniState: HTMLElement;
   readonly #miniAudioOnly: HTMLInputElement;
+  readonly #miniAudioOnlyLabel: HTMLLabelElement;
 
   constructor(room: ShellRoom, roomBody: HTMLElement) {
     this.#room = room;
@@ -92,6 +95,7 @@ export class Shell {
     this.#miniAudioOnly.type = "checkbox";
     this.#miniAudioOnly.id = "mini-audio-only";
     label.append(this.#miniAudioOnly, " Audio only");
+    this.#miniAudioOnlyLabel = label;
     this.#miniAudioOnly.addEventListener("change", () => this.#room.setAudioOnly(this.#miniAudioOnly.checked));
     const leave = document.createElement("button");
     leave.type = "button";
@@ -138,6 +142,7 @@ export class Shell {
     this.#miniTitle.textContent = stopped ?? now.title;
     this.#miniAudioOnly.checked = this.#room.audioOnly();
     this.#miniAudioOnly.disabled = stopped !== undefined;
+    this.#miniAudioOnlyLabel.hidden = this.#room.audioOnlyRoom?.() === true;
     rememberPlaying(stopped === undefined ? { path: this.#room.path(), name: this.#room.name() } : null);
   }
 

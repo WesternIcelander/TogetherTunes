@@ -196,6 +196,105 @@ abstract class PlaybackContract {
         throw new AssertionError("no timeline change to " + entryId);
     }
 
+    /** Makes the item a video with an audio-only file of {@code audioOnlyMs} (null: none). */
+    private void makeVideo(String itemId, Long audioOnlyMs) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video', audio_only_ms = ?"
+                    + " WHERE id = ?")) {
+                if (audioOnlyMs == null) {
+                    ps.setNull(1, java.sql.Types.BIGINT);
+                } else {
+                    ps.setLong(1, audioOnlyMs);
+                }
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Sets the room's settings in its live state, as {@code RoomsApi} does after a change. */
+    private void liveSettings(String json) throws Exception {
+        registry.call(roomId, tx -> {
+            RoomSettings before = tx.state().settings();
+            RoomSettings after = RoomSettings.parse(json);
+            tx.state().settings(after);
+            tx.event(new RoomEvent.SettingsChanged(after.changedFrom(before)));
+            return null;
+        });
+    }
+
+    private boolean currentAudioOnlyColumn() throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT current_audio_only FROM rooms WHERE id = ?")) {
+                ps.setString(1, roomId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    return rs.getInt(1) != 0;
+                }
+            }
+        });
+    }
+
+    /**
+     * Audio-only rooms ({@code docs/rooms.md#audio-only-rooms}): turning the setting on while a
+     * video plays keeps that video (and its length) to its end; the next entry, and everything
+     * after it, plays audio-only, a video with an audio trim for its audio-only file's length.
+     * The current entry's mode is kept across a restart, even when the setting changed meanwhile.
+     */
+    @Test
+    void audioOnlySwitchAppliesFromTheNextEntry() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("ready", 60_000L);
+        String[] c = entry("ready", 45_000L);
+        makeVideo(a[1], 20_000L);
+        makeVideo(b[1], 20_000L);
+        makeVideo(c[1], null);
+        registry.close();
+        registry = newRegistry();
+        registry.call(roomId, Playback::startIfIdle);
+        clock.advance(10_000);
+
+        liveSettings("{\"audioOnly\": true}");
+        QueueEntry current = registry.call(roomId, tx -> tx.state().current());
+        assertEquals(a[0], current.id());
+        assertFalse(current.audioOnly(), "the playing video keeps its mode");
+        assertEquals(60_000L, current.lengthMs());
+        long delay = registry.call(roomId, tx -> Playback.advanceDelayMs(tx.state(), tx.now())).getAsLong();
+        assertEquals(50_000, delay, "A still ends after 60 s");
+        QueueEntry next = registry.call(roomId, tx -> Playback.nextEligible(tx.state()));
+        assertEquals(b[0], next.id());
+        assertTrue(next.audioOnly(), "the next entry follows the setting");
+        assertEquals(20_000L, next.lengthMs(), "its audio-only file's length");
+        assertFalse(currentAudioOnlyColumn());
+
+        tick(50_000);
+        assertEquals(Timeline.playing(b[0], T0 + 60_000, 0), awaitTimeline(b[0]).timeline());
+        current = registry.call(roomId, tx -> tx.state().current());
+        assertTrue(current.audioOnly());
+        assertTrue(currentAudioOnlyColumn(), "persisted with the timeline");
+        delay = registry.call(roomId, tx -> Playback.advanceDelayMs(tx.state(), tx.now())).getAsLong();
+        assertEquals(20_000, delay, "B plays its 20 s audio-only file");
+
+        // switched back off (the stored settings are the defaults) and restarted: B stays audio-only
+        registry.close();
+        registry = newRegistry();
+        current = registry.call(roomId, tx -> tx.state().current());
+        assertEquals(b[0], current.id());
+        assertTrue(current.audioOnly(), "the current entry's mode survives a restart");
+        assertEquals(20_000L, current.lengthMs());
+        next = registry.call(roomId, tx -> Playback.nextEligible(tx.state()));
+        assertFalse(next.audioOnly());
+        assertEquals(45_000L, next.lengthMs());
+
+        // audio-only again: a video without an audio trim plays its whole audio
+        liveSettings("{\"audioOnly\": true}");
+        next = registry.call(roomId, tx -> Playback.nextEligible(tx.state()));
+        assertTrue(next.audioOnly());
+        assertEquals(45_000L, next.lengthMs());
+        assertFalse(next.playsAudioOnlyFile());
+    }
+
     @Test
     void advancesAtTheEndSkippingEntriesThatAreNotReady() throws Exception {
         String[] a = entry("ready", 60_000L);

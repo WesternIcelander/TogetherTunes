@@ -16,15 +16,29 @@ import java.util.Objects;
  *                   ({@link io.siggi.togethertunes.ingest.PlayableFiles}; only meaningful while the
  *                   item is {@code ready}): {@code false} for files of an older output encoding
  *                   waiting for their re-encode, or an unreadable {@code index.bin}
+ * @param audioOnlyMs the length of a video item's audio-only file ({@code items.audio_only_ms}),
+ *                    or {@code null} when it has none (its audio-only file is then {@code audio.m4a},
+ *                    {@code durationMs} long)
+ * @param audioOnly   whether the entry plays audio-only ({@code docs/rooms.md#audio-only-rooms}):
+ *                    waiting entries follow the room's {@code audioOnly} setting; the current entry
+ *                    keeps the mode it started with until it ends ({@link RoomState} keeps both)
  */
 public record QueueEntry(String id, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
                          State state, double position, boolean pinned, Long playedAt, String itemStatus,
-                         Long durationMs, boolean filesUsable) {
+                         Long durationMs, boolean filesUsable, Long audioOnlyMs, boolean audioOnly) {
     public QueueEntry {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(itemId, "itemId");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(itemStatus, "itemStatus");
+    }
+
+    /** An entry that doesn't play audio-only (or whose item has no separate audio-only file). */
+    public QueueEntry(String id, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
+                      State state, double position, boolean pinned, Long playedAt, String itemStatus,
+                      Long durationMs, boolean filesUsable) {
+        this(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt, itemStatus,
+                durationMs, filesUsable, null, false);
     }
 
     /** An entry whose item's files are usable (if it is ready). */
@@ -61,21 +75,49 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
      * ({@code docs/rooms.md#room-state}).
      */
     public boolean ready() {
-        return "ready".equals(itemStatus) && durationMs != null && durationMs > 0 && filesUsable;
+        Long length = lengthMs();
+        return "ready".equals(itemStatus) && length != null && length > 0 && filesUsable;
+    }
+
+    /**
+     * How long the entry plays: the audio-only file's length ({@link #audioOnlyMs}) when it plays
+     * audio-only and its item has one, else the item's duration; {@code null} if not known yet.
+     * This is what the timeline uses.
+     */
+    public Long lengthMs() {
+        return audioOnly && audioOnlyMs != null && durationMs != null ? audioOnlyMs : durationMs;
+    }
+
+    /** Whether it plays its item's separate audio-only file ({@code audio-only.m4a}). */
+    public boolean playsAudioOnlyFile() {
+        return audioOnly && audioOnlyMs != null;
     }
 
     public QueueEntry withState(State newState, Long newPlayedAt) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, newState, position, pinned,
-                newPlayedAt, itemStatus, durationMs, filesUsable);
+                newPlayedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
     }
 
     public QueueEntry withPlace(double newPosition, boolean newPinned) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, newPosition, newPinned,
-                playedAt, itemStatus, durationMs, filesUsable);
+                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
     }
 
     public QueueEntry withItem(String newStatus, Long newDurationMs, boolean newFilesUsable) {
+        return withItem(newStatus, newDurationMs, newFilesUsable, audioOnlyMs);
+    }
+
+    public QueueEntry withItem(String newStatus, Long newDurationMs, boolean newFilesUsable, Long newAudioOnlyMs) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt,
-                newStatus, newDurationMs, newFilesUsable);
+                newStatus, newDurationMs, newFilesUsable, newAudioOnlyMs, audioOnly);
+    }
+
+    /** This entry playing audio-only, or not. */
+    public QueueEntry withAudioOnly(boolean newAudioOnly) {
+        if (newAudioOnly == audioOnly) {
+            return this;
+        }
+        return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt,
+                itemStatus, durationMs, filesUsable, audioOnlyMs, newAudioOnly);
     }
 }

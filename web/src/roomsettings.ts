@@ -47,6 +47,9 @@ export const SETTINGS: SettingDef[] = [
   { key: "guests.canYoutube", label: "Guests can add YouTube links", kind: "bool", group: "guests", default: false },
   { key: "transitionCard", label: "Show a card between items", kind: "bool", group: "playback", default: false },
   { key: "gapMs", label: "Gap between items (ms)", kind: "int", group: "playback", default: 0, min: 0, max: 10000 },
+  { key: "audioOnly", label: "Audio-only room", kind: "bool", group: "playback", default: false,
+    help: "Only audio plays, for listeners and in the stream outputs (which show each item's card at a lower"
+      + " constant rate). A change applies from the next item." },
   { key: "overlay.enabled", label: "Show the QR code overlay", kind: "bool", group: "overlay", default: false },
   { key: "overlay.corner", label: "Corner", kind: "select", group: "overlay", default: "br",
     options: [["br", "bottom right"], ["bl", "bottom left"], ["tr", "top right"], ["tl", "top left"]] },

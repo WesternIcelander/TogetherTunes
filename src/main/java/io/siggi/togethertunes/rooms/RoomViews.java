@@ -41,7 +41,14 @@ final class RoomViews {
     /** An item's columns as the room messages show it. */
     record ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                    boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
-                   int mediaVersion) {
+                   int mediaVersion, Long audioOnlyMs) {
+        ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
+                boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
+                int mediaVersion) {
+            this(id, kind, title, artist, durationMs, status, source, presentAsAudio, originalFile, originalWeb,
+                    originalGainDb, mediaVersion, null);
+        }
+
         /** Version 0 (tests). */
         ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                 boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb) {
@@ -102,8 +109,8 @@ final class RoomViews {
             Map<String, ItemRow> items = new HashMap<>();
             for (List<String> chunk : chunks(itemIds)) {
                 try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, duration_ms, status,"
-                        + " source, present_as_audio, original_file, original_web, original_gain_db, media_version"
-                        + " FROM items"
+                        + " source, present_as_audio, original_file, original_web, original_gain_db, media_version,"
+                        + " audio_only_ms FROM items"
                         + " WHERE id IN (" + marks(chunk.size()) + ")")) {
                     bind(ps, chunk);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -112,9 +119,11 @@ final class RoomViews {
                             Long durationMs = rs.wasNull() ? null : duration;
                             double gain = rs.getDouble(11);
                             Double gainDb = rs.wasNull() ? null : gain;
+                            long audioOnly = rs.getLong(13);
+                            Long audioOnlyMs = rs.wasNull() ? null : audioOnly;
                             items.put(rs.getString(1), new ItemRow(rs.getString(1), rs.getString(2), rs.getString(3),
                                     rs.getString(4), durationMs, rs.getString(6), rs.getString(7), rs.getInt(8) != 0,
-                                    rs.getString(9), rs.getInt(10) != 0, gainDb, rs.getInt(12)));
+                                    rs.getString(9), rs.getInt(10) != 0, gainDb, rs.getInt(12), audioOnlyMs));
                         }
                     }
                 }
@@ -180,6 +189,17 @@ final class RoomViews {
      * {@code originalType} (for {@code canPlayType}).
      */
     static JsonObject item(Lookup l, String itemId) {
+        return item(l, itemId, false);
+    }
+
+    /**
+     * {@link #item(Lookup, String)} as an entry that plays audio-only ({@code audioOnly}, an
+     * audio-only room, {@code docs/rooms.md#audio-only-rooms}) has it: a video has no
+     * {@code videoUrl} (clients play its audio only and never fetch {@code mezz.mp4}), and when it
+     * has a separate audio-only file ({@code items.audio_only_ms}), {@code audioUrl} is that file
+     * ({@code audio-only.m4a}) and {@code durationMs} its length. Audio items are unchanged.
+     */
+    static JsonObject item(Lookup l, String itemId, boolean audioOnly) {
         JsonObject o = new JsonObject();
         o.addProperty("id", itemId);
         ItemRow r = l.items().get(itemId);
@@ -192,7 +212,11 @@ final class RoomViews {
         if (r.artist() != null) {
             o.addProperty("artist", r.artist());
         }
-        if (r.durationMs() != null) {
+        boolean video = "video".equals(r.kind());
+        boolean audioOnlyFile = audioOnly && video && r.audioOnlyMs() != null;
+        if (audioOnlyFile) {
+            o.addProperty("durationMs", r.audioOnlyMs());
+        } else if (r.durationMs() != null) {
             o.addProperty("durationMs", r.durationMs());
         }
         o.addProperty("status", r.status());
@@ -200,8 +224,9 @@ final class RoomViews {
         if ("ready".equals(r.status())) {
             String base = "/media/" + r.id() + "/";
             o.addProperty("coverUrl", MediaApi.url(r.id(), r.mediaVersion(), "cover.jpg"));
-            o.addProperty("audioUrl", MediaApi.url(r.id(), r.mediaVersion(), "audio.m4a"));
-            if ("video".equals(r.kind())) {
+            o.addProperty("audioUrl", MediaApi.url(r.id(), r.mediaVersion(),
+                    audioOnlyFile ? MediaApi.AUDIO_ONLY : "audio.m4a"));
+            if (video && !audioOnly) {
                 o.addProperty("videoUrl", MediaApi.url(r.id(), r.mediaVersion(), "mezz.mp4"));
             }
             if ("audio".equals(r.kind()) && "upload".equals(r.source()) && r.originalWeb()
@@ -271,13 +296,17 @@ final class RoomViews {
 
     /**
      * A queued or suggested entry, without {@code yourVote} (added per socket):
-     * {@code entryId, status, item, addedBy?, addedAt, votes, pinned}.
+     * {@code entryId, status, item, addedBy?, addedAt, votes, pinned}, and {@code audioOnly: true}
+     * when it plays audio-only (its {@code item} then as {@link #item(Lookup, String, boolean)}).
      */
     static JsonObject entry(Lookup l, QueueEntry e, RoomSnapshot s) {
         JsonObject o = new JsonObject();
         o.addProperty("entryId", e.id());
         o.addProperty("status", entryStatus(e));
-        o.add("item", item(l, e.itemId()));
+        o.add("item", item(l, e.itemId(), e.audioOnly()));
+        if (e.audioOnly()) {
+            o.addProperty("audioOnly", true);
+        }
         ActorRef by = addedBy(l, e.addedByUserId(), e.addedByGuestId());
         if (by != null) {
             o.add("addedBy", actor(by));
@@ -288,12 +317,19 @@ final class RoomViews {
         return o;
     }
 
-    /** The current entry: {@code entryId, status, item, addedBy?, addedAt}. */
+    /**
+     * The current entry: {@code entryId, status, item, addedBy?, addedAt}, and {@code audioOnly:
+     * true} when it plays audio-only (the mode it started with; {@code item} as
+     * {@link #item(Lookup, String, boolean)}).
+     */
     static JsonObject current(Lookup l, QueueEntry e) {
         JsonObject o = new JsonObject();
         o.addProperty("entryId", e.id());
         o.addProperty("status", entryStatus(e));
-        o.add("item", item(l, e.itemId()));
+        o.add("item", item(l, e.itemId(), e.audioOnly()));
+        if (e.audioOnly()) {
+            o.addProperty("audioOnly", true);
+        }
         ActorRef by = addedBy(l, e.addedByUserId(), e.addedByGuestId());
         if (by != null) {
             o.add("addedBy", actor(by));

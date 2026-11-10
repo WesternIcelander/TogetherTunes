@@ -35,6 +35,7 @@ class RoomSettingsTest {
         assertEquals(10, d.control().noRepeatWindow());
         assertFalse(d.transitionCard());
         assertEquals(0, d.gapMs());
+        assertFalse(d.audioOnly());
         assertTrue(d.guestsCanVote());
         assertTrue(d.guestsCanRequestLibrary());
         assertFalse(d.guestsCanUpload());
@@ -56,17 +57,31 @@ class RoomSettingsTest {
         assertEquals(d, RoomSettings.parse("[1]"));
     }
 
+    /** {@code audioOnly}: a boolean; it changes nothing else (remote mode's delays stay as they are). */
+    @Test
+    void audioOnlySetting() {
+        RoomSettings on = RoomSettings.DEFAULTS.patch(obj("{\"audioOnly\":true}"));
+        assertTrue(on.audioOnly());
+        assertEquals("{\"audioOnly\":true}", on.toStoredJson());
+        assertEquals(java.util.List.of("audioOnly"), on.changedFrom(RoomSettings.DEFAULTS));
+        assertEquals(5000, on.estimatedDelayMsRtmp());
+        assertEquals(2000, on.estimatedDelayMsTs());
+        assertEquals(8000, on.estimatedDelayMsHls());
+        assertEquals("invalid_setting", patchError("{\"audioOnly\":1}").code());
+        assertFalse(RoomSettings.parse("{\"audioOnly\":\"yes\"}").audioOnly());
+    }
+
     @Test
     void wireFormIsNestedAndComplete() {
         JsonObject j = RoomSettings.DEFAULTS.toJson();
         assertEquals(obj("{\"libraryRequests\":true,\"uploadRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
-                + "\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
+                + "\"audioOnly\":false,\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
                 + "\"outputs\":{\"rtmp\":{\"idleStopMinutes\":10,\"playbackUrl\":\"\"},\"ts\":{\"join\":\"next\"}},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 22);
+        assertEquals(RoomSettings.keys().size(), 23);
     }
 
     @Test

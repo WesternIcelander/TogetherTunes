@@ -30,15 +30,23 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
 
     /**
      * One output's sources, the reference avcC its muxer writes SPS/PPS from, and the constant video
-     * stream rate the packager pads to ({@code streamBitrateBps}; 0 = no padding, for tests).
+     * stream rate the packager pads to ({@code streamBitrateBps}; 0 = no padding, for tests), and
+     * the rate for audio-only output ({@code audioOnlyBitrateBps}, {@link TimelineFollower#audioOnlyRate()};
+     * 0 = the same as {@code streamBitrateBps}).
      */
-    public record Opened(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps) {
+    public record Opened(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
+                         long audioOnlyBitrateBps) {
         public Opened {
             Objects.requireNonNull(sources, "sources");
             Objects.requireNonNull(avcC, "avcC");
-            if (streamBitrateBps < 0) {
-                throw new IllegalArgumentException("streamBitrateBps < 0");
+            if (streamBitrateBps < 0 || audioOnlyBitrateBps < 0) {
+                throw new IllegalArgumentException("bitrate < 0");
             }
+        }
+
+        /** Audio-only output padded to the same rate. */
+        public Opened(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps) {
+            this(sources, avcC, streamBitrateBps, 0);
         }
     }
 
@@ -75,8 +83,14 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
             TsMuxer muxer = new TsMuxer(avcC);
             Packager.Muxer mux = muxer::mux;
             if (opened.streamBitrateBps() > 0) {
-                CbrPadder padder = new CbrPadder(new AnnexB(avcC).nalLengthSize(), opened.streamBitrateBps());
-                mux = u -> muxer.mux(padder.pad(u));
+                long normal = opened.streamBitrateBps();
+                long audioOnly = opened.audioOnlyBitrateBps() > 0 ? opened.audioOnlyBitrateBps() : normal;
+                CbrPadder padder = new CbrPadder(new AnnexB(avcC).nalLengthSize(), normal);
+                mux = u -> {
+                    // the follower just built u: its mode is the unit's (packager thread)
+                    padder.bitrateBps(follower.audioOnlyRate() ? audioOnly : normal, u.startPts());
+                    return muxer.mux(padder.pad(u));
+                };
             }
             Packager packager = new Packager(roomId, follower, mux, clock, time);
             packager.start();

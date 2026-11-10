@@ -253,6 +253,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$Seek", "a scripted action of the harness's fake timeline, private"),
             Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$Skip", "a scripted action of the harness's fake timeline, private"),
             Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$Unknown", "a scripted action of the harness's fake timeline, private"),
+            Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$AudioOnly", "a scripted action of the harness's fake timeline, private"),
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$ItemKind", "an item's kind for the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$Snapshot", "a room's timeline and entries copied for the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.output.HlsSegmenter$Segment", "an HLS segment in the ring (bytes served as video/mp2t), server-side only"),

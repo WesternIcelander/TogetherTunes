@@ -67,6 +67,16 @@ public final class OfflineHarness {
      */
     public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
             ScriptedTimeline timeline, long durationMs, OutputStream out) throws IOException {
+        return run(sources, avcC, streamBitrateBps, 0, timeline, durationMs, out);
+    }
+
+    /**
+     * As above, with audio-only output ({@link TimelineFollower#audioOnlyRate()}) padded to
+     * {@code audioOnlyBitrateBps} instead (0: the same rate), as the live pipeline does.
+     */
+    public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
+            long audioOnlyBitrateBps, ScriptedTimeline timeline, long durationMs, OutputStream out)
+            throws IOException {
         Objects.requireNonNull(sources, "sources");
         Objects.requireNonNull(avcC, "avcC");
         Objects.requireNonNull(timeline, "timeline");
@@ -96,6 +106,8 @@ public final class OfflineHarness {
                 }
                 Unit u = follower.nextUnit();
                 if (padder != null) {
+                    padder.bitrateBps(follower.audioOnlyRate() && audioOnlyBitrateBps > 0 ? audioOnlyBitrateBps
+                            : streamBitrateBps, u.startPts());
                     u = padder.pad(u);
                 }
                 byte[] ts = muxer.mux(u);

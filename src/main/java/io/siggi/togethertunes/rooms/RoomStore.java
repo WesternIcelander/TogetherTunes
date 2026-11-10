@@ -56,8 +56,8 @@ final class RoomStore {
     RoomState load(String roomId) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT slug, name, owner_id, visibility, control_mode,"
-                    + " settings_json, playback_state, current_entry_id, anchor_server_ms, anchor_position_ms, version"
-                    + " FROM rooms WHERE id = ?")) {
+                    + " settings_json, playback_state, current_entry_id, anchor_server_ms, anchor_position_ms, version,"
+                    + " current_audio_only FROM rooms WHERE id = ?")) {
                 ps.setString(1, roomId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
@@ -83,13 +83,14 @@ final class RoomStore {
                             "control_mode");
                     String settings = rs.getString(6);
                     long version = rs.getLong(11);
+                    boolean currentAudioOnly = rs.getInt(12) != 0;
                     List<QueueEntry> entries = entries(c, roomId, entryId, playable);
                     QueueEntry current = null;
                     List<QueueEntry> queue = new ArrayList<>();
                     List<QueueEntry> suggestions = new ArrayList<>();
                     for (QueueEntry e : entries) {
                         if (e.id().equals(entryId)) {
-                            current = e;
+                            current = e.withAudioOnly(currentAudioOnly); // the mode it started with
                         } else if (e.state() == QueueEntry.State.SUGGESTED) {
                             suggestions.add(e);
                         } else {
@@ -118,7 +119,8 @@ final class RoomStore {
 
     private static final String ENTRY_COLUMNS = "q.id, q.item_id, q.added_by_user_id, q.added_by_guest_id,"
             + " q.added_at, q.state, q.position, q.pinned, q.played_at, i.status, i.duration_ms,"
-            + " i.kind, i.output_profile, i.media_version";
+            + " i.kind, i.output_profile, i.media_version,"
+            + " CASE WHEN i.kind = 'video' THEN i.audio_only_ms ELSE NULL END";
 
     /** Votes on the room's queued and suggested entries: entryId -> voter key -> value. */
     private static Map<String, Map<String, Integer>> votes(Connection c, String roomId) throws SQLException {
@@ -197,8 +199,12 @@ final class RoomStore {
         Long durationMs = rs.wasNull() ? null : duration;
         String status = rs.getString(10);
         boolean usable = filesUsable(check, rs.getString(2), status, rs.getString(12), rs.getString(13), rs.getInt(14));
+        long audioOnly = rs.getLong(15);
+        Long audioOnlyMs = rs.wasNull() ? null : audioOnly;
+        // audio-only mode (false here) is the room's business: RoomState sets it
         return new QueueEntry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, status, durationMs, usable);
+                rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, status, durationMs, usable,
+                audioOnlyMs, false);
     }
 
     /**
@@ -241,15 +247,19 @@ final class RoomStore {
         return out;
     }
 
-    /** An item as a queue entry needs it. */
+    /** An item as a queue entry needs it ({@code audioOnlyMs}: a video's audio-only file's length, or null). */
     record ItemRow(String id, String status, Long durationMs, String source, String kind, String outputProfile,
-                   int mediaVersion) {
+                   int mediaVersion, Long audioOnlyMs) {
+        ItemRow(String id, String status, Long durationMs, String source, String kind, String outputProfile,
+                int mediaVersion) {
+            this(id, status, durationMs, source, kind, outputProfile, mediaVersion, null);
+        }
     }
 
     /** The item, or {@code null} if there is no such item. */
     static ItemRow item(Connection c, String itemId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT id, status, duration_ms, source, kind,"
-                + " output_profile, media_version FROM items"
+                + " output_profile, media_version, audio_only_ms FROM items"
                 + " WHERE id = ?")) {
             ps.setString(1, itemId);
             try (ResultSet rs = ps.executeQuery()) {
@@ -258,8 +268,10 @@ final class RoomStore {
                 }
                 long d = rs.getLong(3);
                 Long duration = rs.wasNull() ? null : d;
+                long a = rs.getLong(8);
+                Long audioOnlyMs = rs.wasNull() || !"video".equals(rs.getString(5)) ? null : a;
                 return new ItemRow(rs.getString(1), rs.getString(2), duration, rs.getString(4), rs.getString(5),
-                        rs.getString(6), rs.getInt(7));
+                        rs.getString(6), rs.getInt(7), audioOnlyMs);
             }
         }
     }
@@ -318,7 +330,8 @@ final class RoomStore {
         return db.read(c -> {
             Map<String, RoomState.ItemInfo> out = new HashMap<>();
             for (QueueEntry e : entries(c, state.id(), currentId, playable)) {
-                out.put(e.id(), new RoomState.ItemInfo(e.itemStatus(), e.durationMs(), e.filesUsable()));
+                out.put(e.id(), new RoomState.ItemInfo(e.itemStatus(), e.durationMs(), e.filesUsable(),
+                        e.audioOnlyMs()));
             }
             return out;
         });
@@ -350,20 +363,24 @@ final class RoomStore {
     }
 
     /**
-     * Writes the version and the timeline of {@code state} (with {@code version}) to its row.
+     * Writes the version and the timeline of {@code state} (with {@code version}) to its row, and
+     * whether its current entry plays audio-only ({@code current_audio_only}: the mode it started
+     * with, kept across restarts).
      *
      * @return {@code false} if the row is gone (the room was deleted)
      */
     static boolean save(Connection c, RoomState state, long version) throws SQLException {
         Timeline t = state.timeline();
         try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET version = ?, playback_state = ?,"
-                + " current_entry_id = ?, anchor_server_ms = ?, anchor_position_ms = ? WHERE id = ?")) {
+                + " current_entry_id = ?, anchor_server_ms = ?, anchor_position_ms = ?, current_audio_only = ?"
+                + " WHERE id = ?")) {
             ps.setLong(1, version);
             ps.setString(2, t.state().wire());
             ps.setString(3, t.entryId());
             ps.setLong(4, t.anchorServerMs());
             ps.setLong(5, t.anchorPositionMs());
-            ps.setString(6, state.id());
+            ps.setInt(6, state.current() != null && state.current().audioOnly() ? 1 : 0);
+            ps.setString(7, state.id());
             return ps.executeUpdate() == 1;
         }
     }

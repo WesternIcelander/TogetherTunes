@@ -35,6 +35,7 @@ import java.util.function.Function;
  *   <tr><td>{@code noRepeatWindow}</td><td>10</td><td>0 (off)..{@value ControlSettings#MAX_NO_REPEAT_WINDOW}</td></tr>
  *   <tr><td>{@code transitionCard}</td><td>false</td><td></td></tr>
  *   <tr><td>{@code gapMs}</td><td>0</td><td>0..{@value #MAX_GAP_MS}</td></tr>
+ *   <tr><td>{@code audioOnly}</td><td>false</td><td>audio-only room: every item plays as audio (a video's audio-only file), the program output shows cards at {@code output.audioOnlyBitrateKbps}; a change applies from the next item</td></tr>
  *   <tr><td>{@code guests.canVote}, {@code guests.canRequestLibrary}</td><td>true</td><td>effective only if the server setting is on too</td></tr>
  *   <tr><td>{@code guests.canUpload}, {@code guests.canYoutube}</td><td>false</td><td>effective only if the server setting is on too</td></tr>
  *   <tr><td>{@code overlay.enabled}</td><td>false</td><td>effective only if the server's {@code overlay.enabled} is on too</td></tr>
@@ -98,6 +99,7 @@ public final class RoomSettings {
         def("noRepeatWindow", ControlSettings.DEFAULT_NO_REPEAT_WINDOW, whole(0, ControlSettings.MAX_NO_REPEAT_WINDOW));
         def("transitionCard", false, RoomSettings::bool);
         def("gapMs", 0, whole(0, MAX_GAP_MS));
+        def("audioOnly", false, RoomSettings::bool);
         def("guests.canVote", true, RoomSettings::bool);
         def("guests.canRequestLibrary", true, RoomSettings::bool);
         def("guests.canUpload", false, RoomSettings::bool);
@@ -422,6 +424,14 @@ public final class RoomSettings {
 
     public int gapMs() {
         return (Integer) values.get("gapMs");
+    }
+
+    /**
+     * {@code audioOnly}: whether the room is audio-only ({@code docs/rooms.md#audio-only-rooms}).
+     * Entries that start playing after a change use the new mode; the current one keeps its own.
+     */
+    public boolean audioOnly() {
+        return (Boolean) values.get("audioOnly");
     }
 
     /** The room half of {@code guests.canVote} (the server setting must be on too). */

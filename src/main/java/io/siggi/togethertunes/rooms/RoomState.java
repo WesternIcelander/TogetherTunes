@@ -60,7 +60,10 @@ public final class RoomState {
               QueueEntry current, List<QueueEntry> queue) {
         this(id, slug, name, ownerId, visibility, controlMode, settingsJson, timeline, version);
         this.current = current;
-        this.queue.addAll(queue);
+        boolean audioOnly = settings.audioOnly();
+        for (QueueEntry e : queue) {
+            this.queue.add(e.withAudioOnly(audioOnly));
+        }
     }
 
     RoomState(String id, String slug, String name, String ownerId, Rooms.Visibility visibility,
@@ -68,7 +71,9 @@ public final class RoomState {
               QueueEntry current, List<QueueEntry> queue, List<QueueEntry> suggestions,
               Map<String, Map<String, Integer>> votes, Set<String> skipVotes) {
         this(id, slug, name, ownerId, visibility, controlMode, settingsJson, timeline, version, current, queue);
-        this.suggestions.addAll(suggestions);
+        for (QueueEntry e : suggestions) {
+            this.suggestions.add(e.withAudioOnly(settings.audioOnly()));
+        }
         votes.forEach((entry, byVoter) -> this.votes.put(entry, new HashMap<>(byVoter)));
         this.skipVotes.addAll(skipVotes);
     }
@@ -208,9 +213,16 @@ public final class RoomState {
         this.controlMode = Objects.requireNonNull(controlMode, "controlMode");
     }
 
-    /** Takes over the settings after {@link Rooms} changed them. */
+    /**
+     * Takes over the settings after {@link Rooms} changed them. A change of {@code audioOnly}
+     * applies to the waiting entries at once and to the current entry not at all: it keeps the
+     * mode it started with until it ends ({@code docs/rooms.md#audio-only-rooms}).
+     */
     public void settings(RoomSettings settings) {
         this.settings = Objects.requireNonNull(settings, "settings");
+        boolean audioOnly = settings.audioOnly();
+        queue.replaceAll(e -> e.withAudioOnly(audioOnly));
+        suggestions.replaceAll(e -> e.withAudioOnly(audioOnly));
     }
 
     /**
@@ -248,7 +260,11 @@ public final class RoomState {
             skipVotes.clear();
             if (newId != null) {
                 votes.remove(newId);
+                // an entry that starts playing takes the room's mode now, and keeps it until it ends
+                current = current.withAudioOnly(settings.audioOnly());
             }
+        } else if (current != null) {
+            current = current.withAudioOnly(this.current.audioOnly());
         }
         this.current = current;
     }
@@ -262,6 +278,7 @@ public final class RoomState {
     /** Adds (or replaces) an entry: to the queue if {@code queued}, to the suggestions if {@code suggested}. */
     void addToQueue(QueueEntry entry) {
         removeFromQueue(entry.id());
+        entry = entry.withAudioOnly(settings.audioOnly());
         switch (entry.state()) {
             case QUEUED -> queue.add(entry);
             case SUGGESTED -> suggestions.add(entry);
@@ -302,20 +319,26 @@ public final class RoomState {
     void refreshItems(Map<String, ItemInfo> items) {
         if (current != null && items.containsKey(current.id())) {
             ItemInfo i = items.get(current.id());
-            current = current.withItem(i.status(), i.durationMs(), i.filesUsable());
+            current = current.withItem(i.status(), i.durationMs(), i.filesUsable(), i.audioOnlyMs());
         }
         queue.replaceAll(e -> {
             ItemInfo i = items.get(e.id());
-            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable());
+            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable(), i.audioOnlyMs());
         });
         suggestions.replaceAll(e -> {
             ItemInfo i = items.get(e.id());
-            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable());
+            return i == null ? e : e.withItem(i.status(), i.durationMs(), i.filesUsable(), i.audioOnlyMs());
         });
     }
 
-    /** An item's status, duration and whether its files are usable, as read for {@link #refreshItems}. */
-    record ItemInfo(String status, Long durationMs, boolean filesUsable) {
+    /**
+     * An item's status, duration, whether its files are usable and its audio-only file's length
+     * ({@link QueueEntry#audioOnlyMs}), as read for {@link #refreshItems}.
+     */
+    record ItemInfo(String status, Long durationMs, boolean filesUsable, Long audioOnlyMs) {
+        ItemInfo(String status, Long durationMs, boolean filesUsable) {
+            this(status, durationMs, filesUsable, null);
+        }
     }
 
     void version(long version) {

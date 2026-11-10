@@ -19,7 +19,7 @@ function clone(o) {
 test("every room setting of docs/rooms.md is defined once, with its default", () => {
   const keys = S.SETTINGS.map((d) => d.key);
   assert.equal(new Set(keys).size, keys.length);
-  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
+  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
     "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard", "uploadRequests",

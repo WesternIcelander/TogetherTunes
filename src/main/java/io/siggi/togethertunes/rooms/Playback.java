@@ -261,10 +261,10 @@ public final class Playback {
      */
     static OptionalLong advanceDelayMs(RoomState state, long nowMs) {
         QueueEntry current = state.current();
-        if (current == null || current.durationMs() == null) {
+        if (current == null || current.lengthMs() == null) {
             return OptionalLong.empty();
         }
-        OptionalLong end = state.timeline().endsAtServerMs(current.durationMs());
+        OptionalLong end = state.timeline().endsAtServerMs(current.lengthMs());
         return end.isPresent() ? OptionalLong.of(Math.max(0, end.getAsLong() - nowMs)) : OptionalLong.empty();
     }
 
@@ -301,7 +301,7 @@ public final class Playback {
                 QueueEntry current = s.current();
                 if (!"ready".equals(current.itemStatus())) {
                     advance(tx, QueueEntry.State.SKIPPED);
-                } else if (current.durationMs() != null && t.positionAt(tx.now()) >= current.durationMs()) {
+                } else if (current.lengthMs() != null && t.positionAt(tx.now()) >= current.lengthMs()) {
                     tx.timeline(Timeline.playing(current.id(), tx.now(), 0));
                 }
             }
@@ -315,6 +315,6 @@ public final class Playback {
     private static long clamp(RoomState state, long positionMs) {
         QueueEntry current = state.current();
         long pos = Math.max(0, positionMs);
-        return current == null || current.durationMs() == null ? pos : Math.min(pos, current.durationMs());
+        return current == null || current.lengthMs() == null ? pos : Math.min(pos, current.lengthMs());
     }
 }

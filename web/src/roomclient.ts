@@ -56,6 +56,8 @@ export interface CurrentEntry {
   item: RoomItem;
   addedBy?: ActorRef;
   addedAt: number;
+  /** Plays audio-only (an audio-only room): `item` then has no `videoUrl`. */
+  audioOnly?: boolean;
 }
 
 export interface WaitingEntry extends CurrentEntry {
@@ -94,6 +96,8 @@ export interface RoomSettingsView {
   libraryRequests?: boolean;
   allowDownvotes?: boolean;
   voteSkipThreshold?: number | "off";
+  /** An audio-only room (docs/rooms.md#audio-only-rooms). */
+  audioOnly?: boolean;
   [key: string]: unknown;
 }
 

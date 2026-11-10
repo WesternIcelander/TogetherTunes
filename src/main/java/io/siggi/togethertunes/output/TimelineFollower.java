@@ -87,6 +87,8 @@ public final class TimelineFollower implements UnitProducer {
      */
     private String endedEntryId;
     private ProgramCue endedCue;
+    /** Whether the source playing is padded to the audio-only rate (see {@link #audioOnlyRate()}). */
+    private boolean audioOnlyRate;
 
     /**
      * @param initial the timeline to start with (null: nothing known yet, played as paused)
@@ -123,6 +125,17 @@ public final class TimelineFollower implements UnitProducer {
     /** The filler playing, or null while an item plays. */
     public Filler playingFiller() {
         return filler;
+    }
+
+    /**
+     * Whether the unit {@link #nextUnit} just returned belongs to audio-only output
+     * ({@code docs/program-output.md#constant-rate-padding}): an item of an entry that plays
+     * audio-only ({@link ProgramCue.Entry#audioOnly()}, fixed for the whole item), or a filler
+     * while the room is audio-only ({@link ProgramCue#audioOnly()}). The packager pads such units
+     * to the audio-only rate. Packager thread.
+     */
+    public boolean audioOnlyRate() {
+        return audioOnlyRate;
     }
 
     /** Where the next unit starts if nothing changes ({@link UnitBuilder#nextUnitStart()}). */
@@ -270,6 +283,7 @@ public final class TimelineFollower implements UnitProducer {
         builder.play(src);
         entry = x;
         filler = null;
+        audioOnlyRate = x.audioOnly();
         followed = c;
         entryStartPts = builder.switchPoint();
         entryMediaStartMs = src instanceof ItemSource is ? is.mediaStartMs() : startMs;
@@ -282,6 +296,7 @@ public final class TimelineFollower implements UnitProducer {
 
     private void playFiller(Filler f, ProgramCue c) {
         followed = c;
+        audioOnlyRate = c != null && c.audioOnly();
         if (entry == null && filler == f && builder.source() != null && !builder.sourceEnded()) {
             return;
         }

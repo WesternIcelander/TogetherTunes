@@ -111,12 +111,19 @@ final class HarnessFixture {
     /** Runs {@code script} for {@code durationMs} into {@code out}, padded to {@code streamBitrateBps} (0: unpadded). */
     static OfflineHarness.Result run(Tools tools, Media m, ScriptedTimeline script, long durationMs,
             long streamBitrateBps, Path out) throws Exception {
+        return run(tools, m, script, durationMs, streamBitrateBps, 0, out);
+    }
+
+    /** As above, audio-only output padded to {@code audioOnlyBitrateBps} (0: the same rate). */
+    static OfflineHarness.Result run(Tools tools, Media m, ScriptedTimeline script, long durationMs,
+            long streamBitrateBps, long audioOnlyBitrateBps, Path out) throws Exception {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         try (ProgramMedia sources = new ProgramMedia(m.media(), profile, m.avcC(),
                 ProgramMedia.ffprobeCardLoader(tools, profile), m.fillers(), m.silence(), Runnable::run, 0,
                 script::startServerMs);
                 OutputStream os = new BufferedOutputStream(Files.newOutputStream(out))) {
-            return OfflineHarness.run(sources, m.avcC(), streamBitrateBps, script, durationMs, os);
+            return OfflineHarness.run(sources, m.avcC(), streamBitrateBps, audioOnlyBitrateBps, script, durationMs,
+                    os);
         }
     }
 

@@ -173,6 +173,56 @@ class ProgramMediaTest {
         }
     }
 
+    /**
+     * Audio-only rooms: a video entry that plays audio-only uses its separate audio-only file
+     * ({@code index-audio-only.bin}: {@code audio-only.m4a} + {@code card.mp4}) when it has one,
+     * else its {@code card.mp4} with the audio of {@code index.bin}; both are separate slots of
+     * the same item, and neither touches {@code mezz.mp4}.
+     */
+    @Test
+    void audioOnlyEntriesPlayTheAudioOnlyFile() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        SourcesTest.Media variant = new SourcesTest.Media();
+        List<byte[]> audio = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            audio.add(SourcesTest.audioFrame(5000 + i));
+        }
+        variant.add("audio-only.m4a", SampleIndex.Kind.AUDIO, 48_000, audio, 1024, 1);
+        variant.add("card.mp4", SampleIndex.Kind.VIDEO, 15_360, SourcesTest.cardFrames(2000), 512, 60);
+        Path dir = media.resolve("video1");
+        for (int i = 0; i < variant.names.size(); i++) {
+            Files.write(dir.resolve(variant.names.get(i)), variant.files.get(i));
+        }
+        variant.index().write(dir.resolve("index-audio-only.bin"));
+        Files.delete(dir.resolve("mezz.mp4")); // never read in audio-only mode
+
+        Entry withFile = new Entry("e5", "video1", true, false, 2133, true, true);
+        Entry withoutFile = new Entry("e6", "video1", true, false, 10_000, true, false);
+        assertTrue(withFile.playsAsAudio());
+        try (ProgramMedia pm = asyncMedia()) {
+            ProgramSource a = pm.item(withFile, 0);
+            AudioItemSource as = assertInstanceOf(AudioItemSource.class, a);
+            assertTrue(as.presentAsAudio());
+            assertEquals(2000, SourcesTest.frameNumber(a.nextVideo().data()), "the card in the variant's index");
+            assertEquals(5000, SourcesTest.audioNumber(a.nextAudio()), "audio-only.m4a");
+            assertEquals(99, SourcesTest.drainAudio(a));
+            assertEquals(0, cardLoads.get());
+
+            ProgramSource b = pm.item(withoutFile, 0);
+            assertInstanceOf(AudioItemSource.class, b);
+            assertEquals(7000, SourcesTest.frameNumber(b.nextVideo().data()), "card.mp4, loaded");
+            assertEquals(0, SourcesTest.audioNumber(b.nextAudio()), "audio.m4a");
+            assertEquals(468, SourcesTest.drainAudio(b));
+            assertEquals(1, cardLoads.get());
+
+            // both modes of the same item wanted at once (current and next): two slots
+            pm.prepare(cue(withFile, withoutFile));
+            assertNotNull(pm.item(withFile, 1000));
+            assertNotNull(pm.item(withoutFile, 1000));
+            assertEquals(Set.of("video1"), pm.loadedItems());
+        }
+    }
+
     @Test
     void missingIndexIsRetriedAfterTheBackoff() throws IOException {
         try (ProgramMedia pm = queuedMedia()) {

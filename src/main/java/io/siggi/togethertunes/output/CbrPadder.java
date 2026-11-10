@@ -35,12 +35,14 @@ public final class CbrPadder {
     static final byte TRAILING = (byte) 0x80;
 
     private final int lengthSize;
-    private final long bitrateBps;
+    private long bitrateBps;
     private final int minFiller;
     private final int maxNal;
 
     private boolean started;
+    /** Where the current rate applies from, and the bytes due up to there. */
     private long firstPts;
+    private long baseBytes;
     private long sentBytes;
 
     /**
@@ -63,6 +65,26 @@ public final class CbrPadder {
     /** The target rate in bits per second. */
     public long bitrateBps() {
         return bitrateBps;
+    }
+
+    /**
+     * Changes the target rate from {@code atPts} on (the start of the next unit to pad), e.g. when
+     * an audio-only room's output reaches an item that plays in the other mode. The bytes due so
+     * far stay due; from {@code atPts} they grow at the new rate, so an output ahead or behind at
+     * the change pays that back at the new rate.
+     */
+    public void bitrateBps(long newBitrateBps, long atPts) {
+        if (newBitrateBps <= 0) {
+            throw new IllegalArgumentException("bitrate " + newBitrateBps);
+        }
+        if (newBitrateBps == bitrateBps) {
+            return;
+        }
+        if (started) {
+            baseBytes = budget(atPts);
+            firstPts = atPts;
+        }
+        bitrateBps = newBitrateBps;
     }
 
     /** Video bytes (AVCC, padding included) sent so far. */
@@ -108,14 +130,17 @@ public final class CbrPadder {
                 unit.source(), unit.sourceEnded());
     }
 
-    /** Bytes due from the first frame up to {@code pts}: {@code T × ticks / (8 × 90000)}, rounded down. */
+    /**
+     * Bytes due from the first frame up to {@code pts}: {@code T × ticks / (8 × 90000)}, rounded
+     * down (plus what was due before the last rate change).
+     */
     long budget(long pts) {
         long ticks = pts - firstPts;
         long seconds = Math.floorDiv(ticks, OutputClock.HZ);
         long rest = Math.floorMod(ticks, OutputClock.HZ);
         // whole seconds and the rest apart, so this doesn't overflow in any realistic uptime
         long bits = seconds * bitrateBps + bitrateBps * rest / OutputClock.HZ;
-        return Math.floorDiv(bits, 8);
+        return baseBytes + Math.floorDiv(bits, 8);
     }
 
     /**

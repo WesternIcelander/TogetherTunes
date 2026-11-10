@@ -114,10 +114,17 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
      * @param current   the current entry, or null
      * @param next      the next eligible entry ({@link Playback#nextEligible}), or null
      * @param playedOut see {@link ProgramCue#playedOut()}
+     * @param audioOnly the room's {@code audioOnly} setting (the entries carry their own mode)
      */
-    public record Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut) {
+    public record Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut,
+                           boolean audioOnly) {
         public Snapshot {
             Objects.requireNonNull(timeline, "timeline");
+        }
+
+        /** A snapshot of a room that isn't audio-only. */
+        public Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut) {
+            this(version, timeline, current, next, playedOut, false);
         }
     }
 
@@ -303,7 +310,8 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
     Snapshot snapshot(RoomState state) {
         Timeline t = state.timeline();
         QueueEntry current = t.state() == PlaybackState.IDLE ? null : state.current();
-        return new Snapshot(state.version(), t, current, Playback.nextEligible(state), playedOut.get(state.id()));
+        return new Snapshot(state.version(), t, current, Playback.nextEligible(state), playedOut.get(state.id()),
+                state.settings().audioOnly());
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -658,17 +666,17 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
             }
         }
         if (t.state() == PlaybackState.IDLE) {
-            return ProgramCue.of(t, null, next, s.playedOut());
+            return ProgramCue.of(t, null, next, s.playedOut(), s.audioOnly());
         }
         QueueEntry cur = s.current();
         if (cur == null || !cur.id().equals(t.entryId())) {
-            return new ProgramCue(null, null, 0, 0, null, null);
+            return new ProgramCue(null, null, 0, 0, null, null, s.audioOnly());
         }
         try {
-            return ProgramCue.of(t, entry(cur), next, s.playedOut());
+            return ProgramCue.of(t, entry(cur), next, s.playedOut(), s.audioOnly());
         } catch (Exception e) {
             LOG.log(System.Logger.Level.WARNING, "Program output: can't look up item " + cur.itemId(), e);
-            return new ProgramCue(null, null, 0, 0, null, null);
+            return new ProgramCue(null, null, 0, 0, null, null, s.audioOnly());
         }
     }
 
@@ -677,7 +685,8 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         if (kind == null) {
             throw new SQLException("no item " + q.itemId());
         }
+        Long length = q.lengthMs();
         return new ProgramCue.Entry(q.id(), q.itemId(), kind.videoItem(), kind.presentAsAudio(),
-                q.durationMs() == null ? 0 : q.durationMs());
+                length == null ? 0 : length, q.audioOnly(), kind.videoItem() && q.playsAudioOnlyFile());
     }
 }

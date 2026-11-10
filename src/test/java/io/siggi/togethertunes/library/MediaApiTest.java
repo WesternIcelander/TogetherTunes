@@ -159,6 +159,13 @@ class MediaApiTest {
         assertEquals("bytes 100-199/20000", header(part, "Content-Range"));
         assertArrayEquals(Arrays.copyOfRange(audio, 100, 200), part.body());
 
+        // a video's audio-only file (its audio trim), for audio-only rooms
+        byte[] audioOnly = write(video, "audio-only.m4a", 7_000);
+        HttpResponse<byte[]> ao = get("/media/" + video + "/audio-only.m4a", alice);
+        assertEquals(200, ao.statusCode());
+        assertEquals("audio/mp4", header(ao, "Content-Type"));
+        assertArrayEquals(audioOnly, ao.body());
+
         HttpResponse<byte[]> img = get("/media/" + video + "/cover.jpg", alice);
         assertEquals("image/jpeg", header(img, "Content-Type"));
         assertArrayEquals(cover, img.body());

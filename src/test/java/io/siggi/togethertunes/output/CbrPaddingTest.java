@@ -45,7 +45,7 @@ class CbrPaddingTest {
     Path dir;
 
     /** SPS and PPS with their start codes, as the muxer writes them before every IDR. */
-    private static int parameterSetBytes(byte[] avcC) throws Exception {
+    static int parameterSetBytes(byte[] avcC) throws Exception {
         AnnexB a = new AnnexB(avcC);
         int n = 0;
         for (byte[] nal : a.sps()) {
@@ -58,10 +58,10 @@ class CbrPaddingTest {
     }
 
     /** One video packet as ffprobe reports it. */
-    private record Packet(long pts, long size, boolean key) {
+    record Packet(long pts, long size, boolean key) {
     }
 
-    private static List<Packet> videoPackets(Tools tools, Path file) throws Exception {
+    static List<Packet> videoPackets(Tools tools, Path file) throws Exception {
         String out = tools.ffprobe("-v", "error", "-select_streams", "v", "-show_entries", "packet=pts,size,flags",
                 "-of", "csv=p=0", file.toString()).stdoutToString(1 << 28)
                 .timeout(Duration.ofMinutes(5)).run().stdoutString();
@@ -87,7 +87,7 @@ class CbrPaddingTest {
      * AUD before every frame and the SPS and PPS before every IDR ({@code keyOverhead}), which the
      * padder doesn't count (it counts AVCC samples), are taken off first.
      */
-    private static void checkConstantRate(List<Packet> packets, long bitrateBps, long timeBase, double unitTolerance,
+    static void checkConstantRate(List<Packet> packets, long bitrateBps, long timeBase, double unitTolerance,
             double maxAheadBytes, double maxBehindBytes, int keyOverhead) {
         List<Integer> starts = new ArrayList<>();
         for (int i = 0; i < packets.size(); i++) {

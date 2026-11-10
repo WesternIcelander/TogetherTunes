@@ -1012,6 +1012,10 @@ function render(s: RoomState): void {
   outputsPanel ??= new OutputsPanel(element("room-outputs"));
   outputsPanel.update(s);
   renderRemoteDelay();
+  // An audio-only room plays every item's audio (the server gives no video URLs): no switch.
+  const audioOnlyRoom = isAudioOnlyRoom(s);
+  element("room-audio-only-label").hidden = audioOnlyRoom;
+  element("room-audio-only-room").hidden = !audioOnlyRoom;
   element("room-main").hidden = false;
   if (mode === "listen") player?.update(s);
   shell?.update();
@@ -1122,6 +1126,11 @@ function createPlayer(): ListenPlayer {
   return p;
 }
 
+/** Whether the room is audio-only (its `audioOnly` setting). */
+function isAudioOnlyRoom(s: RoomState | undefined): boolean {
+  return s?.room.settings["audioOnly"] === true;
+}
+
 /** The video / audio-only switch (the checkbox here or the shell's mini player). */
 function setAudioOnly(on: boolean): void {
   player?.setAudioOnly(on);
@@ -1145,6 +1154,7 @@ function createShell(): Shell {
     nowPlaying: () => ({ title: shown?.current?.item.title ?? "", state: shown?.timeline.state ?? "idle" }),
     stopped: () => kickedText,
     audioOnly: () => player?.audioOnly ?? loadAudioOnly(),
+    audioOnlyRoom: () => isAudioOnlyRoom(shown),
     setAudioOnly,
     shown: () => renderNav(me),
   }, element("room-body"));
