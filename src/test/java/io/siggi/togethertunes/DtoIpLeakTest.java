@@ -223,6 +223,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$Unknown", "a scripted action of the harness's fake timeline, private"),
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$ItemKind", "an item's kind for the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.output.ProgramOutputs$Snapshot", "a room's timeline and entries copied for the packager, server-side only"),
+            Map.entry("io.siggi.togethertunes.output.HlsSegmenter$Segment", "an HLS segment in the ring (bytes served as video/mp2t), server-side only"),
+            Map.entry("io.siggi.togethertunes.output.RtmpPusher$Status", "an RTMP push's supervisor state, server-side until the outputs API turns it into a view"),
             Map.entry("io.siggi.togethertunes.output.LiveTsApi$Target", "what a .ts stream token opens (room id, join point), server-side only"),
             Map.entry("io.siggi.togethertunes.output.ProgramPipeline$Running", "a running packager and its parts, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),

@@ -43,6 +43,7 @@ import io.siggi.togethertunes.output.LiveHlsApi;
 import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
+import io.siggi.togethertunes.output.RtmpPushers;
 import io.siggi.togethertunes.output.ProgramPipeline;
 import io.siggi.togethertunes.output.TimeSource;
 import io.siggi.togethertunes.library.AddMediaPolicy;
@@ -210,6 +211,8 @@ public final class Main {
                 silence);
         RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), programOutputs);
         programOutputs.snapshotsFrom(roomRegistry);
+        // RTMP pushes (supervised ffmpeg); started by the outputs API. Null without ffmpeg.
+        RtmpPushers rtmpPushers = config.ffmpeg() == null ? null : new RtmpPushers(programOutputs, config.ffmpeg());
         Rooms rooms = new Rooms(database, permissions, Clock.systemUTC());
         RoomGuests roomGuests = new RoomGuests(database, settings, permissions, rooms, roomRegistry);
         // Guests add media only as a request in a room that allows it (server AND room setting).
@@ -278,6 +281,9 @@ public final class Main {
         retention.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            if (rtmpPushers != null) {
+                rtmpPushers.close();
+            }
             programOutputs.close();
             // After the web server (no new requests), before the database (rooms persist on the way out).
             roomRegistry.close();
