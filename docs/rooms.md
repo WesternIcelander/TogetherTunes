@@ -52,7 +52,7 @@ Details (as implemented):
 
 | Setting | Default | Notes |
 |---|---|---|
-| `requestScope` | `owner` | `owner` \| `owner+self` \| `none` (see [libraries.md](libraries.md#visibility)) |
+| `libraryRequests` | true | Off: only the owner and moderators can search libraries and request items by id; YouTube links and uploads still work (see [libraries.md](libraries.md#visibility)) |
 | `requestsPerActor` | 3 | Max queued entries per user or guest at a time; owner and moderators exempt |
 | `allowDownvotes` | false | Vote mode only |
 | `voteSkipThreshold` | 0.5 | Fraction of present identified members (listen + remote), or `off` |
@@ -67,7 +67,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 
 | Setting | Default | Values |
 |---|---|---|
-| `requestScope` | `owner` | `owner` \| `owner+self` \| `none` |
+| `libraryRequests` | true | |
 | `requestsPerActor` | 3 | 1–1000 |
 | `allowDownvotes` | false | |
 | `voteSkipThreshold` | 0.5 | (0, 1], or `"off"` |
@@ -121,7 +121,7 @@ As implemented (`RoomGuests`, `RoomPresence`, `PresenceOps`):
 
 A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from four sources:
 
-- **Library:** search within `requestScope`.
+- **Library:** search the room owner's library and playlists and the requester's own library, or with "Search the whole server" every item on the server ([libraries.md](libraries.md#visibility)); any item on the server may be requested by id. Room setting **`libraryRequests`** (default on; Siggi, 2026-11-10: "We should allow disabling library requests, in which case you cannot add anything from any library, unless it's a YouTube item you already know the link for which you paste in the YouTube link section.") off: for everyone but the owner and moderators the room page hides the search and the history's Add to Queue, and the server refuses the search, `queue.add` by item id and by history entry (`403 library_requests_off`). Pasting a YouTube link still works even when the video is already on the server, and uploads are unaffected (an upload that dedupes to an existing item is fine). `room.you.canRequestLibrary` tells the client (false while off, except for the owner and moderators).
 - **Upload:** the file is ingested into a new item (or deduplicated). The queue entry is "processing" until the item is ready.
 - **YouTube:** the link is normalised to a video ID and served from the cache when possible ([library-and-ingest.md](library-and-ingest.md#youtube-caching)). See [Adding a YouTube link](#adding-a-youtube-link) for the feedback while a new one is looked up.
 - **History:** "Add to Queue" on a row of the room's [history](#history).
@@ -133,7 +133,7 @@ The owner and moderators get `request.new` for each request. Items that nobody a
 Each room has **one history**: every entry that started playing there and has ended (played or skipped), newest first, kept for `rooms.requestHistoryDays` (default 90, 0 = forever; the hourly retention run deletes older entries, never a room's current one). It replaced the owner's request history (Siggi, 2026-11-10). Everyone who may open the room sees it (the room page, below the queue), so it shows nothing the queue doesn't: per row the item (title and artist; a purged item keeps its row, marked expired), when it played, who added it (the display name they had then; guests marked as guests; never an IP address), how (from a library, by upload, by YouTube link, from a playlist, from the history) and whether it was skipped.
 
 - **Add to Library** on every row whose item isn't in the **viewer's** library (signed-in users; guests have no library), through `PUT /api/library/{itemId}`, so retention protection and the quality re-encode follow. Rows already in their library say "In your library". A purged YouTube item is fetched again; a purged or failed upload can't be restored and has no button.
-- **Add to Queue:** the owner and moderators on every row, exempt from the request rules. Everyone else only where they may request from the library (a guest needs `guests.canRequestLibrary`), with the usual rules: `requestsPerActor`, `owner` mode turns it into a suggestion, and **`noRepeatWindow`**: for an item that started playing within the last N entries (the current one included) the button is disabled with "Played within the last N songs", and the server refuses it (`409 recently_played`). There is **no request scope check**: the item was available in this room already.
+- **Add to Queue:** the owner and moderators on every row, exempt from the request rules. Everyone else only where they may request from the library (a guest needs `guests.canRequestLibrary`), with the usual rules: `requestsPerActor`, `owner` mode turns it into a suggestion, and **`noRepeatWindow`**: for an item that started playing within the last N entries (the current one included) the button is disabled with "Played within the last N songs", and the server refuses it (`409 recently_played`). Like any request by item id it has no scope check; with `libraryRequests` off it is hidden (and refused) for everyone but the owner and moderators.
 - Moderators also get **Ban guest** on a guest's row (after a confirmation with the IP-mode warning); this used to live in the request history.
 
 As implemented (`rooms/RoomHistory`, `web/src/history.ts` + `room.ts`): the history is `queue_entries` with `played_at` set and state `played`/`skipped`; entries record `via` and `added_by_name` (migration `0011`; older entries show the current name and no `via`). `GET /api/rooms/{id}/history` serves it in pages of 50 with per-viewer `inYourLibrary` and `recentlyPlayed` ([api.md](api.md#rooms)); the room state still carries the last 20 rows, and the page loads the first page again whenever that changes ("Show more" for older ones). `queue.add {historyEntryId}` adds an entry's item again (an entry of this room that has started playing; `404 history_entry_not_found` otherwise). An entry that `previous` plays again moves to the top when it ends again.
@@ -253,7 +253,7 @@ The program output ([program-output.md](program-output.md)) **follows** the time
 
 These are performed by the executor; each one checks the actor's permissions and the mode's rules.
 
-- `add(itemId | uploadId | youtubeUrl | historyEntryId)`: checks `requestsPerActor`, `noRepeatWindow`, the guest capabilities and the request scope (not for a history entry). In `owner` mode, a request from anyone else becomes a suggestion. Writes a `room_requests` row.
+- `add(itemId | uploadId | youtubeUrl | historyEntryId)`: checks `requestsPerActor`, `noRepeatWindow`, the guest capabilities and, by item id or history entry, `libraryRequests` (no scope check: any item on the server). In `owner` mode, a request from anyone else becomes a suggestion.
 - `addPlaylist(playlistId, shuffle)`: owner and moderators only.
 - `remove(entryId)`: owner and moderators; the requester while the entry is still queued; or anyone with request rights in `open` mode.
 - `retry(entryId)`: a failed YouTube entry (queued or suggested) is fetched again; owner and moderators, and the requester while they may add YouTube links here ([Retrying](#room-state)).

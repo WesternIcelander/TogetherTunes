@@ -37,20 +37,19 @@ An **item** is a media object stored once on the server: its files, metadata and
 |---|---|
 | Any user | Their own library and playlists; items shared with them |
 | `library.viewAll` | Every user's library and playlists (read-only), searchable by user (`/api/users?q=` finds users by username or display name; their library can be searched like your own) |
-| Room members (users and guests) | Inside a room, the **request search scope** chosen by the room owner (below) |
+| Room members (users and guests) | Inside a room: the **room owner's** library and playlists plus **their own** library, or with "Search the whole server" every item on the server (below) |
+| Any user | On the Library page, with "Search the whole server": every item on the server |
 | Anyone | Any item's page, **by direct link** (`/items/{id}`), whether or not it's in their library |
 
-Item pages can be opened from a direct link, but there is no global listing or search across all items. Without `library.viewAll`, the only ways to discover an item are your own library, a room's request search, a share, or being given the link.
+**Any item on the server is fair game** (Siggi, 2026-11-10: "If an item is available on the server, it's fair game. [...] Only thing that should be private about the entire server's library is which users libraries an item is in."). The only private thing is **which users' libraries (and playlists) an item is in**. Item metadata (title, artist, album, kind, length, status) is not private.
 
-**Room request search scope** (room setting `requestScope`): which items room members can find when requesting.
+**Room request search** (`GET /api/rooms/{id}/search`): always the room owner's library and playlists **and** the requester's own library (guests have none: the owner's only), each item once. A **"Search the whole server"** tickbox (`all=1`; unchecked by default, remembered per browser) widens it to every item on the server that isn't purged: all users' libraries and playlists, and items in no library yet (e.g. recent guest requests awaiting retention). Room setting `libraryRequests` off turns the search off for everyone but the owner and moderators (`403 library_requests_off`).
 
-- `owner` (default): the room owner's library and playlists.
-- `owner+self`: also the requesting user's own library.
-- `none`: no library search; requests come only from uploads and YouTube links, if those are enabled.
+**Library page:** the search has the same **"Search the whole server"** tickbox for signed-in users (`GET /api/items/search`), with the same results and privacy rules; each result says whether it is in the viewer's own library ("In your library") or offers **Add to Library**. Unchecked, the search is the user's own library.
 
-Search results return only item metadata. They don't say which library an item came from, so nothing about a library's contents leaks beyond what the scope allows.
+**Requests by item id** (`queue.add` with `itemId`): any item that exists and isn't a purged or failed upload, for anyone allowed to request from the library at all; there is no scope check (the former room setting `requestScope` and `403 not_in_request_scope` are gone; stored values are ignored). The other request rules stay: `requestsPerActor`, `noRepeatWindow`, guest capabilities (`guests.canRequestLibrary`), control mode (owner mode → suggestion), `libraryRequests`, and the item's own rules (unknown `404 item_not_found`, failed upload `409 item_failed`, purged upload `409 media_expired`; a purged or failed YouTube item is fetched again).
 
-As implemented (`RequestSearch`): `owner` covers the owner's library and the items in the owner's playlists; `owner+self` adds the searching user's library (guests have none). An item appears once however many of these hold it, ordered by item id (newest item first), never by when a library got it; results carry no `addedAt`, `via` or `sharedBy`. The same scope applies to **requests by item id** (`queue.add` with `itemId`) from anyone but the owner and moderators: `403 not_in_request_scope` (the same for an unknown item, so it only answers what the search already shows) and, with `none`, `403 library_requests_disabled`. Owner and moderators add any item. With `none` the owner can still search their own library; moderators can't.
+As implemented (`library/ItemSearch`, used by `rooms/RequestSearch` and `GET /api/items/search`): one search implementation. A result is only item metadata (`Library.ItemView`), plus `inYourLibrary` on `/api/items/search`; no `addedAt`, `via`, `sharedBy` or "in X's library" hints. Results are ordered by item id (newest item first: the item's creation, the same for everyone), never by when a library got it, and the whole-server mode has no grouping, so neither the order nor the paging reveals library membership. Excluded: failed and purged uploads; in whole-server mode also purged YouTube items (failed and purged YouTube items in the owner's or requester's library are listed, since requesting one fetches it again). The item page (`GET /api/items/{id}`) shows the item's metadata, its first `addedAt`, and the viewer's own `you.inLibrary`/`canEdit`/`canPurge`/`canRetry`; it carries no adder and nothing about other users' libraries (`items.added_by_user_id` is only used server-side for the edit right, which requires the item to be in the adder's own library).
 
 ## Media access rules
 
