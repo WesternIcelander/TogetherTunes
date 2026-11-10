@@ -150,6 +150,7 @@ abstract class UploadsContract {
         Uploads u = new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
         u.libraryAddListener(libraryAdds::add);
+        u.precheck(true); // the test server's base URL is https
         return u;
     }
 
@@ -262,6 +263,30 @@ abstract class UploadsContract {
             return null;
         });
         return id;
+    }
+
+    private String insertItem(String status, String sha256, String contentId) throws SQLException {
+        String id = insertItem(status, sha256);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET content_id = ? WHERE id = ?")) {
+                ps.setString(1, contentId);
+                ps.setString(2, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    private String contentIdOf(String itemId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT content_id FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
     }
 
     private Map<String, Object> item(String id) throws SQLException {
@@ -543,6 +568,7 @@ abstract class UploadsContract {
         assertEquals("Tag Album", row.get("album"));
         assertEquals("upload", row.get("source"));
         assertEquals(sha256(mp3), row.get("content_sha256"));
+        assertEquals(ContentId.of(new ByteArrayInputStream(mp3)), contentIdOf(itemId), "the content ID is recorded");
         assertEquals(aliceId, row.get("added_by_user_id"));
         assertEquals("pending", row.get("status"));
         assertEquals("720p30-3000k-v2", row.get("output_profile"));
@@ -659,14 +685,103 @@ abstract class UploadsContract {
             assertEquals("upload", libraryVia(aliceId, existing));
             // done with this row: mark its job finished so the other status starts clean
             db.write(c -> {
-                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'ready', content_sha256 = NULL"
-                        + " WHERE id = ?")) {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'ready', content_sha256 = NULL,"
+                        + " content_id = NULL WHERE id = ?")) {
                     ps.setString(1, existing);
                     ps.executeUpdate();
                 }
                 return null;
             });
         }
+    }
+
+    private Reply startWithContentId(String token, long size, String contentId, String extra) throws Exception {
+        return json(token, "POST", "/api/uploads", "{\"filename\":\"known.mp3\",\"size\":" + size
+                + ",\"contentId\":\"" + contentId + "\"" + extra + "}");
+    }
+
+    /**
+     * The pre-check: a content ID of a ready, pending or processing upload item gives that item
+     * without any bytes, with a library entry (unless addToLibrary is false) and a fresh
+     * last_referenced_at; the upload counts as completed, so its id works like any other.
+     */
+    @Test
+    void precheckHitAddsTheItemWithoutBytes() throws Exception {
+        byte[] file = random(30_000, 7);
+        String contentId = ContentId.of(new ByteArrayInputStream(file));
+        String ready = insertItem("ready", sha256(file), contentId);
+        clock.advance(5000);
+        JsonObject hit = expect(200, startWithContentId(alice, file.length, contentId, "")).json();
+        assertTrue(hit.get("deduplicated").getAsBoolean());
+        assertEquals(ready, hit.get("itemId").getAsString());
+        assertEquals("ready", hit.get("status").getAsString());
+        String uploadId = hit.get("uploadId").getAsString();
+        assertEquals("upload", libraryVia(aliceId, ready));
+        assertEquals(List.of(ready), libraryAdds);
+        assertEquals(clock.millis(), ((Number) item(ready).get("last_referenced_at")).longValue());
+        assertEquals(List.of(), partFiles(), "no bytes, no part file");
+        JsonObject status = expect(200, json(alice, "GET", "/api/uploads/" + uploadId, null)).json();
+        assertEquals(ready, status.get("itemId").getAsString());
+        assertEquals(file.length, status.get("receivedBytes").getAsLong());
+        JsonObject done = expect(200, complete(alice, uploadId, null)).json();
+        assertEquals(ready, done.get("itemId").getAsString());
+        assertTrue(done.get("deduplicated").getAsBoolean());
+        assertEquals(1, count("SELECT COUNT(*) FROM items"));
+        assertEquals(0, count("SELECT COUNT(*) FROM ingest_jobs"));
+
+        // without a library entry; and a pending item counts too
+        insertItem("purged", sha256(file), contentId); // an older purged row with the same ID doesn't get in the way
+        sql("UPDATE items SET status = 'pending' WHERE id = ?", ready);
+        JsonObject bobs = expect(200, startWithContentId(bob, file.length, contentId, ",\"addToLibrary\":false")).json();
+        assertEquals(ready, bobs.get("itemId").getAsString());
+        assertEquals("pending", bobs.get("status").getAsString());
+        assertNull(libraryVia(bobId, ready));
+        // nothing in the reply says whose libraries hold the item
+        assertEquals(java.util.Set.of("uploadId", "chunkSize", "size", "deduplicated", "itemId", "status"), bobs.keySet());
+    }
+
+    /**
+     * No shortcut for a purged or failed match, an unknown, malformed or wrong-size ID, a non-upload
+     * item, or with the pre-check off (a non-https server): a normal upload starts.
+     */
+    @Test
+    void precheckMissesStartANormalUpload() throws Exception {
+        byte[] file = random(20_000, 9);
+        String contentId = ContentId.of(new ByteArrayInputStream(file));
+        String purged = insertItem("purged", sha256(file), contentId);
+        expect(201, startWithContentId(alice, file.length, contentId, ""));
+        sql("UPDATE items SET status = 'failed' WHERE id = ?", purged);
+        expect(201, startWithContentId(alice, file.length, contentId, ""));
+        sql("UPDATE items SET status = 'ready' WHERE id = ?", purged);
+        expect(201, startWithContentId(alice, file.length, ContentId.of(new ByteArrayInputStream(random(20_000, 10))), ""));
+        expect(201, startWithContentId(alice, file.length, contentId.toUpperCase(), ""));
+        expect(201, startWithContentId(alice, file.length, "nonsense", ""));
+        expect(201, startWithContentId(alice, file.length + 1, contentId, ""));
+        sql("UPDATE items SET source = 'youtube', youtube_id = 'dQw4w9WgXcQ' WHERE id = ?", purged);
+        expect(201, startWithContentId(alice, file.length, contentId, ""));
+        sql("UPDATE items SET source = 'upload', youtube_id = NULL WHERE id = ?", purged);
+        expect(200, startWithContentId(alice, file.length, contentId, ""));
+        uploads.precheck(false);
+        expect(201, startWithContentId(alice, file.length, contentId, ""));
+        assertNull(libraryVia(bobId, purged));
+        // a wrong claim only means no shortcut: the bytes are hashed on completion as always
+        uploads.precheck(true);
+        expect(400, json(alice, "POST", "/api/uploads", "{\"filename\":\"x.mp3\",\"size\":0,\"contentId\":\""
+                + contentId + "\"}"));
+        // the usual checks still come first
+        expect(401, startWithContentId(null, file.length, contentId, ""));
+    }
+
+    private void sql(String sql, String... args) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < args.length; i++) {
+                    ps.setString(i + 1, args[i]);
+                }
+                ps.executeUpdate();
+            }
+            return null;
+        });
     }
 
     /** Two uploads of the same new file completed at once make one item. */

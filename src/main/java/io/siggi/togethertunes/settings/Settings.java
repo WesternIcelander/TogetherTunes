@@ -147,6 +147,15 @@ public final class Settings {
     /** Every setting, in documentation order, by name. */
     public static final Map<String, SettingKey<?>> KEYS;
 
+    /**
+     * Uploads need library requests ({@code docs/auth.md#server-settings}): an upload switch (key)
+     * is only on while its library-request switch (value) is. The admin API makes the companion
+     * change when a patch would break this; {@link #all()} and {@link #guestsCanUpload()} read a
+     * stored state that breaks it as upload off.
+     */
+    public static final Map<SettingKey<Boolean>, SettingKey<Boolean>> COUPLED =
+            Map.of(GUESTS_CAN_UPLOAD, GUESTS_CAN_REQUEST_LIBRARY);
+
     static {
         Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
         for (SettingKey<?> k : List.of(REGISTRATION_MODE,
@@ -293,6 +302,11 @@ public final class Settings {
             String json = stored.get(k.name());
             out.put(k, json == null ? defaults.get(k) : parseStored(k, json));
         }
+        for (Map.Entry<SettingKey<Boolean>, SettingKey<Boolean>> c : COUPLED.entrySet()) {
+            if (Boolean.TRUE.equals(out.get(c.getKey())) && !Boolean.TRUE.equals(out.get(c.getValue()))) {
+                out.put(c.getKey(), false); // stored state breaking the rule reads as upload off
+            }
+        }
         return Collections.unmodifiableMap(out);
     }
 
@@ -375,8 +389,13 @@ public final class Settings {
         return get(GUESTS_CAN_REQUEST_LIBRARY);
     }
 
+    /**
+     * The server half of {@code guests.canUpload}: only ever on while
+     * {@code guests.canRequestLibrary} is (uploads need library requests, {@link #COUPLED}); a
+     * stored state breaking that reads as off.
+     */
     public boolean guestsCanUpload() throws SQLException {
-        return get(GUESTS_CAN_UPLOAD);
+        return get(GUESTS_CAN_UPLOAD) && get(GUESTS_CAN_REQUEST_LIBRARY);
     }
 
     public boolean guestsCanYoutube() throws SQLException {

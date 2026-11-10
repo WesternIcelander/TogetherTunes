@@ -486,13 +486,24 @@ class RoomsApiTest {
                 .getAsJsonObject().get("id").getAsString());
         expectError(400, "unknown_setting", call(alice, "PATCH", "/api/rooms/" + slug,
                 "{\"settings\":{\"requestScope\":\"none\"}}"));
-        assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"libraryRequests\":false}}")
-                .statusCode());
+        // uploads need library requests: turning those off turns uploads off too, and the response says so
+        JsonObject off = json(call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"libraryRequests\":false}}"));
+        assertEquals("[\"uploadRequests\"]", off.get("adjusted").toString());
+        assertFalse(off.getAsJsonObject("settings").get("uploadRequests").getAsBoolean());
         expectError(403, "library_requests_off", call(bob, "GET", path, null));
         expectError(403, "library_requests_off", call(null, "GET", path + "?all=1", null));
         assertEquals(1, json(call(alice, "GET", path, null)).getAsJsonArray("items").size());
         assertEquals(200, call(alice, "PATCH", "/api/rooms/" + slug,
                 "{\"settings\":{\"libraryRequests\":null,\"guests\":{\"canRequestLibrary\":false}}}").statusCode());
+        // turning uploads on while library requests are off turns them on too
+        call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"libraryRequests\":false}}");
+        JsonObject on = json(call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"uploadRequests\":true}}"));
+        assertEquals("[\"libraryRequests\"]", on.get("adjusted").toString());
+        assertTrue(on.getAsJsonObject("settings").get("libraryRequests").getAsBoolean());
+        assertFalse(json(call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"gapMs\":0}}")).has("adjusted"));
+        call(alice, "PATCH", "/api/rooms/" + slug, "{\"settings\":{\"uploadRequests\":false}}");
+        expectError(400, "invalid_setting", call(alice, "PATCH", "/api/rooms/" + slug,
+                "{\"settings\":{\"libraryRequests\":false,\"uploadRequests\":true}}"));
         expectError(403, "guest_library_requests_disabled", call(null, "GET", path, null));
         assertEquals(200, call(bob, "GET", path, null).statusCode());
     }

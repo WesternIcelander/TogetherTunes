@@ -75,6 +75,7 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
         bar.value = p.size > 0 ? p.sentBytes / p.size : 1;
         const amount = formatBytes(p.sentBytes) + " of " + formatBytes(p.size);
         switch (p.state) {
+          case "checking": text.textContent = "Checking the file… " + Math.floor((p.checked ?? 0) * 100) + " %"; break;
           case "starting": text.textContent = "Starting…"; break;
           case "uploading": text.textContent = "Uploading " + amount; break;
           case "retrying": text.textContent = amount + ". " + (p.error ?? ""); break;
@@ -84,7 +85,7 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
           case "done": break;
         }
         if (p.state !== "failed") text.className = "muted small";
-        pauseButton.hidden = !(p.state === "uploading" || p.state === "retrying" || p.state === "starting");
+        pauseButton.hidden = !(p.state === "uploading" || p.state === "retrying" || p.state === "starting" || p.state === "checking");
         resumeButton.hidden = !(p.state === "paused" || (p.state === "failed" && p.error !== "Cancelled"));
         resumeButton.textContent = p.state === "failed" ? "Retry" : "Resume";
         cancelButton.hidden = p.state === "done" || p.state === "processing" || (p.state === "failed" && p.error === "Cancelled");

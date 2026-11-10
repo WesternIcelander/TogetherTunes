@@ -37,7 +37,9 @@ import java.util.Set;
  *       "settings"?}} → the room; the owner only. {@code settings} is a merge patch of the room
  *       settings ({@link RoomSettings}: nested objects change only what they name, {@code null}
  *       resets to the default); {@code 400 invalid_settings} (not an object), {@code
- *       unknown_setting}, {@code invalid_setting}. {@code 409 slug_taken}.</li>
+ *       unknown_setting}, {@code invalid_setting}. {@code 409 slug_taken}. Uploads need library
+ *       requests ({@link RoomSettings#patchAdjusting}): a patch that would break that makes the
+ *       companion change and the response lists it, e.g. {@code "adjusted": ["libraryRequests"]}.</li>
  *   <li>{@code DELETE /api/rooms/{room}} → {@code 204}; the owner, or {@code rooms.moderateAny}.</li>
  *   <li>{@code GET /api/rooms/{room}/members?cursor=&limit=} → {@code {"items": [member],
  *       "nextCursor"?}}; owner and moderators.</li>
@@ -301,13 +303,18 @@ public final class RoomsApi {
                 controlMode(body.get("controlMode")), settings);
         String id = roomId(request);
         // Through the room's executor, so the live state changes in step with the row.
-        Rooms.RoomView room = registry.call(id, tx -> {
-            Rooms.RoomView v = rooms.update(user, id, edit, request.clientIp());
+        Rooms.Updated updated = registry.call(id, tx -> {
+            Rooms.Updated v = rooms.updateAdjusting(user, id, edit, request.clientIp());
             syncRecord(tx);
             return v;
         });
         response.header("Cache-Control", "no-store");
-        response.json(room);
+        // adjusted: settings changed on top of the patch (uploads need library requests)
+        JsonObject out = io.siggi.togethertunes.http.Json.GSON.toJsonTree(updated.view()).getAsJsonObject();
+        if (!updated.adjusted().isEmpty()) {
+            out.add("adjusted", io.siggi.togethertunes.http.Json.GSON.toJsonTree(updated.adjusted()));
+        }
+        response.json(out);
     }
 
     private void delete(Request request, Response response) throws Exception {

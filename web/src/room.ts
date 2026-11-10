@@ -884,6 +884,7 @@ function uploadPanel(): HTMLElement {
       bar.value = p.size > 0 ? p.sentBytes / p.size : 1;
       text.className = p.state === "failed" ? "error small" : "muted small";
       switch (p.state) {
+        case "checking": text.textContent = "Checking the file… " + Math.floor((p.checked ?? 0) * 100) + " %"; break;
         case "starting": text.textContent = "Starting…"; break;
         case "uploading": text.textContent = "Uploading " + formatBytes(p.sentBytes) + " of " + formatBytes(p.size); break;
         case "retrying": text.textContent = p.error ?? "Retrying"; break;

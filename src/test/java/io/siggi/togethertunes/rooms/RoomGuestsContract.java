@@ -266,6 +266,39 @@ abstract class RoomGuestsContract {
         assertEquals("room_not_found", refused(() -> policy.requireYoutube(ipGuest, roomId)).code());
     }
 
+    /**
+     * Uploads need library requests: no mix of server and room switches lets a guest upload where
+     * library requests are off, and the room's {@code uploadRequests} off refuses guest uploads.
+     */
+    @Test
+    void guestUploadsNeedLibraryRequests() throws Exception {
+        AddMediaPolicy policy = new AddMediaPolicy(permissions, settings, guests);
+        settings.setJson("guests.canUpload", "true");
+        roomSettings("{\"guests\":{\"canUpload\":true}}");
+        policy.requireUpload(guest, roomId);
+        assertTrue(guests.capabilities(guest, roomSettings()).canUpload());
+        // a stored server state breaking the rule (the admin API never writes one) reads as upload off
+        settings.setJson("guests.canRequestLibrary", "false");
+        assertFalse(settings.guestsCanUpload());
+        assertEquals(new RoomGuests.Capabilities(true, false, false, false), guests.capabilities(guest, roomSettings()));
+        assertEquals("guest_uploads_disabled", refused(() -> policy.requireUpload(guest, roomId)).code());
+        settings.setJson("guests.canRequestLibrary", "true");
+        // the room: turning guest library requests off turns guest uploads off too
+        roomSettings("{\"guests\":{\"canRequestLibrary\":false}}");
+        assertFalse(roomSettings().guestsCanUpload());
+        assertEquals("guest_uploads_disabled", refused(() -> policy.requireUpload(guest, roomId)).code());
+        roomSettings("{\"guests\":{\"canUpload\":true}}");
+        assertTrue(roomSettings().guestsCanRequestLibrary(), "turned back on with it");
+        policy.requireUpload(guest, roomId);
+        // the room's uploadRequests off (or libraryRequests off, which turns it off) refuses guest uploads
+        roomSettings("{\"uploadRequests\":false}");
+        assertEquals("upload_requests_off", refused(() -> policy.requireUpload(guest, roomId)).code());
+        roomSettings("{\"uploadRequests\":true}");
+        policy.requireUpload(guest, roomId);
+        roomSettings("{\"libraryRequests\":false}");
+        assertEquals("upload_requests_off", refused(() -> policy.requireUpload(guest, roomId)).code());
+    }
+
     @Test
     void banLifecycle() throws Exception {
         call(tx -> {

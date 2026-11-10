@@ -13,7 +13,7 @@ import { navigate, pageSignal, reloadPage } from "./nav.js";
 import { button, formatTime, h } from "./dom.js";
 import { type Page } from "./media.js";
 import {
-  assignableRoles, buildPatch, canManageMember, describeDefault, getPath, GROUPS, parseInput, serverCapNote,
+  adjustedNotice, assignableRoles, buildPatch, canManageMember, coupledChange, describeDefault, getPath, GROUPS, parseInput, serverCapNote,
   serverDisabledReason,
   SETTINGS, thresholdToPercent, type ServerSwitches, type SettingDef,
 } from "./roomsettings.js";
@@ -163,6 +163,7 @@ function renderSettings(): void {
       const cap = reason === null ? serverCapNote(def.key, getPath(room.settings, def.key), switches) : null;
       const input = settingInput(def, getPath(room.settings, def.key), readOnly || reason !== null);
       inputs.set(def.key, input);
+      if (def.kind === "bool") input.addEventListener("change", () => { coupleInputs(def.key); });
       const label = h("label", { for: input.id, text: def.label });
       const row = h("div", { class: "setting" + (reason !== null ? " server-disabled" : "") },
         label, input,
@@ -177,6 +178,25 @@ function renderSettings(): void {
   }
   element("room-delete").hidden = !room.you.canDelete;
   form.hidden = false;
+}
+
+/**
+ * Uploads need library requests: after a switch changed, flips its companion in the form (unless
+ * greyed out: the server adjusts those) and says so.
+ */
+function coupleInputs(key: string): void {
+  const input = inputs.get(key);
+  if (!(input instanceof HTMLInputElement)) return;
+  const change = coupledChange(key, input.checked, (k) => {
+    const other = inputs.get(k);
+    return other instanceof HTMLInputElement ? other.checked : getPath(room.settings, k);
+  });
+  if (change === null) return;
+  const other = inputs.get(change.key);
+  if (other instanceof HTMLInputElement && !other.disabled) {
+    other.checked = change.value;
+    element("settings-saved").textContent = change.notice;
+  }
 }
 
 /** The changes in the settings form: the room fields and the settings merge patch. */
@@ -227,11 +247,12 @@ function setUpSettings(): void {
     }
     const save = element<HTMLButtonElement>("settings-save");
     save.disabled = true;
-    api<RoomView>("PATCH", roomPath(), body).then((updated) => {
+    api<RoomView & { adjusted?: string[] }>("PATCH", roomPath(), body).then((updated) => {
+      const notice = adjustedNotice(updated.adjusted, (k) => getPath(updated.settings, k));
       room = updated;
       renderHeader();
       renderSettings();
-      saved.textContent = "Saved.";
+      saved.textContent = notice === null ? "Saved." : "Saved. " + notice;
     }).catch((e: unknown) => {
       error.textContent = message(e);
     }).finally(() => { save.disabled = false; });

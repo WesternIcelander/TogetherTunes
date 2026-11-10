@@ -4,6 +4,7 @@
 import { api, ApiError } from "./api.js";
 import { mountJobs, type JobsView } from "./jobs.js";
 import { pageSignal } from "./nav.js";
+import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
 
@@ -446,9 +447,12 @@ function settingRow(s: Setting): HTMLElement {
   const name = "s:" + s.key;
   let input: HTMLElement;
   switch (s.type) {
-    case "boolean":
-      input = h("input", { type: "checkbox", name, checked: s.value === true });
+    case "boolean": {
+      const box = h("input", { type: "checkbox", name, checked: s.value === true });
+      box.addEventListener("change", () => { coupleServerSwitch(s.key, box.checked); });
+      input = box;
       break;
+    }
     case "integer":
       input = h("input", { type: "number", name, step: "1", value: String(s.value ?? ""),
         placeholder: UNSET_TEXT[s.key] ?? "" });
@@ -483,14 +487,40 @@ function settingRow(s: Setting): HTMLElement {
     const error = element("settings-form").querySelector<HTMLElement>(".error");
     void run(error, reset, async () => {
       if (!(await confirmEncodingChange({ [s.key]: s.default === undefined ? null : s.default }))) return;
-      loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", { [s.key]: null })).items;
-      status(`Reset ${s.key}.`);
+      const r = await api<SettingsResponse>("PATCH", "/api/admin/settings", { [s.key]: null });
+      loadedSettings = r.items;
+      status(`Reset ${s.key}.` + savedNotice(r));
       renderSettings();
       await loadStorage();
     });
   });
   return h("div", { class: "setting" }, h("span", { text: s.key }), input, reset,
     h("span", { class: "muted", text: "default: " + describe(s.default, s.type, s.key) }));
+}
+
+/** `PATCH /api/admin/settings`: the settings, and those changed on top of the patch (uploads need library requests). */
+interface SettingsResponse { items: Setting[]; adjusted?: string[] }
+
+/** " " + the notice for the settings the server adjusted, or "". */
+function savedNotice(r: SettingsResponse): string {
+  const notice = adjustedNotice(r.adjusted, (k) => r.items.find((x) => x.key === k)?.value, (k) => k);
+  return notice === null ? "" : " " + notice;
+}
+
+/**
+ * Uploads need library requests (guests.canUpload needs guests.canRequestLibrary): after a switch
+ * changed in the form, flips its companion and says so.
+ */
+function coupleServerSwitch(key: string, value: boolean): void {
+  const form = element<HTMLFormElement>("settings-form");
+  const box = (k: string): HTMLInputElement | null => form.querySelector<HTMLInputElement>(
+    "input[type=checkbox][name=\"s:" + k + "\"]");
+  const change = coupledChange(key, value, (k) => box(k)?.checked, (k) => k);
+  if (change === null) return;
+  const other = box(change.key);
+  if (other === null) return;
+  other.checked = change.value;
+  status(change.notice);
 }
 
 /** The settings whose form value differs from the loaded one, as a PATCH body. */
@@ -579,8 +609,9 @@ function setUpSettings(): void {
     }
     void run(form.querySelector(".error"), form, async () => {
       if (!(await confirmEncodingChange(changes))) return;
-      loadedSettings = (await api<{ items: Setting[] }>("PATCH", "/api/admin/settings", changes)).items;
-      status("Saved " + Object.keys(changes).join(", ") + ".");
+      const r = await api<SettingsResponse>("PATCH", "/api/admin/settings", changes);
+      loadedSettings = r.items;
+      status("Saved " + Object.keys(changes).join(", ") + "." + savedNotice(r));
       renderSettings();
       await loadStorage();
     });

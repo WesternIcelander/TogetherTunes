@@ -30,7 +30,9 @@ export const GROUPS: Array<[string, string]> = [
 /** Every room setting, in the order the view shows them. */
 export const SETTINGS: SettingDef[] = [
   { key: "libraryRequests", label: "Allow library requests", kind: "bool", group: "requests", default: true,
-    help: "Off: only you and moderators can search libraries and request items from them. YouTube links and uploads still work." },
+    help: "Off: only you and moderators can search libraries and request items from them. YouTube links still work; uploads need library requests, so they turn off too." },
+  { key: "uploadRequests", label: "Allow uploads as requests", kind: "bool", group: "requests", default: true,
+    help: "Off: only you and moderators can request by uploading a file. Needs library requests on." },
   { key: "requestsPerActor", label: "Waiting requests per person", kind: "int", group: "requests", default: 3,
     min: 1, max: 1000 },
   { key: "noRepeatWindow", label: "No repeat within the last N items (0 = off)", kind: "int", group: "requests",
@@ -66,6 +68,54 @@ export const SETTINGS: SettingDef[] = [
   { key: "estimatedDelayMs.hls", label: "Estimated HLS delay (ms)", kind: "int", group: "outputs", default: 8000,
     min: 0, max: 120000 },
 ];
+
+/**
+ * Uploads need library requests (docs/rooms.md#uploads-need-library-requests): [upload switch,
+ * the library-request switch it needs]. The same pairs hold for the server's guest settings.
+ */
+export const COUPLED: Array<[string, string]> = [
+  ["uploadRequests", "libraryRequests"],
+  ["guests.canUpload", "guests.canRequestLibrary"],
+];
+
+/** A change made on top of the user's to keep uploads coupled, with the notice to show. */
+export interface CoupledChange { key: string; value: boolean; notice: string }
+
+/**
+ * After a switch `key` was set to `value` in a form (labels from `labelOf`), the companion change
+ * that keeps uploads coupled to library requests, or null: turning an upload switch on while its
+ * library switch is off turns that on; turning a library switch off while its upload switch is
+ * on turns that off. `current` reads the form's value of a switch.
+ */
+export function coupledChange(key: string, value: boolean, current: (key: string) => unknown,
+  labelOf: (key: string) => string = settingLabel): CoupledChange | null {
+  for (const [upload, library] of COUPLED) {
+    if (key === upload && value && current(library) !== true) {
+      return { key: library, value: true, notice: couplingNotice(library, true, labelOf) };
+    }
+    if (key === library && !value && current(upload) === true) {
+      return { key: upload, value: false, notice: couplingNotice(upload, false, labelOf) };
+    }
+  }
+  return null;
+}
+
+/** The notice for the settings the server changed on top of a patch (`adjusted` of the response). */
+export function adjustedNotice(adjusted: unknown, after: (key: string) => unknown,
+  labelOf: (key: string) => string = settingLabel): string | null {
+  if (!Array.isArray(adjusted) || adjusted.length === 0) return null;
+  return adjusted.filter((k): k is string => typeof k === "string")
+    .map((k) => couplingNotice(k, after(k) === true, labelOf)).join(" ");
+}
+
+function couplingNotice(key: string, on: boolean, labelOf: (key: string) => string): string {
+  return "Uploads need library requests: turned \"" + labelOf(key) + "\" " + (on ? "on" : "off") + " too.";
+}
+
+function settingLabel(key: string): string {
+  const def = SETTINGS.find((d) => d.key === key);
+  return def === undefined ? key : def.label;
+}
 
 /** `GET /api/rooms/{id}/server-switches`. */
 export interface ServerSwitches {

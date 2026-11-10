@@ -28,6 +28,7 @@ import java.util.function.Function;
  * <table>
  *   <caption>Room settings</caption>
  *   <tr><td>{@code libraryRequests}</td><td>true</td><td>off: only the owner and moderators may search libraries and request items by id</td></tr>
+ *   <tr><td>{@code uploadRequests}</td><td>true</td><td>off: only the owner and moderators may request by upload; on needs {@code libraryRequests} on</td></tr>
  *   <tr><td>{@code requestsPerActor}</td><td>3</td><td>1..{@value ControlSettings#MAX_REQUESTS_PER_ACTOR}</td></tr>
  *   <tr><td>{@code allowDownvotes}</td><td>false</td><td></td></tr>
  *   <tr><td>{@code voteSkipThreshold}</td><td>0.5</td><td>a number in (0, 1], or {@code "off"}</td></tr>
@@ -49,6 +50,13 @@ import java.util.function.Function;
  * <p>Whether an output exists and is on is not a setting: that is the {@code stream_outputs} row
  * and its {@code enabled} flag ({@code /api/rooms/{id}/outputs}), so there is one source of truth.
  *
+ * <p><b>Uploads need library requests</b> ({@code docs/rooms.md#uploads-need-library-requests}): with
+ * the upload pre-check, holding a file's content ID is enough to get its item, so an upload could
+ * stand in for a library request. Hence {@code uploadRequests} on needs {@code libraryRequests} on,
+ * and {@code guests.canUpload} on needs {@code guests.canRequestLibrary} on ({@link #COUPLED}). A
+ * patch that would break this makes the companion change ({@link #patchAdjusting}); settings that
+ * break it anyway (older rows) are read with the upload switch off.
+ *
  * <p>{@link #parse} reads stored JSON leniently (anything unknown or invalid falls back to the
  * default); {@link #patch} validates a change from a client strictly.
  */
@@ -62,6 +70,14 @@ public final class RoomSettings {
     public static final int DEFAULT_IDLE_STOP_MINUTES = 10;
     public static final int MAX_IDLE_STOP_MINUTES = 1440;
 
+    /**
+     * Upload switch → the library-request switch it needs: an upload switch is only on while its
+     * companion is.
+     */
+    public static final Map<String, String> COUPLED = Map.of(
+            "uploadRequests", "libraryRequests",
+            "guests.canUpload", "guests.canRequestLibrary");
+
     // ------------------------------------------------------------------ definitions
 
     /** One setting: its dotted name, default, and how a JSON value is checked. */
@@ -74,6 +90,7 @@ public final class RoomSettings {
 
     static {
         def("libraryRequests", true, RoomSettings::bool);
+        def("uploadRequests", true, RoomSettings::bool);
         def("requestsPerActor", ControlSettings.DEFAULT_REQUESTS_PER_ACTOR,
                 whole(1, ControlSettings.MAX_REQUESTS_PER_ACTOR));
         def("allowDownvotes", false, RoomSettings::bool);
@@ -204,6 +221,11 @@ public final class RoomSettings {
     private final ControlSettings control;
 
     private RoomSettings(Map<String, Object> values) {
+        for (Map.Entry<String, String> c : COUPLED.entrySet()) {
+            if (Boolean.TRUE.equals(values.get(c.getKey())) && !Boolean.TRUE.equals(values.get(c.getValue()))) {
+                values.put(c.getKey(), false); // stored state breaking the rule: read as upload off
+            }
+        }
         this.values = Collections.unmodifiableMap(values);
         Object threshold = values.get("voteSkipThreshold");
         this.control = new ControlSettings((Boolean) values.get("allowDownvotes"),
@@ -239,10 +261,52 @@ public final class RoomSettings {
      *                   invalid_setting} (a value out of range or of the wrong type)
      */
     public RoomSettings patch(JsonObject change) {
+        return patchAdjusting(change).settings();
+    }
+
+    /**
+     * {@link #patchAdjusting}'s result.
+     *
+     * @param adjusted the settings changed on top of the patch to keep uploads coupled to library
+     *                 requests ({@link #COUPLED}), dotted names; empty if none
+     */
+    public record Patched(RoomSettings settings, List<String> adjusted) {
+    }
+
+    /**
+     * {@link #patch}, reporting the companion changes it made: turning an upload switch on while
+     * its library-request switch is off turns that on too; turning a library-request switch off
+     * while its upload switch is on turns that off too.
+     *
+     * @throws HttpError as {@link #patch}; {@code 400 invalid_setting} for a patch that turns an
+     *                   upload switch on and its library-request switch off at once
+     */
+    public Patched patchAdjusting(JsonObject change) {
         Objects.requireNonNull(change);
         Map<String, Object> next = new LinkedHashMap<>(values);
         apply(next, "", change, true);
-        return new RoomSettings(next);
+        List<String> adjusted = new java.util.ArrayList<>();
+        for (String upload : List.of("uploadRequests", "guests.canUpload")) {
+            String library = COUPLED.get(upload);
+            if (!(Boolean) next.get(upload) || (Boolean) next.get(library)) {
+                continue;
+            }
+            // These settings keep the rule, so the patch turned the upload switch on, the library one off, or both.
+            boolean uploadTurnedOn = !(Boolean) values.get(upload);
+            boolean libraryTurnedOff = (Boolean) values.get(library);
+            if (uploadTurnedOn && libraryTurnedOff) {
+                throw new HttpError(400, "invalid_setting", upload + ": uploads need " + library
+                        + " on; it can't be turned off at the same time");
+            }
+            if (uploadTurnedOn) {
+                next.put(library, true);
+                adjusted.add(library);
+            } else {
+                next.put(upload, false);
+                adjusted.add(upload);
+            }
+        }
+        return new Patched(new RoomSettings(next), List.copyOf(adjusted));
     }
 
     private static void apply(Map<String, Object> values, String prefix, JsonObject o, boolean strict) {
@@ -337,10 +401,19 @@ public final class RoomSettings {
 
     /**
      * {@code libraryRequests}: whether people other than the owner and moderators may search
-     * libraries and request items by id (YouTube links and uploads are unaffected).
+     * libraries and request items by id (YouTube links are unaffected; off also means
+     * {@link #uploadRequests()} off).
      */
     public boolean libraryRequests() {
         return (Boolean) values.get("libraryRequests");
+    }
+
+    /**
+     * {@code uploadRequests}: whether people other than the owner and moderators may request by
+     * upload. Only ever on while {@link #libraryRequests()} is.
+     */
+    public boolean uploadRequests() {
+        return (Boolean) values.get("uploadRequests");
     }
 
     public boolean transitionCard() {
@@ -361,7 +434,7 @@ public final class RoomSettings {
         return (Boolean) values.get("guests.canRequestLibrary");
     }
 
-    /** The room half of {@code guests.canUpload}. */
+    /** The room half of {@code guests.canUpload} (only ever on while {@code guests.canRequestLibrary} is). */
     public boolean guestsCanUpload() {
         return (Boolean) values.get("guests.canUpload");
     }

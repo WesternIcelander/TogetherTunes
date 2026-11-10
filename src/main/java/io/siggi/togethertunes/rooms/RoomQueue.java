@@ -95,6 +95,8 @@ public final class RoomQueue {
      *                   for a guest the effective guest capability) and {@link QueueOps#add};
      *                   by item id or history entry, outside the owner and moderators,
      *                   {@code 403 library_requests_off} (room setting {@code libraryRequests} off);
+     *                   by upload, outside the owner and moderators, {@code 403 upload_requests_off}
+     *                   (room setting {@code uploadRequests} off);
      *                   for an upload {@code 404 upload_not_found} (not the actor's) and
      *                   {@code 409 upload_incomplete}; for a YouTube link (or a purged/failed
      *                   YouTube item) the import's errors and {@link AddMediaPolicy#requireYoutube}
@@ -121,6 +123,8 @@ public final class RoomQueue {
             QueueOps.checkAdd(tx.state(), a);
             if (byId) {
                 requireLibraryRequests(tx.state().settings(), a);
+            } else if (source.uploadId() != null) {
+                requireUploadRequests(tx.state().settings(), a);
             }
             return null;
         });
@@ -294,6 +298,22 @@ public final class RoomQueue {
         if (!settings.libraryRequests() && !a.moderates()) {
             throw new HttpError(403, "library_requests_off", "This room doesn't take requests from libraries");
         }
+    }
+
+    /**
+     * The room setting {@code uploadRequests} (only on while {@code libraryRequests} is): when
+     * off, only the owner and moderators request by upload.
+     *
+     * @throws HttpError {@code 403 upload_requests_off}
+     */
+    static void requireUploadRequests(RoomSettings settings, RoomActor a) {
+        if (!settings.uploadRequests() && !a.moderates()) {
+            throw uploadRequestsOff();
+        }
+    }
+
+    static HttpError uploadRequestsOff() {
+        return new HttpError(403, "upload_requests_off", "This room doesn't take uploads as requests");
     }
 
     private void refetchIfNeeded(String roomId, Actor actor, String itemId) throws Exception {

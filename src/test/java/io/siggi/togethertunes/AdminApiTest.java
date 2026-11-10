@@ -562,6 +562,36 @@ class AdminApiTest {
         assertEquals("720p30-3000k-v2", settings.outputEncoding().id());
     }
 
+    /** Uploads need library requests: guests.canUpload on needs guests.canRequestLibrary on. */
+    @Test
+    void guestUploadsNeedGuestLibraryRequests() throws Exception {
+        // turning uploads on while library requests are off turns them on too
+        call(200, "PATCH", "/api/admin/settings", "{\"guests.canRequestLibrary\":false}", admin);
+        JsonObject on = call(200, "PATCH", "/api/admin/settings", "{\"guests.canUpload\":true}", admin);
+        assertEquals("[\"guests.canRequestLibrary\"]", on.get("adjusted").toString());
+        assertTrue(find(on.getAsJsonArray("items"), "guests.canRequestLibrary").get("value").getAsBoolean());
+        assertTrue(settings.guestsCanUpload());
+        assertTrue(settings.guestsCanRequestLibrary());
+        // turning library requests off while uploads are on turns those off too (also by a reset to a default of off)
+        JsonObject off = call(200, "PATCH", "/api/admin/settings", "{\"guests.canRequestLibrary\":false}", admin);
+        assertEquals("[\"guests.canUpload\"]", off.get("adjusted").toString());
+        assertFalse(settings.guestsCanUpload());
+        assertFalse(settings.get(Settings.GUESTS_CAN_UPLOAD), "stored off, not just read as off");
+        // no adjustment needed: no "adjusted"
+        assertFalse(call(200, "PATCH", "/api/admin/settings", "{\"guests.canRequestLibrary\":true}", admin)
+                .has("adjusted"));
+        // both the wrong way at once
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"guests.canUpload\":true,\"guests.canRequestLibrary\":false}", admin));
+        assertFalse(settings.guestsCanUpload(), "nothing changed");
+        // a stored state breaking the rule (older rows) is shown and read as upload off
+        settings.set(Settings.GUESTS_CAN_UPLOAD, true);
+        settings.set(Settings.GUESTS_CAN_REQUEST_LIBRARY, false);
+        assertFalse(settings.guestsCanUpload());
+        assertFalse(find(call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items"),
+                "guests.canUpload").get("value").getAsBoolean());
+    }
+
     @Test
     void serverSettings() throws Exception {
         JsonObject all = call(200, "GET", "/api/admin/settings", null, admin);

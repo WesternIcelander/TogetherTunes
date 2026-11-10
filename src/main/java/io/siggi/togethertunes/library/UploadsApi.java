@@ -15,8 +15,12 @@ import java.util.Objects;
  * The upload endpoints ({@code docs/api.md#adding-media}); the work is in {@link Uploads}.
  *
  * <ul>
- *   <li>{@code POST /api/uploads} {@code {filename, size, roomId?}} → {@code 201}
- *       {@code {uploadId, chunkSize, size}}. Errors: {@code 400 invalid_filename},
+ *   <li>{@code POST /api/uploads} {@code {filename, size, roomId?, contentId?, addToLibrary?}} →
+ *       {@code 201} {@code {uploadId, chunkSize, size}}; or, when the <b>pre-check</b> finds a
+ *       ready, pending or processing upload item with that {@code contentId} ({@link ContentId};
+ *       only on an {@code https} server, {@link Uploads#start}), {@code 200 {uploadId, chunkSize,
+ *       size, deduplicated: true, itemId, status}}: the upload is complete without any bytes
+ *       ({@code queue.add {uploadId}} takes it as usual). Errors: {@code 400 invalid_filename},
  *       {@code 400 invalid_size}, {@code 413 payload_too_large} (over {@code ingest.maxUploadBytes},
  *       or a guest's quota size), {@code 429 upload_quota_exceeded} (guests), and the
  *       {@link AddMediaPolicy} errors. A user's {@code roomId} gets {@code 404 room_not_found} until
@@ -42,7 +46,7 @@ public final class UploadsApi {
     private final AddMediaPolicy policy;
     private final Guests guests;
 
-    record CreateRequest(String filename, Long size, String roomId) {
+    record CreateRequest(String filename, Long size, String roomId, String contentId, Boolean addToLibrary) {
     }
 
     record CompleteRequest(String title, String artist, Boolean addToLibrary) {
@@ -86,11 +90,21 @@ public final class UploadsApi {
             uploads.guestQuota().check(guestId, request.clientIp(), body.size());
             actor = guests.requireIdentity(request, response);
         }
-        Uploads.Upload upload = uploads.create(actor, body.filename(), body.size(), roomId, request.clientIp());
+        Uploads.Started started = uploads.start(actor, body.filename(), body.size(), roomId, request.clientIp(),
+                body.contentId(), body.addToLibrary());
+        Uploads.Upload upload = started.upload();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("uploadId", upload.id());
         out.put("chunkSize", Uploads.CHUNK_SIZE);
         out.put("size", upload.size());
+        if (started.precheckHit()) {
+            // The pre-check found the item: no bytes needed, the upload is already complete.
+            out.put("deduplicated", true);
+            out.put("itemId", upload.itemId());
+            out.put("status", started.itemStatus());
+            response.json(200, out);
+            return;
+        }
         response.json(201, out);
     }
 

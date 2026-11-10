@@ -64,6 +64,7 @@ import io.siggi.togethertunes.output.ProgramPipeline;
 import io.siggi.togethertunes.output.TimeSource;
 import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
+import io.siggi.togethertunes.library.ContentIdBackfill;
 import io.siggi.togethertunes.library.Uploads;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryAddListener;
@@ -250,6 +251,8 @@ public final class Main {
         LibraryAddListener qualityOnLibraryAdd = itemId -> ingest.jobs().enqueueQualityIfNeeded(itemId);
         uploads.libraryAddListener(qualityOnLibraryAdd);
         uploads.diskSpace(diskSpace);
+        uploads.precheck(uploadPrecheck(config));
+        new ContentIdBackfill(database, dataDir).start();
         try {
             int swept = uploads.sweep();
             if (swept > 0) {
@@ -506,6 +509,15 @@ public final class Main {
             err.println("WARNING: " + problem);
         }
         return presets;
+    }
+
+    /**
+     * Whether the upload pre-check by content ID is on: only when {@code http.publicBaseUrl} is
+     * {@code https}, since browsers compute the ID with {@code crypto.subtle}, which needs a secure
+     * context (plain http isn't supported for it: no fallback hasher).
+     */
+    static boolean uploadPrecheck(Config config) {
+        return "https".equalsIgnoreCase(config.publicBaseUri().getScheme());
     }
 
     /**

@@ -2,6 +2,7 @@ package io.siggi.togethertunes.rooms;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -310,14 +311,32 @@ abstract class QueueOpsContract {
         // a YouTube link already on the server still works: they knew the link
         assertEquals(yt, queue.add(roomId, bobActor, bob, RoomQueue.Source.youtube("https://youtu.be/dQw4w9WgXcQ"))
                 .itemId());
-        // an upload that is an existing item still works: they had the file
+        // uploads need library requests: off with them (the pre-check would let a content ID stand in for one)
         String done = UuidV7.newId();
         sql("INSERT INTO uploads (id, user_id, filename, size, created_at, updated_at, item_id)"
                 + " VALUES (?, ?, 'a.mp3', 10, 1, 1, ?)", done, bobId, owners);
-        assertEquals(owners, queue.add(roomId, bobActor, bob, RoomQueue.Source.upload(done)).itemId());
+        assertEquals("upload_requests_off", refused(() -> queue.add(roomId, bobActor, bob, RoomQueue.Source.upload(done))));
         // owner and moderators are unaffected
         add(owner, ready());
         add(RoomActor.user(carolId, Rooms.Role.MODERATOR), ready());
+    }
+
+    /** {@code uploadRequests} off: only the owner and moderators request by upload; library requests stay. */
+    @Test
+    void uploadRequestsOffRefusesUploadsFromOthers() throws Exception {
+        String item = ready();
+        settings("{\"uploadRequests\":false,\"requestsPerActor\":100}");
+        String bobs = UuidV7.newId();
+        sql("INSERT INTO uploads (id, user_id, filename, size, created_at, updated_at, item_id)"
+                + " VALUES (?, ?, 'a.mp3', 10, 1, 1, ?)", bobs, bobId, item);
+        assertEquals("upload_requests_off", refused(() -> queue.add(roomId, bobActor, bob, RoomQueue.Source.upload(bobs))));
+        add(bob, ready());
+        String carols = UuidV7.newId();
+        sql("INSERT INTO uploads (id, user_id, filename, size, created_at, updated_at, item_id)"
+                + " VALUES (?, ?, 'b.mp3', 10, 1, 1, ?)", carols, carolId, ready());
+        RoomActor moderator = RoomActor.user(carolId, Rooms.Role.MODERATOR);
+        assertNotNull(queue.add(roomId, new Actor.User(carolId, "s-carol", Actor.Via.BEARER), moderator,
+                RoomQueue.Source.upload(carols)).itemId(), "moderators unaffected");
     }
 
     @Test

@@ -22,7 +22,7 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "estimatedDelayMs.hls", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.rtmp.idleStopMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
-    "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard",
+    "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard", "uploadRequests",
     "voteSkipThreshold"]);
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
 });
@@ -165,4 +165,34 @@ test("member management follows the room roles", () => {
   assert.equal(S.canManageMember("moderator", me, { id: "u2", role: "owner" }), false);
   assert.equal(S.canManageMember("moderator", me, { id: me, role: "moderator" }), false);
   assert.equal(S.canManageMember("member", me, { id: "u2", role: "member" }), false);
+});
+
+test("uploads need library requests: the companion change in the form, with a notice", () => {
+  const form = { libraryRequests: false, uploadRequests: false, "guests.canRequestLibrary": true, "guests.canUpload": true };
+  const get = (k) => form[k];
+  let c = S.coupledChange("uploadRequests", true, get);
+  assert.deepEqual([c.key, c.value], ["libraryRequests", true]);
+  assert.match(c.notice, /^Uploads need library requests: turned "Allow library requests" on too\.$/);
+  c = S.coupledChange("guests.canRequestLibrary", false, get);
+  assert.deepEqual([c.key, c.value], ["guests.canUpload", false]);
+  assert.match(c.notice, /turned "Guests can upload files" off too/);
+  // nothing to do: library on already, library turned on, upload turned off, other settings
+  assert.equal(S.coupledChange("uploadRequests", true, (k) => (k === "libraryRequests" ? true : undefined)), null);
+  assert.equal(S.coupledChange("libraryRequests", true, get), null);
+  assert.equal(S.coupledChange("guests.canUpload", false, get), null);
+  assert.equal(S.coupledChange("libraryRequests", false, get), null, "upload already off");
+  assert.equal(S.coupledChange("allowDownvotes", true, get), null);
+  // the admin page labels switches by key
+  assert.match(S.coupledChange("guests.canUpload", true, () => false, (k) => k).notice, /"guests.canRequestLibrary" on/);
+});
+
+test("the notice for settings the server adjusted", () => {
+  const after = { libraryRequests: true, uploadRequests: false };
+  assert.equal(S.adjustedNotice(undefined, (k) => after[k]), null);
+  assert.equal(S.adjustedNotice([], (k) => after[k]), null);
+  assert.equal(S.adjustedNotice(["libraryRequests"], (k) => after[k]),
+    "Uploads need library requests: turned \"Allow library requests\" on too.");
+  assert.equal(S.adjustedNotice(["uploadRequests"], (k) => after[k]),
+    "Uploads need library requests: turned \"Allow uploads as requests\" off too.");
+  assert.ok(S.SETTINGS.some((d) => d.key === "uploadRequests" && d.default === true && d.group === "requests"));
 });

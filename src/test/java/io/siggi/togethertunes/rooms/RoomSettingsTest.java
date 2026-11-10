@@ -27,6 +27,7 @@ class RoomSettingsTest {
     void defaultsMatchTheDocs() {
         RoomSettings d = RoomSettings.DEFAULTS;
         assertTrue(d.libraryRequests());
+        assertTrue(d.uploadRequests());
         assertEquals(ControlSettings.DEFAULTS, d.control());
         assertEquals(3, d.control().requestsPerActor());
         assertFalse(d.control().allowDownvotes());
@@ -58,14 +59,14 @@ class RoomSettingsTest {
     @Test
     void wireFormIsNestedAndComplete() {
         JsonObject j = RoomSettings.DEFAULTS.toJson();
-        assertEquals(obj("{\"libraryRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
+        assertEquals(obj("{\"libraryRequests\":true,\"uploadRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
                 + "\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
                 + "\"outputs\":{\"rtmp\":{\"idleStopMinutes\":10,\"playbackUrl\":\"\"},\"ts\":{\"join\":\"next\"}},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 21);
+        assertEquals(RoomSettings.keys().size(), 22);
     }
 
     @Test
@@ -95,7 +96,9 @@ class RoomSettingsTest {
         assertTrue(s.tsJoinLatest());
         assertNull(s.rtmpPlaybackUrl());
         // the removed requestScope is dropped like any unknown name
-        assertEquals(obj("{\"libraryRequests\":false,\"guests\":{\"canYoutube\":true},"
+        // uploadRequests (default on) reads as off while libraryRequests is off
+        assertFalse(s.uploadRequests());
+        assertEquals(obj("{\"libraryRequests\":false,\"uploadRequests\":false,\"guests\":{\"canYoutube\":true},"
                 + "\"outputs\":{\"ts\":{\"join\":\"latest\"}}}"), obj(s.toStoredJson()));
         assertEquals(s, RoomSettings.parse(s.toStoredJson()), "round trip");
     }
@@ -126,6 +129,54 @@ class RoomSettingsTest {
         assertEquals(RoomSettings.DEFAULTS, RoomSettings.DEFAULTS.patch(obj("{\"requestsPerActor\":3}")));
         assertEquals(1, RoomSettings.DEFAULTS.patch(obj("{\"voteSkipThreshold\":1}")).control().voteSkipThreshold());
         assertEquals(1000, RoomSettings.DEFAULTS.patch(obj("{\"requestsPerActor\":1000.0}")).control().requestsPerActor());
+    }
+
+    /** Uploads need library requests: the companion change on a patch, and older rows read as upload off. */
+    @Test
+    void uploadsNeedLibraryRequests() {
+        // turning library requests off turns uploads off too
+        RoomSettings.Patched p = RoomSettings.DEFAULTS.patchAdjusting(obj("{\"libraryRequests\":false}"));
+        assertFalse(p.settings().libraryRequests());
+        assertFalse(p.settings().uploadRequests());
+        assertEquals(List.of("uploadRequests"), p.adjusted());
+        // turning uploads on while library requests are off turns them on too
+        RoomSettings.Patched q = p.settings().patchAdjusting(obj("{\"uploadRequests\":true}"));
+        assertTrue(q.settings().libraryRequests());
+        assertTrue(q.settings().uploadRequests());
+        assertEquals(List.of("libraryRequests"), q.adjusted());
+        // turning library requests back on leaves uploads as they are
+        RoomSettings.Patched r = p.settings().patchAdjusting(obj("{\"libraryRequests\":true}"));
+        assertFalse(r.settings().uploadRequests());
+        assertEquals(List.of(), r.adjusted());
+        // both switches turned the wrong way at once
+        HttpError e = assertThrows(HttpError.class, () -> RoomSettings.DEFAULTS.patch(obj(
+                "{\"uploadRequests\":false}")).patchAdjusting(obj("{\"uploadRequests\":true,\"libraryRequests\":false}")));
+        assertEquals("invalid_setting", e.code());
+        // both in a consistent way: no adjustment
+        assertEquals(List.of(), RoomSettings.DEFAULTS.patchAdjusting(
+                obj("{\"uploadRequests\":false,\"libraryRequests\":false}")).adjusted());
+
+        // the same for the guest switches
+        RoomSettings g = RoomSettings.DEFAULTS.patch(obj("{\"guests\":{\"canRequestLibrary\":false}}"));
+        RoomSettings.Patched gp = g.patchAdjusting(obj("{\"guests\":{\"canUpload\":true}}"));
+        assertTrue(gp.settings().guestsCanUpload());
+        assertTrue(gp.settings().guestsCanRequestLibrary());
+        assertEquals(List.of("guests.canRequestLibrary"), gp.adjusted());
+        RoomSettings.Patched gq = gp.settings().patchAdjusting(obj("{\"guests\":{\"canRequestLibrary\":false}}"));
+        assertFalse(gq.settings().guestsCanUpload());
+        assertEquals(List.of("guests.canUpload"), gq.adjusted());
+        // a reset of the library switch counts like any change
+        RoomSettings.Patched both = RoomSettings.DEFAULTS.patch(obj("{\"guests\":{\"canUpload\":true}}"))
+                .patchAdjusting(obj("{\"libraryRequests\":false,\"guests\":null}"));
+        assertEquals(List.of("uploadRequests"), both.adjusted());
+        assertFalse(both.settings().guestsCanUpload(), "the group reset turned guest uploads back off");
+
+        // stored rows that break the rule read as upload off
+        RoomSettings old = RoomSettings.parse("{\"libraryRequests\":false,\"uploadRequests\":true,"
+                + "\"guests\":{\"canRequestLibrary\":false,\"canUpload\":true}}");
+        assertFalse(old.uploadRequests());
+        assertFalse(old.guestsCanUpload());
+        assertFalse(old.toJson().get("uploadRequests").getAsBoolean(), "clients see it off too");
     }
 
     @Test

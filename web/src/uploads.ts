@@ -6,13 +6,19 @@
 // server how much it already has (`GET /api/uploads/{id}`) and continues from there. Network
 // errors and server errors are retried with a growing delay; the server skips bytes it already
 // has, so a chunk that was sent twice does no harm.
+//
+// Pre-check (docs/library-and-ingest.md#pre-check): on an https server, a new upload first computes
+// the file's content ID (contentid.ts, crypto.subtle) and sends it with `POST /api/uploads`. If the
+// server already has the file, it answers 200 with `deduplicated: true` and the upload is complete
+// without sending any bytes.
 import { api, ApiError } from "./api.js";
+import { contentId, precheckAvailable } from "./contentid.js";
 
-interface Created { uploadId: string; chunkSize: number; size: number }
+interface Created { uploadId: string; chunkSize: number; size: number; deduplicated?: boolean; itemId?: string }
 interface Status { receivedBytes: number; size: number; itemId?: string }
 export interface Completed { itemId: string; deduplicated: boolean }
 
-export type UploadState = "starting" | "uploading" | "paused" | "retrying" | "processing" | "done" | "failed";
+export type UploadState = "checking" | "starting" | "uploading" | "paused" | "retrying" | "processing" | "done" | "failed";
 
 export interface UploadProgress {
   state: UploadState;
@@ -22,6 +28,8 @@ export interface UploadProgress {
   error?: string;
   /** Set once completed. */
   result?: Completed;
+  /** For "checking": the share of the file hashed so far (0..1). */
+  checked?: number;
 }
 
 const STORE_PREFIX = "tt.upload.";
@@ -120,6 +128,8 @@ export class Upload {
   #running = false;
   #cancelled = false;
   #onProgress: (p: UploadProgress) => void;
+  /** The file's content ID once computed; null if the pre-check isn't possible here. */
+  #contentId: string | null | undefined;
   /** Metadata for `complete`; the server reads tags and the file name when left out. */
   addToLibrary = true;
   /** The room this upload is a request in (`POST /api/uploads {roomId}`); needed for guests. */
@@ -235,10 +245,18 @@ export class Upload {
       }
     }
     if (this.#uploadId === undefined) {
+      const id = await this.#precheckId();
       this.#report("starting");
-      const created = await api<Created>("POST", "/api/uploads", 
-        this.roomId === undefined ? { filename: this.file.name, size } : { filename: this.file.name, size, roomId: this.roomId });
+      const body: Record<string, unknown> = { filename: this.file.name, size, addToLibrary: this.addToLibrary };
+      if (this.roomId !== undefined) body["roomId"] = this.roomId;
+      if (id !== null) body["contentId"] = id;
+      const created = await api<Created>("POST", "/api/uploads", body);
       this.#uploadId = created.uploadId;
+      if (created.deduplicated === true && created.itemId !== undefined) {
+        // The server already has this file: nothing to send.
+        this.#sent = size;
+        return { itemId: created.itemId, deduplicated: true };
+      }
       if (created.chunkSize > 0) this.#chunkSize = created.chunkSize;
       this.#sent = 0;
       storeSet(this.key, created.uploadId);
@@ -265,6 +283,25 @@ export class Upload {
     this.#report("processing");
     return await api<Completed>("POST", "/api/uploads/" + encodeURIComponent(this.#uploadId) + "/complete",
       { addToLibrary: this.addToLibrary });
+  }
+
+  /** The content ID for the pre-check, computed once; null where the pre-check isn't available. */
+  async #precheckId(): Promise<string | null> {
+    if (this.#contentId !== undefined) return this.#contentId;
+    if (!precheckAvailable()) {
+      this.#contentId = null;
+      return null;
+    }
+    this.#report("checking", { checked: 0 });
+    try {
+      this.#contentId = await contentId(this.file, crypto.subtle,
+        (done) => this.#report("checking", { checked: done }), () => this.#signal.stopped);
+    } catch (e) {
+      if (this.#signal.stopped) throw new Stopped();
+      // Can't read or hash the file here: upload it normally (the server hashes it anyway).
+      this.#contentId = null;
+    }
+    return this.#contentId;
   }
 
   #check(): void {

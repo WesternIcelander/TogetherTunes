@@ -398,6 +398,40 @@ abstract class GuestUploadsContract {
         assertError(429, "upload_quota_exceeded", start(g, roomId, 10));
     }
 
+    /** A guest's pre-check hit counts as an upload start (the quota), like a real upload. */
+    @Test
+    void aPrecheckCountsAgainstTheGuestQuota() throws Exception {
+        uploads.precheck(true);
+        guestUploads(true);
+        settings.set(Settings.GUESTS_UPLOAD_QUOTA, new UploadQuota(1, 1000));
+        String contentId = "sha256c8m:10:" + "ab".repeat(32);
+        String itemId = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source, content_sha256,"
+                    + " content_id, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
+                    + " VALUES (?, 'audio', 'Known', 'upload', 'x', ?, ?, 1, 'ready', '720p30', 1)")) {
+                ps.setString(1, itemId);
+                ps.setString(2, contentId);
+                ps.setString(3, aliceId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        Caller g = anonymous(IP_A);
+        String body = "{\"filename\":\"song.mp3\",\"size\":10,\"roomId\":\"" + roomId + "\",\"contentId\":\""
+                + contentId + "\"}";
+        Reply hit = call(server, g, "POST", "/api/uploads", body, null);
+        assertEquals(200, hit.status(), hit.body());
+        assertTrue(hit.json().get("deduplicated").getAsBoolean());
+        assertEquals(itemId, hit.json().get("itemId").getAsString());
+        assertEquals(1, count("SELECT COUNT(*) FROM guest_upload_starts"));
+        assertError(429, "upload_quota_exceeded", call(server, g, "POST", "/api/uploads", body, null));
+        assertError(429, "upload_quota_exceeded", start(g, roomId, 10));
+        // the guest rules apply as to any upload start
+        guestUploads(false);
+        assertError(403, "guest_uploads_disabled", call(server, anonymous(IP_B), "POST", "/api/uploads", body, null));
+    }
+
     @Test
     void ipv6CountsByTheSlash64() throws Exception {
         guestUploads(true);

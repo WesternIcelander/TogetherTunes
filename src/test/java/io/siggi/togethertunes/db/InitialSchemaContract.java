@@ -50,7 +50,7 @@ abstract class InitialSchemaContract {
                 "content_sha256", "added_by_user_id", "added_by_guest_id", "added_at", "status", "error",
                 "output_profile", "loudness_lufs", "metadata_json", "original_file", "original_codec",
                 "original_web", "original_gain_db", "last_referenced_at", "purged_at", "present_as_audio", "encode_preset",
-                "encode_quality", "media_version");
+                "encode_quality", "media_version", "content_id");
         t("ingest_jobs", "id", "item_id", "kind", "state", "attempts", "progress", "created_at", "started_at",
                 "finished_at", "log", "tier");
         t("library_entries", "user_id", "item_id", "added_at", "via", "shared_by_user_id");

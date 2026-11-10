@@ -186,7 +186,8 @@ public final class RoomGuests implements RoomGuestRules {
     /**
      * The room half of a guest upload or YouTube link: the room must exist and be visible to the
      * guest (not private, not banning it: {@code 404 room_not_found} / {@code 403
-     * banned_from_room}), and its setting must be on ({@code 403 guest_uploads_disabled} /
+     * banned_from_room}), an upload needs the room's {@code uploadRequests} ({@code 403
+     * upload_requests_off}), and its setting must be on ({@code 403 guest_uploads_disabled} /
      * {@code guest_youtube_disabled}). The server half was checked by the caller.
      */
     @Override
@@ -195,6 +196,9 @@ public final class RoomGuests implements RoomGuestRules {
         RoomSettings room = access.room().settings();
         switch (capability) {
             case UPLOAD -> {
+                if (!room.uploadRequests()) {
+                    throw RoomQueue.uploadRequestsOff();
+                }
                 if (!room.guestsCanUpload()) {
                     throw new HttpError(403, "guest_uploads_disabled", "Guests can't upload files in this room");
                 }

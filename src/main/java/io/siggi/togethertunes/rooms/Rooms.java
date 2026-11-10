@@ -679,7 +679,22 @@ public final class Rooms {
      *                   validation errors
      */
     public RoomView update(Actor actor, String idOrSlug, Edit edit, String ip) throws SQLException {
+        return updateAdjusting(actor, idOrSlug, edit, ip).view();
+    }
+
+    /**
+     * {@link #updateAdjusting}'s result.
+     *
+     * @param adjusted settings changed on top of the edit to keep uploads coupled to library
+     *                 requests ({@link RoomSettings#patchAdjusting}); empty if none
+     */
+    public record Updated(RoomView view, List<String> adjusted) {
+    }
+
+    /** {@link #update}, also reporting the settings it adjusted ({@link RoomSettings.Patched#adjusted}). */
+    public Updated updateAdjusting(Actor actor, String idOrSlug, Edit edit, String ip) throws SQLException {
         Objects.requireNonNull(edit);
+        List<String> adjusted = new ArrayList<>();
         String newName = edit.name() == null ? null : name(edit.name());
         String newSlug = edit.slug() == null ? null : slug(edit.slug());
         boolean moderateAny = moderatesAny(actor);
@@ -718,7 +733,9 @@ public final class Rooms {
                 }
                 RoomSettings settings = r.settings();
                 if (edit.settings() != null) {
-                    RoomSettings patched = settings.patch(edit.settings());
+                    RoomSettings.Patched p = settings.patchAdjusting(edit.settings());
+                    RoomSettings patched = p.settings();
+                    adjusted.addAll(p.adjusted());
                     List<String> changed = patched.changedFrom(settings);
                     if (!changed.isEmpty()) {
                         settings = patched;
@@ -740,7 +757,7 @@ public final class Rooms {
                     }
                     AuditLog.write(c, EpochMs.now(clock), userId(actor), null, ip, AUDIT_UPDATED, r.id(), details);
                 }
-                return view(updated, Role.OWNER, moderateAny);
+                return new Updated(view(updated, Role.OWNER, moderateAny), List.copyOf(adjusted));
             });
         } catch (SQLException e) {
             if (newSlug != null && isUniqueViolation(e)) {

@@ -89,7 +89,10 @@ import java.util.Set;
  *       {@code null} resets a setting to its default. All or nothing: {@code 400 unknown_setting}
  *       or {@code 400 invalid_setting} change nothing. {@code invalid_setting} also covers a value
  *       the server can't use, e.g. an x264 preset that doesn't give the reference avcC
- *       ({@link #settingCheck}).</li>
+ *       ({@link #settingCheck}). Uploads need library requests ({@link Settings#COUPLED}): a
+ *       patch turning {@code guests.canUpload} on also turns {@code guests.canRequestLibrary} on,
+ *       one turning {@code guests.canRequestLibrary} off also turns {@code guests.canUpload} off,
+ *       and the response lists such companion changes in {@code "adjusted"}.</li>
  *   <li>{@code GET /api/admin/encoding?profile=&videoBitrateKbps=} → {@code {"current", "encoding",
  *       "reencodeItems"}}: what changing {@code output.profile} / {@code output.videoBitrateKbps}
  *       to these values would do, so the admin page can ask before saving: the encoding the server
@@ -488,6 +491,7 @@ public final class AdminApi {
         }
         Map<String, JsonElement> set = new LinkedHashMap<>();
         List<String> reset = new ArrayList<>();
+        List<String> adjusted;
         try {
             for (Map.Entry<String, JsonElement> e : body.entrySet()) {
                 if (!e.getValue().isJsonNull()) {
@@ -495,6 +499,7 @@ public final class AdminApi {
                     settingCheck.check(key, key.decode(e.getValue()));
                 }
             }
+            adjusted = coupleUploads(body);
             db.write(c -> {
                 for (Map.Entry<String, JsonElement> e : body.entrySet()) {
                     SettingKey<?> key = Settings.KEYS.get(e.getKey());
@@ -522,7 +527,52 @@ public final class AdminApi {
             accounts.audit(actor.userId(), request.clientIp(), AUDIT_SETTINGS, null, details);
             settingsListener.run();
         }
-        send(response, 200, settingsJson());
+        Map<String, Object> out = new LinkedHashMap<>(settingsJson());
+        if (!adjusted.isEmpty()) {
+            out.put("adjusted", adjusted);
+        }
+        send(response, 200, out);
+    }
+
+    /**
+     * Uploads need library requests ({@link Settings#COUPLED}): if the patch would leave an
+     * upload switch on and its library-request switch off, adds the companion change to
+     * {@code body} (turning the upload switch on turns library requests on; turning library
+     * requests off turns uploads off).
+     *
+     * @return the settings added that way
+     * @throws HttpError {@code 400 invalid_setting} for a patch turning both the wrong way at once
+     */
+    private List<String> coupleUploads(JsonObject body) throws SQLException {
+        List<String> adjusted = new ArrayList<>();
+        Map<SettingKey<?>, Object> current = settings.all();
+        for (Map.Entry<SettingKey<Boolean>, SettingKey<Boolean>> c : Settings.COUPLED.entrySet()) {
+            SettingKey<Boolean> upload = c.getKey();
+            SettingKey<Boolean> library = c.getValue();
+            boolean uploadWas = Boolean.TRUE.equals(current.get(upload));
+            boolean libraryWas = Boolean.TRUE.equals(current.get(library));
+            if (!after(body, upload, uploadWas) || after(body, library, libraryWas)) {
+                continue;
+            }
+            boolean uploadTurnedOn = !uploadWas;
+            if (uploadTurnedOn && libraryWas) {
+                throw new HttpError(400, "invalid_setting", upload.name() + ": uploads need " + library.name()
+                        + " on; it can't be turned off at the same time");
+            }
+            SettingKey<Boolean> companion = uploadTurnedOn ? library : upload;
+            body.addProperty(companion.name(), uploadTurnedOn);
+            adjusted.add(companion.name());
+        }
+        return adjusted;
+    }
+
+    /** A boolean setting's value after {@code body} is applied ({@code null} = its default). */
+    private boolean after(JsonObject body, SettingKey<Boolean> key, boolean current) {
+        if (!body.has(key.name())) {
+            return current;
+        }
+        JsonElement v = body.get(key.name());
+        return v.isJsonNull() ? Boolean.TRUE.equals(settings.defaultValue(key)) : key.decode(v);
     }
 
     private void getEncoding(Request request, Response response) throws Exception {

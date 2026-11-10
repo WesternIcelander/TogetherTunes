@@ -89,6 +89,11 @@ import java.util.stream.Stream;
  * repeated {@code complete} answers the same. Concurrent completes are serialised around the
  * lookup, so two uploads of the same file make one item.
  *
+ * <p><b>Content ID</b> ({@link ContentId}): computed alongside the SHA-256 and stored in
+ * {@code items.content_id}; completion dedupes on either. The <b>pre-check</b> ({@link #start}):
+ * on an https server a new upload may name its content ID and, if a reusable item has it, is
+ * completed at once without bytes.
+ *
  * <p><b>Cleanup</b>: uploads untouched for {@link #STALE_AFTER} (finished or not) are deleted with
  * their part file by {@link #sweep}, which runs at startup and at most every
  * {@link #SWEEP_EVERY} when an upload is created; part files without a row go too.
@@ -122,6 +127,7 @@ public final class Uploads {
     private final ReentrantLock completeLock = new ReentrantLock();
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
+    private volatile boolean precheck;
     private volatile long nextSweepAt;
 
     /**
@@ -152,6 +158,8 @@ public final class Uploads {
     private static final class Session {
         final ReentrantLock lock = new ReentrantLock();
         MessageDigest digest;
+        /** The content ID ({@link ContentId}), kept in step with {@link #digest}. */
+        ContentId contentId;
         long hashed;
     }
 
@@ -201,6 +209,21 @@ public final class Uploads {
     public void limits(LongSupplier maxBytes, IntSupplier maxDurationSec) {
         this.maxBytes = Objects.requireNonNull(maxBytes);
         this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
+    }
+
+    /**
+     * Turns the pre-check by content ID on or off ({@link #start}): on only when
+     * {@code http.publicBaseUrl} is {@code https} (browsers compute the ID with
+     * {@code crypto.subtle}, which needs a secure context). Off until set; while off, a
+     * {@code contentId} is ignored and every upload is a normal one.
+     */
+    public void precheck(boolean enabled) {
+        this.precheck = enabled;
+    }
+
+    /** Whether the pre-check by content ID is on. */
+    public boolean precheckEnabled() {
+        return precheck;
     }
 
     /** The guest upload quota. */
@@ -269,9 +292,46 @@ public final class Uploads {
      */
     public Upload create(Actor owner, String filename, long size, String roomId, String clientIp)
             throws SQLException, IOException {
+        return start(owner, filename, size, roomId, clientIp, null, null).upload();
+    }
+
+    /**
+     * What {@link #start} did.
+     *
+     * @param upload     the upload; already completed ({@link Upload#completed()},
+     *                   {@code deduplicated}) when the pre-check found the item
+     * @param itemStatus the found item's status ({@code ready}, {@code pending} or
+     *                   {@code processing}), or null for a normal upload
+     */
+    public record Started(Upload upload, String itemStatus) {
+        public boolean precheckHit() {
+            return itemStatus != null;
+        }
+    }
+
+    /**
+     * {@link #create(Actor, String, long, String, String)} with the <b>pre-check</b>
+     * ({@code docs/library-and-ingest.md#pre-check}): when it is on ({@link #precheck(boolean)}) and
+     * {@code contentId} names an upload item of this size that is ready, pending or processing, no
+     * bytes are needed: the upload is recorded as completed with that item ({@code deduplicated}),
+     * as {@link #complete} would have done (the uploader's library entry unless
+     * {@code addToLibrary} is false, {@code last_referenced_at}), and a guest's start still counts
+     * against the guest quota. Anything else (no match, a purged or failed item, a malformed ID, the
+     * pre-check off) starts a normal upload; the server computes the ID itself on completion, so a
+     * wrong claim only means no shortcut.
+     */
+    public Started start(Actor owner, String filename, long size, String roomId, String clientIp, String contentId,
+                         Boolean addToLibrary) throws SQLException, IOException {
         String userId = userId(owner);
         String guestId = guestId(owner);
         String name = validate(filename, size);
+        if (precheck && ContentId.isValid(contentId) && ContentId.sizeOf(contentId) == size) {
+            Started hit = precheckHit(owner, name, size, roomId, clientIp, contentId,
+                    owner instanceof Actor.User && !Boolean.FALSE.equals(addToLibrary));
+            if (hit != null) {
+                return hit;
+            }
+        }
         maybeSweep();
         String id = UuidV7.newId();
         long now = EpochMs.now(clock);
@@ -308,7 +368,72 @@ public final class Uploads {
                 guestQuota.lock().unlock();
             }
         }
-        return new Upload(id, userId, guestId, finalName, size, now, now, null, false);
+        return new Started(new Upload(id, userId, guestId, finalName, size, now, now, null, false), null);
+    }
+
+    /** The pre-check: the completed upload if a reusable item has this content ID, else null. */
+    private Started precheckHit(Actor owner, String name, long size, String roomId, String clientIp, String contentId,
+                                boolean library) throws SQLException {
+        String userId = userId(owner);
+        String guestId = guestId(owner);
+        if (guestId != null) {
+            guestQuota.lock().lock();
+        }
+        completeLock.lock();
+        try {
+            return db.write(c -> {
+                Existing existing = byContentId(c, contentId);
+                if (existing == null || !existing.reusable()) {
+                    return null;
+                }
+                String id = UuidV7.newId();
+                long now = EpochMs.now(clock);
+                if (guestId != null) {
+                    guestQuota.reserve(c, guestId, clientIp, size, now);
+                }
+                try (PreparedStatement ps = c.prepareStatement("INSERT INTO uploads (id, user_id, guest_id, room_id,"
+                        + " filename, size, created_at, updated_at, item_id, deduplicated)"
+                        + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)")) {
+                    ps.setString(1, id);
+                    ps.setString(2, userId);
+                    ps.setString(3, guestId);
+                    ps.setString(4, roomId);
+                    ps.setString(5, name);
+                    ps.setLong(6, size);
+                    ps.setLong(7, now);
+                    ps.setLong(8, now);
+                    ps.setString(9, existing.id());
+                    ps.executeUpdate();
+                }
+                References.touch(c, existing.id(), now);
+                if (library) {
+                    addToLibrary(c, userId, existing.id(), now);
+                }
+                return new Started(new Upload(id, userId, guestId, name, size, now, now, existing.id(), true),
+                        existing.status());
+            });
+        } finally {
+            completeLock.unlock();
+            if (guestId != null) {
+                guestQuota.lock().unlock();
+            }
+        }
+    }
+
+    private static Existing byContentId(Connection c, String contentId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT id, status FROM items WHERE content_id = ?"
+                + " AND source = 'upload' ORDER BY added_at, id")) {
+            ps.setString(1, contentId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    Existing e = new Existing(rs.getString(1), rs.getString(2));
+                    if (e.reusable()) {
+                        return e;
+                    }
+                }
+            }
+            return null;
+        }
     }
 
     /** {@code owner}'s upload {@code id}; {@code 404 upload_not_found} for anyone else's or an unknown id. */
@@ -442,10 +567,11 @@ public final class Uploads {
      * kept as is when it already does, else computed again from the file.
      */
     private static void ensureDigest(Session session, FileChannel channel, long length) throws IOException {
-        if (session.digest != null && session.hashed == length) {
+        if (session.digest != null && session.contentId != null && session.hashed == length) {
             return;
         }
         MessageDigest digest = sha256();
+        ContentId contentId = new ContentId();
         ByteBuffer buffer = ByteBuffer.allocate(256 * 1024);
         long position = 0;
         while (position < length) {
@@ -458,10 +584,12 @@ public final class Uploads {
                 throw new IOException("The upload's file is shorter than expected");
             }
             buffer.flip();
-            digest.update(buffer);
+            digest.update(buffer.duplicate());
+            contentId.update(buffer);
             position += n;
         }
         session.digest = digest;
+        session.contentId = contentId;
         session.hashed = length;
     }
 
@@ -505,6 +633,7 @@ public final class Uploads {
                 position += channel.write(buffer, position);
             }
             session.digest.update(b, off, len);
+            session.contentId.update(b, off, len);
             session.hashed = position;
         }
     }
@@ -550,6 +679,7 @@ public final class Uploads {
             }
             Path part = partFile(upload.id());
             String sha256;
+            String contentId;
             try (FileChannel channel = FileChannel.open(part, StandardOpenOption.READ)) {
                 long received = channel.size();
                 if (received != upload.size()) {
@@ -558,24 +688,25 @@ public final class Uploads {
                 }
                 ensureDigest(session, channel, received);
                 sha256 = HexFormat.of().formatHex(clone(session.digest).digest());
+                contentId = session.contentId.value();
             } catch (NoSuchFileException e) {
                 throw new HttpError(409, "upload_incomplete", "The server has 0 of " + upload.size() + " bytes");
             }
             boolean library = owner instanceof Actor.User && !Boolean.FALSE.equals(addToLibrary);
 
-            Completed done = dedupe(upload, sha256, library);
+            Completed done = dedupe(upload, sha256, contentId, library);
             if (done != null) {
                 return done;
             }
             MediaProbe probe = probe(upload, part);
             completeLock.lock();
             try {
-                Existing existing = db.read(c -> existing(c, sha256));
+                Existing existing = db.read(c -> existing(c, sha256, contentId));
                 if (existing != null && existing.reusable()) {
-                    return reuse(upload, existing.id(), library);
+                    return reuse(upload, existing.id(), contentId, library);
                 }
-                return ingest(upload, part, probe, sha256, existing == null ? null : existing.id(), title, artist,
-                        library);
+                return ingest(upload, part, probe, sha256, contentId, existing == null ? null : existing.id(), title,
+                        artist, library);
             } finally {
                 completeLock.unlock();
             }
@@ -586,11 +717,12 @@ public final class Uploads {
     }
 
     /** The reusable item with this hash, recorded as the upload's result; null if there is none. */
-    private Completed dedupe(Upload upload, String sha256, boolean library) throws SQLException, IOException {
+    private Completed dedupe(Upload upload, String sha256, String contentId, boolean library)
+            throws SQLException, IOException {
         completeLock.lock();
         try {
-            Existing existing = db.read(c -> existing(c, sha256));
-            return existing != null && existing.reusable() ? reuse(upload, existing.id(), library) : null;
+            Existing existing = db.read(c -> existing(c, sha256, contentId));
+            return existing != null && existing.reusable() ? reuse(upload, existing.id(), contentId, library) : null;
         } finally {
             completeLock.unlock();
         }
@@ -604,10 +736,12 @@ public final class Uploads {
         }
     }
 
-    private static Existing existing(Connection c, String sha256) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT id, status FROM items WHERE content_sha256 = ?"
-                + " AND source = 'upload' ORDER BY added_at, id")) {
+    /** An upload item with this SHA-256 or content ID (both name the same bytes): a reusable one first. */
+    private static Existing existing(Connection c, String sha256, String contentId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT id, status FROM items WHERE (content_sha256 = ?"
+                + " OR content_id = ?) AND source = 'upload' ORDER BY added_at, id")) {
             ps.setString(1, sha256);
+            ps.setString(2, contentId);
             Existing purged = null;
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
@@ -624,10 +758,12 @@ public final class Uploads {
         }
     }
 
-    private Completed reuse(Upload upload, String itemId, boolean library) throws SQLException, IOException {
+    private Completed reuse(Upload upload, String itemId, String contentId, boolean library)
+            throws SQLException, IOException {
         long now = EpochMs.now(clock);
         db.write(c -> {
             References.touch(c, itemId, now);
+            setContentIdIfMissing(c, itemId, contentId);
             if (library) {
                 addToLibrary(c, upload.userId(), itemId, now);
             }
@@ -678,8 +814,9 @@ public final class Uploads {
      * purged/failed one with this hash), its {@code upload} job, the library entry and the
      * upload's result in one transaction. If the transaction fails, the file goes back.
      */
-    private Completed ingest(Upload upload, Path part, MediaProbe probe, String sha256, String reuseItemId,
-                             String title, String artist, boolean library) throws SQLException, IOException {
+    private Completed ingest(Upload upload, Path part, MediaProbe probe, String sha256, String contentId,
+                             String reuseItemId, String title, String artist, boolean library)
+            throws SQLException, IOException {
         String itemId = reuseItemId != null ? reuseItemId : UuidV7.newId();
         Path staging = IngestPipeline.stagingDir(dataDir, itemId);
         deleteTree(staging); // leftovers of a failed job
@@ -692,9 +829,10 @@ public final class Uploads {
         try {
             db.write(c -> {
                 if (reuseItemId == null) {
-                    insertItem(c, itemId, probe.isVideo() ? "video" : "audio", meta, sha256, upload, now);
+                    insertItem(c, itemId, probe.isVideo() ? "video" : "audio", meta, sha256, contentId, upload, now);
                 } else {
                     References.touch(c, itemId, now);
+                    setContentIdIfMissing(c, itemId, contentId);
                 }
                 jobs.enqueue(itemId, IngestJob.Kind.UPLOAD, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                 if (library) {
@@ -717,10 +855,10 @@ public final class Uploads {
     }
 
     private void insertItem(Connection c, String itemId, String kind, UploadMetadata meta, String sha256,
-                            Upload upload, long now) throws SQLException {
+                            String contentId, Upload upload, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, source,"
                 + " content_sha256, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " last_referenced_at) VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?)")) {
+                + " last_referenced_at, content_id) VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?)")) {
             ps.setString(1, itemId);
             ps.setString(2, kind);
             ps.setString(3, meta.title());
@@ -732,10 +870,23 @@ public final class Uploads {
             ps.setLong(9, now);
             ps.setString(10, profile.get().id());
             ps.setLong(11, now);
+            ps.setString(12, contentId);
             ps.executeUpdate();
         }
     }
 
+    /** Records the content ID on an item that has none yet (an item from before content IDs). */
+    private static void setContentIdIfMissing(Connection c, String itemId, String contentId) throws SQLException {
+        if (contentId == null) {
+            return;
+        }
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE items SET content_id = ? WHERE id = ? AND content_id IS NULL")) {
+            ps.setString(1, contentId);
+            ps.setString(2, itemId);
+            ps.executeUpdate();
+        }
+    }
 
     private void addToLibrary(Connection c, String userId, String itemId, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
