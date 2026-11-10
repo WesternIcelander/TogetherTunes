@@ -203,6 +203,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.IngestJob", "ingest_jobs row; GET /api/items/{id}/job (later step) builds its own view of it"),
             Map.entry("io.siggi.togethertunes.ingest.IngestJobs$Recovered", "startup recovery counts, server log only"),
             Map.entry("io.siggi.togethertunes.media.Mp4Boxes$Box", "MP4 box position in a media file, server-side only"),
+            Map.entry("io.siggi.togethertunes.output.VideoSample", "a video sample a program source hands the packager, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$ItemCard", "card renderer input (item metadata + artwork image), server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.CardRenderer$Fitted", "card text layout result, server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.IngestItems$Item", "item columns an ingest job reads, server-side only"),
