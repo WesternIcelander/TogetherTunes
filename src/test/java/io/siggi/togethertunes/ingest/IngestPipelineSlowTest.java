@@ -153,24 +153,24 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertEquals(State.DONE, keptJob.state(), keptJob.log());
 
         // video upload with its original: from it, loudness measured again, original kept
-        assertTrue(keptJob.log().contains("re-encoding for 1080p30-6000k-v2 (was 720p30-3000k-v2, preset veryfast) from the original original.mov"),
+        assertTrue(keptJob.log().contains("re-encoding for 1080p30-6000k-v3 (was 720p30-3000k-v3, preset veryfast) from the original original.mov"),
                 keptJob.log());
         assertTrue(keptJob.log().contains("step: loudnorm pass 1"), keptJob.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4", "original.mov"), layout(keptVideo));
         assertKeptOnly(keptVideo, "original.mov", "aac/mov,mp4,m4a,3gp,3g2,mj2", keptOriginal);
-        assertEquals("1080p30-6000k-v2", itemRow(keptVideo)[3]);
+        assertEquals("1080p30-6000k-v3", itemRow(keptVideo)[3]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(keptVideo).resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(keptVideo).resolve("mezz.mp4"))));
         IngestVerifier.checkKeyframes(SampleIndex.read(cur(keptVideo).resolve("index.bin")), "mezz.mp4");
 
         // audio upload: from its original
-        assertTrue(audioJob.log().contains("re-encoding for 1080p30-6000k-v2 (was 720p30-3000k-v2, preset veryfast) from the original original.flac"),
+        assertTrue(audioJob.log().contains("re-encoding for 1080p30-6000k-v3 (was 720p30-3000k-v3, preset veryfast) from the original original.flac"),
                 audioJob.log());
         assertTrue(audioJob.log().contains("step: loudnorm pass 1"), audioJob.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.flac"), layout(audioItem));
         assertArrayEquals(original, Files.readAllBytes(audioDir.resolve("original.flac")));
         assertArrayEquals(audioBefore, originalRow(audioItem), "same codec, web flag and gain");
-        assertEquals("1080p30-6000k-v2", itemRow(audioItem)[3]);
+        assertEquals("1080p30-6000k-v3", itemRow(audioItem)[3]);
         assertEquals("ready", itemRow(audioItem)[0]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(audioItem).resolve("card.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(audioItem).resolve("card.mp4"))));
@@ -185,7 +185,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         Object[] videoAfter = itemRow(videoItem);
         assertEquals("ready", videoAfter[0]);
         assertEquals("video", videoAfter[1]);
-        assertEquals("1080p30-6000k-v2", videoAfter[3]);
+        assertEquals("1080p30-6000k-v3", videoAfter[3]);
         assertEquals(videoBefore[4], videoAfter[4], "the loudness measured at the first ingest is kept");
         assertTrue(Math.abs((Long) videoAfter[2] - (Long) videoBefore[2]) <= 50, "duration " + videoAfter[2]);
         assertNoOriginal(videoItem);
@@ -204,7 +204,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertEquals(0, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
         IngestJob noop = run(q, Kind.REENCODE, videoItem);
         assertEquals(State.DONE, noop.state());
-        assertTrue(noop.log().contains("already encoded for 1080p30-6000k-v2"), noop.log());
+        assertTrue(noop.log().contains("already encoded for 1080p30-6000k-v3"), noop.log());
         assertTrue(Files.exists(mezz));
     }
 
@@ -239,7 +239,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertTrue(job.log().contains("from the original original.mkv"), job.log());
         assertFalse(job.log().contains("step: download"), job.log());
         assertTrue(job.log().contains("step: loudnorm pass 1"), job.log());
-        assertEquals("1080p30-6000k-v2", itemRow(item)[3]);
+        assertEquals("1080p30-6000k-v3", itemRow(item)[3]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(item).resolve("mezz.mp4"))));
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
@@ -254,7 +254,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertEquals(State.DONE, refetched.state(), refetched.log());
         assertTrue(refetched.log().contains("from a new download"), refetched.log());
         assertTrue(refetched.log().contains("step: download"), refetched.log());
-        assertEquals("720p30-3000k-v2", itemRow(item)[3]);
+        assertEquals("720p30-3000k-v3", itemRow(item)[3]);
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
         assertNoLeftovers();
 
@@ -271,7 +271,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertFalse(fallback.log().contains("step: loudnorm pass 1"), fallback.log());
         Object[] row = itemRow(item);
         assertEquals("ready", row[0]);
-        assertEquals("1080p30-6000k-v2", row[3]);
+        assertEquals("1080p30-6000k-v3", row[3]);
         assertEquals(lufs, row[4]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(cur(item).resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(cur(item).resolve("mezz.mp4"))));
@@ -325,7 +325,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertEquals(Kind.QUALITY, quality.kind());
         assertEquals(State.DONE, quality.state(), quality.log());
         assertTrue(quality.log().contains("x264 preset slow (quality)"), quality.log());
-        assertTrue(quality.log().contains("quality re-encode for 720p30-3000k-v2 (was 720p30-3000k-v2, preset veryfast)"
+        assertTrue(quality.log().contains("quality re-encode for 720p30-3000k-v3 (was 720p30-3000k-v3, preset veryfast)"
                 + " from the original original.mp4"), quality.log());
         assertArrayEquals(new Object[] {"slow", true}, fixtures.encode(requested));
         assertEquals("ready", itemRow(requested)[0]);
@@ -438,7 +438,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin"), layout(item));
         Object[] row = itemRow(item);
         assertEquals("audio", row[1]);
-        assertEquals("1080p30-6000k-v2", row[3]);
+        assertEquals("1080p30-6000k-v3", row[3]);
         assertEquals(lufs, row[4]);
         assertTrue(Math.abs((Long) row[2] - 3000) <= 50, "duration " + row[2]);
         assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(item));

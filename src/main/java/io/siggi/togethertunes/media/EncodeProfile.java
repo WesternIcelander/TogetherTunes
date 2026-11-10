@@ -14,8 +14,11 @@ import java.util.List;
  * <p>Every list gives: libx264, the chosen preset (with its {@code chroma-qp-offset} and
  * {@code ref=4} pinned, so all presets write the same SPS and PPS), High profile, yuv420p, no B-frames (so PTS =
  * DTS), closed 60-frame GOPs with an IDR forced every 2 s from t = 0 and no scene-cut keyframes
- * (invariant 2), constant bitrate at the configured rate with filler NAL padding (so cards and
- * mezzanines alike are exactly CBR; {@code docs/library-and-ingest.md#the-mezzanine-profile}).
+ * (invariant 2), and a bitrate <em>capped</em> at the configured rate (a VBV-constrained
+ * average, not CBR: nothing on disk is padded; the packager pads the program output to a constant
+ * rate with filler NAL units while it sends, {@code docs/program-output.md#constant-rate-padding}).
+ * No HRD parameters go into the SPS, so the bitrate is not part of the avcC
+ * ({@code docs/library-and-ingest.md#the-mezzanine-profile}).
  * They contain only output (encoder) options, so a call
  * site puts them after its inputs and filters, e.g.
  * {@code ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf <scaleFilter> <videoArgs> -an card.mp4}.
@@ -38,13 +41,16 @@ public final class EncodeProfile {
     /** GOP length in milliseconds; every GOP starts with an IDR exactly this far apart. */
     public static final int GOP_MS = 2000;
     /**
-     * x264's VBV buffer ({@code -bufsize}) in milliseconds of video at the constant rate, started
-     * full ({@code vbv-init=1}). Measured 2026-11-10 with ffmpeg 6.1.1 at 720p30, 3 Mb/s, bytes per
-     * 2 s GOP against {@code R × 2 s / 8} = 750 000: a 2 s still card +0.1 % (−2.4 % without
-     * {@code vbv-init=1}, which starts the buffer 90 % full), {@code testsrc2} within ±0.01 %, a
-     * noisy fractal source −1…+2 %. With a 1 s buffer the noisy source spread −2…+6 % and
-     * {@code testsrc2} −5…+10 %; with 2 s, −10…+18 %. Half a second still leaves an IDR frame
-     * up to half a second's worth of bits (~187 KB at 3 Mb/s).
+     * x264's VBV buffer ({@code -bufsize}) in milliseconds of video at the cap. It bounds how far an
+     * encode can run ahead of the cap {@code R}: the bytes up to any frame are at most
+     * {@code R × t / 8} plus this buffer, which is what the packager's padding relies on (an IDR's
+     * excess is paid back by the following frames). Measured 2026-11-10 with ffmpeg 6.1.1 at 720p30,
+     * 3 Mb/s, without HRD (largest run-ahead of the cumulative bytes over {@code R × t / 8}):
+     * {@code testsrc2} 23 KB, a noisy fractal 30 KB, a cellular automaton 145 KB (all within the
+     * 187.5 KB buffer); the 2 s GOPs came out at 70…93 % of the cap. With a 1 s buffer
+     * {@code testsrc2} ran ahead by 100 KB and single GOPs reached 106 % of the cap; with a quarter
+     * of a second the GOPs fell to 57…87 % (less quality for the same cap).
+     * Half a second still leaves an IDR frame up to half a second's worth of bits (~187 KB at 3 Mb/s).
      */
     public static final int BUFSIZE_MS = 500;
 
@@ -81,11 +87,10 @@ public final class EncodeProfile {
      * The x264 argument list for {@code encoding} and {@code preset} (immutable): the preset with
      * {@code ref=4} and the preset's {@code chroma-qp-offset} (so every preset gives the same avcC),
      * the profile's H.264 level and
-     * constant bitrate {@code R = encoding.videoBitrateKbps()}: {@code -b:v R -minrate R -maxrate R
-     * -bufsize R/2} with {@code nal-hrd=cbr:vbv-init=1}, so x264 signals CBR in the SPS (VUI HRD
-     * parameters, which carry the rate and buffer size: another bitrate is another avcC) and pads
-     * every frame up to the rate with filler data NAL units (type 12). The VBV buffer is
-     * {@link #BUFSIZE_MS} of video, started full. Equal encodings and presets give equal lists.
+     * the bitrate cap {@code R = encoding.videoBitrateKbps()}: {@code -b:v R -maxrate R -bufsize R/2}
+     * (a VBV buffer of {@link #BUFSIZE_MS} of video). No {@code nal-hrd}: the SPS carries no HRD
+     * parameters, so every bitrate gives the same avcC, and x264 writes no filler data; the
+     * packager pads the output instead. Equal encodings and presets give equal lists.
      */
     public static List<String> videoArgs(OutputEncoding encoding, X264Preset preset) {
         String level = switch (encoding.profile()) {
@@ -110,10 +115,9 @@ public final class EncodeProfile {
                 "-keyint_min", Integer.toString(GOP_FRAMES),
                 "-sc_threshold", "0",
                 "-force_key_frames", "expr:gte(t,n_forced*" + (GOP_MS / 1000) + ")",
-                "-x264-params", "open-gop=0:nal-hrd=cbr:vbv-init=1:ref=" + REF_FRAMES
+                "-x264-params", "open-gop=0:ref=" + REF_FRAMES
                         + ":chroma-qp-offset=" + preset.chromaQpOffset(),
                 "-b:v", rate,
-                "-minrate", rate,
                 "-maxrate", rate,
                 "-bufsize", bufsize);
     }

@@ -73,7 +73,7 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertEquals("ready", row[0]);
         assertEquals("audio", row[1]);
         assertTrue(Math.abs((Long) row[2] - 4000) <= 50, "duration " + row[2]);
-        assertEquals("720p30-3000k-v2", row[3]);
+        assertEquals("720p30-3000k-v3", row[3]);
         assertNotNull(row[4]);
         assertTrue((Double) row[4] < -14 && (Double) row[4] > -30, "loudness " + row[4]);
         assertNull(row[5]);
@@ -507,7 +507,8 @@ class IngestPipelineTest extends IngestPipelineTestBase {
 
     /**
      * A bitrate change alone (same profile) re-encodes ready items: the new mezzanine and card are
-     * CBR at the new rate, with the new reference's avcC, and the index records the new encoding.
+     * capped at the new rate, with the new reference's avcC (the same as the old one: the bitrate
+     * is not in the SPS), and the index records the new encoding.
      */
     @Test
     @Execution(ExecutionMode.CONCURRENT)
@@ -517,32 +518,33 @@ class IngestPipelineTest extends IngestPipelineTestBase {
                 "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(item, "source.mp4").toString());
         assertEquals(State.DONE, run(Kind.UPLOAD, item).state());
         Path itemDir = IngestPipeline.itemDir(data, item);
-        assertEquals("720p30-3000k-v2", itemRow(item)[3]);
+        assertEquals("720p30-3000k-v3", itemRow(item)[3]);
         for (IngestQueue q : queues) {
             q.close();
         }
         OutputEncoding lower = new OutputEncoding(OutputProfile.P720_30, 2000);
         ReferenceCard ref = ReferenceCard.ensure(tools, data.cards(), lower, null);
-        assertFalse(Arrays.equals(reference.avcC(), ref.avcC()), "the bitrate is part of the avcC");
+        assertArrayEquals(reference.avcC(), ref.avcC(), "the bitrate is not part of the avcC");
         assertEquals(1, jobs.enqueueReencodes(lower));
         IngestQueue q = queue(tools, ref, 1800);
         IngestJob job = run(q, Kind.REENCODE, item);
         assertEquals(State.DONE, job.state(), job.log());
-        assertTrue(job.log().contains("re-encoding for 720p30-2000k-v2 (was 720p30-3000k-v2, preset veryfast) from the original original.mp4"),
+        assertTrue(job.log().contains("re-encoding for 720p30-2000k-v3 (was 720p30-3000k-v3, preset veryfast) from the original original.mp4"),
                 job.log());
-        assertEquals("720p30-2000k-v2", itemRow(item)[3]);
+        assertEquals("720p30-2000k-v3", itemRow(item)[3]);
         Path mezz = cur(item).resolve("mezz.mp4");
         assertArrayEquals(ref.avcC(), Mp4Boxes.readAvcC(mezz));
         SampleIndex index = SampleIndex.read(cur(item).resolve("index.bin"));
         assertEquals(lower, index.encoding());
-        // CBR: every full 2 s GOP is 2000 kb/s × 2 s = 500 000 bytes, give or take a little
+        // capped: no full 2 s GOP is above 2000 kb/s × 2 s = 500 000 bytes by more than the VBV
+        // buffer (half a second) allows
         SampleIndex.Track v = index.track(SampleIndex.Kind.VIDEO);
         long gop = 0;
         int gops = 0;
         for (int i = 0; i < v.sampleCount(); i++) {
             gop += v.size(i);
             if ((i + 1) % EncodeProfile.GOP_FRAMES == 0) {
-                assertEquals(500_000, gop, 500_000 * 0.03, "GOP " + gops);
+                assertTrue(gop <= 500_000 * 1.25, "GOP " + gops + ": " + gop);
                 gop = 0;
                 gops++;
             }

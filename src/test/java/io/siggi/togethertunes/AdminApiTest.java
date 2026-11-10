@@ -530,13 +530,13 @@ class AdminApiTest {
         assertEquals("bytes", find(items, "overlay.cacheMaxBytes").get("type").getAsString());
 
         JsonObject same = call(200, "GET", "/api/admin/encoding", null, admin);
-        assertEquals("720p30-3000k-v2", same.get("current").getAsString());
-        assertEquals("720p30-3000k-v2", same.get("encoding").getAsString());
+        assertEquals("720p30-3000k-v3", same.get("current").getAsString());
+        assertEquals("720p30-3000k-v3", same.get("encoding").getAsString());
         assertEquals(0, same.get("reencodeItems").getAsInt());
         JsonObject hd = call(200, "GET", "/api/admin/encoding?profile=1080p30&videoBitrateKbps=", null, admin);
-        assertEquals("1080p30-6000k-v2", hd.get("encoding").getAsString());
+        assertEquals("1080p30-6000k-v3", hd.get("encoding").getAsString());
         assertEquals(7, hd.get("reencodeItems").getAsInt());
-        assertEquals("720p30-2000k-v2",
+        assertEquals("720p30-2000k-v3",
                 call(200, "GET", "/api/admin/encoding?videoBitrateKbps=2000", null, admin).get("encoding").getAsString());
         assertError("invalid_setting", call(400, "GET", "/api/admin/encoding?profile=480p25", null, admin));
         assertError("invalid_setting", call(400, "GET", "/api/admin/encoding?videoBitrateKbps=100", null, admin));
@@ -546,20 +546,20 @@ class AdminApiTest {
                 + "\"output.videoBitrateKbps\":8000,\"ingest.workers\":5,\"ingest.maxUploadBytes\":1073741824,"
                 + "\"overlay.workers\":2,\"overlay.cacheMaxBytes\":0}", admin);
         assertEquals(8000, find(changed.getAsJsonArray("items"), "output.videoBitrateKbps").get("value").getAsInt());
-        assertEquals("1080p30-8000k-v2", settings.outputEncoding().id());
+        assertEquals("1080p30-8000k-v3", settings.outputEncoding().id());
         assertEquals(5, settings.ingestWorkers());
         assertEquals(Settings.GIB, settings.ingestMaxUploadBytes());
         assertEquals(2, settings.overlayWorkers());
         assertEquals(0, settings.overlayCacheMaxBytes());
         // the missing profile is now the setting's
-        assertEquals("1080p30-6000k-v2",
+        assertEquals("1080p30-6000k-v3",
                 call(200, "GET", "/api/admin/encoding", null, admin).get("encoding").getAsString());
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
                 "{\"ingest.workers\":0}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
                 "{\"output.videoBitrateKbps\":30000}", admin));
         call(200, "PATCH", "/api/admin/settings", "{\"output.videoBitrateKbps\":null,\"output.profile\":null}", admin);
-        assertEquals("720p30-3000k-v2", settings.outputEncoding().id());
+        assertEquals("720p30-3000k-v3", settings.outputEncoding().id());
     }
 
     /** Uploads need library requests: guests.canUpload on needs guests.canRequestLibrary on. */

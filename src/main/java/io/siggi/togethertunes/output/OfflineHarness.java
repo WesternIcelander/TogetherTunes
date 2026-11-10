@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.output;
 
+import io.siggi.togethertunes.media.AnnexB;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -56,6 +57,16 @@ public final class OfflineHarness {
      */
     public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, ScriptedTimeline timeline,
             long durationMs, OutputStream out) throws IOException {
+        return run(sources, avcC, 0, timeline, durationMs, out);
+    }
+
+    /**
+     * {@link #run(TimelineFollower.SourceFactory, byte[], ScriptedTimeline, long, OutputStream)} with
+     * the video padded to a constant {@code streamBitrateBps} ({@link CbrPadder}, as the live
+     * pipeline does); 0 writes it unpadded.
+     */
+    public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
+            ScriptedTimeline timeline, long durationMs, OutputStream out) throws IOException {
         Objects.requireNonNull(sources, "sources");
         Objects.requireNonNull(avcC, "avcC");
         Objects.requireNonNull(timeline, "timeline");
@@ -74,6 +85,8 @@ public final class OfflineHarness {
         long bytes = 0;
         long endPts = OutputClock.START;
         TsMuxer muxer = new TsMuxer(avcC);
+        CbrPadder padder = streamBitrateBps > 0
+                ? new CbrPadder(new AnnexB(avcC).nalLengthSize(), streamBitrateBps) : null;
         try (TimelineFollower follower = new TimelineFollower(new UnitBuilder(), sources, clock, timeline.cue())) {
             while (endPts < endTarget) {
                 long buildAtMs = clock.serverMsAt(follower.nextUnitStart()) - Packager.LEAD_MS - startMs;
@@ -82,6 +95,9 @@ public final class OfflineHarness {
                     follower.update(c.cue());
                 }
                 Unit u = follower.nextUnit();
+                if (padder != null) {
+                    u = padder.pad(u);
+                }
                 byte[] ts = muxer.mux(u);
                 out.write(ts);
                 units++;

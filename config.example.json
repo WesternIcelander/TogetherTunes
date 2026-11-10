@@ -10,7 +10,8 @@
   },
   "output": {
     "profile": "720p30",
-    "videoBitrateKbps": 3000
+    "videoBitrateKbps": 3000,
+    "audioOnlyBitrateKbps": 800
   },
   "ingest": {
     "maxUploadBytes": "4 GiB",

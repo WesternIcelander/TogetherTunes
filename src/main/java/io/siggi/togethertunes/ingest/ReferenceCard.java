@@ -21,9 +21,10 @@ import javax.imageio.ImageIO;
  *
  * <p>The card is a black still at the profile's size, encoded like every card
  * ({@link #encodeCard}). It lives in
- * {@code <data>/cards/<encoding>/reference.mp4} (e.g. {@code cards/720p30-3000k/}), with its avcC in
- * {@code reference.avcC}. The bitrate is part of the SPS (CBR HRD parameters), so each bitrate
- * has its own reference.
+ * {@code <data>/cards/<encoding>/reference.mp4} (e.g. {@code cards/720p30-3000k-v3/}), with its avcC in
+ * {@code reference.avcC}. Each encoding (profile and bitrate cap) has its own reference, like its
+ * own cards; the bitrate is no longer in the SPS (no HRD), so references of one profile at
+ * different caps hold the same avcC.
  *
  * <p>{@link #ensure} runs at startup. The first time, it creates both files. Afterwards the stored
  * avcC stays the reference, because the library was encoded against it, but a fresh card is still

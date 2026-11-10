@@ -20,8 +20,11 @@ import java.util.List;
  * @param ffprobe                  ffprobe command or path ({@code tools.ffprobe})
  * @param ytdlp                    yt-dlp command or path ({@code tools.ytdlp})
  * @param outputProfile            output profile ({@code output.profile})
- * @param outputVideoBitrateKbps   constant video bitrate of every encode in kb/s
- *                                 ({@code output.videoBitrateKbps}; defaults per profile)
+ * @param outputVideoBitrateKbps   video bitrate cap of every encode and the program output's
+ *                                 constant stream rate in kb/s ({@code output.videoBitrateKbps};
+ *                                 defaults per profile)
+ * @param outputAudioOnlyBitrateKbps constant stream rate of audio-only rooms' program output in
+ *                                 kb/s ({@code output.audioOnlyBitrateKbps}; default 800)
  * @param ingestWorkers            ingest worker count ({@code ingest.workers})
  * @param ingestMaxUploadBytes     upload size limit ({@code ingest.maxUploadBytes})
  * @param ingestMaxDurationSeconds media duration limit for uploads and yt-dlp
@@ -45,6 +48,7 @@ public record Config(
         String ytdlp,
         OutputProfile outputProfile,
         int outputVideoBitrateKbps,
+        int outputAudioOnlyBitrateKbps,
         int ingestWorkers,
         long ingestMaxUploadBytes,
         int ingestMaxDurationSeconds,
@@ -57,7 +61,7 @@ public record Config(
         trustedProxies = List.copyOf(trustedProxies);
     }
 
-    /** The output profile and video bitrate every encode is made for. */
+    /** The output profile and video bitrate cap every encode is made for. */
     public OutputEncoding outputEncoding() {
         return new OutputEncoding(outputProfile, outputVideoBitrateKbps);
     }

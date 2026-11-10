@@ -73,7 +73,8 @@ class ConfigLoaderTest {
         assertEquals(bin.resolve("yt-dlp").toString(), c.ytdlp());
         assertEquals(OutputProfile.P720_30, c.outputProfile());
         assertEquals(3000, c.outputVideoBitrateKbps());
-        assertEquals("720p30-3000k-v2", c.outputEncoding().id());
+        assertEquals("720p30-3000k-v3", c.outputEncoding().id());
+        assertEquals(800, c.outputAudioOnlyBitrateKbps());
         assertEquals(X264Preset.VERYFAST, c.ingestQuickPreset());
         assertEquals(X264Preset.SLOW, c.ingestQualityPreset());
         assertEquals(4, c.ingestWorkers());
@@ -152,11 +153,22 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void audioOnlyBitrate() throws ConfigException {
+        Config c = load("{\"http.publicBaseUrl\": \"https://music.example.com\", \"output\": {\"audioOnlyBitrateKbps\": 600}}");
+        assertEquals(600, c.outputAudioOnlyBitrateKbps());
+        env.put("TOGETHERTUNES_OUTPUT_AUDIO_ONLY_BITRATE_KBPS", "1200");
+        assertEquals(1200, load(URL_ONLY).outputAudioOnlyBitrateKbps());
+        env.put("TOGETHERTUNES_OUTPUT_AUDIO_ONLY_BITRATE_KBPS", "499");
+        assertProblem(fails(URL_ONLY), "between 500 and 25000");
+        env.remove("TOGETHERTUNES_OUTPUT_AUDIO_ONLY_BITRATE_KBPS");
+    }
+
+    @Test
     void videoBitrate() throws ConfigException {
         Config c = load("{\"http.publicBaseUrl\": \"https://music.example.com\", \"output\": {\"videoBitrateKbps\": 4500}}");
         assertEquals(4500, c.outputVideoBitrateKbps());
         assertEquals(new OutputEncoding(OutputProfile.P720_30, 4500), c.outputEncoding());
-        assertEquals("720p30-4500k-v2", c.outputEncoding().id());
+        assertEquals("720p30-4500k-v3", c.outputEncoding().id());
         env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "2500");
         assertEquals(2500, load(URL_ONLY).outputVideoBitrateKbps());
         env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "499");
@@ -207,7 +219,8 @@ class ConfigLoaderTest {
     void everyDocumentedKeyIsKnown() {
         // docs/architecture.md#configuration
         assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "data.dir", "db.url",
-                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps", "ingest.workers",
+                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps",
+                "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
                 "overlay.workers",
                 "overlay.cacheMaxBytes", "http.trustedProxies"), ConfigLoader.KEYS);

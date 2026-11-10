@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 class MainUploadPrecheckTest {
     private static Config config(String baseUrl) {
         return new Config("127.0.0.1", 0, baseUrl, List.of(), Path.of("data"), "jdbc:sqlite:x.db", null, null, null,
-                OutputProfile.P720_30, 3000, 1, Settings.GIB, 1800, X264Preset.VERYFAST, X264Preset.VERYFAST, 1,
+                OutputProfile.P720_30, 3000, 800, 1, Settings.GIB, 1800, X264Preset.VERYFAST, X264Preset.VERYFAST, 1,
                 Settings.GIB);
     }
 

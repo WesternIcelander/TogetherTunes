@@ -571,7 +571,7 @@ abstract class UploadsContract {
         assertEquals(ContentId.of(new ByteArrayInputStream(mp3)), contentIdOf(itemId), "the content ID is recorded");
         assertEquals(aliceId, row.get("added_by_user_id"));
         assertEquals("pending", row.get("status"));
-        assertEquals("720p30-3000k-v2", row.get("output_profile"));
+        assertEquals("720p30-3000k-v3", row.get("output_profile"));
         assertEquals(clock.millis(), ((Number) row.get("last_referenced_at")).longValue());
         assertEquals(List.of("upload"), queuedJobs(itemId));
         Path staged = IngestPipeline.stagingDir(data, itemId).resolve("source.mp3");

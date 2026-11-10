@@ -66,6 +66,15 @@ final class HarnessFixture {
     }
 
     static Media media(Tools tools, Path dir) throws Exception {
+        return media(tools, dir, null);
+    }
+
+    /**
+     * {@link #media(Tools, Path)} with every filler card encoded from the lavfi source
+     * {@code fillerSource} (e.g. a still {@code smptebars}, like real cards); null for the default
+     * moving ones.
+     */
+    static Media media(Tools tools, Path dir, String fillerSource) throws Exception {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         JobLog log = new JobLog();
         // laid out as ingest does: media/<itemId>/{mezz.mp4|audio.m4a,card.mp4,index.bin}
@@ -83,7 +92,8 @@ final class HarnessFixture {
         Map<Filler, CardGop> fillers = new EnumMap<>(Filler.class);
         for (Filler f : Filler.values()) {
             Path card = dir.resolve(f.name().toLowerCase() + ".mp4");
-            encode(tools, card, f == Filler.IDLE ? "mandelbrot" : "testsrc", 2, false);
+            encode(tools, card, fillerSource != null ? fillerSource : f == Filler.IDLE ? "mandelbrot" : "testsrc", 2,
+                    false);
             fillers.put(f, CardGop.load(tools, profile, card, log));
         }
         return new Media(media, vIndex.avcC(), fillers, SilenceFrame.generate(tools, log).frame());
@@ -95,16 +105,22 @@ final class HarnessFixture {
         for (int i = 0; i < minutes; i++) {
             cycle(script, i * 60_000L, i);
         }
+        return run(tools, m, script, minutes * 60_000L, 0, out);
+    }
+
+    /** Runs {@code script} for {@code durationMs} into {@code out}, padded to {@code streamBitrateBps} (0: unpadded). */
+    static OfflineHarness.Result run(Tools tools, Media m, ScriptedTimeline script, long durationMs,
+            long streamBitrateBps, Path out) throws Exception {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         try (ProgramMedia sources = new ProgramMedia(m.media(), profile, m.avcC(),
                 ProgramMedia.ffprobeCardLoader(tools, profile), m.fillers(), m.silence(), Runnable::run, 0,
                 script::startServerMs);
                 OutputStream os = new BufferedOutputStream(Files.newOutputStream(out))) {
-            return OfflineHarness.run(sources, m.avcC(), script, minutes * 60_000L, os);
+            return OfflineHarness.run(sources, m.avcC(), streamBitrateBps, script, durationMs, os);
         }
     }
 
-    private static void encode(Tools tools, Path out, String video, double seconds, boolean audio)
+    static void encode(Tools tools, Path out, String video, double seconds, boolean audio)
             throws Exception {
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", video + "=s=640x360:r=30"));
         if (audio) {
@@ -121,7 +137,7 @@ final class HarnessFixture {
         tools.ffmpeg(enc).run();
     }
 
-    private static void encodeAudio(Tools tools, Path out, double seconds) throws Exception {
+    static void encodeAudio(Tools tools, Path out, double seconds) throws Exception {
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", "sine=f=660:r=48000",
                 "-t", Double.toString(seconds)));
         enc.addAll(EncodeProfile.AUDIO_ARGS);

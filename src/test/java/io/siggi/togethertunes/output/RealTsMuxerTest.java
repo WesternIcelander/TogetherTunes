@@ -91,12 +91,15 @@ class RealTsMuxerTest {
             // idle
             b.play(new FillerSource(FillerSource.Filler.IDLE, card, silence));
             units.add(b.next());
-            for (Unit u : units) {
+            // padded to the encode cap while sending, as the pipeline does (nothing on disk is padded)
+            CbrPadder padder = new CbrPadder(4, profile.videoBitrateBps());
+            for (Unit unpadded : units) {
+                Unit u = padder.pad(unpadded);
                 assertNotNull(u);
                 videoFrames += u.video().size();
                 audioFrames += u.audio().size();
                 for (Unit.Video f : u.video()) {
-                    // AVCC, 4-byte lengths: count the filler data NAL units (type 12), the CBR padding
+                    // AVCC, 4-byte lengths: count the filler data NAL units (type 12), the padding
                     int pos = 0;
                     while (pos < f.data().length) {
                         int len = java.nio.ByteBuffer.wrap(f.data(), pos, 4).getInt();
@@ -158,8 +161,8 @@ class RealTsMuxerTest {
         assertEquals(videoFrames, nv, "every access unit");
         assertEquals(audioFrames, na, "every audio frame");
 
-        // CBR padding passes through: every filler NAL of the samples is in the .ts, byte for byte
-        assertTrue(fillerIn > videoFrames / 2, "the encodes are padded: " + fillerIn + " filler NALs");
+        // the padding passes through: every filler NAL of the samples is in the .ts, byte for byte
+        assertTrue(fillerIn > videoFrames / 2, "the units are padded: " + fillerIn + " filler NALs");
         Path h264 = dir.resolve("out.h264");
         tools.ffmpeg("-v", "error", "-i", out.toString(), "-map", "0:v", "-c", "copy", "-f", "h264", h264.toString()).run();
         long[] fillerOut = fillerNals(Files.readAllBytes(h264));

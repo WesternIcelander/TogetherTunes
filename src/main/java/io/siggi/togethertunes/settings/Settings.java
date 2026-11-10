@@ -114,16 +114,26 @@ public final class Settings {
     public static final SettingKey<Integer> ROOMS_REQUEST_HISTORY_DAYS = SettingKey.integer(
             "rooms.requestHistoryDays", 90, 0, 36_500);
 
-    // Output encoding (docs/library-and-ingest.md#re-encodes): changing either re-encodes every item.
+    // Output encoding (docs/library-and-ingest.md#re-encodes): changing either of the first two
+    // re-encodes every item; the audio-only stream rate only changes the packager's padding.
     /** The output profile every encode is made for. Default from the config file. */
     public static final SettingKey<OutputProfile> OUTPUT_PROFILE = SettingKey.enumeration(
             "output.profile", OutputProfile.class, OutputProfile.DEFAULT, OutputProfile::id);
     /**
-     * Constant video bitrate of every encode in kb/s; {@code null} (the built-in default) means the
-     * profile's own ({@link OutputEncoding#defaultVideoBitrateKbps}).
+     * Video bitrate cap of every encode in kb/s, also the constant stream rate the packager pads
+     * normal rooms' program output to; {@code null} (the built-in default) means the profile's own
+     * ({@link OutputEncoding#defaultVideoBitrateKbps}).
      */
     public static final SettingKey<Integer> OUTPUT_VIDEO_BITRATE_KBPS = SettingKey.optionalInteger(
             "output.videoBitrateKbps", OutputEncoding.MIN_VIDEO_BITRATE_KBPS, OutputEncoding.MAX_VIDEO_BITRATE_KBPS);
+    /**
+     * Constant video stream rate of audio-only rooms' program output in kb/s (cards only, so it may
+     * be below the cap; {@code docs/program-output.md#constant-rate-padding}). No re-encode. Default
+     * from the config file.
+     */
+    public static final SettingKey<Integer> OUTPUT_AUDIO_ONLY_BITRATE_KBPS = SettingKey.integer(
+            "output.audioOnlyBitrateKbps", OutputEncoding.DEFAULT_AUDIO_ONLY_BITRATE_KBPS,
+            OutputEncoding.MIN_VIDEO_BITRATE_KBPS, OutputEncoding.MAX_VIDEO_BITRATE_KBPS);
 
     // Outputs
     public static final SettingKey<Boolean> OUTPUTS_RTMP_ENABLED = SettingKey.bool("outputs.rtmp.enabled", true);
@@ -166,7 +176,7 @@ public final class Settings {
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,
                 STORAGE_MIN_FREE_BYTES,
                 ROOMS_REQUEST_HISTORY_DAYS,
-                OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
+                OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS, OUTPUT_AUDIO_ONLY_BITRATE_KBPS,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_RTMP_MAX_IDLE_STOP_MINUTES, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES)) {
             if (keys.put(k.name(), k) != null) {
@@ -187,7 +197,7 @@ public final class Settings {
     /**
      * Settings whose defaults for the config keys that are also admin settings come from the config
      * file ({@code docs/architecture.md#configuration}): {@code output.profile},
-     * {@code output.videoBitrateKbps}, {@code ingest.workers}, {@code ingest.maxUploadBytes},
+     * {@code output.videoBitrateKbps}, {@code output.audioOnlyBitrateKbps}, {@code ingest.workers}, {@code ingest.maxUploadBytes},
      * {@code ingest.maxDurationSeconds}, {@code ingest.quickPreset}, {@code ingest.qualityPreset},
      * {@code overlay.workers} and {@code overlay.cacheMaxBytes}. The admin UI can still override them.
      * A configured bitrate equal to its profile's default counts as "the profile's default"
@@ -204,6 +214,7 @@ public final class Settings {
         int bitrate = config.outputVideoBitrateKbps();
         d.put(OUTPUT_VIDEO_BITRATE_KBPS,
                 bitrate == OutputEncoding.defaultVideoBitrateKbps(config.outputProfile()) ? null : bitrate);
+        d.put(OUTPUT_AUDIO_ONLY_BITRATE_KBPS, config.outputAudioOnlyBitrateKbps());
         d.put(INGEST_WORKERS, Math.min(config.ingestWorkers(), MAX_WORKERS));
         d.put(INGEST_MAX_UPLOAD_BYTES, Math.min(config.ingestMaxUploadBytes(), MAX_BYTES));
         d.put(INGEST_MAX_DURATION_SECONDS, config.ingestMaxDurationSeconds());
@@ -458,6 +469,11 @@ public final class Settings {
     /** The {@code output.videoBitrateKbps} setting, or null for the profile's default. */
     public Integer outputVideoBitrateKbps() throws SQLException {
         return get(OUTPUT_VIDEO_BITRATE_KBPS);
+    }
+
+    /** Constant stream rate of audio-only rooms' program output in kb/s. */
+    public int outputAudioOnlyBitrateKbps() throws SQLException {
+        return get(OUTPUT_AUDIO_ONLY_BITRATE_KBPS);
     }
 
     /** The output encoding every encode is made for: {@code output.profile} at its effective bitrate. */

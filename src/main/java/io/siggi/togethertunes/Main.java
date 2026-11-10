@@ -728,7 +728,8 @@ public final class Main {
         AtomicReference<LoadedFillers> fillers = new AtomicReference<>();
         ReentrantLock fillersLock = new ReentrantLock();
         ProgramPipeline.EncodedOpener opener = () -> {
-            // Each start uses the encoding in use then, for its sources, cards and muxer alike.
+            // Each start uses the encoding in use then, for its sources, cards and muxer alike; the
+            // stream is padded to the encoding's cap (normal rooms: stream rate = cap).
             OutputAssets.Assets current = assets.current();
             if (current.reference() == null || current.fillerCards() == null) {
                 throw new IOException("program output unavailable: no reference or filler cards for "
@@ -755,7 +756,7 @@ public final class Main {
             ProgramMedia.ItemDirs dirs = id -> MediaVersions.versionDir(dataDir, id, currentVersion(database, id));
             return new ProgramPipeline.Opened(new ProgramMedia(dirs, current.encoding(), avcC, cardLoader,
                     cards, silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
-                    System::currentTimeMillis), avcC);
+                    System::currentTimeMillis), avcC, current.encoding().videoBitrateBps());
         };
         return new ProgramOutputs(new ProgramPipeline(opener, TimeSource.system(Clock.systemUTC())),
                 kinds, System::currentTimeMillis);

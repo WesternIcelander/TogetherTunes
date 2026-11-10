@@ -131,9 +131,20 @@ class CardEncoderTest {
         assertArrayEquals(ref.avcC(), ReferenceCard.readAvcC(out));
         checkCard(tools, out, profile);
         long size = Files.size(out);
-        // CBR: a 2 s card is R × 2 s / 8 bytes (padded with filler NALs) plus a little MP4 overhead
-        long expected = profile.videoBitrateBps() * 2 / 8;
-        assertTrue(size > expected * 0.97 && size < expected * 1.03 + 10_000, "card size " + size + ", expected " + expected);
+        // capped, not padded: a still 2 s card is far below R × 2 s / 8 bytes, and holds no filler
+        // NAL units (the packager pads the stream while sending)
+        long rate = profile.videoBitrateBps() * 2 / 8;
+        assertTrue(size < rate / 4, "card size " + size + ", the rate would be " + rate);
+        Path raw = dir.resolve("card.h264");
+        tools.ffmpeg("-v", "error", "-i", out.toString(), "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264",
+                raw.toString()).run();
+        byte[] annexB = Files.readAllBytes(raw);
+        for (int i = 0; i + 3 < annexB.length; i++) {
+            if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1) {
+                assertTrue((annexB[i + 3] & 0x1F) != 12, "filler NAL unit at " + i);
+                i += 3;
+            }
+        }
         assertEquals(List.of(), tempFiles(out.getParent()), "temporary files are cleaned up");
         assertTrue(log.tail().contains("-loop 1"), "ffmpeg command is logged");
     }
@@ -157,7 +168,7 @@ class CardEncoderTest {
         Path cards = dir.resolve("cards");
         // Simulate an encoder change: the stored reference avcC differs from what ffmpeg makes now.
         ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
-        Path avcFile = cards.resolve("720p30-3000k-v2").resolve(ReferenceCard.AVCC_FILE);
+        Path avcFile = cards.resolve("720p30-3000k-v3").resolve(ReferenceCard.AVCC_FILE);
         byte[] other = p720.avcC();
         other[other.length - 1] ^= 0x01;
         Files.write(avcFile, other);

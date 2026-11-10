@@ -77,15 +77,15 @@ abstract class IngestJobsContract {
 
         items.published(item, false, 61_234, OutputEncoding.defaultFor(OutputProfile.P1080_30), -17.25,
                 new Originals.Original("original.flac", "flac/flac", true, 3.25));
-        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30-6000k-v2", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
+        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30-6000k-v3", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
                 publishedRow(item));
         items.published(item, false, 1, OutputEncoding.defaultFor(OutputProfile.P720_30), null,
                 new Originals.Original("original.wma", "wmav2/asf", false, null));
-        assertArrayEquals(new Object[] {"audio", 1L, "720p30-3000k-v2", null, null, "original.wma", "wmav2/asf", 0, null},
+        assertArrayEquals(new Object[] {"audio", 1L, "720p30-3000k-v3", null, null, "original.wma", "wmav2/asf", 0, null},
                 publishedRow(item));
         // a video (or YouTube) publish clears an earlier original
         items.published(item, true, 2, OutputEncoding.defaultFor(OutputProfile.P720_30), -9.5, null);
-        assertArrayEquals(new Object[] {"video", 2L, "720p30-3000k-v2", -9.5, null, null, null, 0, null}, publishedRow(item));
+        assertArrayEquals(new Object[] {"video", 2L, "720p30-3000k-v3", -9.5, null, null, null, 0, null}, publishedRow(item));
         assertThrows(SQLException.class, () -> items.published("nope", false, 1,
                 OutputEncoding.defaultFor(OutputProfile.P720_30), null, null));
         // the preset columns: the short form records the reference preset as not the quality encode
@@ -538,13 +538,13 @@ abstract class IngestJobsContract {
                     ps.setString(2, id);
                     ps.executeUpdate();
                 }
-                ps.setString(1, "1080p30-6000k-v2");
+                ps.setString(1, "1080p30-6000k-v3");
                 ps.setString(2, current);
                 ps.executeUpdate();
                 ps.setString(1, "1080p30-6000k"); // the same encoding before ref=4 (encoder args v1)
                 ps.setString(2, olderArgs);
                 ps.executeUpdate();
-                ps.setString(1, "1080p30-8000k-v2"); // same profile, another bitrate
+                ps.setString(1, "1080p30-8000k-v3"); // same profile, another bitrate
                 ps.setString(2, otherRate);
                 ps.executeUpdate();
                 ps.setString(1, "1080p30"); // before CBR: the profile name only

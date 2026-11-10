@@ -139,23 +139,26 @@ class ReferenceCardTest {
         assertFalse(Arrays.equals(p720.avcC(), p1080.avcC()));
         ReferenceCard.AvcCMismatchException e = assertThrows(ReferenceCard.AvcCMismatchException.class,
                 () -> p720.verify(p1080.avcC(), "mezz.mp4"));
-        assertTrue(e.getMessage().startsWith("mezz.mp4: avcC differs from the 720p30-3000k-v2 reference card"), e.getMessage());
+        assertTrue(e.getMessage().startsWith("mezz.mp4: avcC differs from the 720p30-3000k-v3 reference card"), e.getMessage());
         assertThrows(ReferenceCard.AvcCMismatchException.class, () -> p720.verify(null, "x"));
     }
 
-    /** Each bitrate has its own reference (its own cards directory), and they differ. */
+    /**
+     * Each bitrate has its own reference (its own cards directory: the cap still re-encodes), but
+     * the bitrate is not in the SPS (no HRD), so their avcC are the same.
+     */
     @Test
     @Timeout(120)
-    void bitratesHaveDifferentReferences() throws Exception {
+    void bitratesHaveTheirOwnReferencesWithTheSameAvcC() throws Exception {
         Tools tools = tools();
         Path cards = dir.resolve("cards");
         ReferenceCard r3000 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         ReferenceCard r4000 = ReferenceCard.ensure(tools, cards, new OutputEncoding(OutputProfile.P720_30, 4000), null);
-        assertEquals(cards.resolve("720p30-3000k-v2").resolve(ReferenceCard.CARD_FILE), r3000.card());
-        assertEquals(cards.resolve("720p30-4000k-v2").resolve(ReferenceCard.CARD_FILE), r4000.card());
+        assertEquals(cards.resolve("720p30-3000k-v3").resolve(ReferenceCard.CARD_FILE), r3000.card());
+        assertEquals(cards.resolve("720p30-4000k-v3").resolve(ReferenceCard.CARD_FILE), r4000.card());
         assertTrue(r4000.created());
-        assertFalse(Arrays.equals(r3000.avcC(), r4000.avcC()));
-        assertThrows(ReferenceCard.AvcCMismatchException.class, () -> r3000.verify(r4000.avcC(), "mezz.mp4"));
+        assertArrayEquals(r3000.avcC(), r4000.avcC());
+        r3000.verify(r4000.avcC(), "mezz.mp4");
     }
 
     @Test
@@ -231,6 +234,6 @@ class ReferenceCardTest {
         ToolException e = assertThrows(ToolException.class,
                 () -> ReferenceCard.ensure(none, dir.resolve("cards"), OutputEncoding.defaultFor(OutputProfile.P720_30), null));
         assertEquals(ToolException.Kind.START_FAILED, e.kind());
-        assertFalse(Files.exists(dir.resolve("cards").resolve("720p30-3000k-v2").resolve(ReferenceCard.AVCC_FILE)));
+        assertFalse(Files.exists(dir.resolve("cards").resolve("720p30-3000k-v3").resolve(ReferenceCard.AVCC_FILE)));
     }
 }

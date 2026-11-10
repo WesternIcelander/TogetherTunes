@@ -243,7 +243,7 @@ abstract class YoutubeImportsContract {
         assertEquals(alice.userId(), item.get("added_by_user_id"));
         assertNull(item.get("added_by_guest_id"));
         assertEquals("pending", item.get("status"));
-        assertEquals("720p30-3000k-v2", item.get("output_profile"));
+        assertEquals("720p30-3000k-v3", item.get("output_profile"));
         assertNull(item.get("content_sha256"));
         assertEquals(0, ((Number) item.get("present_as_audio")).intValue());
         assertEquals(clock.millis(), ((Number) item.get("last_referenced_at")).longValue());

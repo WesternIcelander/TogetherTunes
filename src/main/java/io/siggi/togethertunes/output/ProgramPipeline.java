@@ -1,12 +1,14 @@
 package io.siggi.togethertunes.output;
 
+import io.siggi.togethertunes.media.AnnexB;
 import java.io.IOException;
 import java.util.Objects;
 
 /**
  * Builds a room's running program output ({@link ProgramOutputs.OutputFactory}): a fresh
  * {@link PacingClock} (the output clock starts over at {@link OutputClock#START}), {@link UnitBuilder},
- * {@link TimelineFollower} on the room's sources, {@link TsMuxer} and a started {@link Packager}.
+ * {@link TimelineFollower} on the room's sources, a {@link CbrPadder} (constant stream rate),
+ * {@link TsMuxer} and a started {@link Packager}.
  */
 public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
     private static final System.Logger LOG = System.getLogger(ProgramPipeline.class.getName());
@@ -26,11 +28,17 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
         Opened open() throws IOException;
     }
 
-    /** One output's sources and the reference avcC its muxer writes SPS/PPS from. */
-    public record Opened(TimelineFollower.SourceFactory sources, byte[] avcC) {
+    /**
+     * One output's sources, the reference avcC its muxer writes SPS/PPS from, and the constant video
+     * stream rate the packager pads to ({@code streamBitrateBps}; 0 = no padding, for tests).
+     */
+    public record Opened(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps) {
         public Opened {
             Objects.requireNonNull(sources, "sources");
             Objects.requireNonNull(avcC, "avcC");
+            if (streamBitrateBps < 0) {
+                throw new IllegalArgumentException("streamBitrateBps < 0");
+            }
         }
     }
 
@@ -38,14 +46,15 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
     private final TimeSource time;
 
     /**
-     * @param sources opens each output's sources
-     * @param avcC    the profile's reference avcC (what the muxer writes SPS/PPS from)
-     * @param time    real time in production
+     * @param sources          opens each output's sources
+     * @param avcC             the profile's reference avcC (what the muxer writes SPS/PPS from)
+     * @param streamBitrateBps the constant video rate to pad to (0: no padding)
+     * @param time             real time in production
      */
-    public ProgramPipeline(SourcesOpener sources, byte[] avcC, TimeSource time) {
+    public ProgramPipeline(SourcesOpener sources, byte[] avcC, long streamBitrateBps, TimeSource time) {
         Objects.requireNonNull(sources, "sources");
         byte[] fixed = Objects.requireNonNull(avcC, "avcC").clone();
-        this.opener = () -> new Opened(sources.open(), fixed);
+        this.opener = () -> new Opened(sources.open(), fixed, streamBitrateBps);
         this.time = Objects.requireNonNull(time, "time");
     }
 
@@ -64,7 +73,12 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
             PacingClock clock = new PacingClock(time);
             TimelineFollower follower = new TimelineFollower(new UnitBuilder(), src, clock, initial);
             TsMuxer muxer = new TsMuxer(avcC);
-            Packager packager = new Packager(roomId, follower, muxer::mux, clock, time);
+            Packager.Muxer mux = muxer::mux;
+            if (opened.streamBitrateBps() > 0) {
+                CbrPadder padder = new CbrPadder(new AnnexB(avcC).nalLengthSize(), opened.streamBitrateBps());
+                mux = u -> muxer.mux(padder.pad(u));
+            }
+            Packager packager = new Packager(roomId, follower, mux, clock, time);
             packager.start();
             return new Running(packager, follower, src);
         } catch (RuntimeException | IOException e) {

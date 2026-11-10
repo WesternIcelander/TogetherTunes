@@ -63,8 +63,9 @@ class EncodeProfileTest {
         assertEquals("60", option(args, "-keyint_min"));
         assertEquals("0", option(args, "-sc_threshold"));
         assertEquals("expr:gte(t,n_forced*2)", option(args, "-force_key_frames"));
-        assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1:ref=4:chroma-qp-offset=-2", option(args, "-x264-params"));
-        assertFalse(args.contains("-crf"), "constant bitrate, no CRF");
+        assertEquals("open-gop=0:ref=4:chroma-qp-offset=-2", option(args, "-x264-params"));
+        assertFalse(args.contains("-crf"), "a capped bitrate, no CRF");
+        assertFalse(args.contains("-minrate"), "no minimum: nothing on disk is padded");
         assertEquals(EncodeProfile.GOP_FRAMES, profile.fps() * EncodeProfile.GOP_MS / 1000);
         for (String arg : args) {
             assertFalse(arg.equals("-i") || arg.equals("-vf") || arg.equals("-r") || arg.equals("-s"),
@@ -83,7 +84,7 @@ class EncodeProfileTest {
             List<String> args = EncodeProfile.videoArgs(encoding, preset);
             assertEquals(preset.id(), option(args, "-preset"));
             String offset = preset == X264Preset.VERYFAST || preset == X264Preset.FASTER ? "-2" : "0";
-            assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1:ref=4:chroma-qp-offset=" + offset, option(args, "-x264-params"));
+            assertEquals("open-gop=0:ref=4:chroma-qp-offset=" + offset, option(args, "-x264-params"));
             assertEquals(reference.size(), args.size());
             for (int i = 0; i < args.size(); i++) {
                 if (!reference.get(i).equals(args.get(i))) {
@@ -96,22 +97,19 @@ class EncodeProfileTest {
 
     @Test
     @Execution(ExecutionMode.CONCURRENT)
-    void levelAndConstantRatePerEncoding() {
+    void levelAndRateCapPerEncoding() {
         List<String> p720 = EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P720_30));
         assertEquals("4.0", option(p720, "-level:v"));
         assertEquals("3000k", option(p720, "-b:v"));
-        assertEquals("3000k", option(p720, "-minrate"));
         assertEquals("3000k", option(p720, "-maxrate"));
         assertEquals("1500k", option(p720, "-bufsize"));
         List<String> p1080 = EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P1080_30));
         assertEquals("4.1", option(p1080, "-level:v"));
         assertEquals("6000k", option(p1080, "-b:v"));
-        assertEquals("6000k", option(p1080, "-minrate"));
         assertEquals("6000k", option(p1080, "-maxrate"));
         assertEquals("3000k", option(p1080, "-bufsize"));
         List<String> custom = EncodeProfile.videoArgs(new OutputEncoding(OutputProfile.P720_30, 4500));
         assertEquals("4500k", option(custom, "-b:v"));
-        assertEquals("4500k", option(custom, "-minrate"));
         assertEquals("4500k", option(custom, "-maxrate"));
         assertEquals("2250k", option(custom, "-bufsize"));
         assertNotEquals(p720, custom);
@@ -354,14 +352,38 @@ class EncodeProfileTest {
                 extradata(tools, encodeCard(tools, OutputEncoding.defaultFor(OutputProfile.P1080_30))));
     }
 
-    /** The bitrate is in the SPS (CBR HRD parameters), so another bitrate is another avcC. */
+    /**
+     * The bitrate is not in the SPS (no HRD parameters), so every bitrate gives the same avcC, for
+     * cards and moving video alike.
+     */
     @Test
     @Execution(ExecutionMode.CONCURRENT)
     @Timeout(120)
-    void bitratesHaveDifferentExtradata() throws Exception {
+    void bitratesShareTheExtradata() throws Exception {
         Tools tools = tools();
-        assertNotEquals(extradata(tools, encodeCard(tools, OutputEncoding.DEFAULT)),
-                extradata(tools, encodeCard(tools, new OutputEncoding(OutputProfile.P720_30, 4000))));
+        String reference = extradata(tools, encodeCard(tools, OutputEncoding.DEFAULT));
+        assertEquals(reference, extradata(tools, encodeCard(tools, new OutputEncoding(OutputProfile.P720_30, 4000))));
+        assertEquals(reference, extradata(tools, encodeCard(tools, new OutputEncoding(OutputProfile.P720_30, 800))));
+        assertEquals(reference, extradata(tools, encodeVideo(tools, new OutputEncoding(OutputProfile.P720_30, 1500),
+                "moving1500", "testsrc2=size=1280x720:rate=30:duration=2")));
+    }
+
+    /** The SPS carries no HRD parameters (as ffmpeg's trace_headers bitstream filter reads it). */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    @Timeout(120)
+    void noHrdInTheSps() throws Exception {
+        Tools tools = tools();
+        Path card = encodeCard(tools, OutputEncoding.DEFAULT);
+        // the whole trace (ToolResult keeps only the tail of stderr)
+        Process p = new ProcessBuilder(onPath("ffmpeg"), "-hide_banner", "-nostats", "-v", "info", "-i",
+                card.toString(), "-c:v", "copy", "-bsf:v", "trace_headers", "-frames:v", "1", "-f", "null", "-")
+                .redirectErrorStream(true).start();
+        String trace = new String(p.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals(0, p.waitFor(), trace);
+        assertTrue(trace.contains("nal_hrd_parameters_present_flag"), "the SPS was traced");
+        assertTrue(trace.matches("(?s).*nal_hrd_parameters_present_flag\\s+0\\s+=\\s+0.*"), "no NAL HRD");
+        assertTrue(trace.matches("(?s).*vcl_hrd_parameters_present_flag\\s+0\\s+=\\s+0.*"), "no VCL HRD");
     }
 
     /** Bytes per 2 s GOP of the video track, from ffprobe's packet list. */
@@ -390,34 +412,37 @@ class EncodeProfileTest {
     }
 
     /**
-     * Every encode is CBR: each 2 s GOP of a moving source and of a still card carries
-     * {@code R × 2 s / 8} bytes within a few percent, the still card padded with filler NALs.
+     * Every encode is capped at the rate, not padded: no 2 s GOP of a moving source goes above
+     * {@code R × 2 s / 8} by more than the VBV buffer allows (and the source as a whole stays under
+     * the cap), and a still card is small and holds no filler NAL units (the packager pads the
+     * stream while sending, {@code output.CbrPadder}).
      */
     @Test
     @Execution(ExecutionMode.CONCURRENT)
     @Timeout(180)
-    void encodesAreConstantBitrate() throws Exception {
+    void encodesAreCappedNotPadded() throws Exception {
         Tools tools = tools();
         OutputEncoding encoding = new OutputEncoding(OutputProfile.P720_30, 2000);
         double target = encoding.videoBitrateBps() * (EncodeProfile.GOP_MS / 1000.0) / 8;
+        double buffer = encoding.videoBitrateBps() / 8.0 * EncodeProfile.BUFSIZE_MS / 1000;
 
         Path video = encodeVideo(tools, encoding, "moving", "testsrc2=size=1280x720:rate=30:duration=8");
         List<Long> videoGops = gopBytes(tools, video);
         assertEquals(4, videoGops.size(), videoGops.toString());
+        long total = 0;
         for (long bytes : videoGops) {
-            assertEquals(target, bytes, target * 0.03, "moving GOPs " + videoGops);
+            assertTrue(bytes <= target + buffer, "moving GOPs " + videoGops);
+            total += bytes;
         }
+        assertTrue(total <= 4 * target + buffer, "moving GOPs " + videoGops);
 
         Path card = encodeCard(tools, encoding);
         List<Long> cardGops = gopBytes(tools, card);
         assertEquals(1, cardGops.size());
-        assertEquals(target, cardGops.get(0), target * 0.03, "a still card is padded to the rate: " + cardGops);
-
-        // the padding is H.264 filler data (NAL type 12), most of the card's bytes
+        assertTrue(cardGops.get(0) < target / 10, "a still card is small: " + cardGops);
         Path raw = dir.resolve("card.h264");
         tools.ffmpeg("-i", card.toString(), "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264",
                 raw.toString()).run();
-        int[] types = nalTypes(Files.readAllBytes(raw));
-        assertTrue(types[12] >= 59, "filler NALs: " + types[12]);
+        assertEquals(0, nalTypes(Files.readAllBytes(raw))[12], "no filler NAL units on disk");
     }
 }
