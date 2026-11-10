@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.CardRenderer.Filler;
 import java.awt.image.BufferedImage;
@@ -29,13 +30,14 @@ class FillerCardsTest {
     @ParameterizedTest
     @EnumSource(OutputProfile.class)
     @Timeout(180)
-    void encodesEveryFillerOnceAndReusesThem(OutputProfile profile) throws Exception {
+    void encodesEveryFillerOnceAndReusesThem(OutputProfile p) throws Exception {
+        OutputEncoding profile = OutputEncoding.defaultFor(p);
         Tools tools = CardEncoderTest.tools();
         Path cards = dir.resolve("cards");
         ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
 
         FillerCards fillers = FillerCards.ensure(tools, cards, ref, null);
-        assertEquals(profile, fillers.profile());
+        assertEquals(profile, fillers.encoding());
         assertEquals(Filler.values().length, fillers.encoded());
         Path profileDir = cards.resolve(profile.id());
         assertEquals(profileDir.resolve("paused.mp4"), fillers.card(Filler.PAUSED));
@@ -69,7 +71,7 @@ class FillerCardsTest {
     void missingStaleOrDamagedCardsAreReencoded() throws Exception {
         Tools tools = CardEncoderTest.tools();
         Path cards = dir.resolve("cards");
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
         FillerCards fillers = FillerCards.ensure(tools, cards, ref, null);
         Path profileDir = cards.resolve(profile.id());
@@ -94,7 +96,7 @@ class FillerCardsTest {
     void encoderChangeKeepsCurrentCardsButCannotMakeNewOnes() throws Exception {
         Tools tools = CardEncoderTest.tools();
         Path cards = dir.resolve("cards");
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
         FillerCards.ensure(tools, cards, ref, null);
 
@@ -115,7 +117,7 @@ class FillerCardsTest {
     void fingerprintDependsOnPixelsProfileAndReference() throws Exception {
         Tools tools = CardEncoderTest.tools();
         Path cards = dir.resolve("cards");
-        ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputProfile.P720_30, null);
+        ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         CardRenderer renderer = new CardRenderer(OutputProfile.P720_30);
         BufferedImage paused = renderer.renderFiller(Filler.PAUSED);
         String key = FillerCards.fingerprint(paused, p720);
@@ -124,7 +126,7 @@ class FillerCardsTest {
         assertNotEquals(key, FillerCards.fingerprint(renderer.renderFiller(Filler.LOADING), p720));
         paused.setRGB(5, 5, 0xffffff);
         assertNotEquals(key, FillerCards.fingerprint(paused, p720));
-        ReferenceCard p1080 = ReferenceCard.ensure(tools, cards, OutputProfile.P1080_30, null);
+        ReferenceCard p1080 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
         assertFalse(key.equals(FillerCards.fingerprint(renderer.renderFiller(Filler.PAUSED), p1080)));
     }
 }

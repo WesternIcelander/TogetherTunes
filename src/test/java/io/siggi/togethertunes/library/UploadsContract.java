@@ -23,6 +23,7 @@ import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.auth.Sessions;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -144,7 +145,7 @@ abstract class UploadsContract {
     private Uploads uploads() {
         Tools t = tools != null ? tools : new Tools(null, null, null);
         return new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
-        }, OutputProfile.P720_30, MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
+        }, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
     }
 
     private WebServer start(Uploads u) throws Exception {
@@ -501,7 +502,7 @@ abstract class UploadsContract {
         assertEquals(sha256(mp3), row.get("content_sha256"));
         assertEquals(aliceId, row.get("added_by_user_id"));
         assertEquals("pending", row.get("status"));
-        assertEquals("720p30", row.get("output_profile"));
+        assertEquals("720p30-3000k", row.get("output_profile"));
         assertEquals(clock.millis(), ((Number) row.get("last_referenced_at")).longValue());
         assertEquals(List.of("upload"), queuedJobs(itemId));
         Path staged = IngestPipeline.stagingDir(data, itemId).resolve("source.mp3");
@@ -671,7 +672,7 @@ abstract class UploadsContract {
         assertEquals("Flac Song", item(itemId).get("title"));
         assertEquals("Flac Artist", item(itemId).get("artist"));
 
-        ReferenceCard reference = ReferenceCard.ensure(tools, data.cards(), OutputProfile.P720_30, null);
+        ReferenceCard reference = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         IngestJobs jobs = new IngestJobs(db);
         IngestQueue queue = new IngestQueue(jobs, 1, new IngestPipeline(tools, data, new IngestItems(db), reference,
                 MAX_SECONDS), Clock.systemUTC(), Duration.ofMillis(100), Duration.ZERO);

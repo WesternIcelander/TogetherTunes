@@ -75,6 +75,7 @@ public final class ConfigLoader {
     public static final String TOOLS_FFPROBE = "tools.ffprobe";
     public static final String TOOLS_YTDLP = "tools.ytdlp";
     public static final String OUTPUT_PROFILE = "output.profile";
+    public static final String OUTPUT_VIDEO_BITRATE_KBPS = "output.videoBitrateKbps";
     public static final String INGEST_WORKERS = "ingest.workers";
     public static final String INGEST_MAX_UPLOAD_BYTES = "ingest.maxUploadBytes";
     public static final String INGEST_MAX_DURATION_SECONDS = "ingest.maxDurationSeconds";
@@ -84,7 +85,7 @@ public final class ConfigLoader {
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
             HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, DATA_DIR, DB_URL,
-            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, OUTPUT_PROFILE,
+            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES);
 
@@ -304,6 +305,9 @@ public final class ConfigLoader {
             }
             return p;
         });
+        int videoBitrate = v.integer(OUTPUT_VIDEO_BITRATE_KBPS,
+                OutputEncoding.defaultVideoBitrateKbps(profile == null ? OutputProfile.DEFAULT : profile),
+                OutputEncoding.MIN_VIDEO_BITRATE_KBPS, OutputEncoding.MAX_VIDEO_BITRATE_KBPS);
 
         int ingestWorkers = v.integer(INGEST_WORKERS, Math.max(1, availableProcessors / 2), 1, MAX_WORKERS);
         long maxUpload = v.size(INGEST_MAX_UPLOAD_BYTES, DEFAULT_MAX_UPLOAD_BYTES, 1);
@@ -315,7 +319,7 @@ public final class ConfigLoader {
             throw new ConfigException(problems);
         }
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
-                ffmpeg, ffprobe, ytdlp, profile, ingestWorkers, maxUpload, maxDuration,
+                ffmpeg, ffprobe, ytdlp, profile, videoBitrate, ingestWorkers, maxUpload, maxDuration,
                 overlayWorkers, overlayCache);
         return new Loaded(config, json == null ? null : file, warnings);
     }

@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
@@ -36,9 +37,10 @@ class EncodeProfileTest {
 
     @ParameterizedTest
     @EnumSource(OutputProfile.class)
-    void argumentsFixTheEncoder(OutputProfile profile) {
+    void argumentsFixTheEncoder(OutputProfile p) {
+        OutputEncoding profile = OutputEncoding.defaultFor(p);
         List<String> args = EncodeProfile.videoArgs(profile);
-        assertSame(args, EncodeProfile.videoArgs(profile), "one constant per profile");
+        assertEquals(args, EncodeProfile.videoArgs(profile), "equal encodings, equal arguments");
         assertThrows(UnsupportedOperationException.class, () -> args.add("-tune"));
         assertEquals(0, args.size() % 2, "options come in name/value pairs");
         assertEquals("libx264", option(args, "-c:v"));
@@ -55,7 +57,8 @@ class EncodeProfileTest {
         assertEquals("60", option(args, "-keyint_min"));
         assertEquals("0", option(args, "-sc_threshold"));
         assertEquals("expr:gte(t,n_forced*2)", option(args, "-force_key_frames"));
-        assertEquals("open-gop=0", option(args, "-x264-params"));
+        assertEquals("open-gop=0:nal-hrd=cbr:vbv-init=1", option(args, "-x264-params"));
+        assertFalse(args.contains("-crf"), "constant bitrate, no CRF");
         assertEquals(EncodeProfile.GOP_FRAMES, profile.fps() * EncodeProfile.GOP_MS / 1000);
         for (String arg : args) {
             assertFalse(arg.equals("-i") || arg.equals("-vf") || arg.equals("-r") || arg.equals("-s"),
@@ -64,15 +67,25 @@ class EncodeProfileTest {
     }
 
     @Test
-    void levelAndRateCapPerProfile() {
-        assertEquals("4.0", option(EncodeProfile.VIDEO_ARGS_720P30, "-level:v"));
-        assertEquals("3M", option(EncodeProfile.VIDEO_ARGS_720P30, "-maxrate"));
-        assertEquals("6M", option(EncodeProfile.VIDEO_ARGS_720P30, "-bufsize"));
-        assertEquals("4.1", option(EncodeProfile.VIDEO_ARGS_1080P30, "-level:v"));
-        assertEquals("6M", option(EncodeProfile.VIDEO_ARGS_1080P30, "-maxrate"));
-        assertEquals("12M", option(EncodeProfile.VIDEO_ARGS_1080P30, "-bufsize"));
-        assertSame(EncodeProfile.VIDEO_ARGS_720P30, EncodeProfile.videoArgs(OutputProfile.P720_30));
-        assertSame(EncodeProfile.VIDEO_ARGS_1080P30, EncodeProfile.videoArgs(OutputProfile.P1080_30));
+    void levelAndConstantRatePerEncoding() {
+        List<String> p720 = EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P720_30));
+        assertEquals("4.0", option(p720, "-level:v"));
+        assertEquals("3000k", option(p720, "-b:v"));
+        assertEquals("3000k", option(p720, "-minrate"));
+        assertEquals("3000k", option(p720, "-maxrate"));
+        assertEquals("1500k", option(p720, "-bufsize"));
+        List<String> p1080 = EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P1080_30));
+        assertEquals("4.1", option(p1080, "-level:v"));
+        assertEquals("6000k", option(p1080, "-b:v"));
+        assertEquals("6000k", option(p1080, "-minrate"));
+        assertEquals("6000k", option(p1080, "-maxrate"));
+        assertEquals("3000k", option(p1080, "-bufsize"));
+        List<String> custom = EncodeProfile.videoArgs(new OutputEncoding(OutputProfile.P720_30, 4500));
+        assertEquals("4500k", option(custom, "-b:v"));
+        assertEquals("4500k", option(custom, "-minrate"));
+        assertEquals("4500k", option(custom, "-maxrate"));
+        assertEquals("2250k", option(custom, "-bufsize"));
+        assertNotEquals(p720, custom);
     }
 
     @Test
@@ -111,7 +124,7 @@ class EncodeProfileTest {
     }
 
     /** A lavfi source scaled to the profile: a mezzanine-style encode. */
-    private Path encodeVideo(Tools tools, OutputProfile profile, String name, String source) throws Exception {
+    private Path encodeVideo(Tools tools, OutputEncoding profile, String name, String source) throws Exception {
         Path out = dir.resolve(name + ".mp4");
         List<String> args = new ArrayList<>(List.of("-f", "lavfi", "-i", source,
                 "-vf", EncodeProfile.scaleFilter(profile)));
@@ -122,7 +135,7 @@ class EncodeProfileTest {
     }
 
     /** A still image at the profile size, encoded as one 2 s card GOP. */
-    private Path encodeCard(Tools tools, OutputProfile profile) throws Exception {
+    private Path encodeCard(Tools tools, OutputEncoding profile) throws Exception {
         Path png = dir.resolve("card-" + profile + ".png");
         tools.ffmpeg("-f", "lavfi", "-i", "color=c=0x336699:size=" + profile.width() + "x" + profile.height(),
                 "-frames:v", "1", png.toString()).run();
@@ -160,7 +173,7 @@ class EncodeProfileTest {
     }
 
     /** Checks the stream parameters and that IDRs sit exactly on every 60th frame, nothing else. */
-    private static void checkStructure(Tools tools, Path file, OutputProfile profile, int expectedFrames) throws Exception {
+    private static void checkStructure(Tools tools, Path file, OutputEncoding profile, int expectedFrames) throws Exception {
         String stream = probe(tools, file, "-show_entries",
                 "stream=codec_name,profile,width,height,pix_fmt,has_b_frames,sample_aspect_ratio,r_frame_rate",
                 "-of", "default=noprint_wrappers=1").trim();
@@ -204,7 +217,8 @@ class EncodeProfileTest {
     @ParameterizedTest
     @EnumSource(OutputProfile.class)
     @Timeout(180)
-    void everyEncodeSharesTheExtradata(OutputProfile profile) throws Exception {
+    void everyEncodeSharesTheExtradata(OutputProfile p) throws Exception {
+        OutputEncoding profile = OutputEncoding.defaultFor(p);
         Tools tools = tools();
         Path landscape24 = encodeVideo(tools, profile, "landscape24",
                 "testsrc2=size=640x480:rate=24:duration=4.5");
@@ -230,7 +244,7 @@ class EncodeProfileTest {
     @Timeout(180)
     void colourTagsOfTheSourceDontChangeTheExtradata() throws Exception {
         Tools tools = tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.DEFAULT;
         String reference = extradata(tools, encodeCard(tools, profile));
         String src = "testsrc2=size=640x360:rate=30:duration=2";
         List<List<String>> sources = List.of(
@@ -268,7 +282,72 @@ class EncodeProfileTest {
     @Timeout(120)
     void profilesHaveDifferentExtradata() throws Exception {
         Tools tools = tools();
-        assertNotEquals(extradata(tools, encodeCard(tools, OutputProfile.P720_30)),
-                extradata(tools, encodeCard(tools, OutputProfile.P1080_30)));
+        assertNotEquals(extradata(tools, encodeCard(tools, OutputEncoding.defaultFor(OutputProfile.P720_30))),
+                extradata(tools, encodeCard(tools, OutputEncoding.defaultFor(OutputProfile.P1080_30))));
+    }
+
+    /** The bitrate is in the SPS (CBR HRD parameters), so another bitrate is another avcC. */
+    @Test
+    @Timeout(120)
+    void bitratesHaveDifferentExtradata() throws Exception {
+        Tools tools = tools();
+        assertNotEquals(extradata(tools, encodeCard(tools, OutputEncoding.DEFAULT)),
+                extradata(tools, encodeCard(tools, new OutputEncoding(OutputProfile.P720_30, 4000))));
+    }
+
+    /** Bytes per 2 s GOP of the video track, from ffprobe's packet list. */
+    private static List<Long> gopBytes(Tools tools, Path file) throws Exception {
+        List<Long> gops = new ArrayList<>();
+        for (String line : probe(tools, file, "-show_entries", "packet=size,flags", "-of", "csv=p=0").trim().split("\n")) {
+            String[] f = line.split(",");
+            if (f[1].startsWith("K")) {
+                gops.add(0L);
+            }
+            gops.set(gops.size() - 1, gops.get(gops.size() - 1) + Long.parseLong(f[0]));
+        }
+        return gops;
+    }
+
+    /** Annex B NAL unit types in a raw H.264 stream, counted by type. */
+    private static int[] nalTypes(byte[] annexB) {
+        int[] counts = new int[32];
+        for (int i = 0; i + 3 < annexB.length; i++) {
+            if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1) {
+                counts[annexB[i + 3] & 0x1F]++;
+                i += 3;
+            }
+        }
+        return counts;
+    }
+
+    /**
+     * Every encode is CBR: each 2 s GOP of a moving source and of a still card carries
+     * {@code R × 2 s / 8} bytes within a few percent, the still card padded with filler NALs.
+     */
+    @Test
+    @Timeout(180)
+    void encodesAreConstantBitrate() throws Exception {
+        Tools tools = tools();
+        OutputEncoding encoding = new OutputEncoding(OutputProfile.P720_30, 2000);
+        double target = encoding.videoBitrateBps() * (EncodeProfile.GOP_MS / 1000.0) / 8;
+
+        Path video = encodeVideo(tools, encoding, "moving", "testsrc2=size=1280x720:rate=30:duration=8");
+        List<Long> videoGops = gopBytes(tools, video);
+        assertEquals(4, videoGops.size(), videoGops.toString());
+        for (long bytes : videoGops) {
+            assertEquals(target, bytes, target * 0.03, "moving GOPs " + videoGops);
+        }
+
+        Path card = encodeCard(tools, encoding);
+        List<Long> cardGops = gopBytes(tools, card);
+        assertEquals(1, cardGops.size());
+        assertEquals(target, cardGops.get(0), target * 0.03, "a still card is padded to the rate: " + cardGops);
+
+        // the padding is H.264 filler data (NAL type 12), most of the card's bytes
+        Path raw = dir.resolve("card.h264");
+        tools.ffmpeg("-i", card.toString(), "-c:v", "copy", "-bsf:v", "h264_mp4toannexb", "-f", "h264",
+                raw.toString()).run();
+        int[] types = nalTypes(Files.readAllBytes(raw));
+        assertTrue(types[12] >= 59, "filler NALs: " + types[12]);
     }
 }

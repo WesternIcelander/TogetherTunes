@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.Database;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -27,7 +27,7 @@ public final class IngestItems {
      * @param kind      {@code audio} | {@code video} (as stored; the probe decides it anew)
      * @param source    {@code upload} | {@code youtube}
      * @param youtubeId the video ID for YouTube items, else null
-     * @param outputProfile the profile its files were encoded for ({@code output_profile}), or null
+     * @param outputProfile the encoding (profile and bitrate id) its files were encoded for ({@code output_profile}), or null
      * @param originalFile  the kept original in the item directory ({@code original_file}), or null
      * @param loudnessLufs  the source's integrated loudness as measured at ingest, or null
      */
@@ -60,13 +60,13 @@ public final class IngestItems {
 
     /**
      * Records what the publish step produced: the item's kind, the duration of its
-     * {@code audio.m4a}, the profile it was encoded for, the source's integrated loudness
+     * {@code audio.m4a}, the encoding it was made for, the source's integrated loudness
      * (null if it couldn't be measured, e.g. digital silence) and the kept original (null if none,
      * i.e. re-encoded from the previous encode; the {@code original_*} columns are then cleared). A purged
      * item that was fetched again is no longer purged. The status itself becomes {@code ready}
      * when the queue marks the job done.
      */
-    public void published(String id, boolean video, long durationMs, OutputProfile profile, Double loudnessLufs,
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, Double loudnessLufs,
                           Originals.Original original) throws SQLException {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
@@ -74,7 +74,7 @@ public final class IngestItems {
                     + " original_web = ?, original_gain_db = ?, purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
                 ps.setLong(2, durationMs);
-                ps.setString(3, profile.id());
+                ps.setString(3, encoding.id());
                 setDouble(ps, 4, loudnessLufs);
                 ps.setString(5, original == null ? null : original.file());
                 ps.setString(6, original == null ? null : original.codec());

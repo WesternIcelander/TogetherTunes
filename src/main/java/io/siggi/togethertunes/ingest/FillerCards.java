@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.ingest.CardRenderer.Filler;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
@@ -19,8 +19,8 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * The server-wide filler cards (Paused, Queue is empty, Loading…) for one output profile, encoded
- * once and kept in {@code <data>/cards/<profile>/<id>.mp4} ({@code paused.mp4}, {@code idle.mp4},
+ * The server-wide filler cards (Paused, Queue is empty, Loading…) for one output encoding, encoded
+ * once and kept in {@code <data>/cards/<encoding>/<id>.mp4} ({@code paused.mp4}, {@code idle.mp4},
  * {@code loading.mp4}). The packager pairs them with the silence frame when a room is paused, idle
  * or loading ({@code docs/program-output.md}); rooms with the QR overlay get their own overlaid
  * copies instead ({@code docs/overlay.md}).
@@ -28,30 +28,30 @@ import java.util.Objects;
  * <p>{@link #ensure} runs at startup. Each card is rendered (cheap) and fingerprinted together with
  * the encoder arguments and the reference avcC; the fingerprint is stored next to the card in
  * {@code <id>.key}. A card whose fingerprint still matches and whose avcC matches the reference is
- * kept; otherwise (first start, new renderer or fonts, new profile arguments, missing or damaged
+ * kept; otherwise (first start, new renderer or fonts, new encoder arguments or bitrate, missing or damaged
  * file) it is re-encoded with {@link CardEncoder#encode}, which checks the avcC before publishing.
  */
 public final class FillerCards {
     /** Suffix of the fingerprint file stored next to each card. */
     static final String KEY_SUFFIX = ".key";
 
-    private final OutputProfile profile;
+    private final OutputEncoding encoding;
     private final Map<Filler, Path> cards;
     private final int encoded;
 
-    private FillerCards(OutputProfile profile, Map<Filler, Path> cards, int encoded) {
-        this.profile = profile;
+    private FillerCards(OutputEncoding encoding, Map<Filler, Path> cards, int encoded) {
+        this.encoding = encoding;
         this.cards = Collections.unmodifiableMap(cards);
         this.encoded = encoded;
     }
 
-    /** Where a filler card lives: {@code <cardsDir>/<profile>/<id>.mp4}. */
-    public static Path cardFile(Path cardsDir, OutputProfile profile, Filler filler) {
-        return ReferenceCard.profileDir(cardsDir, profile).resolve(filler.id() + ".mp4");
+    /** Where a filler card lives: {@code <cardsDir>/<encoding>/<id>.mp4}. */
+    public static Path cardFile(Path cardsDir, OutputEncoding encoding, Filler filler) {
+        return ReferenceCard.encodingDir(cardsDir, encoding).resolve(filler.id() + ".mp4");
     }
 
     /**
-     * Makes sure every filler card exists and is current for {@code reference}'s profile,
+     * Makes sure every filler card exists and is current for {@code reference}'s encoding,
      * re-encoding the ones that aren't.
      *
      * @param log job log for the ffmpeg output, or null
@@ -61,12 +61,12 @@ public final class FillerCards {
     public static FillerCards ensure(Tools tools, Path cardsDir, ReferenceCard reference, JobLog log)
             throws ToolException, IOException, InterruptedException, ReferenceCard.AvcCMismatchException {
         Objects.requireNonNull(reference, "reference");
-        OutputProfile profile = reference.profile();
-        CardRenderer renderer = new CardRenderer(profile);
+        OutputEncoding encoding = reference.encoding();
+        CardRenderer renderer = new CardRenderer(encoding.profile());
         Map<Filler, Path> cards = new EnumMap<>(Filler.class);
         int encoded = 0;
         for (Filler filler : Filler.values()) {
-            Path card = cardFile(cardsDir, profile, filler);
+            Path card = cardFile(cardsDir, encoding, filler);
             Path keyFile = card.resolveSibling(filler.id() + KEY_SUFFIX);
             BufferedImage image = renderer.renderFiller(filler);
             String key = fingerprint(image, reference);
@@ -84,7 +84,7 @@ public final class FillerCards {
             }
             cards.put(filler, card);
         }
-        return new FillerCards(profile, cards, encoded);
+        return new FillerCards(encoding, cards, encoded);
     }
 
     /** Whether the stored card was made from the same image and arguments and has the reference avcC. */
@@ -103,7 +103,7 @@ public final class FillerCards {
     }
 
     /**
-     * SHA-256 over everything a card's bytes depend on: the profile, the encoder arguments and
+     * SHA-256 over everything a card's bytes depend on: the encoding, the encoder arguments (incl. the bitrate) and
      * filter, the reference avcC, and the rendered pixels.
      */
     static String fingerprint(BufferedImage image, ReferenceCard reference) {
@@ -113,9 +113,9 @@ public final class FillerCards {
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException(e);
         }
-        OutputProfile profile = reference.profile();
-        sha.update(("card v1\n" + profile.id() + "\n" + EncodeProfile.scaleFilter(profile) + "\n"
-                + String.join(" ", EncodeProfile.videoArgs(profile)) + "\n").getBytes(StandardCharsets.UTF_8));
+        OutputEncoding encoding = reference.encoding();
+        sha.update(("card v1\n" + encoding.id() + "\n" + EncodeProfile.scaleFilter(encoding) + "\n"
+                + String.join(" ", EncodeProfile.videoArgs(encoding)) + "\n").getBytes(StandardCharsets.UTF_8));
         sha.update(reference.avcC());
         ByteBuffer header = ByteBuffer.allocate(8).putInt(image.getWidth()).putInt(image.getHeight());
         sha.update(header.array());
@@ -129,8 +129,8 @@ public final class FillerCards {
         return HexFormat.of().formatHex(sha.digest());
     }
 
-    public OutputProfile profile() {
-        return profile;
+    public OutputEncoding encoding() {
+        return encoding;
     }
 
     /** The encoded card for {@code filler}. */

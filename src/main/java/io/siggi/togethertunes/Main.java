@@ -351,10 +351,10 @@ public final class Main {
         IngestQueue queue = new IngestQueue(jobs, config.ingestWorkers(), handler);
         if (referenceCard != null) {
             try {
-                int reencodes = jobs.enqueueReencodes(referenceCard.profile());
+                int reencodes = jobs.enqueueReencodes(referenceCard.encoding());
                 if (reencodes > 0) {
-                    err.println("Queued " + reencodes + " re-encode jobs for output profile "
-                            + referenceCard.profile().id() + " (items encoded for another profile)");
+                    err.println("Queued " + reencodes + " re-encode jobs for output encoding "
+                            + referenceCard.encoding().id() + " (items encoded for another profile or video bitrate)");
                 }
             } catch (SQLException e) {
                 err.println("WARNING: could not queue re-encode jobs for the output profile: " + e.getMessage());
@@ -374,7 +374,7 @@ public final class Main {
      * quota comes from the settings.
      */
     static Uploads uploads(Config config, DataDir dataDir, Database database, IngestQueue ingest, Settings settings) {
-        return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
+        return new Uploads(database, dataDir, Tools.from(config), ingest.jobs(), ingest::wake, config.outputEncoding(),
                 config.ingestMaxUploadBytes(), config.ingestMaxDurationSeconds(),
                 new GuestUploadQuota(database, settings, Clock.systemUTC()), Clock.systemUTC());
     }
@@ -385,7 +385,7 @@ public final class Main {
      */
     static YoutubeImports youtubeImports(Config config, Database database, IngestQueue ingest,
                                          Supplier<String> cookiesFile) {
-        return new YoutubeImports(database, Tools.from(config), ingest.jobs(), ingest::wake, config.outputProfile(),
+        return new YoutubeImports(database, Tools.from(config), ingest.jobs(), ingest::wake, config.outputEncoding(),
                 config.ingestMaxDurationSeconds(), cookiesFile, Clock.systemUTC());
     }
 
@@ -414,18 +414,18 @@ public final class Main {
             throws InterruptedException {
         Tools tools = Tools.from(config);
         try {
-            ReferenceCard card = ReferenceCard.ensure(tools, dataDir.cards(), config.outputProfile(), null);
+            ReferenceCard card = ReferenceCard.ensure(tools, dataDir.cards(), config.outputEncoding(), null);
             if (card.created()) {
-                out.println("Created the " + config.outputProfile() + " reference card in " + card.card());
+                out.println("Created the " + config.outputEncoding() + " reference card in " + card.card());
             }
             if (card.encoderChanged()) {
-                err.println("WARNING: ffmpeg/x264 no longer reproduces the " + config.outputProfile()
-                        + " reference card's avcC (" + ReferenceCard.profileDir(dataDir.cards(), config.outputProfile())
+                err.println("WARNING: ffmpeg/x264 no longer reproduces the " + config.outputEncoding()
+                        + " reference card's avcC (" + ReferenceCard.encodingDir(dataDir.cards(), config.outputEncoding())
                         + "). New encodes will fail the avcC check until the library is re-encoded against a new reference.");
             }
             return card;
         } catch (ToolException | IOException e) {
-            err.println("WARNING: could not create the " + config.outputProfile()
+            err.println("WARNING: could not create the " + config.outputEncoding()
                     + " reference card; ingest won't work: " + e.getMessage());
             return null;
         }
@@ -444,12 +444,12 @@ public final class Main {
         try {
             FillerCards cards = FillerCards.ensure(Tools.from(config), dataDir.cards(), reference, null);
             if (cards.encoded() > 0) {
-                out.println("Encoded " + cards.encoded() + " " + config.outputProfile() + " filler card(s) in "
-                        + ReferenceCard.profileDir(dataDir.cards(), config.outputProfile()));
+                out.println("Encoded " + cards.encoded() + " " + config.outputEncoding() + " filler card(s) in "
+                        + ReferenceCard.encodingDir(dataDir.cards(), config.outputEncoding()));
             }
             return cards;
         } catch (ToolException | IOException | ReferenceCard.AvcCMismatchException e) {
-            err.println("WARNING: could not create the " + config.outputProfile() + " filler cards: " + e.getMessage());
+            err.println("WARNING: could not create the " + config.outputEncoding() + " filler cards: " + e.getMessage());
             return null;
         }
     }
@@ -469,7 +469,7 @@ public final class Main {
                         + " frame could not be created at startup");
             }, kinds, System::currentTimeMillis);
         }
-        ProgramMedia.CardLoader cardLoader = ProgramMedia.ffprobeCardLoader(Tools.from(config), config.outputProfile());
+        ProgramMedia.CardLoader cardLoader = ProgramMedia.ffprobeCardLoader(Tools.from(config), config.outputEncoding());
         AtomicReference<Map<Filler, CardGop>> fillers = new AtomicReference<>();
         ReentrantLock fillersLock = new ReentrantLock();
         ProgramPipeline.SourcesOpener opener = () -> {
@@ -486,7 +486,7 @@ public final class Main {
             } finally {
                 fillersLock.unlock();
             }
-            return new ProgramMedia(dataDir.media(), config.outputProfile(), reference.avcC(), cardLoader, cards,
+            return new ProgramMedia(dataDir.media(), config.outputEncoding(), reference.avcC(), cardLoader, cards,
                     silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
                     System::currentTimeMillis);
         };
@@ -687,7 +687,7 @@ public final class Main {
         Config config = loaded.config();
         out.println("Config: " + (loaded.configFile() == null ? "(no file, environment and defaults only)" : loaded.configFile()));
         out.println("Public URL " + config.publicBaseUrl() + ", listening on " + config.httpBind() + ":" + config.httpPort()
-                + ", data in " + config.dataDir() + ", output profile " + config.outputProfile());
+                + ", data in " + config.dataDir() + ", output encoding " + config.outputEncoding());
         return new Startup(0, config);
     }
 

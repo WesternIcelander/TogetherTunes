@@ -72,6 +72,8 @@ class ConfigLoaderTest {
         assertEquals(bin.resolve("ffprobe").toString(), c.ffprobe());
         assertEquals(bin.resolve("yt-dlp").toString(), c.ytdlp());
         assertEquals(OutputProfile.P720_30, c.outputProfile());
+        assertEquals(3000, c.outputVideoBitrateKbps());
+        assertEquals("720p30-3000k", c.outputEncoding().id());
         assertEquals(4, c.ingestWorkers());
         assertEquals(4L << 30, c.ingestMaxUploadBytes());
         assertEquals(1800, c.ingestMaxDurationSeconds());
@@ -115,6 +117,7 @@ class ConfigLoaderTest {
         assertEquals(ff.toString(), c.ffmpeg());
         assertEquals(OutputProfile.P1080_30, c.outputProfile());
         assertEquals(1920, c.outputProfile().width());
+        assertEquals(6000, c.outputVideoBitrateKbps(), "the default follows the profile");
         assertEquals(3, c.ingestWorkers());
         assertEquals(512L << 20, c.ingestMaxUploadBytes());
         assertEquals(600, c.ingestMaxDurationSeconds());
@@ -147,6 +150,26 @@ class ConfigLoaderTest {
     }
 
     @Test
+    void videoBitrate() throws ConfigException {
+        Config c = load("{\"http.publicBaseUrl\": \"https://music.example.com\", \"output\": {\"videoBitrateKbps\": 4500}}");
+        assertEquals(4500, c.outputVideoBitrateKbps());
+        assertEquals(new OutputEncoding(OutputProfile.P720_30, 4500), c.outputEncoding());
+        assertEquals("720p30-4500k", c.outputEncoding().id());
+        env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "2500");
+        assertEquals(2500, load(URL_ONLY).outputVideoBitrateKbps());
+        env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "499");
+        assertProblem(fails(URL_ONLY), "between 500 and 25000");
+        env.put("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", "25001");
+        assertProblem(fails(URL_ONLY), "between 500 and 25000");
+        env.remove("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS");
+        // a bad profile still reports the bitrate problem on its own
+        ConfigException e = fails("{\"http.publicBaseUrl\": \"https://music.example.com\","
+                + " \"output\": {\"profile\": \"4k60\", \"videoBitrateKbps\": \"fast\"}}");
+        assertProblem(e, "'output.profile'");
+        assertProblem(e, "'output.videoBitrateKbps'");
+    }
+
+    @Test
     void environmentAloneIsEnough() throws ConfigException {
         env.put("TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://music.example.com");
         ConfigLoader.Loaded loaded = loader().load(null);
@@ -160,13 +183,14 @@ class ConfigLoaderTest {
         assertEquals("TOGETHERTUNES_TOOLS_YTDLP", ConfigLoader.envName("tools.ytdlp"));
         assertEquals("TOGETHERTUNES_OVERLAY_CACHE_MAX_BYTES", ConfigLoader.envName("overlay.cacheMaxBytes"));
         assertEquals("TOGETHERTUNES_DATA_DIR", ConfigLoader.envName("data.dir"));
+        assertEquals("TOGETHERTUNES_OUTPUT_VIDEO_BITRATE_KBPS", ConfigLoader.envName("output.videoBitrateKbps"));
     }
 
     @Test
     void everyDocumentedKeyIsKnown() {
         // docs/architecture.md#configuration
         assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "data.dir", "db.url",
-                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "ingest.workers",
+                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "overlay.workers",
                 "overlay.cacheMaxBytes", "http.trustedProxies"), ConfigLoader.KEYS);
     }

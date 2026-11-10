@@ -214,7 +214,7 @@ abstract class SettingsContract {
     @Test
     void configSuppliesTheMaxDurationDefault() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
-                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.values()[0], 1,
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.values()[0], 3000, 1,
                 1L << 32, 600, 1, 1L << 34);
         Settings withConfig = new Settings(db, config);
         assertEquals(600, withConfig.ingestMaxDurationSeconds());

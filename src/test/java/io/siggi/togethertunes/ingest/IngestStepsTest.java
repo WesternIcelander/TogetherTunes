@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.DataDir;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.media.EncodeProfile;
@@ -199,7 +200,7 @@ class IngestStepsTest {
             a.add(pts * 10, 50, pts, d, SampleIndex.FLAG_KEYFRAME);
             pts += d;
         }
-        return new SampleIndex(OutputProfile.P720_30, List.of("mezz.mp4", "audio.m4a"), List.of(v.build(), a.build()),
+        return new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), List.of("mezz.mp4", "audio.m4a"), List.of(v.build(), a.build()),
                 AVCC);
     }
 
@@ -259,11 +260,11 @@ class IngestStepsTest {
         MediaProbe probe = new MediaProbe("matroska", 0, 1_000_000, new MediaProbe.Stream(1, "opus", 0, -1),
                 new MediaProbe.Stream(0, "vp9", 0, -1), null);
         Loudness.Measurement m = new Loudness.Measurement(-20, -3, 5, -30, 0.5);
-        List<String> video = IngestPipeline.videoEncodeArgs(Path.of("src.mkv"), probe, m, OutputProfile.P720_30,
+        List<String> video = IngestPipeline.videoEncodeArgs(Path.of("src.mkv"), probe, m, OutputEncoding.defaultFor(OutputProfile.P720_30),
                 Path.of("mezz.mp4"));
         assertEquals(List.of("-y", "-i", "src.mkv", "-map", "0:0", "-map", "0:1", "-map_metadata", "-1",
-                "-map_chapters", "-1", "-vf", EncodeProfile.scaleFilter(OutputProfile.P720_30)), video.subList(0, 13));
-        assertEquals(EncodeProfile.VIDEO_ARGS_720P30, video.subList(13, 13 + EncodeProfile.VIDEO_ARGS_720P30.size()));
+                "-map_chapters", "-1", "-vf", EncodeProfile.scaleFilter(OutputEncoding.defaultFor(OutputProfile.P720_30))), video.subList(0, 13));
+        assertEquals(EncodeProfile.videoArgs(OutputEncoding.DEFAULT), video.subList(13, 13 + EncodeProfile.videoArgs(OutputEncoding.DEFAULT).size()));
         int af = video.indexOf("-af");
         assertEquals(m.filter(), video.get(af + 1));
         assertEquals(EncodeProfile.AUDIO_ARGS, video.subList(af + 2, af + 2 + EncodeProfile.AUDIO_ARGS.size()));

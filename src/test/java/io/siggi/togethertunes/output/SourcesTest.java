@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.media.SampleIndex;
@@ -83,7 +84,7 @@ class SourcesTest {
         }
 
         SampleIndex index() {
-            return new SampleIndex(OutputProfile.P720_30, names, tracks, AVCC);
+            return new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), names, tracks, AVCC);
         }
 
         SampleData data() {

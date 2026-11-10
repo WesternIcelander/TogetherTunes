@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.output;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.ToolException;
@@ -40,7 +40,7 @@ import java.util.function.LongSupplier;
  * up to {@code waitMs} for it, then gives up (null: the follower plays the Loading filler and asks
  * again at the next unit boundary).</li>
  * <li>An index that can't be used — missing ({@code index.bin} isn't published yet, or the item was
- * purged), unreadable, for another output profile (a re-encode for a new profile is still running,
+ * purged), unreadable, for another output encoding (a re-encode for a new profile or video bitrate is still running,
  * {@code docs/library-and-ingest.md#re-encoding-on-a-profile-change}) or with an avcC that differs
  * from the reference (invariant 1) — counts as not loadable. It is retried no sooner than
  * {@link #RETRY_MS} later, and each distinct failure is logged once.</li>
@@ -67,7 +67,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     }
 
     /** A {@link CardLoader} that indexes the card with ffprobe ({@link CardGop#load}). */
-    public static CardLoader ffprobeCardLoader(Tools tools, OutputProfile profile) {
+    public static CardLoader ffprobeCardLoader(Tools tools, OutputEncoding profile) {
         return file -> {
             try {
                 return CardGop.load(tools, profile, file, null);
@@ -117,7 +117,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     }
 
     private final Path mediaDir;
-    private final OutputProfile profile;
+    private final OutputEncoding profile;
     private final byte[] referenceAvcC;
     private final CardLoader cardLoader;
     private final Map<Filler, CardGop> fillers;
@@ -135,7 +135,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /**
      * @param mediaDir      {@code <data>/media}: item {@code id}'s files are in {@code mediaDir/id}
-     * @param profile       the output profile; indexes for another profile aren't played
+     * @param profile       the output encoding; indexes for another profile or video bitrate aren't played
      * @param referenceAvcC the profile's reference avcC (invariant 1), or null to skip the check
      * @param cardLoader    loads a video item's {@code card.mp4} when it is played as audio
      * @param fillers       a card for every {@link Filler}
@@ -144,7 +144,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
      * @param waitMs        how long {@link #item} waits for a load
      * @param nowMs         the clock for {@link #RETRY_MS}
      */
-    public ProgramMedia(Path mediaDir, OutputProfile profile, byte[] referenceAvcC, CardLoader cardLoader,
+    public ProgramMedia(Path mediaDir, OutputEncoding profile, byte[] referenceAvcC, CardLoader cardLoader,
             Map<Filler, CardGop> fillers, byte[] silence, Executor executor, long waitMs, LongSupplier nowMs) {
         this.mediaDir = Objects.requireNonNull(mediaDir, "mediaDir");
         this.profile = Objects.requireNonNull(profile, "profile");
@@ -374,8 +374,8 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     private SampleIndex readIndex(Slot s) throws IOException {
         SampleIndex index = SampleIndex.read(s.dir.resolve(SampleIndex.FILE_NAME));
-        if (index.profile() != profile) {
-            throw new IOException("index is for profile " + index.profile().id() + ", not " + profile.id()
+        if (!index.encoding().equals(profile)) {
+            throw new IOException("index is for " + index.encoding().id() + ", not " + profile.id()
                     + " (re-encode pending)");
         }
         if (referenceAvcC != null && !Arrays.equals(referenceAvcC, index.avcC())) {

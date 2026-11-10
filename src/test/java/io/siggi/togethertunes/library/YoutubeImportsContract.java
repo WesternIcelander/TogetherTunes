@@ -13,6 +13,7 @@ import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -116,7 +117,7 @@ abstract class YoutubeImportsContract {
     }
 
     private YoutubeImports imports(Tools tools) {
-        return new YoutubeImports(db, tools, jobs, wakes::incrementAndGet, OutputProfile.P720_30, MAX_SECONDS,
+        return new YoutubeImports(db, tools, jobs, wakes::incrementAndGet, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_SECONDS,
                 () -> cookies, clock);
     }
 
@@ -238,7 +239,7 @@ abstract class YoutubeImportsContract {
         assertEquals(alice.userId(), item.get("added_by_user_id"));
         assertNull(item.get("added_by_guest_id"));
         assertEquals("pending", item.get("status"));
-        assertEquals("720p30", item.get("output_profile"));
+        assertEquals("720p30-3000k", item.get("output_profile"));
         assertNull(item.get("content_sha256"));
         assertEquals(0, ((Number) item.get("present_as_audio")).intValue());
         assertEquals(clock.millis(), ((Number) item.get("last_referenced_at")).longValue());

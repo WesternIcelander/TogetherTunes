@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.JobLog;
@@ -29,7 +30,7 @@ class RealTsMuxerTest {
     @TempDir
     Path dir;
 
-    private void encode(Tools tools, OutputProfile profile, Path out, double seconds, boolean audio)
+    private void encode(Tools tools, OutputEncoding profile, Path out, double seconds, boolean audio)
             throws Exception {
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30"));
         if (audio) {
@@ -50,7 +51,7 @@ class RealTsMuxerTest {
     @Timeout(180)
     void splicedSessionIsCleanForFfmpeg() throws Exception {
         Tools tools = RealSourcesTest.tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         JobLog log = new JobLog();
 
         Path cardFile = dir.resolve("card.mp4");
@@ -64,6 +65,8 @@ class RealTsMuxerTest {
         Path out = dir.resolve("out.ts");
         long videoFrames = 0;
         long audioFrames = 0;
+        long fillerIn = 0;
+        long fillerBytesIn = 0;
         try (FileSampleData data = new FileSampleData(dir, index);
                 UnitBuilder b = new UnitBuilder();
                 OutputStream os = Files.newOutputStream(out)) {
@@ -92,6 +95,18 @@ class RealTsMuxerTest {
                 assertNotNull(u);
                 videoFrames += u.video().size();
                 audioFrames += u.audio().size();
+                for (Unit.Video f : u.video()) {
+                    // AVCC, 4-byte lengths: count the filler data NAL units (type 12), the CBR padding
+                    int pos = 0;
+                    while (pos < f.data().length) {
+                        int len = java.nio.ByteBuffer.wrap(f.data(), pos, 4).getInt();
+                        if ((f.data()[pos + 4] & 0x1F) == 12) {
+                            fillerIn++;
+                            fillerBytesIn += len;
+                        }
+                        pos += 4 + len;
+                    }
+                }
                 os.write(mux.mux(u));
             }
         }
@@ -142,5 +157,40 @@ class RealTsMuxerTest {
         }
         assertEquals(videoFrames, nv, "every access unit");
         assertEquals(audioFrames, na, "every audio frame");
+
+        // CBR padding passes through: every filler NAL of the samples is in the .ts, byte for byte
+        assertTrue(fillerIn > videoFrames / 2, "the encodes are padded: " + fillerIn + " filler NALs");
+        Path h264 = dir.resolve("out.h264");
+        tools.ffmpeg("-v", "error", "-i", out.toString(), "-map", "0:v", "-c", "copy", "-f", "h264", h264.toString()).run();
+        long[] fillerOut = fillerNals(Files.readAllBytes(h264));
+        assertEquals(fillerIn, fillerOut[0], "filler NAL count");
+        assertEquals(fillerBytesIn, fillerOut[1], "filler NAL bytes");
+    }
+
+    /** Count and total size of the filler data NAL units (type 12) in an Annex B stream. */
+    private static long[] fillerNals(byte[] annexB) {
+        long count = 0;
+        long bytes = 0;
+        int start = -1;
+        for (int i = 0; i + 2 < annexB.length; i++) {
+            if (annexB[i] == 0 && annexB[i + 1] == 0 && annexB[i + 2] == 1) {
+                if (start >= 0 && (annexB[start] & 0x1F) == 12) {
+                    count++;
+                    bytes += nalEnd(annexB, i) - start;
+                }
+                start = i + 3;
+                i += 2;
+            }
+        }
+        if (start >= 0 && start < annexB.length && (annexB[start] & 0x1F) == 12) {
+            count++;
+            bytes += annexB.length - start;
+        }
+        return new long[] {count, bytes};
+    }
+
+    /** End of the NAL unit before the start code at {@code startCode} (drops a 4-byte code's leading zero). */
+    private static int nalEnd(byte[] annexB, int startCode) {
+        return startCode > 0 && annexB[startCode - 1] == 0 ? startCode - 1 : startCode;
     }
 }

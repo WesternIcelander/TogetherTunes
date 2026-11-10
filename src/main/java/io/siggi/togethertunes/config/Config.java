@@ -20,6 +20,8 @@ import java.util.List;
  * @param ffprobe                  ffprobe command or path ({@code tools.ffprobe})
  * @param ytdlp                    yt-dlp command or path ({@code tools.ytdlp})
  * @param outputProfile            output profile ({@code output.profile})
+ * @param outputVideoBitrateKbps   constant video bitrate of every encode in kb/s
+ *                                 ({@code output.videoBitrateKbps}; defaults per profile)
  * @param ingestWorkers            ingest worker count ({@code ingest.workers})
  * @param ingestMaxUploadBytes     upload size limit ({@code ingest.maxUploadBytes})
  * @param ingestMaxDurationSeconds media duration limit for uploads and yt-dlp
@@ -39,6 +41,7 @@ public record Config(
         String ffprobe,
         String ytdlp,
         OutputProfile outputProfile,
+        int outputVideoBitrateKbps,
         int ingestWorkers,
         long ingestMaxUploadBytes,
         int ingestMaxDurationSeconds,
@@ -47,6 +50,11 @@ public record Config(
 
     public Config {
         trustedProxies = List.copyOf(trustedProxies);
+    }
+
+    /** The output profile and video bitrate every encode is made for. */
+    public OutputEncoding outputEncoding() {
+        return new OutputEncoding(outputProfile, outputVideoBitrateKbps);
     }
 
     /** {@link #publicBaseUrl()} as a URI. */

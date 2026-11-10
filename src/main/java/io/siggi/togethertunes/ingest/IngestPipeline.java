@@ -1,7 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.DataDir;
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.media.EncodeProfile;
@@ -177,8 +177,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
                 return;
             }
-            if (reference.profile().id().equals(item.outputProfile())) {
-                log.append("[ingest] the item is already encoded for " + reference.profile().id());
+            if (reference.encoding().id().equals(item.outputProfile())) {
+                log.append("[ingest] the item is already encoded for " + reference.encoding().id());
                 return;
             }
         }
@@ -248,7 +248,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private void run(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work) throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
-        OutputProfile profile = reference.profile();
+        OutputEncoding profile = reference.encoding();
         boolean reencode = job.kind() == Kind.REENCODE;
         Path staging = stagingDir(dataDir, item.id());
         Path itemDir = itemDir(dataDir, item.id());
@@ -361,7 +361,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         step(log, "card");
         Path cover = work.resolve(COVER);
         BufferedImage artwork = cover(source, probe, stagedCover, cover, log);
-        BufferedImage card = new CardRenderer(profile).renderItem(
+        BufferedImage card = new CardRenderer(profile.profile()).renderItem(
                 new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
         Path cardFile = work.resolve(CARD);
         CardEncoder.encode(tools, card, cardFile, reference, log);
@@ -499,7 +499,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     // ------------------------------------------------------------------ commands
 
     static List<String> videoEncodeArgs(Path source, MediaProbe probe, Loudness.Measurement loudness,
-                                        OutputProfile profile, Path out) {
+                                        OutputEncoding profile, Path out) {
         List<String> args = new ArrayList<>(List.of("-y", "-i", source.toString(),
                 "-map", probe.video().map(), "-map", probe.audio().map(),
                 "-map_metadata", "-1", "-map_chapters", "-1",
@@ -861,6 +861,6 @@ public final class IngestPipeline implements IngestQueue.Handler {
     /** For tests and logs. */
     @Override
     public String toString() {
-        return "IngestPipeline[" + (reference == null ? "no reference" : reference.profile().id()) + "]";
+        return "IngestPipeline[" + (reference == null ? "no reference" : reference.encoding().id()) + "]";
     }
 }

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.IngestPipeline;
@@ -65,7 +66,7 @@ final class HarnessFixture {
     }
 
     static Media media(Tools tools, Path dir) throws Exception {
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         JobLog log = new JobLog();
         // laid out as ingest does: media/<itemId>/{mezz.mp4|audio.m4a,card.mp4,index.bin}
         Path media = Files.createDirectories(dir.resolve("media"));
@@ -94,7 +95,7 @@ final class HarnessFixture {
         for (int i = 0; i < minutes; i++) {
             cycle(script, i * 60_000L, i);
         }
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         try (ProgramMedia sources = new ProgramMedia(m.media(), profile, m.avcC(),
                 ProgramMedia.ffprobeCardLoader(tools, profile), m.fillers(), m.silence(), Runnable::run, 0,
                 script::startServerMs);
@@ -109,8 +110,8 @@ final class HarnessFixture {
         if (audio) {
             enc.addAll(List.of("-f", "lavfi", "-i", "sine=f=440:r=48000"));
         }
-        enc.addAll(List.of("-t", Double.toString(seconds), "-vf", EncodeProfile.scaleFilter(OutputProfile.P720_30)));
-        enc.addAll(EncodeProfile.videoArgs(OutputProfile.P720_30));
+        enc.addAll(List.of("-t", Double.toString(seconds), "-vf", EncodeProfile.scaleFilter(OutputEncoding.defaultFor(OutputProfile.P720_30))));
+        enc.addAll(EncodeProfile.videoArgs(OutputEncoding.defaultFor(OutputProfile.P720_30)));
         if (audio) {
             enc.addAll(EncodeProfile.AUDIO_ARGS);
         } else {

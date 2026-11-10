@@ -2,7 +2,7 @@ package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.auth.Actor;
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
@@ -107,7 +107,7 @@ public final class Uploads {
     private final Tools tools;
     private final IngestJobs jobs;
     private final Runnable wake;
-    private final OutputProfile profile;
+    private final OutputEncoding profile;
     private final long maxBytes;
     private final long maxDurationUs;
     private final Clock clock;
@@ -151,12 +151,12 @@ public final class Uploads {
 
     /**
      * @param wake           called after a job was queued (the ingest queue's {@code wake})
-     * @param profile        the output profile new items are recorded with
+     * @param profile        the output encoding new items are recorded with
      * @param maxBytes       {@code ingest.maxUploadBytes}
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
      * @param guestQuota     {@code guests.uploadQuota}, applied to uploads guests start
      */
-    public Uploads(Database db, DataDir dataDir, Tools tools, IngestJobs jobs, Runnable wake, OutputProfile profile,
+    public Uploads(Database db, DataDir dataDir, Tools tools, IngestJobs jobs, Runnable wake, OutputEncoding profile,
                    long maxBytes, int maxDurationSec, GuestUploadQuota guestQuota, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.dataDir = Objects.requireNonNull(dataDir);

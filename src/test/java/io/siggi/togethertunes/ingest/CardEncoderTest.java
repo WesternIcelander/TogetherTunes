@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.media.EncodeProfile;
 import java.awt.image.BufferedImage;
@@ -55,7 +56,7 @@ class CardEncoderTest {
      * Checks a card's structure: one 2 s GOP at the profile size, 60 frames 1/30 s apart from 0,
      * an IDR first and P-frames only after it, no B-frames.
      */
-    static void checkCard(Tools tools, Path card, OutputProfile profile) throws Exception {
+    static void checkCard(Tools tools, Path card, OutputEncoding profile) throws Exception {
         String stream = tools.ffprobe("-v", "error", "-select_streams", "v:0", "-show_entries",
                 "stream=codec_name,profile,width,height,pix_fmt,has_b_frames,r_frame_rate,sample_aspect_ratio",
                 "-of", "default=noprint_wrappers=1", card.toString()).stdoutToString(65536).run().stdoutString();
@@ -101,7 +102,7 @@ class CardEncoderTest {
 
     @Test
     void commandIsTheDocumentedCardCommand() {
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         List<String> args = CardEncoder.command(Path.of("card.png"), Path.of("card.mp4"), profile);
         String joined = String.join(" ", args);
         assertTrue(joined.startsWith("-y -loop 1 -framerate 30 -i card.png -t 2 -vf "
@@ -114,11 +115,12 @@ class CardEncoderTest {
     @ParameterizedTest
     @EnumSource(OutputProfile.class)
     @Timeout(120)
-    void encodesAnItemCardMatchingTheReference(OutputProfile profile) throws Exception {
+    void encodesAnItemCardMatchingTheReference(OutputProfile p) throws Exception {
+        OutputEncoding profile = OutputEncoding.defaultFor(p);
         Tools tools = tools();
         Path cards = dir.resolve("cards");
         ReferenceCard ref = ReferenceCard.ensure(tools, cards, profile, null);
-        BufferedImage image = new CardRenderer(profile).renderItem(
+        BufferedImage image = new CardRenderer(profile.profile()).renderItem(
                 new CardRenderer.ItemCard("A Song With A Reasonably Long Title", "Some Artist", "Some Album", null));
 
         Path out = dir.resolve("media").resolve("item").resolve("card.mp4");
@@ -129,7 +131,9 @@ class CardEncoderTest {
         assertArrayEquals(ref.avcC(), ReferenceCard.readAvcC(out));
         checkCard(tools, out, profile);
         long size = Files.size(out);
-        assertTrue(size > 5_000 && size < 400_000, "card size " + size);
+        // CBR: a 2 s card is R × 2 s / 8 bytes (padded with filler NALs) plus a little MP4 overhead
+        long expected = profile.videoBitrateBps() * 2 / 8;
+        assertTrue(size > expected * 0.97 && size < expected * 1.03 + 10_000, "card size " + size + ", expected " + expected);
         assertEquals(List.of(), tempFiles(out.getParent()), "temporary files are cleaned up");
         assertTrue(log.tail().contains("-loop 1"), "ffmpeg command is logged");
     }
@@ -138,7 +142,7 @@ class CardEncoderTest {
     @Timeout(120)
     void otherImageSizesAreLetterboxedToTheProfile() throws Exception {
         Tools tools = tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         ReferenceCard ref = ReferenceCard.ensure(tools, dir.resolve("cards"), profile, null);
         BufferedImage square = new BufferedImage(501, 501, BufferedImage.TYPE_INT_RGB);
         Path out = dir.resolve("square.mp4");
@@ -152,12 +156,12 @@ class CardEncoderTest {
         Tools tools = tools();
         Path cards = dir.resolve("cards");
         // Simulate an encoder change: the stored reference avcC differs from what ffmpeg makes now.
-        ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputProfile.P720_30, null);
-        Path avcFile = cards.resolve("720p30").resolve(ReferenceCard.AVCC_FILE);
+        ReferenceCard p720 = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
+        Path avcFile = cards.resolve("720p30-3000k").resolve(ReferenceCard.AVCC_FILE);
         byte[] other = p720.avcC();
         other[other.length - 1] ^= 0x01;
         Files.write(avcFile, other);
-        ReferenceCard changed = ReferenceCard.ensure(tools, cards, OutputProfile.P720_30, null);
+        ReferenceCard changed = ReferenceCard.ensure(tools, cards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         assertTrue(changed.encoderChanged());
 
         Path out = dir.resolve("out").resolve("card.mp4");
@@ -174,7 +178,7 @@ class CardEncoderTest {
     @Test
     void missingToolsLeaveNothingBehind() throws Exception {
         Tools tools = tools();
-        ReferenceCard ref = ReferenceCard.ensure(tools, dir.resolve("cards"), OutputProfile.P720_30, null);
+        ReferenceCard ref = ReferenceCard.ensure(tools, dir.resolve("cards"), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe", null);
         Path out = dir.resolve("x").resolve("card.mp4");
         ToolException e = assertThrows(ToolException.class,

@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.output;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.JobLog;
 import io.siggi.togethertunes.ingest.ToolException;
@@ -70,9 +70,9 @@ public final class CardGop {
      * {@code card.mp4}): indexes it with ffprobe once and reads its frames. Meant for caching, not
      * for each play.
      */
-    public static CardGop load(Tools tools, OutputProfile profile, Path card, JobLog log)
+    public static CardGop load(Tools tools, OutputEncoding encoding, Path card, JobLog log)
             throws IOException, ToolException, InterruptedException {
-        SampleIndex index = IndexBuilder.build(tools, profile,
+        SampleIndex index = IndexBuilder.build(tools, encoding,
                 List.of(new IndexBuilder.Source(card, Kind.VIDEO)), log);
         try (FileSampleData data = new FileSampleData(card.toAbsolutePath().getParent(), index)) {
             return fromTrack(index, index.track(Kind.VIDEO), data);

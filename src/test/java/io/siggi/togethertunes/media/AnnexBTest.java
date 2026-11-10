@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.JobLog;
@@ -215,7 +216,7 @@ class AnnexBTest {
     @Timeout(120)
     void realEncodeDecodesToTheSameFrames() throws Exception {
         Tools tools = tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         Path mezz = dir.resolve("mezz.mp4");
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30",
                 "-f", "lavfi", "-i", "sine=f=440:r=48000", "-t", "5", "-vf", EncodeProfile.scaleFilter(profile)));

@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.PostgresDialect;
@@ -91,7 +91,7 @@ public final class IngestJobs {
 
     /**
      * Queues a {@code reencode} job for every {@code ready} item whose files were encoded for
-     * another output profile than {@code profile}, unless the item already has an
+     * another output encoding (profile or video bitrate) than {@code encoding}, unless the item already has an
      * unfinished job. Purged items are skipped (a refetch or new upload encodes for the current
      * profile anyway), and so are items that are pending, processing or failed (their next ingest
      * does too). Run at startup, before the workers start; a re-encode that failed is therefore
@@ -99,15 +99,15 @@ public final class IngestJobs {
      *
      * @return the number of jobs queued
      */
-    public int enqueueReencodes(OutputProfile profile) throws SQLException {
-        Objects.requireNonNull(profile);
+    public int enqueueReencodes(OutputEncoding encoding) throws SQLException {
+        Objects.requireNonNull(encoding);
         return db.write(c -> {
             List<String> stale = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE status = 'ready'"
                     + " AND output_profile <> ?"
                     + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
                     + " ORDER BY added_at, id")) {
-                ps.setString(1, profile.id());
+                ps.setString(1, encoding.id());
                 ps.setString(2, State.QUEUED.wire());
                 ps.setString(3, State.RUNNING.wire());
                 try (ResultSet rs = ps.executeQuery()) {

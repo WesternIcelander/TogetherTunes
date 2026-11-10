@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.Tools;
 import java.io.ByteArrayOutputStream;
@@ -211,7 +212,7 @@ class Mp4BoxesTest {
     @Timeout(120)
     void matchesFfprobeOnRealEncodes() throws Exception {
         Tools tools = tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         for (boolean faststart : new boolean[] {false, true}) {
             // Audio is mapped first so the video track is the second trak.
             Path out = dir.resolve("real-" + faststart + ".mp4");

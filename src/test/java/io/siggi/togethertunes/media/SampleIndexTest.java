@@ -8,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.media.SampleIndex.IndexFormatException;
 import io.siggi.togethertunes.media.SampleIndex.Kind;
@@ -41,7 +42,7 @@ class SampleIndexTest {
                 .add(441, 287, 1024, 1024, 1)
                 .add(6_000_000_000L, 319, 2048, 640, 1)
                 .build();
-        return new SampleIndex(OutputProfile.P720_30, List.of("mezz.mp4", "audio.m4a"), List.of(video, audio), AVCC);
+        return new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), List.of("mezz.mp4", "audio.m4a"), List.of(video, audio), AVCC);
     }
 
     @Test
@@ -53,7 +54,7 @@ class SampleIndexTest {
             assertEquals(List.of(SampleIndex.FILE_NAME), files.map(p -> p.getFileName().toString()).toList());
         }
         SampleIndex b = SampleIndex.read(file);
-        assertEquals(OutputProfile.P720_30, b.profile());
+        assertEquals(OutputEncoding.defaultFor(OutputProfile.P720_30), b.encoding());
         assertEquals(List.of("mezz.mp4", "audio.m4a"), b.files());
         assertArrayEquals(AVCC, b.avcC());
         assertEquals(2, b.tracks().size());
@@ -84,8 +85,9 @@ class SampleIndexTest {
         byte[] magic = new byte[4];
         in.get(magic);
         assertArrayEquals("MSIX".getBytes(), magic);
-        assertEquals(1, in.getShort());
+        assertEquals(2, in.getShort()); // version
         assertEquals(1, in.getShort()); // 720p30
+        assertEquals(3000, in.getInt()); // kb/s
         assertEquals(2, in.get()); // files
         assertEquals(8, in.getShort());
         in.position(in.position() + 8);
@@ -112,16 +114,18 @@ class SampleIndexTest {
         in.get(avcC);
         assertArrayEquals(AVCC, avcC);
         assertFalse(in.hasRemaining());
-        assertEquals(4 + 2 + 2 + 1 + 2 + 8 + 2 + 9 + 1 + 2 * 10 + 7 * 25 + 2 + AVCC.length, bytes.length);
+        assertEquals(4 + 2 + 2 + 4 + 1 + 2 + 8 + 2 + 9 + 1 + 2 * 10 + 7 * 25 + 2 + AVCC.length, bytes.length);
     }
 
     @Test
-    void profileCodes() throws Exception {
+    void profileCodesAndBitrate() throws Exception {
         assertEquals(1, SampleIndex.profileCode(OutputProfile.P720_30));
         assertEquals(2, SampleIndex.profileCode(OutputProfile.P1080_30));
-        SampleIndex a = new SampleIndex(OutputProfile.P1080_30, List.of("card.mp4"), List.of(), new byte[0]);
+        OutputEncoding encoding = new OutputEncoding(OutputProfile.P1080_30, 4500);
+        SampleIndex a = new SampleIndex(encoding, List.of("card.mp4"), List.of(), new byte[0]);
         SampleIndex b = SampleIndex.parse(a.toBytes());
-        assertSame(OutputProfile.P1080_30, b.profile());
+        assertEquals(encoding, b.encoding());
+        assertEquals(4500, b.encoding().videoBitrateKbps());
         assertEquals(0, b.avcC().length);
         assertNull(b.track(Kind.VIDEO));
     }
@@ -179,13 +183,13 @@ class SampleIndexTest {
     void constructorRejectsBadTables() {
         Track t = new Track.Builder(Kind.VIDEO, 15360, 1).build();
         assertThrows(IllegalArgumentException.class,
-                () -> new SampleIndex(OutputProfile.P720_30, List.of("mezz.mp4"), List.of(t), AVCC));
+                () -> new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), List.of("mezz.mp4"), List.of(t), AVCC));
         for (String name : List.of("", ".", "..", "a/b", "a\\b", "../mezz.mp4")) {
             assertThrows(IllegalArgumentException.class,
-                    () -> new SampleIndex(OutputProfile.P720_30, List.of(name), List.of(), AVCC), name);
+                    () -> new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), List.of(name), List.of(), AVCC), name);
         }
         assertThrows(IllegalArgumentException.class,
-                () -> new SampleIndex(OutputProfile.P720_30, List.of("a"), List.of(), new byte[0x10000]));
+                () -> new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P720_30), List.of("a"), List.of(), new byte[0x10000]));
     }
 
     @Test
@@ -196,15 +200,26 @@ class SampleIndexTest {
         magic[0] = 'X';
         assertBad(magic, "bad magic");
         byte[] version = good.clone();
-        version[5] = 2;
-        assertBad(version, "version 2");
+        version[5] = 3;
+        assertBad(version, "version 3");
+        // version 1 (before CBR, no bitrate): not playable until re-encoded
+        byte[] v1 = new byte[good.length - 4];
+        System.arraycopy(good, 0, v1, 0, 8);
+        System.arraycopy(good, 12, v1, 8, good.length - 12);
+        v1[5] = 1;
+        assertBad(v1, "unsupported index version 1");
+        byte[] rate = good.clone();
+        ByteBuffer.wrap(rate).putInt(8, 0);
+        assertBad(rate, "bad video bitrate 0");
+        ByteBuffer.wrap(rate).putInt(8, -1);
+        assertBad(rate, "bad video bitrate 4294967295");
         byte[] profile = good.clone();
         profile[7] = 9;
         assertBad(profile, "profile code 9");
         assertBad(Arrays.copyOf(good, good.length - 1), "truncated");
         assertBad(Arrays.copyOf(good, good.length + 1), "1 trailing bytes");
 
-        int videoHeader = 4 + 2 + 2 + 1 + 2 + 8 + 2 + 9 + 1;
+        int videoHeader = 4 + 2 + 2 + 4 + 1 + 2 + 8 + 2 + 9 + 1;
         byte[] kind = good.clone();
         kind[videoHeader] = 7;
         assertBad(kind, "track kind 7");
@@ -225,10 +240,10 @@ class SampleIndexTest {
         ByteBuffer.wrap(size).putInt(videoHeader + 10 + 8, -1);
         assertBad(size, "size out of range");
         byte[] name = good.clone();
-        name[4 + 2 + 2 + 1 + 2] = '/';
+        name[4 + 2 + 2 + 4 + 1 + 2] = '/';
         assertBad(name, "bad file name");
         byte[] utf8 = good.clone();
-        utf8[4 + 2 + 2 + 1 + 2] = (byte) 0xC3;
+        utf8[4 + 2 + 2 + 4 + 1 + 2] = (byte) 0xC3;
         assertBad(utf8, "bad file name");
     }
 

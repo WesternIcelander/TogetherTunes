@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.media.EncodeProfile;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -37,9 +37,9 @@ public final class CardEncoder {
      *
      * @param log job log for the ffmpeg output, or null
      */
-    public static void encodePng(Tools tools, Path png, Path out, OutputProfile profile, JobLog log)
+    public static void encodePng(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
             throws ToolException, InterruptedException {
-        ToolCall call = tools.ffmpeg(command(png, out, profile)).timeout(ENCODE_TIMEOUT);
+        ToolCall call = tools.ffmpeg(command(png, out, encoding)).timeout(ENCODE_TIMEOUT);
         if (log != null) {
             call.log(log);
         }
@@ -47,11 +47,11 @@ public final class CardEncoder {
     }
 
     /** The ffmpeg arguments of the card command (without the {@code -hide_banner -nostdin} prefix). */
-    static List<String> command(Path png, Path out, OutputProfile profile) {
-        List<String> args = new ArrayList<>(List.of("-y", "-loop", "1", "-framerate", Integer.toString(profile.fps()),
+    static List<String> command(Path png, Path out, OutputEncoding encoding) {
+        List<String> args = new ArrayList<>(List.of("-y", "-loop", "1", "-framerate", Integer.toString(encoding.fps()),
                 "-i", png.toString(), "-t", Integer.toString(EncodeProfile.GOP_MS / 1000),
-                "-vf", EncodeProfile.scaleFilter(profile)));
-        args.addAll(EncodeProfile.videoArgs(profile));
+                "-vf", EncodeProfile.scaleFilter(encoding)));
+        args.addAll(EncodeProfile.videoArgs(encoding));
         args.addAll(List.of("-an", "-f", "mp4", out.toString()));
         return args;
     }
@@ -76,7 +76,7 @@ public final class CardEncoder {
         Path mp4 = Files.createTempFile(dir, base + "-", ".mp4");
         try {
             CardRenderer.writePng(image, png);
-            encodePng(tools, png, mp4, reference.profile(), log);
+            encodePng(tools, png, mp4, reference.encoding(), log);
             reference.verify(ReferenceCard.readAvcC(mp4), out.getFileName().toString());
             move(mp4, out);
         } finally {

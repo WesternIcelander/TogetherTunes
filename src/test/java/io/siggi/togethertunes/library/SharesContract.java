@@ -11,6 +11,7 @@ import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Passwords;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -63,7 +64,7 @@ abstract class SharesContract {
         jobs = new IngestJobs(db, clock);
         YoutubeImports youtube = new YoutubeImports(db, new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString()),
                 jobs, () -> {
-                }, OutputProfile.P720_30, 600, () -> null, clock);
+                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, clock);
         shares = new Shares(db, youtube, clock);
         library = new Library(db, youtube, clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);

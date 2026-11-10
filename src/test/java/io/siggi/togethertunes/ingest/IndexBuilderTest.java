@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
@@ -117,7 +118,7 @@ class IndexBuilderTest {
     void filesMustBeNextToTheIndex() throws Exception {
         Files.createDirectories(dir.resolve("sub"));
         assertThrows(IllegalArgumentException.class, () -> IndexBuilder.build(new Tools(null, null, null),
-                OutputProfile.P720_30, dir.resolve("sub/mezz.mp4"), dir.resolve("audio.m4a"),
+                OutputEncoding.defaultFor(OutputProfile.P720_30), dir.resolve("sub/mezz.mp4"), dir.resolve("audio.m4a"),
                 dir.resolve("index.bin"), new JobLog()));
     }
 
@@ -131,7 +132,7 @@ class IndexBuilderTest {
     @Timeout(120)
     void indexesARealVideoItem() throws Exception {
         Tools tools = CardEncoderTest.tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         Path mezz = dir.resolve("mezz.mp4");
         Path audio = dir.resolve("audio.m4a");
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=24",
@@ -149,7 +150,7 @@ class IndexBuilderTest {
         SampleIndex built = IndexBuilder.build(tools, profile, mezz, audio, out, new JobLog());
         SampleIndex index = SampleIndex.read(out);
         assertArrayEquals(built.toBytes(), index.toBytes());
-        assertEquals(profile, index.profile());
+        assertEquals(profile, index.encoding());
         assertEquals(List.of("mezz.mp4", "audio.m4a"), index.files());
         assertArrayEquals(Mp4Boxes.readAvcC(mezz), index.avcC());
 
@@ -172,8 +173,9 @@ class IndexBuilderTest {
                     assertTrue(len > 0 && len <= b.remaining(), "NAL length in sample " + i);
                     if (b.position() == 4) {
                         int type = b.get(b.position()) & 0x1F;
-                        // first NAL: IDR (5) or SEI (6) on keyframes, non-IDR slice (1) otherwise
-                        assertTrue(v.isKeyframe(i) ? type == 5 || type == 6 : type == 1, "NAL type " + type);
+                        // first NAL: IDR (5) or SEI (6) on keyframes; non-IDR slice (1), or SEI (6:
+                        // the CBR HRD picture timing) before it, otherwise
+                        assertTrue(v.isKeyframe(i) ? type == 5 || type == 6 : type == 1 || type == 6, "NAL type " + type);
                     }
                     b.position(b.position() + len);
                 }
@@ -206,7 +208,7 @@ class IndexBuilderTest {
     @Timeout(120)
     void indexesAnAudioItemWithItsCard() throws Exception {
         Tools tools = CardEncoderTest.tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
         Path card = dir.resolve("card.mp4");
         Path audio = dir.resolve("audio.m4a");
         CardEncoder.encodePng(tools, writeBlackPng(), card, profile, new JobLog());
@@ -230,8 +232,8 @@ class IndexBuilderTest {
     void missingAudioStreamFails() throws Exception {
         Tools tools = CardEncoderTest.tools();
         Path card = dir.resolve("card.mp4");
-        CardEncoder.encodePng(tools, writeBlackPng(), card, OutputProfile.P720_30, new JobLog());
-        IOException e = assertThrows(IOException.class, () -> IndexBuilder.build(tools, OutputProfile.P720_30,
+        CardEncoder.encodePng(tools, writeBlackPng(), card, OutputEncoding.defaultFor(OutputProfile.P720_30), new JobLog());
+        IOException e = assertThrows(IOException.class, () -> IndexBuilder.build(tools, OutputEncoding.defaultFor(OutputProfile.P720_30),
                 card, card, dir.resolve("index.bin"), new JobLog()));
         assertTrue(e.getMessage().contains("no audio stream"), e.getMessage());
         assertTrue(Files.notExists(dir.resolve("index.bin")));
@@ -239,7 +241,7 @@ class IndexBuilderTest {
 
     private Path writeBlackPng() throws IOException {
         Path png = dir.resolve("card.png");
-        ReferenceCard.writeBlackPng(png, OutputProfile.P720_30);
+        ReferenceCard.writeBlackPng(png, OutputEncoding.defaultFor(OutputProfile.P720_30));
         return png;
     }
 

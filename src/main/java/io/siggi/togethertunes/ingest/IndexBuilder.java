@@ -1,6 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SampleIndex.Kind;
@@ -52,7 +52,7 @@ public final class IndexBuilder {
      * {@code out} atomically. Both files must be in the same directory as {@code out}, since the
      * index refers to them by file name.
      */
-    public static SampleIndex build(Tools tools, OutputProfile profile, Path video, Path audio, Path out, JobLog log)
+    public static SampleIndex build(Tools tools, OutputEncoding encoding, Path video, Path audio, Path out, JobLog log)
             throws IOException, ToolException, InterruptedException {
         List<Source> sources = List.of(new Source(video, Kind.VIDEO), new Source(audio, Kind.AUDIO));
         Path dir = out.toAbsolutePath().getParent();
@@ -61,7 +61,7 @@ public final class IndexBuilder {
                 throw new IllegalArgumentException(s.file() + " is not next to " + out);
             }
         }
-        SampleIndex index = build(tools, profile, sources, log);
+        SampleIndex index = build(tools, encoding, sources, log);
         index.write(out);
         return index;
     }
@@ -70,7 +70,7 @@ public final class IndexBuilder {
      * Indexes the given sources, one track each, in order. The avcC is read from the first video
      * source (empty if there is none). Each distinct file becomes one file-ref entry.
      */
-    public static SampleIndex build(Tools tools, OutputProfile profile, List<Source> sources, JobLog log)
+    public static SampleIndex build(Tools tools, OutputEncoding encoding, List<Source> sources, JobLog log)
             throws IOException, ToolException, InterruptedException {
         List<String> files = new ArrayList<>();
         List<Track> tracks = new ArrayList<>();
@@ -89,7 +89,7 @@ public final class IndexBuilder {
                 haveAvcC = true;
             }
         }
-        return new SampleIndex(profile, files, tracks, avcC);
+        return new SampleIndex(encoding, files, tracks, avcC);
     }
 
     /** The ffprobe arguments for one track of {@code file}. */

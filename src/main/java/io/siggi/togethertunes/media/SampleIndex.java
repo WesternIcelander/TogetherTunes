@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.media;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -26,7 +27,7 @@ import java.util.List;
  *
  * <p>Format, big-endian:
  * <pre>
- * magic "MSIX" | version u16 (1) | profile u16 (see {@link #profileCode})
+ * magic "MSIX" | version u16 (2) | profile u16 (see {@link #profileCode}) | video bitrate u32 (kb/s)
  * file-ref table: file count u8 | per file: name length u16 | name UTF-8 (a plain file name in the item directory)
  * track count u8
  * per track:
@@ -35,6 +36,9 @@ import java.util.List;
  * avcC length u16 | avcC bytes
  * </pre>
  *
+ * <p>Version 1 had no bitrate (its files were capped-CRF encodes); it is rejected, so such an
+ * item counts as not ready until the startup re-encode for the CBR encoding has replaced it.
+ *
  * <p>Samples are in file (decode) order, and since no encode has B-frames that is also PTS
  * order: PTS strictly increases within a track. The reader checks that, so lookups by time can
  * use binary search. Instances are immutable.
@@ -42,7 +46,7 @@ import java.util.List;
 public final class SampleIndex {
     /** The file name inside an item directory. */
     public static final String FILE_NAME = "index.bin";
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     /** Bytes per sample record. */
     public static final int SAMPLE_BYTES = 8 + 4 + 8 + 4 + 1;
     /** Sample flag: the sample is a keyframe (an IDR for video; every AAC frame is one). */
@@ -84,7 +88,7 @@ public final class SampleIndex {
         }
     }
 
-    private final OutputProfile profile;
+    private final OutputEncoding encoding;
     private final List<String> files;
     private final List<Track> tracks;
     private final byte[] avcC;
@@ -94,9 +98,9 @@ public final class SampleIndex {
      * @param avcC the video track's avcC (empty if there is no video track)
      * @throws IllegalArgumentException if a track refers to a missing file or limits are exceeded
      */
-    public SampleIndex(OutputProfile profile, List<String> files, List<Track> tracks, byte[] avcC) {
-        if (profile == null) {
-            throw new IllegalArgumentException("profile is null");
+    public SampleIndex(OutputEncoding encoding, List<String> files, List<Track> tracks, byte[] avcC) {
+        if (encoding == null) {
+            throw new IllegalArgumentException("encoding is null");
         }
         if (files.size() > MAX_FILES || tracks.size() > MAX_TRACKS) {
             throw new IllegalArgumentException("too many files or tracks");
@@ -112,14 +116,15 @@ public final class SampleIndex {
         if (avcC.length > 0xFFFF) {
             throw new IllegalArgumentException("avcC too long: " + avcC.length);
         }
-        this.profile = profile;
+        this.encoding = encoding;
         this.files = List.copyOf(files);
         this.tracks = List.copyOf(tracks);
         this.avcC = avcC.clone();
     }
 
-    public OutputProfile profile() {
-        return profile;
+    /** The output profile and video bitrate the indexed files were encoded for. */
+    public OutputEncoding encoding() {
+        return encoding;
     }
 
     /** The file-ref table: plain file names relative to the item directory. */
@@ -192,7 +197,8 @@ public final class SampleIndex {
             DataOutputStream out = new DataOutputStream(bytes);
             out.write(MAGIC);
             out.writeShort(VERSION);
-            out.writeShort(profileCode(profile));
+            out.writeShort(profileCode(encoding.profile()));
+            out.writeInt(encoding.videoBitrateKbps());
             out.writeByte(files.size());
             for (String f : files) {
                 byte[] name = f.getBytes(StandardCharsets.UTF_8);
@@ -249,7 +255,7 @@ public final class SampleIndex {
     }
 
     /**
-     * Parses and validates an encoded index: magic, version, a known profile, plain file names,
+     * Parses and validates an encoded index: magic, version, a known profile and bitrate, plain file names,
      * file refs in range, positive timescales, sizes and durations within u32/int range, PTS
      * strictly increasing per track, and no trailing bytes.
      */
@@ -266,6 +272,13 @@ public final class SampleIndex {
                 throw new IndexFormatException("unsupported index version " + version);
             }
             OutputProfile profile = profileOfCode(Short.toUnsignedInt(in.getShort()));
+            long kbps = Integer.toUnsignedLong(in.getInt());
+            OutputEncoding encoding;
+            try {
+                encoding = new OutputEncoding(profile, (int) Math.min(kbps, Integer.MAX_VALUE));
+            } catch (IllegalArgumentException e) {
+                throw new IndexFormatException("bad video bitrate " + kbps);
+            }
             int fileCount = Byte.toUnsignedInt(in.get());
             List<String> files = new ArrayList<>(fileCount);
             for (int i = 0; i < fileCount; i++) {
@@ -319,7 +332,7 @@ public final class SampleIndex {
             if (in.hasRemaining()) {
                 throw new IndexFormatException(in.remaining() + " trailing bytes");
             }
-            return new SampleIndex(profile, files, tracks, avcC);
+            return new SampleIndex(encoding, files, tracks, avcC);
         } catch (BufferUnderflowException e) {
             throw new IndexFormatException("truncated sample index");
         }

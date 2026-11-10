@@ -20,6 +20,7 @@ import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.auth.Roles;
 import io.siggi.togethertunes.auth.Sessions;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -95,7 +96,7 @@ abstract class GuestUploadsContract {
         permissions = new Permissions(db, settings);
         DataDir data = DataDir.create(dir.resolve("data"));
         uploads = new Uploads(db, data, new Tools(null, null, null), new IngestJobs(db, clock), () -> {
-        }, OutputProfile.P720_30, MAX_BYTES, 600, new GuestUploadQuota(db, settings, clock), clock);
+        }, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_BYTES, 600, new GuestUploadQuota(db, settings, clock), clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         accounts.createLocal("root", null, "root-password", true, null, "account.setup"); // the admin
         aliceId = accounts.createLocal("alice", null, "alice-password", false, null, "account.register").id();

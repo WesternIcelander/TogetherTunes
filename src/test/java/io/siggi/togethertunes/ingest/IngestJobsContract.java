@@ -9,6 +9,8 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
+import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -71,19 +73,19 @@ abstract class IngestJobsContract {
                 items.get(item).orElseThrow());
         assertTrue(items.get("nope").isEmpty());
 
-        items.published(item, false, 61_234, io.siggi.togethertunes.config.OutputProfile.P1080_30, -17.25,
+        items.published(item, false, 61_234, OutputEncoding.defaultFor(OutputProfile.P1080_30), -17.25,
                 new Originals.Original("original.flac", "flac/flac", true, 3.25));
-        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
+        assertArrayEquals(new Object[] {"audio", 61_234L, "1080p30-6000k", -17.25, null, "original.flac", "flac/flac", 1, 3.25},
                 publishedRow(item));
-        items.published(item, false, 1, io.siggi.togethertunes.config.OutputProfile.P720_30, null,
+        items.published(item, false, 1, OutputEncoding.defaultFor(OutputProfile.P720_30), null,
                 new Originals.Original("original.wma", "wmav2/asf", false, null));
-        assertArrayEquals(new Object[] {"audio", 1L, "720p30", null, null, "original.wma", "wmav2/asf", 0, null},
+        assertArrayEquals(new Object[] {"audio", 1L, "720p30-3000k", null, null, "original.wma", "wmav2/asf", 0, null},
                 publishedRow(item));
         // a video (or YouTube) publish clears an earlier original
-        items.published(item, true, 2, io.siggi.togethertunes.config.OutputProfile.P720_30, -9.5, null);
-        assertArrayEquals(new Object[] {"video", 2L, "720p30", -9.5, null, null, null, 0, null}, publishedRow(item));
+        items.published(item, true, 2, OutputEncoding.defaultFor(OutputProfile.P720_30), -9.5, null);
+        assertArrayEquals(new Object[] {"video", 2L, "720p30-3000k", -9.5, null, null, null, 0, null}, publishedRow(item));
         assertThrows(SQLException.class, () -> items.published("nope", false, 1,
-                io.siggi.togethertunes.config.OutputProfile.P720_30, null, null));
+                OutputEncoding.defaultFor(OutputProfile.P720_30), null, null));
     }
 
     private Object[] publishedRow(String item) throws SQLException {
@@ -213,11 +215,16 @@ abstract class IngestJobsContract {
         assertEquals("Ingest failed", fixtures.itemStatus(other)[1]);
     }
 
-    /** A profile change queues a re-encode for ready items of another (or no) profile, once. */
+    /**
+     * A profile or bitrate change queues a re-encode for ready items of another (or no) encoding,
+     * once: items from before CBR stored the bare profile name, which never matches.
+     */
     @Test
     void enqueueReencodesQueuesReadyItemsOfAnotherProfile() throws SQLException {
         String current = fixtures.item("ready");
         String old = fixtures.item("ready");
+        String otherRate = fixtures.item("ready");
+        String bare = fixtures.item("ready");
         String unknown = fixtures.item("ready");
         String purged = fixtures.item("purged");
         String failed = fixtures.item("failed");
@@ -229,8 +236,14 @@ abstract class IngestJobsContract {
                     ps.setString(2, id);
                     ps.executeUpdate();
                 }
-                ps.setString(1, "1080p30");
+                ps.setString(1, "1080p30-6000k");
                 ps.setString(2, current);
+                ps.executeUpdate();
+                ps.setString(1, "1080p30-8000k"); // same profile, another bitrate
+                ps.setString(2, otherRate);
+                ps.executeUpdate();
+                ps.setString(1, "1080p30"); // before CBR: the profile name only
+                ps.setString(2, bare);
                 ps.executeUpdate();
                 ps.setString(1, "480p25"); // a profile this version doesn't know
                 ps.setString(2, unknown);
@@ -241,20 +254,20 @@ abstract class IngestJobsContract {
         IngestJob busyJob = jobs.enqueue(busy, Kind.UPLOAD);
         clock.advance(1000);
 
-        assertEquals(2, jobs.enqueueReencodes(io.siggi.togethertunes.config.OutputProfile.P1080_30));
+        assertEquals(4, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
         List<IngestJob> queued = jobs.list(State.QUEUED, 10);
-        assertEquals(3, queued.size());
+        assertEquals(5, queued.size());
         Set<String> reencoded = new HashSet<>();
         for (IngestJob j : queued) {
             if (j.kind() == Kind.REENCODE) {
                 reencoded.add(j.itemId());
             }
         }
-        assertEquals(Set.of(old, unknown), reencoded);
+        assertEquals(Set.of(old, unknown, otherRate, bare), reencoded);
         assertEquals("ready", fixtures.itemStatus(old)[0], "a re-encode leaves the item ready");
         assertEquals("ready", fixtures.itemStatus(unknown)[0]);
         // they already have unfinished jobs now
-        assertEquals(0, jobs.enqueueReencodes(io.siggi.togethertunes.config.OutputProfile.P1080_30));
+        assertEquals(0, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
 
         // Other jobs are claimed first, even when they are newer.
         clock.advance(1000);
@@ -262,6 +275,8 @@ abstract class IngestJobsContract {
         IngestJob newer = jobs.enqueue(upload, Kind.UPLOAD);
         assertEquals(busyJob.id(), jobs.claimNext().id());
         assertEquals(newer.id(), jobs.claimNext().id());
+        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
+        assertEquals(Kind.REENCODE, jobs.claimNext().kind());
         assertEquals(Kind.REENCODE, jobs.claimNext().kind());
         assertEquals(Kind.REENCODE, jobs.claimNext().kind());
         assertNull(jobs.claimNext());

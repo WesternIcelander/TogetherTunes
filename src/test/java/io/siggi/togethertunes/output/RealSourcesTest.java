@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.ingest.IndexBuilder;
 import io.siggi.togethertunes.ingest.JobLog;
@@ -45,7 +46,7 @@ class RealSourcesTest {
         return null;
     }
 
-    private void encode(Tools tools, OutputProfile profile, Path out, double seconds, boolean audio)
+    private void encode(Tools tools, OutputEncoding profile, Path out, double seconds, boolean audio)
             throws Exception {
         List<String> enc = new ArrayList<>(List.of("-v", "error", "-f", "lavfi", "-i", "testsrc2=s=640x360:r=30"));
         if (audio) {
@@ -66,7 +67,7 @@ class RealSourcesTest {
     @Timeout(120)
     void realCardAndVideoItem() throws Exception {
         Tools tools = tools();
-        OutputProfile profile = OutputProfile.P720_30;
+        OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
 
         Path cardFile = dir.resolve("card.mp4");
         encode(tools, profile, cardFile, 2, false);

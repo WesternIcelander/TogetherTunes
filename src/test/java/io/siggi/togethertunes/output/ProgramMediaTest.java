@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.output.FillerSource.Filler;
@@ -58,13 +59,13 @@ class ProgramMediaTest {
 
     /** Loads run when {@link #runLoads} is called; {@code item} doesn't wait. */
     ProgramMedia queuedMedia() {
-        return new ProgramMedia(media, OutputProfile.P720_30, SourcesTest.AVCC, this::loadCard, fillers,
+        return new ProgramMedia(media, OutputEncoding.defaultFor(OutputProfile.P720_30), SourcesTest.AVCC, this::loadCard, fillers,
                 SourcesTest.audioFrame(9999), queued::add, 0, now::get);
     }
 
     /** Loads run on virtual threads; {@code item} waits up to 5 s. */
     ProgramMedia asyncMedia() {
-        return new ProgramMedia(media, OutputProfile.P720_30, SourcesTest.AVCC, this::loadCard, fillers,
+        return new ProgramMedia(media, OutputEncoding.defaultFor(OutputProfile.P720_30), SourcesTest.AVCC, this::loadCard, fillers,
                 SourcesTest.audioFrame(9999), r -> Thread.ofVirtual().start(r), 5000, now::get);
     }
 
@@ -192,7 +193,7 @@ class ProgramMediaTest {
     void indexForAnotherProfileIsNotPlayed() throws IOException {
         SourcesTest.Media m = SourcesTest.audioItem();
         write("audio1", m);
-        new SampleIndex(OutputProfile.P1080_30, m.names, m.tracks, SourcesTest.AVCC)
+        new SampleIndex(OutputEncoding.defaultFor(OutputProfile.P1080_30), m.names, m.tracks, SourcesTest.AVCC)
                 .write(media.resolve("audio1").resolve(SampleIndex.FILE_NAME));
         try (ProgramMedia pm = asyncMedia()) {
             assertNull(pm.item(AUDIO, 0));
@@ -204,7 +205,7 @@ class ProgramMediaTest {
     void avcCMustMatchTheReference() throws IOException {
         SourcesTest.Media m = SourcesTest.audioItem();
         write("audio1", m);
-        try (ProgramMedia pm = new ProgramMedia(media, OutputProfile.P720_30, new byte[] {1, 2, 3}, this::loadCard,
+        try (ProgramMedia pm = new ProgramMedia(media, OutputEncoding.defaultFor(OutputProfile.P720_30), new byte[] {1, 2, 3}, this::loadCard,
                 fillers, SourcesTest.audioFrame(1), r -> Thread.ofVirtual().start(r), 5000, now::get)) {
             assertNull(pm.item(AUDIO, 0));
         }

@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.auth.Actor;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.MigrationRunner;
@@ -20,6 +21,7 @@ import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.State;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.YoutubeImports;
+import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.retention.RetentionSweeper;
@@ -32,6 +34,7 @@ import java.sql.ResultSet;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
@@ -70,7 +73,7 @@ class IngestPipelineTest {
         MigrationRunner.migrate(db);
         jobs = new IngestJobs(db);
         fixtures = new IngestFixtures(db);
-        reference = ReferenceCard.ensure(tools, data.cards(), OutputProfile.P720_30, null);
+        reference = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
     }
 
     @AfterEach
@@ -216,7 +219,7 @@ class IngestPipelineTest {
         assertEquals("ready", row[0]);
         assertEquals("audio", row[1]);
         assertTrue(Math.abs((Long) row[2] - 4000) <= 50, "duration " + row[2]);
-        assertEquals("720p30", row[3]);
+        assertEquals("720p30-3000k", row[3]);
         assertNotNull(row[4]);
         assertTrue((Double) row[4] < -14 && (Double) row[4] > -30, "loudness " + row[4]);
         assertNull(row[5]);
@@ -671,12 +674,12 @@ class IngestPipelineTest {
     @Test
     void avcCMismatchPublishesNothing() throws Exception {
         Path otherCards = dir.resolve("other-cards");
-        Path profileDir = ReferenceCard.profileDir(otherCards, OutputProfile.P720_30);
+        Path profileDir = ReferenceCard.encodingDir(otherCards, OutputEncoding.defaultFor(OutputProfile.P720_30));
         Files.createDirectories(profileDir);
         byte[] tampered = reference.avcC();
         tampered[tampered.length - 1] ^= 1;
         Files.write(profileDir.resolve(ReferenceCard.AVCC_FILE), tampered);
-        ReferenceCard changed = ReferenceCard.ensure(tools, otherCards, OutputProfile.P720_30, null);
+        ReferenceCard changed = ReferenceCard.ensure(tools, otherCards, OutputEncoding.defaultFor(OutputProfile.P720_30), null);
         assertTrue(changed.encoderChanged());
 
         String item = fixtures.item("ready");
@@ -770,8 +773,8 @@ class IngestPipelineTest {
         for (IngestQueue q : queues) {
             q.close(); // the 720p30 server stops
         }
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputProfile.P1080_30, null);
-        assertEquals(3, jobs.enqueueReencodes(OutputProfile.P1080_30));
+        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
+        assertEquals(3, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
         IngestQueue q = queue(tools, hd, 1800);
         for (IngestJob j : jobs.list(State.QUEUED, 10)) {
             assertEquals(Kind.REENCODE, j.kind());
@@ -793,29 +796,29 @@ class IngestPipelineTest {
         assertEquals(State.DONE, keptJob.state(), keptJob.log());
 
         // video upload with its original: from it, loudness measured again, original kept
-        assertTrue(keptJob.log().contains("re-encoding for 1080p30 (was 720p30) from the original original.mov"),
+        assertTrue(keptJob.log().contains("re-encoding for 1080p30-6000k (was 720p30-3000k) from the original original.mov"),
                 keptJob.log());
         assertTrue(keptJob.log().contains("step: loudnorm pass 1"), keptJob.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin", "mezz.mp4", "original.mov"), files(keptDir));
         assertKeptOnly(keptVideo, "original.mov", "aac/mov,mp4,m4a,3gp,3g2,mj2", keptOriginal);
-        assertEquals("1080p30", itemRow(keptVideo)[3]);
+        assertEquals("1080p30-6000k", itemRow(keptVideo)[3]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(keptDir.resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(keptDir.resolve("mezz.mp4"))));
         IngestVerifier.checkKeyframes(SampleIndex.read(keptDir.resolve("index.bin")), "mezz.mp4");
 
         // audio upload: from its original
-        assertTrue(audioJob.log().contains("re-encoding for 1080p30 (was 720p30) from the original original.flac"),
+        assertTrue(audioJob.log().contains("re-encoding for 1080p30-6000k (was 720p30-3000k) from the original original.flac"),
                 audioJob.log());
         assertTrue(audioJob.log().contains("step: loudnorm pass 1"), audioJob.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.flac"), files(audioDir));
         assertArrayEquals(original, Files.readAllBytes(audioDir.resolve("original.flac")));
         assertArrayEquals(audioBefore, originalRow(audioItem), "same codec, web flag and gain");
-        assertEquals("1080p30", itemRow(audioItem)[3]);
+        assertEquals("1080p30-6000k", itemRow(audioItem)[3]);
         assertEquals("ready", itemRow(audioItem)[0]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(audioDir.resolve("card.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(audioDir.resolve("card.mp4"))));
         SampleIndex audioIndex = SampleIndex.read(audioDir.resolve("index.bin"));
-        assertEquals(OutputProfile.P1080_30, audioIndex.profile());
+        assertEquals(OutputEncoding.defaultFor(OutputProfile.P1080_30), audioIndex.encoding());
         assertArrayEquals(hd.avcC(), audioIndex.avcC());
 
         // video upload without its original: from its old mezzanine, without loudnorm, loudness kept
@@ -825,7 +828,7 @@ class IngestPipelineTest {
         Object[] videoAfter = itemRow(videoItem);
         assertEquals("ready", videoAfter[0]);
         assertEquals("video", videoAfter[1]);
-        assertEquals("1080p30", videoAfter[3]);
+        assertEquals("1080p30-6000k", videoAfter[3]);
         assertEquals(videoBefore[4], videoAfter[4], "the loudness measured at the first ingest is kept");
         assertTrue(Math.abs((Long) videoAfter[2] - (Long) videoBefore[2]) <= 50, "duration " + videoAfter[2]);
         assertNoOriginal(videoItem);
@@ -833,7 +836,7 @@ class IngestPipelineTest {
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(mezz));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(mezz)));
         SampleIndex videoIndex = SampleIndex.read(videoDir.resolve("index.bin"));
-        assertEquals(OutputProfile.P1080_30, videoIndex.profile());
+        assertEquals(OutputEncoding.defaultFor(OutputProfile.P1080_30), videoIndex.encoding());
         IngestVerifier.checkKeyframes(videoIndex, "mezz.mp4");
         // already normalised: the level stays at about -14 LUFS
         Loudness.Measurement out = Loudness.measure(tools, videoDir.resolve("audio.m4a").toString(), "0:a:0", null, null);
@@ -841,10 +844,10 @@ class IngestPipelineTest {
         assertNoLeftovers();
 
         // nothing left to do for this profile; a stale job for the current profile is a no-op
-        assertEquals(0, jobs.enqueueReencodes(OutputProfile.P1080_30));
+        assertEquals(0, jobs.enqueueReencodes(OutputEncoding.defaultFor(OutputProfile.P1080_30)));
         IngestJob noop = run(q, Kind.REENCODE, videoItem);
         assertEquals(State.DONE, noop.state());
-        assertTrue(noop.log().contains("already encoded for 1080p30"), noop.log());
+        assertTrue(noop.log().contains("already encoded for 1080p30-6000k"), noop.log());
         assertTrue(Files.exists(mezz));
     }
 
@@ -869,7 +872,7 @@ class IngestPipelineTest {
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
 
         // to 1080p30 with the video gone from YouTube: from the original, no download
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputProfile.P1080_30, null);
+        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
         for (IngestQueue q : queues) {
             q.close();
         }
@@ -878,7 +881,7 @@ class IngestPipelineTest {
         assertTrue(job.log().contains("from the original original.mkv"), job.log());
         assertFalse(job.log().contains("step: download"), job.log());
         assertTrue(job.log().contains("step: loudnorm pass 1"), job.log());
-        assertEquals("1080p30", itemRow(item)[3]);
+        assertEquals("1080p30-6000k", itemRow(item)[3]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(itemDir.resolve("mezz.mp4"))));
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
@@ -893,7 +896,7 @@ class IngestPipelineTest {
         assertEquals(State.DONE, refetched.state(), refetched.log());
         assertTrue(refetched.log().contains("from a new download"), refetched.log());
         assertTrue(refetched.log().contains("step: download"), refetched.log());
-        assertEquals("720p30", itemRow(item)[3]);
+        assertEquals("720p30-3000k", itemRow(item)[3]);
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
         assertNoLeftovers();
 
@@ -910,7 +913,7 @@ class IngestPipelineTest {
         assertFalse(fallback.log().contains("step: loudnorm pass 1"), fallback.log());
         Object[] row = itemRow(item);
         assertEquals("ready", row[0]);
-        assertEquals("1080p30", row[3]);
+        assertEquals("1080p30-6000k", row[3]);
         assertEquals(lufs, row[4]);
         assertArrayEquals(hd.avcC(), Mp4Boxes.readAvcC(itemDir.resolve("mezz.mp4")));
         assertEquals(List.of("1920", "1080"), List.of(videoSize(itemDir.resolve("mezz.mp4"))));
@@ -932,6 +935,52 @@ class IngestPipelineTest {
         assertEquals("purged", fixtures.itemStatus(item)[0]);
     }
 
+    /**
+     * A bitrate change alone (same profile) re-encodes ready items: the new mezzanine and card are
+     * CBR at the new rate, with the new reference's avcC, and the index records the new encoding.
+     */
+    @Test
+    void reencodeForANewBitrate() throws Exception {
+        String item = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "4",
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", stage(item, "source.mp4").toString());
+        assertEquals(State.DONE, run(Kind.UPLOAD, item).state());
+        Path itemDir = IngestPipeline.itemDir(data, item);
+        assertEquals("720p30-3000k", itemRow(item)[3]);
+        for (IngestQueue q : queues) {
+            q.close();
+        }
+        OutputEncoding lower = new OutputEncoding(OutputProfile.P720_30, 2000);
+        ReferenceCard ref = ReferenceCard.ensure(tools, data.cards(), lower, null);
+        assertFalse(Arrays.equals(reference.avcC(), ref.avcC()), "the bitrate is part of the avcC");
+        assertEquals(1, jobs.enqueueReencodes(lower));
+        IngestQueue q = queue(tools, ref, 1800);
+        IngestJob job = run(q, Kind.REENCODE, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("re-encoding for 720p30-2000k (was 720p30-3000k) from the original original.mp4"),
+                job.log());
+        assertEquals("720p30-2000k", itemRow(item)[3]);
+        Path mezz = itemDir.resolve("mezz.mp4");
+        assertArrayEquals(ref.avcC(), Mp4Boxes.readAvcC(mezz));
+        SampleIndex index = SampleIndex.read(itemDir.resolve("index.bin"));
+        assertEquals(lower, index.encoding());
+        // CBR: every full 2 s GOP is 2000 kb/s × 2 s = 500 000 bytes, give or take a little
+        SampleIndex.Track v = index.track(SampleIndex.Kind.VIDEO);
+        long gop = 0;
+        int gops = 0;
+        for (int i = 0; i < v.sampleCount(); i++) {
+            gop += v.size(i);
+            if ((i + 1) % EncodeProfile.GOP_FRAMES == 0) {
+                assertEquals(500_000, gop, 500_000 * 0.03, "GOP " + gops);
+                gop = 0;
+                gops++;
+            }
+        }
+        assertEquals(2, gops);
+        assertEquals(0, jobs.enqueueReencodes(lower));
+        assertNoLeftovers();
+    }
+
     /** An audio item without its original (e.g. ingested before originals were kept) re-encodes from audio.m4a. */
     @Test
     void reencodeAudioWithoutOriginalFromAudioM4a() throws Exception {
@@ -944,14 +993,14 @@ class IngestPipelineTest {
         for (IngestQueue q : queues) {
             q.close();
         }
-        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputProfile.P1080_30, null);
+        ReferenceCard hd = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P1080_30), null);
         IngestJob job = run(queue(tools, hd, 1), Kind.REENCODE, item);
         assertEquals(State.DONE, job.state(), "the duration limit doesn't apply to re-encodes\n" + job.log());
         assertTrue(job.log().contains("from the previous encode"), job.log());
         assertEquals(List.of("audio.m4a", "card.mp4", "index.bin"), files(itemDir));
         Object[] row = itemRow(item);
         assertEquals("audio", row[1]);
-        assertEquals("1080p30", row[3]);
+        assertEquals("1080p30-6000k", row[3]);
         assertEquals(lufs, row[4]);
         assertTrue(Math.abs((Long) row[2] - 3000) <= 50, "duration " + row[2]);
         assertArrayEquals(new Object[] {null, null, 0, null}, originalRow(item));
@@ -1121,7 +1170,7 @@ class IngestPipelineTest {
         long ytCallsBefore = Files.readAllLines(calls).stream().filter("----"::equals).count();
 
         // the YouTube link again: the same row, refetched
-        YoutubeImports imports = new YoutubeImports(db, ytTools, jobs, q::wake, OutputProfile.P720_30, 1800,
+        YoutubeImports imports = new YoutubeImports(db, ytTools, jobs, q::wake, OutputEncoding.defaultFor(OutputProfile.P720_30), 1800,
                 () -> null, clock);
         YoutubeImports.Imported again = imports.importUrl(new Actor.User(user, "s", Actor.Via.BEARER),
                 "https://youtu.be/dQw4w9WgXcQ?t=7", null, null);

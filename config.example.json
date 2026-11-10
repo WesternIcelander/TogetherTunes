@@ -9,7 +9,8 @@
     "dir": "./data"
   },
   "output": {
-    "profile": "720p30"
+    "profile": "720p30",
+    "videoBitrateKbps": 3000
   },
   "ingest": {
     "maxUploadBytes": "4 GiB",

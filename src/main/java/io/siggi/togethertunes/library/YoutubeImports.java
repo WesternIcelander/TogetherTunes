@@ -1,7 +1,7 @@
 package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.auth.Actor;
-import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
@@ -80,7 +80,7 @@ public final class YoutubeImports {
     private final Tools tools;
     private final IngestJobs jobs;
     private final Runnable wake;
-    private final OutputProfile profile;
+    private final OutputEncoding profile;
     private final int maxDurationSec;
     private final Supplier<String> cookiesFile;
     private final Clock clock;
@@ -102,11 +102,11 @@ public final class YoutubeImports {
 
     /**
      * @param wake           called after a job was queued (the ingest queue's {@code wake})
-     * @param profile        the output profile new items are recorded with
+     * @param profile        the output encoding new items are recorded with
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
      * @param cookiesFile    the {@code ytdlp.cookiesFile} setting, read on every metadata request
      */
-    public YoutubeImports(Database db, Tools tools, IngestJobs jobs, Runnable wake, OutputProfile profile,
+    public YoutubeImports(Database db, Tools tools, IngestJobs jobs, Runnable wake, OutputEncoding profile,
                           int maxDurationSec, Supplier<String> cookiesFile, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.tools = Objects.requireNonNull(tools);

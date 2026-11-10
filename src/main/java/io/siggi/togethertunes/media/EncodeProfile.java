@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.media;
 
+import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import java.util.List;
 
@@ -11,7 +12,9 @@ import java.util.List;
  *
  * <p>Every list gives: libx264, preset veryfast, High profile, yuv420p, no B-frames (so PTS =
  * DTS), closed 60-frame GOPs with an IDR forced every 2 s from t = 0 and no scene-cut keyframes
- * (invariant 2), CRF 20 with a VBV cap. They contain only output (encoder) options, so a call
+ * (invariant 2), constant bitrate at the configured rate with filler NAL padding (so cards and
+ * mezzanines alike are exactly CBR; {@code docs/library-and-ingest.md#the-mezzanine-profile}).
+ * They contain only output (encoder) options, so a call
  * site puts them after its inputs and filters, e.g.
  * {@code ffmpeg -loop 1 -framerate 30 -i card.png -t 2 -vf <scaleFilter> <videoArgs> -an card.mp4}.
  *
@@ -32,11 +35,16 @@ public final class EncodeProfile {
     public static final int GOP_FRAMES = 60;
     /** GOP length in milliseconds; every GOP starts with an IDR exactly this far apart. */
     public static final int GOP_MS = 2000;
-
-    /** x264 arguments for {@link OutputProfile#P720_30}. */
-    public static final List<String> VIDEO_ARGS_720P30 = videoArgs("4.0", "3M", "6M");
-    /** x264 arguments for {@link OutputProfile#P1080_30}. */
-    public static final List<String> VIDEO_ARGS_1080P30 = videoArgs("4.1", "6M", "12M");
+    /**
+     * x264's VBV buffer ({@code -bufsize}) in milliseconds of video at the constant rate, started
+     * full ({@code vbv-init=1}). Measured 2026-11-10 with ffmpeg 6.1.1 at 720p30, 3 Mb/s, bytes per
+     * 2 s GOP against {@code R × 2 s / 8} = 750 000: a 2 s still card +0.1 % (−2.4 % without
+     * {@code vbv-init=1}, which starts the buffer 90 % full), {@code testsrc2} within ±0.01 %, a
+     * noisy fractal source −1…+2 %. With a 1 s buffer the noisy source spread −2…+6 % and
+     * {@code testsrc2} −5…+10 %; with 2 s, −10…+18 %. Half a second still leaves an IDR frame
+     * up to half a second's worth of bits (~187 KB at 3 Mb/s).
+     */
+    public static final int BUFSIZE_MS = 500;
 
     /** AAC sample rate of every encode; one AAC frame is 1024 samples = 1920 ticks at 90 kHz. */
     public static final int AUDIO_SAMPLE_RATE = 48000;
@@ -59,7 +67,21 @@ public final class EncodeProfile {
     private EncodeProfile() {
     }
 
-    private static List<String> videoArgs(String level, String maxrate, String bufsize) {
+    /**
+     * The x264 argument list for {@code encoding} (immutable): the profile's H.264 level and
+     * constant bitrate {@code R = encoding.videoBitrateKbps()}: {@code -b:v R -minrate R -maxrate R
+     * -bufsize R/2} with {@code nal-hrd=cbr:vbv-init=1}, so x264 signals CBR in the SPS (VUI HRD
+     * parameters, which carry the rate and buffer size: another bitrate is another avcC) and pads
+     * every frame up to the rate with filler data NAL units (type 12). The VBV buffer is
+     * {@link #BUFSIZE_MS} of video, started full. Equal encodings give equal lists.
+     */
+    public static List<String> videoArgs(OutputEncoding encoding) {
+        String level = switch (encoding.profile()) {
+            case P720_30 -> "4.0";
+            case P1080_30 -> "4.1";
+        };
+        String rate = encoding.videoBitrateKbps() + "k";
+        String bufsize = (encoding.videoBitrateKbps() * BUFSIZE_MS / 1000) + "k";
         return List.of(
                 "-c:v", "libx264",
                 "-preset", "veryfast",
@@ -76,18 +98,16 @@ public final class EncodeProfile {
                 "-keyint_min", Integer.toString(GOP_FRAMES),
                 "-sc_threshold", "0",
                 "-force_key_frames", "expr:gte(t,n_forced*" + (GOP_MS / 1000) + ")",
-                "-x264-params", "open-gop=0",
-                "-crf", "20",
-                "-maxrate", maxrate,
+                "-x264-params", "open-gop=0:nal-hrd=cbr:vbv-init=1",
+                "-b:v", rate,
+                "-minrate", rate,
+                "-maxrate", rate,
                 "-bufsize", bufsize);
     }
 
-    /** The x264 argument list for {@code profile} (immutable; the same instance every call). */
-    public static List<String> videoArgs(OutputProfile profile) {
-        return switch (profile) {
-            case P720_30 -> VIDEO_ARGS_720P30;
-            case P1080_30 -> VIDEO_ARGS_1080P30;
-        };
+    /** {@link #scaleFilter(OutputProfile)} for the encoding's profile. */
+    public static String scaleFilter(OutputEncoding encoding) {
+        return scaleFilter(encoding.profile());
     }
 
     /**
