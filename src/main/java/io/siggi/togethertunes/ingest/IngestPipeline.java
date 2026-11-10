@@ -524,7 +524,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // publish
         step(log, "publish");
-        if (reencode) {
+        // Wait only when the old files are still of the current encoding: files of another
+        // encoding (profile, bitrate or encoder arguments) can't be spliced by the program output,
+        // which shows "Loading…" for them, so waiting for the item to stop playing would deadlock
+        // a room that has it current or next.
+        if (reencode && reference.encoding().id().equals(item.outputProfile())) {
             waitUntilNotPlaying(item.id(), ctx);
         }
         publish(work, itemDir, item.id(), job.id());

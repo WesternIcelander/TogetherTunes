@@ -1171,6 +1171,45 @@ class IngestPipelineTest {
         assertNoLeftovers();
     }
 
+    /**
+     * A re-encode for a new encoding publishes at once even while its item is playing: the program
+     * output can't splice the old encoding's files (it shows "Loading…" for them), so waiting for
+     * the play to end would deadlock a room that has the item current or next.
+     */
+    @Test
+    void aReencodeOfAnOldEncodingDoesNotWaitForThePlay() throws Exception {
+        IngestPipeline pipeline = presetQueue(EncodePresets.fixed(X264Preset.VERYFAST, X264Preset.VERYFAST));
+        String item = fixtures.item("pending");
+        stageVideo(item);
+        IngestJob first = jobs.enqueue(item, Kind.UPLOAD, IngestJob.Tier.QUICK);
+        assertEquals(State.DONE, awaitJob(first.id()).state());
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET output_profile = '720p30' WHERE id = ?")) {
+                ps.setString(1, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        pipeline.inUse(id -> true); // playing in a room, forever
+
+        IngestJob done = awaitJob(jobs.enqueue(item, Kind.REENCODE).id());
+        assertEquals(State.DONE, done.state(), done.log());
+        assertFalse(done.log().contains("publishing once it has finished"), done.log());
+        assertEquals(reference.encoding().id(), itemProfile(item), "published for the current encoding");
+        assertNoLeftovers();
+    }
+
+    private String itemProfile(String item) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT output_profile FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (var rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+    }
+
     /** A quality job for an item without an original (and not from YouTube) leaves it as it is. */
     @Test
     void qualityWithoutAnOriginalKeepsTheQuickEncode() throws Exception {
