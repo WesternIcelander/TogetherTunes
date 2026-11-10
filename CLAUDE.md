@@ -25,7 +25,7 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 3. Program-output timestamps increase smoothly forever. Audio frames are exactly 1920 ticks (90 kHz) apart. Never emit a discontinuity.
 4. The room timeline is the only source of truth. The program output follows it and never feeds back into it.
 5. **IP addresses are never exposed** to an actor without `ip.view`, in any response, message or export. Only `IpAccess` reads IP columns.
-6. Stream URL tokens and RTMP keys are capabilities. Never log them in full.
+6. Stream URL tokens (private rooms) and RTMP keys are capabilities. Never log them in full. (Public and unlisted rooms' stream URLs use the room slug, which isn't a secret.)
 7. One YouTube video ID maps to exactly one item row, forever (purged items are refetched into the same row).
 
 ## Upstream libraries (SiggiHTTP, SimpleWebsocket)

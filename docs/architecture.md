@@ -8,7 +8,7 @@
    (WebSocket) ──► │        │                                    │          │                    │
                    │        │ static files (vanilla TS UI)       │          ├─ RoomState (memory)│
                    │        │ media file serving (Range)         │          └─ Packager (opt.)   │
- VRChat player ──► │        └─ /live/{token}.ts, .m3u8 ◄─────────┼──────────── │                 │
+ VRChat player ──► │        └─ /live/{slug}.ts, .m3u8 ◄─────────┼──────────── │                 │
                    │                                            │             └─► ffmpeg (RTMP) ─┼──► VRCDN etc.
                    │  IngestQueue ── workers ──► ffmpeg/ffprobe/yt-dlp (subprocesses)            │
                    │  DB (JDBC: SQLite | PostgreSQL)      Media store (filesystem)               │
