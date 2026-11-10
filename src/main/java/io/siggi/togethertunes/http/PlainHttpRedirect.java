@@ -7,14 +7,13 @@ import java.util.Objects;
  * request that arrived over plain HTTP ({@link Request#isSecure()} false: the connection, or
  * {@code X-Forwarded-Proto} from a trusted proxy) gets a {@code 301} to the same path and query on
  * {@code http.publicBaseUrl} with an empty body, unless {@link Exemption} says it may be served over
- * HTTP (public and unlisted rooms' stream URLs, for players without TLS). Pages, {@code /api/*},
- * {@code /media/*}, WebSocket upgrades, unknown paths and private rooms' token stream URLs all
- * redirect. Requests over HTTPS pass through untouched.
+ * HTTP (stream URLs, by slug or by a private room's token, for players without TLS). Pages,
+ * {@code /api/*}, {@code /media/*}, WebSocket upgrades and unknown paths all redirect. Requests over HTTPS pass through untouched.
  *
  * <p>Installed only when {@code http.insecureBaseUrl} is set and {@code http.publicBaseUrl} is
  * {@code https://} ({@code Config.redirectPlainHttp()}); with an {@code http://} public URL (local
- * testing) nothing is ever redirected. The {@code Location} may carry a private room's stream token
- * (the client sent it already); it is never logged (invariant 6).
+ * testing) nothing is ever redirected. The {@code Location} may carry a stream token the client sent
+ * (an unknown or revoked one); it is never logged (invariant 6).
  */
 public final class PlainHttpRedirect implements Router.Filter {
     private static final System.Logger LOG = System.getLogger(PlainHttpRedirect.class.getName());

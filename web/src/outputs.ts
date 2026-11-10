@@ -40,10 +40,15 @@ export interface OutputRow {
   /** `.ts` / HLS / MP3: `slug` (public and unlisted rooms) or `token` (private rooms: the URL can be rotated). */
   urlKind?: "slug" | "token" | string;
   /**
-   * `.ts` / HLS / MP3 of a public or unlisted room, when the server has a plain-HTTP address:
-   * the same stream as `http://`, for players that can't use HTTPS. Never for private rooms.
+   * `.ts` / HLS / MP3, when the server has a plain-HTTP address: the same stream URL (slug or
+   * token) as `http://`, for players that can't use HTTPS.
    */
   insecureUrl?: string;
+  /**
+   * A private room's output whose current token has been used over plain HTTP: when it was first
+   * seen (epoch ms). Cleared by Rotate.
+   */
+  tokenCleartextAt?: number;
   /** RTMP, the room's owner only: the ingest URL, whether there is a key, and the key. */
   rtmpUrl?: string;
   hasRtmpKey?: boolean;
@@ -68,6 +73,21 @@ export function autoOffLine(row: OutputRow): string | undefined {
     case "no_listeners": return "Off: no listeners for " + minutes + ". Turn on to start again.";
     default: return undefined;
   }
+}
+
+/** A date for the cleartext warning, in the browser's locale. */
+function shortDate(ms: number): string {
+  return new Date(ms).toLocaleDateString();
+}
+
+/**
+ * The warning for a token URL that has been used over unencrypted HTTP (`tokenCleartextAt`), or
+ * undefined. Slug URLs have no token and never get one.
+ */
+export function cleartextWarning(row: OutputRow, date: (ms: number) => string = shortDate): string | undefined {
+  if (row.urlKind !== "token" || typeof row.tokenCleartextAt !== "number") return undefined;
+  return "This URL has been used over unencrypted HTTP (since " + date(row.tokenCleartextAt)
+    + "), so others on the network could have seen it. Rotate it if that matters.";
 }
 
 /** Whether the output's URL has a token the owner can rotate (only private rooms' URLs do). */

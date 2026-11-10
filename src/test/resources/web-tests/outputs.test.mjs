@@ -139,3 +139,15 @@ test("stream URLs: only token URLs (private rooms) rotate; the URLs follow the r
   assert.notEqual(O.urlKey({ slug: "club", visibility: "public" }), O.urlKey({ slug: "club", visibility: "private" }));
   assert.notEqual(O.urlKey({ slug: "club", visibility: "public" }), O.urlKey({ slug: "disco", visibility: "public" }));
 });
+
+test("cleartext warning: only for a token URL used over plain HTTP, generic wording with the date", () => {
+  const url = (over) => ({ id: "o2", kind: "mp3", enabled: true, serverEnabled: true, active: true, createdAt: 1, ...over });
+  const date = (ms) => "D" + ms;
+  assert.equal(O.cleartextWarning(url({ urlKind: "token", tokenCleartextAt: 1800000000000 }), date),
+    "This URL has been used over unencrypted HTTP (since D1800000000000), so others on the network could have seen it."
+    + " Rotate it if that matters.");
+  assert.equal(O.cleartextWarning(url({ urlKind: "token" }), date), undefined, "never used over HTTP");
+  assert.equal(O.cleartextWarning(url({ urlKind: "slug", tokenCleartextAt: 5 }), date), undefined, "slug URLs have no token");
+  assert.equal(O.cleartextWarning(url({ urlKind: "token", tokenCleartextAt: "5" }), date), undefined, "malformed");
+  assert.match(O.cleartextWarning(url({ urlKind: "token", tokenCleartextAt: 1800000000000 })), /^This URL has been used over unencrypted HTTP \(since .+\), so/);
+});

@@ -34,7 +34,10 @@ import java.util.Objects;
  *       plaintext (they are shown to the owner again); {@link #rotate} replaces one, and
  *       {@link #reissueTokens} all of a room's (when it becomes private). A token never has the
  *       shape of a slug ({@link #newToken}), so the two can't collide. Tokens are capabilities:
- *       never logged, never in an audit entry (invariant 6). Slugs aren't secrets.</li>
+ *       never logged, never in an audit entry (invariant 6). Slugs aren't secrets. With
+ *       {@code http.insecureBaseUrl} a token may travel over plain HTTP; its first such use is
+ *       recorded in {@code token_cleartext_at} ({@link #markTokenCleartext}), and a new token
+ *       clears it.</li>
  *   <li><b>RTMP stream keys</b> are stored in plain text ({@code rtmp_key}; RTMP sends them in
  *       plain text anyway). The API shows the key (and the ingest URL) to the room's owner only;
  *       moderators get nothing about either. Keys are never logged or audited (invariant 6).
@@ -114,11 +117,16 @@ public final class StreamOutputs {
 
     /** A {@code stream_outputs} row. Internal: holds the token and the stream key. */
     public record Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
-                         boolean enabled, long createdAt, Stopped stopped) {
+                         boolean enabled, long createdAt, Stopped stopped, Long tokenCleartextAt) {
         public Output {
             Objects.requireNonNull(id, "id");
             Objects.requireNonNull(roomId, "roomId");
             Objects.requireNonNull(kind, "kind");
+        }
+
+        public Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
+                      boolean enabled, long createdAt, Stopped stopped) {
+            this(id, roomId, kind, token, rtmpUrl, rtmpKey, enabled, createdAt, stopped, null);
         }
 
         public Output(String id, String roomId, Kind kind, String token, String rtmpUrl, String rtmpKey,
@@ -415,7 +423,7 @@ public final class StreamOutputs {
             }
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_UPDATED, roomId, details);
             return new Output(o.id(), roomId, o.kind(), o.token(), url, key, enabled, o.createdAt(),
-                    keepStopped ? o.stopped() : null);
+                    keepStopped ? o.stopped() : null, o.tokenCleartextAt());
         });
     }
 
@@ -463,13 +471,14 @@ public final class StreamOutputs {
             details.put("idleMinutes", minutes);
             AuditLog.write(c, now, null, null, null, AUDIT_UPDATED, roomId, details);
             return new Output(o.id(), roomId, o.kind(), o.token(), o.rtmpUrl(), o.rtmpKey(), false, o.createdAt(),
-                    new Stopped(reason, now, minutes));
+                    new Stopped(reason, now, minutes), o.tokenCleartextAt());
         });
     }
 
     /**
      * Gives every {@code .ts}/HLS/MP3 output of the room a new token, e.g. because the room just
-     * became private: tokens from an earlier private phase never come back. Not audited (the
+     * became private: tokens from an earlier private phase never come back. Clears
+     * {@code token_cleartext_at} (the new tokens have never travelled unencrypted). Not audited (the
      * visibility change is).
      *
      * @return how many outputs got a new token
@@ -478,7 +487,8 @@ public final class StreamOutputs {
         List<Output> outs = list(roomId);
         return db.write(c -> {
             int n = 0;
-            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET token = ? WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE stream_outputs SET token = ?, token_cleartext_at = NULL WHERE id = ?")) {
                 for (Output o : outs) {
                     if (o.kind().hasToken()) {
                         ps.setString(1, newToken());
@@ -509,7 +519,8 @@ public final class StreamOutputs {
     }
 
     /**
-     * Gives a {@code .ts}/HLS/MP3 output a new token; the old one stops working at once.
+     * Gives a {@code .ts}/HLS/MP3 output a new token; the old one stops working at once. Clears
+     * {@code token_cleartext_at}: the new token has never travelled unencrypted.
      *
      * @return the output with its new token, or null if there is no such output in the room
      * @throws HttpError {@code 409 no_token} for an RTMP output
@@ -524,7 +535,8 @@ public final class StreamOutputs {
             if (!o.kind().hasToken()) {
                 throw new HttpError(409, "no_token", "An RTMP output has no token to rotate");
             }
-            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET token = ? WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE stream_outputs SET token = ?, token_cleartext_at = NULL WHERE id = ?")) {
                 ps.setString(1, token);
                 ps.setString(2, o.id());
                 ps.executeUpdate();
@@ -532,13 +544,60 @@ public final class StreamOutputs {
             AuditLog.write(c, EpochMs.now(clock), actorUserId, null, ip, AUDIT_ROTATED, roomId,
                     details(o.id(), o.kind()));
             return new Output(o.id(), roomId, o.kind(), token, o.rtmpUrl(), o.rtmpKey(), o.enabled(),
-                    o.createdAt(), o.stopped());
+                    o.createdAt(), o.stopped(), null);
+        });
+    }
+
+    /**
+     * Records that a private room's output token was presented over plain HTTP
+     * ({@code docs/program-output.md#plain-http}): sets {@code token_cleartext_at} to now if
+     * {@code token} is the current token of the room's output of this kind, the room is private and
+     * the time isn't set yet. Not audited (the token must not appear anywhere; the caller logs the
+     * event without it).
+     *
+     * @return the output (without its token) if this call set the time, else null (not a private
+     *         room's current token, or already recorded)
+     */
+    public Output markTokenCleartext(Kind kind, String token) throws SQLException {
+        Objects.requireNonNull(kind, "kind");
+        if (token == null || !kind.hasToken()) {
+            return null;
+        }
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            String id;
+            String roomId;
+            try (PreparedStatement ps = c.prepareStatement("SELECT so.id, so.room_id FROM stream_outputs so"
+                    + " JOIN rooms r ON r.id = so.room_id WHERE so.kind = ? AND so.token = ?"
+                    + " AND r.visibility = 'private' AND so.token_cleartext_at IS NULL")) {
+                ps.setString(1, kind.wire());
+                ps.setString(2, token);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    id = rs.getString(1);
+                    roomId = rs.getString(2);
+                }
+            }
+            try (PreparedStatement ps = c.prepareStatement("UPDATE stream_outputs SET token_cleartext_at = ?"
+                    + " WHERE id = ? AND token = ? AND token_cleartext_at IS NULL")) {
+                ps.setLong(1, now);
+                ps.setString(2, id);
+                ps.setString(3, token);
+                if (ps.executeUpdate() == 0) {
+                    return null;
+                }
+            }
+            Output o = find(c, roomId, id);
+            return o == null ? null : new Output(o.id(), o.roomId(), o.kind(), null, null, null, o.enabled(),
+                    o.createdAt(), o.stopped(), o.tokenCleartextAt());
         });
     }
 
     private static final String SELECT =
             "SELECT id, room_id, kind, token, rtmp_url, rtmp_key, enabled, created_at, stopped_reason, stopped_at,"
-                    + " stopped_idle_minutes FROM stream_outputs";
+                    + " stopped_idle_minutes, token_cleartext_at FROM stream_outputs";
 
     private static Output find(Connection c, String roomId, String outputId) throws SQLException {
         if (outputId == null || roomId == null) {
@@ -561,8 +620,10 @@ public final class StreamOutputs {
         }
         String reason = rs.getString(9);
         Stopped stopped = reason == null ? null : new Stopped(reason, rs.getLong(10), rs.getInt(11));
+        long cleartext = rs.getLong(12);
+        Long cleartextAt = rs.wasNull() ? null : cleartext;
         return new Output(rs.getString(1), rs.getString(2), kind, rs.getString(4), rs.getString(5), rs.getString(6),
-                rs.getInt(7) != 0, rs.getLong(8), stopped);
+                rs.getInt(7) != 0, rs.getLong(8), stopped, cleartextAt);
     }
 
     private static Map<String, Object> details(String outputId, Kind kind) {

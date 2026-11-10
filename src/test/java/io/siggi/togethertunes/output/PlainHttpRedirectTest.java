@@ -31,9 +31,8 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * {@code http.insecureBaseUrl} end to end ({@link PlainHttpRedirect} with {@link PlainHttpStreams}):
  * plain-HTTP requests (direct, or {@code X-Forwarded-Proto: http} from a trusted proxy) get a
- * {@code 301} to the same path and query on the HTTPS URL, except public and unlisted rooms' stream
- * URLs; private rooms' token URLs redirect too; an untrusted client's {@code X-Forwarded-Proto} is
- * ignored. The routes are stand-ins that answer with the start of each output's normal body.
+ * {@code 301} to the same path and query on the HTTPS URL, except stream URLs (public and unlisted
+ * rooms' slugs, private rooms' tokens); an untrusted client's {@code X-Forwarded-Proto} is ignored. The routes are stand-ins that answer with the start of each output's normal body.
  */
 class PlainHttpRedirectTest {
     static final String TOKEN = "Ab3_dEf-GhIjKlMnOpQrSt"; // a private room's token (not slug-shaped)
@@ -71,9 +70,9 @@ class PlainHttpRedirectTest {
         return (rq, rs) -> rs.send(200, Response.TEXT, body);
     }
 
-    /** "club" and "hidden" are public/unlisted; "secret" is a private room's slug. */
-    static PlainHttpStreams.PublicSlugs slugs() {
-        return key -> key.equals("club") || key.equals("hidden");
+    /** "club" and "hidden" are public/unlisted; "secret" is a private room's slug, {@link #TOKEN} its token. */
+    static PlainHttpStreams.StreamKeys slugs() {
+        return key -> key.equals("club") || key.equals("hidden") || key.equals(TOKEN);
     }
 
     void start(boolean redirect, String bind, List<String> trustedProxies) throws IOException {
@@ -143,11 +142,11 @@ class PlainHttpRedirectTest {
 
     static final List<String> REDIRECTED = List.of("/", "/rooms/club?mode=remote", "/api/me?x=1&y=%20z",
             "/media/0190/cover.jpg", "/nope/at/all", "/live/club.txt", "/live/club/other",
-            "/live/" + TOKEN + ".ts", "/live/" + TOKEN + ".mp3", "/live/" + TOKEN + "/index.m3u8",
-            "/live/" + TOKEN + "/seg/12.ts", "/live/secret.ts", "/live/secret/index.m3u8");
+            "/live/" + TOKEN + "/other", "/live/Zz9_wrongTokenAbcdefgh.ts", "/live/secret.ts",
+            "/live/secret/index.m3u8");
 
     @Test
-    void plainHttpRedirectsEverythingButPublicStreamUrls() throws Exception {
+    void plainHttpRedirectsEverythingButStreamUrls() throws Exception {
         start(true, "127.0.0.1", List.of());
         for (String forwarded : new String[] {null, "X-Forwarded-Proto: http"}) {
             String[] h = forwarded == null ? new String[0] : new String[] {forwarded};
@@ -167,6 +166,12 @@ class PlainHttpRedirectTest {
             assertServed(send("127.0.0.1", "GET", "/live/club/index.m3u8", h), "#EXTM3U");
             assertServed(send("127.0.0.1", "GET", "/live/club/seg/123.ts", h), "G@");
             assertEquals(200, send("127.0.0.1", "HEAD", "/live/club.mp3", h).status());
+            // Private rooms' token URLs: served too (the stream endpoint records the cleartext use)
+            assertServed(send("127.0.0.1", "GET", "/live/" + TOKEN + ".ts", h), "G@");
+            assertServed(send("127.0.0.1", "GET", "/live/" + TOKEN + ".mp3", h), "ID3");
+            assertServed(send("127.0.0.1", "GET", "/live/" + TOKEN + "/index.m3u8", h), "#EXTM3U");
+            assertServed(send("127.0.0.1", "GET", "/live/" + TOKEN + "/seg/12.ts", h), "G@");
+            assertEquals(200, send("127.0.0.1", "HEAD", "/live/" + TOKEN + ".mp3", h).status());
             // Other methods on a stream URL redirect
             assertRedirect(send("127.0.0.1", "POST", "/live/club.mp3", h), "/live/club.mp3");
         }
@@ -205,8 +210,7 @@ class PlainHttpRedirectTest {
         Assumptions.assumeTrue(lan != null, "no non-loopback IPv4 address to connect from");
         start(true, "0.0.0.0", List.of()); // trusts no proxies; only loopback is trusted by SiggiHTTP itself
         assertRedirect(send(lan, "GET", "/api/me", "X-Forwarded-Proto: https"), "/api/me");
-        assertRedirect(send(lan, "GET", "/live/" + TOKEN + ".ts", "X-Forwarded-Proto: https"),
-                "/live/" + TOKEN + ".ts");
+        assertRedirect(send(lan, "GET", "/live/secret.ts", "X-Forwarded-Proto: https"), "/live/secret.ts");
         assertServed(send(lan, "GET", "/live/club.ts", "X-Forwarded-Proto: https"), "G@");
     }
 

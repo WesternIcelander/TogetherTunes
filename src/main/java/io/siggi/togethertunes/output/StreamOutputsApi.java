@@ -43,8 +43,10 @@ import java.util.Set;
  * <p>An output is {@code {"id", "kind", "enabled", "serverEnabled", "active", "createdAt",
  * "stopped"?}} plus, for ts/HLS/MP3, {@code "url"} (the stream URL: by the room's slug for a public
  * or unlisted room, by token for a private one) and {@code "urlKind": "slug"|"token"}, plus
- * {@code "insecureUrl"?} (a public or unlisted room's slug URL on {@code http.insecureBaseUrl}, for
- * players that can't use HTTPS; only when the server has one, never for a private room), and for
+ * {@code "insecureUrl"?} (the same URL, slug or token, on {@code http.insecureBaseUrl}, for players
+ * that can't use HTTPS; only when the server has one) and {@code "tokenCleartextAt"?} (a private
+ * room's output whose current token has been used over plain HTTP: when, epoch ms; the panel warns),
+ * and for
  * RTMP, to the room's owner only, {@code
  * "rtmpUrl"}, {@code "hasRtmpKey"} and {@code "rtmpKey"?} (the full key; moderators get nothing
  * about the key or the ingest URL, which can carry credentials too), then for everyone {@code
@@ -76,8 +78,8 @@ public final class StreamOutputsApi {
     }
 
     /**
-     * @param insecureBaseUrl {@code http.insecureBaseUrl} if public and unlisted rooms' stream URLs
-     *                        are served over plain HTTP ({@code Config.redirectPlainHttp()}), else null
+     * @param insecureBaseUrl {@code http.insecureBaseUrl} if stream URLs are served over plain HTTP
+     *                        ({@code Config.redirectPlainHttp()}), else null
      */
     public StreamOutputsApi(Rooms rooms, StreamOutputs outputs, StreamOutputControl control, String publicBaseUrl,
                             String insecureBaseUrl) {
@@ -283,9 +285,12 @@ public final class StreamOutputsApi {
             boolean byToken = a.room().visibility() == Rooms.Visibility.PRIVATE;
             m.put("url", url(o.kind(), byToken ? o.token() : a.room().slug()));
             m.put("urlKind", byToken ? "token" : "slug");
-            // Never a token over plain HTTP (invariant 6): only slug URLs get a plain-HTTP twin.
-            if (!byToken && insecureBaseUrl != null) {
-                m.put("insecureUrl", url(insecureBaseUrl, o.kind(), a.room().slug()));
+            if (insecureBaseUrl != null) {
+                // Private rooms' token URLs too (the token then travels unencrypted; tokenCleartextAt warns).
+                m.put("insecureUrl", url(insecureBaseUrl, o.kind(), byToken ? o.token() : a.room().slug()));
+            }
+            if (byToken && o.tokenCleartextAt() != null) {
+                m.put("tokenCleartextAt", o.tokenCleartextAt());
             }
         } else {
             // The target and key only for the owner: they open the owner's account at the RTMP service.

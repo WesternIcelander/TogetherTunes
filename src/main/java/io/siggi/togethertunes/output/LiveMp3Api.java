@@ -76,6 +76,7 @@ public final class LiveMp3Api {
     private final LiveLimits limits;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     private volatile OutputListeners listeners = OutputListeners.NONE;
+    private volatile CleartextTokens cleartext = CleartextTokens.NONE;
 
     /**
      * @param encoders    the rooms' encoders, or null if the server has no ffmpeg
@@ -108,6 +109,11 @@ public final class LiveMp3Api {
                 }
             });
         };
+    }
+
+    /** Records private rooms' tokens arriving over plain HTTP ({@link CleartextTokens}). */
+    public void cleartext(CleartextTokens cleartext) {
+        this.cleartext = Objects.requireNonNull(cleartext);
     }
 
     /** Where open connections are counted ({@link OutputAutoOff}). */
@@ -192,6 +198,7 @@ public final class LiveMp3Api {
         if (target == null) {
             throw HttpError.notFound();
         }
+        cleartext.presented(request, StreamOutputs.Kind.MP3, token);
         boolean metadata = "1".equals(strip(request.header("Icy-MetaData")));
         if (request.method().equals("HEAD")) {
             headers(response, target, bitrateKbps.getAsInt(), metadata);

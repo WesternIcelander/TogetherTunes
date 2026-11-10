@@ -63,6 +63,12 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
     private final LiveLimits limits;
     private final ConcurrentHashMap<String, Room> rooms = new ConcurrentHashMap<>();
     private volatile OutputListeners listeners = OutputListeners.NONE;
+    private volatile CleartextTokens cleartext = CleartextTokens.NONE;
+
+    /** Records private rooms' tokens arriving over plain HTTP ({@link CleartextTokens}). */
+    public void cleartext(CleartextTokens cleartext) {
+        this.cleartext = Objects.requireNonNull(cleartext);
+    }
 
     /** Where requests are counted as listening ({@link OutputAutoOff}). */
     public void listeners(OutputListeners listeners) {
@@ -155,6 +161,7 @@ public final class LiveHlsApi implements ProgramOutputs.StartListener {
         if (roomId == null) {
             throw HttpError.notFound();
         }
+        cleartext.presented(request, StreamOutputs.Kind.HLS, token);
         Room room = rooms.computeIfAbsent(roomId, k -> new Room());
         room.lastFetchMs = nowMs.getAsLong();
         listeners.touched(roomId, StreamOutputs.Kind.HLS);

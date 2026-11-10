@@ -759,23 +759,153 @@ class StreamOutputsApiTest {
         for (String kind : List.of("ts", "hls", "mp3")) {
             JsonObject o = output(alice, kind);
             assertEquals("token", o.get("urlKind").getAsString());
-            assertFalse(o.has("insecureUrl"), "a token never goes over plain HTTP: " + o);
-            assertFalse(o.toString().contains("http://"), o.toString());
+            String token = o.get("url").getAsString().replaceFirst("^https://tunes\\.example/live/", "")
+                    .replaceFirst("(\\.ts|\\.mp3|/index\\.m3u8)$", "");
+            assertEquals(o.get("url").getAsString().replace("https://", "http://"),
+                    o.get("insecureUrl").getAsString(), "private rooms get the token URL over plain HTTP too");
+            assertTrue(o.get("insecureUrl").getAsString().contains("/live/" + token), o.toString());
+            assertFalse(o.has("tokenCleartextAt"), "never used over plain HTTP yet: " + o);
+        }
+        assertFalse(output(alice, "rtmp").has("insecureUrl"));
+    }
+
+    @Test
+    void noInsecureUrlWithoutThePlainHttpAddress() throws Exception {
+        create("{\"kind\":\"mp3\"}");
+        visibility(Rooms.Visibility.PRIVATE);
+        assertFalse(output(alice, "mp3").has("insecureUrl"));
+    }
+
+    /** The plain-HTTP stream server: the redirect filter in front of the MP3 endpoint (HEAD needs no encoder). */
+    WebServer liveServer() throws Exception {
+        Router router = new Router();
+        router.filter(new io.siggi.togethertunes.http.PlainHttpRedirect("https://tunes.example",
+                PlainHttpStreams.exemption(PlainHttpStreams.from(db))));
+        LiveMp3Api mp3 = new LiveMp3Api(LiveMp3Api.targetsFrom(db, settings), null, () -> 128, LiveLimits.noIpLimit());
+        mp3.cleartext(CleartextTokens.from(rows));
+        router.get("/live/{file}", mp3::handle);
+        return WebServer.start("127.0.0.1", 0, router, dir.toFile());
+    }
+
+    HttpResponse<String> head(WebServer live, String path, String... headers) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + live.port() + path))
+                .method("HEAD", HttpRequest.BodyPublishers.noBody());
+        for (int i = 0; i < headers.length; i += 2) {
+            b.header(headers[i], headers[i + 1]);
+        }
+        return HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NEVER).build()
+                .send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    String cleartextAt(String kind) throws Exception {
+        return column("SELECT token_cleartext_at FROM stream_outputs WHERE kind = '" + kind + "'");
+    }
+
+    @Test
+    void privateTokenUrlsAreServedOverPlainHttpAndTheFirstUseIsRecorded() throws Exception {
+        restartWithInsecureBase("http://tunes.example");
+        create("{\"kind\":\"mp3\"}");
+        create("{\"kind\":\"ts\"}");
+        visibility(Rooms.Visibility.PRIVATE);
+        String mp3Path = "/api/rooms/club/outputs/" + output(alice, "mp3").get("id").getAsString();
+        String token = column("SELECT token FROM stream_outputs WHERE kind = 'mp3'");
+        String tsToken = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        WebServer live = liveServer();
+        try {
+            // HTTPS (a trusted proxy's X-Forwarded-Proto: https) records nothing
+            assertEquals(200, head(live, "/live/" + token + ".mp3", "X-Forwarded-Proto", "https").statusCode());
+            assertNull(cleartextAt("mp3"), "HTTPS use is not cleartext");
+            // A wrong token, or a valid token of another output kind, records nothing
+            assertEquals(301, head(live, "/live/Zz9_wrongTokenAbcdefgh.mp3").statusCode());
+            assertEquals(404, head(live, "/live/" + tsToken + ".mp3").statusCode(), "served, but no such MP3 output");
+            assertNull(cleartextAt("mp3"));
+            assertNull(cleartextAt("ts"));
+            assertFalse(output(alice, "mp3").has("tokenCleartextAt"));
+
+            // Plain HTTP (via a trusted proxy): served, and the first use is recorded
+            clock.set(1_800_000_100_000L);
+            HttpResponse<String> r = head(live, "/live/" + token + ".mp3", "X-Forwarded-Proto", "http");
+            assertEquals(200, r.statusCode());
+            assertEquals("audio/mpeg", r.headers().firstValue("Content-Type").orElse(""));
+            assertEquals("1800000100000", cleartextAt("mp3"));
+            clock.set(1_800_000_200_000L);
+            assertEquals(200, head(live, "/live/" + token + ".mp3").statusCode(), "direct plain HTTP");
+            assertEquals("1800000100000", cleartextAt("mp3"), "the first use is kept");
+            JsonObject o = output(alice, "mp3");
+            assertEquals(1_800_000_100_000L, o.get("tokenCleartextAt").getAsLong());
+            assertEquals(1_800_000_100_000L, output(bob, "mp3").get("tokenCleartextAt").getAsLong(),
+                    "moderators see the URL, so they see the warning too");
+            assertFalse(output(alice, "ts").has("tokenCleartextAt"), "per output");
+            assertFalse(auditText().contains(token), "never audited");
+
+            // Rotate clears it: the new token never travelled in cleartext
+            HttpResponse<String> rotated = call(alice, "POST", mp3Path + "/rotate", null);
+            assertEquals(200, rotated.statusCode(), rotated.body());
+            assertFalse(json(rotated).has("tokenCleartextAt"));
+            assertNull(cleartextAt("mp3"));
+            String newToken = column("SELECT token FROM stream_outputs WHERE kind = 'mp3'");
+            assertEquals(301, head(live, "/live/" + token + ".mp3").statusCode(), "the old token is gone");
+            assertNull(cleartextAt("mp3"), "the old token doesn't mark the new one");
+            assertEquals(200, head(live, "/live/" + newToken + ".mp3").statusCode());
+            assertEquals("1800000200000", cleartextAt("mp3"), "the new token's first plain-HTTP use");
+
+            // A room that becomes private again gets new tokens without the mark
+            visibility(Rooms.Visibility.PUBLIC);
+            assertFalse(output(alice, "mp3").has("tokenCleartextAt"), "slug URLs have no token and no warning");
+            assertEquals(200, head(live, "/live/club.mp3").statusCode());
+            visibility(Rooms.Visibility.PRIVATE);
+            assertNull(cleartextAt("mp3"));
+            assertFalse(output(alice, "mp3").has("tokenCleartextAt"));
+        } finally {
+            live.close();
         }
     }
 
     @Test
-    void plainHttpStreamsAreTheSlugsOfPublicAndUnlistedRoomsOnly() throws Exception {
+    void markTokenCleartextOnlyForAPrivateRoomsCurrentToken() throws Exception {
         create("{\"kind\":\"ts\"}");
-        PlainHttpStreams.PublicSlugs slugs = PlainHttpStreams.from(db);
-        assertTrue(slugs.isPublicSlug("club"));
-        assertFalse(slugs.isPublicSlug("nope"));
-        visibility(Rooms.Visibility.UNLISTED);
-        assertTrue(slugs.isPublicSlug("club"));
+        String publicToken = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        assertNull(rows.markTokenCleartext(StreamOutputs.Kind.TS, publicToken), "not a private room");
+        assertNull(rows.markTokenCleartext(StreamOutputs.Kind.TS, "club"), "a slug is no token");
         visibility(Rooms.Visibility.PRIVATE);
-        assertFalse(slugs.isPublicSlug("club"));
         String token = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
-        assertFalse(slugs.isPublicSlug(token));
+        assertNull(rows.markTokenCleartext(StreamOutputs.Kind.HLS, token), "another kind");
+        StreamOutputs.Output o = rows.markTokenCleartext(StreamOutputs.Kind.TS, token);
+        assertEquals(clock.millis(), o.tokenCleartextAt());
+        assertNull(o.token(), "the result carries no token");
+        assertNull(rows.markTokenCleartext(StreamOutputs.Kind.TS, token), "only once");
+
+        // CleartextTokens: one write per key, failures retried
+        AtomicInteger writes = new AtomicInteger();
+        CleartextTokens ct = new CleartextTokens((k, t) -> {
+            if (writes.incrementAndGet() == 1) {
+                throw new SQLException("busy");
+            }
+            return null;
+        });
+        ct.presented(StreamOutputs.Kind.TS, "abc");
+        ct.presented(StreamOutputs.Kind.TS, "abc");
+        ct.presented(StreamOutputs.Kind.TS, "abc");
+        assertEquals(2, writes.get(), "the failed write is retried, then remembered");
+        ct.presented(StreamOutputs.Kind.HLS, "abc");
+        assertEquals(3, writes.get());
+    }
+
+    @Test
+    void plainHttpStreamsAreSlugsOfPublicRoomsAndTokensOfPrivateOnes() throws Exception {
+        create("{\"kind\":\"ts\"}");
+        PlainHttpStreams.StreamKeys keys = PlainHttpStreams.from(db);
+        String publicToken = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        assertTrue(keys.isStreamKey("club"));
+        assertFalse(keys.isStreamKey("nope"));
+        assertFalse(keys.isStreamKey(publicToken), "a public room's stored token opens nothing");
+        visibility(Rooms.Visibility.UNLISTED);
+        assertTrue(keys.isStreamKey("club"));
+        visibility(Rooms.Visibility.PRIVATE);
+        assertFalse(keys.isStreamKey("club"));
+        String token = column("SELECT token FROM stream_outputs WHERE kind = 'ts'");
+        assertTrue(keys.isStreamKey(token));
+        assertFalse(keys.isStreamKey(publicToken));
     }
 
     @Test

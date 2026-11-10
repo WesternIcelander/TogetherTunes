@@ -67,7 +67,7 @@ abstract class InitialSchemaContract {
         t("votes", "entry_id", "voter_user_id", "voter_guest_id", "value", "at");
         t("skip_votes", "entry_id", "voter_user_id", "voter_guest_id", "at");
         t("stream_outputs", "id", "room_id", "kind", "token", "rtmp_url", "rtmp_key_enc", "enabled",
-                "created_at", "rtmp_key", "stopped_reason", "stopped_at", "stopped_idle_minutes");
+                "created_at", "rtmp_key", "stopped_reason", "stopped_at", "stopped_idle_minutes", "token_cleartext_at");
         t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
                 "item_id", "deduplicated");
         t("guest_upload_starts", "id", "guest_id", "ip_key_hash", "created_at");

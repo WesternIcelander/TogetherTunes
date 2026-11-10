@@ -9,7 +9,7 @@
 import { api } from "./api.js";
 import { button, h } from "./dom.js";
 import {
-  activeKey, autoOffLine, canCreate, canRotate, urlKey, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
+  activeKey, autoOffLine, canCreate, canRotate, cleartextWarning, urlKey, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
   validRtmpUrl, type OutputKind, type OutputRow,
 } from "./outputs.js";
 import type { RoomState } from "./roomclient.js";
@@ -266,6 +266,8 @@ export class OutputsPanel {
       parts.push(h("p", { class: "muted small", text: "For players that can't use HTTPS:" }));
       parts.push(copyField(row.insecureUrl, (OUTPUT_LABELS[kind] ?? kind) + " URL for players that can't use HTTPS"));
     }
+    const cleartext = cleartextWarning(row);
+    if (cleartext !== undefined) parts.push(h("p", { class: "small error", text: cleartext }));
     const buttons: Node[] = [];
     if (this.#owner && canRotate(row)) {
       buttons.push(button("Rotate URL", async () => {

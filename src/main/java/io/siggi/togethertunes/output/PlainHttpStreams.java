@@ -8,31 +8,38 @@ import java.util.Objects;
 /**
  * Which plain-HTTP requests are served instead of redirected ({@link PlainHttpRedirect},
  * {@code http.insecureBaseUrl}, {@code docs/architecture.md#plain-http}): {@code GET}/{@code HEAD}
- * of a stream URL by slug of a public or unlisted room, i.e. {@code /live/{slug}.mp3},
- * {@code /live/{slug}.ts}, {@code /live/{slug}/index.m3u8} and {@code /live/{slug}/seg/{file}}.
- * Some players (internet-radio players in particular) have no TLS. Private rooms' token URLs are
- * never served over plain HTTP: the token is a capability and would travel unencrypted
- * (invariant 6). A token never has a slug's shape and a slug opens only a non-private room
- * ({@link StreamOutputs#KEY_MATCH}), so "the key is the slug of a public or unlisted room" is
- * exactly "a slug URL". Whether the room has that output enabled is left to the stream handler,
- * which answers the same way over HTTP and HTTPS.
+ * of a stream URL, i.e. {@code /live/{key}.mp3}, {@code /live/{key}.ts},
+ * {@code /live/{key}/index.m3u8} and {@code /live/{key}/seg/{file}}, whose key is the slug of a
+ * public or unlisted room or the token of one of a private room's outputs (the same keys
+ * {@link StreamOutputs#KEY_MATCH} opens). Some players (internet-radio players in particular) have
+ * no TLS. A private room's token then travels unencrypted (Siggi, 2026-11-10: acceptable): the
+ * stream endpoints record its first plain-HTTP use ({@link CleartextTokens}) and the outputs panel
+ * warns the owner, who can rotate it. Whether the room has that output enabled, and whether the
+ * token belongs to that output's kind, is left to the stream handler, which answers the same way
+ * over HTTP and HTTPS (token check, rate limits, connection caps).
  */
 public final class PlainHttpStreams {
     private PlainHttpStreams() {
     }
 
-    /** Whether {@code key} is the slug of a public or unlisted room. */
+    /**
+     * Whether {@code key} is a stream URL key: the slug of a public or unlisted room, or the token of
+     * a private room's output.
+     */
     @FunctionalInterface
-    public interface PublicSlugs {
-        boolean isPublicSlug(String key) throws SQLException;
+    public interface StreamKeys {
+        boolean isStreamKey(String key) throws SQLException;
     }
 
-    /** {@link PublicSlugs} from the {@code rooms} table. */
-    public static PublicSlugs from(Database db) {
+    /** {@link StreamKeys} from the {@code rooms} and {@code stream_outputs} tables. */
+    public static StreamKeys from(Database db) {
         Objects.requireNonNull(db, "db");
         return key -> db.read(c -> {
-            try (var ps = c.prepareStatement("SELECT 1 FROM rooms WHERE slug = ? AND visibility <> 'private'")) {
+            try (var ps = c.prepareStatement("SELECT 1 FROM rooms r WHERE (r.slug = ? AND r.visibility <> 'private')"
+                    + " OR (r.visibility = 'private' AND EXISTS (SELECT 1 FROM stream_outputs so"
+                    + " WHERE so.room_id = r.id AND so.token = ?))")) {
                 ps.setString(1, key);
+                ps.setString(2, key);
                 try (var rs = ps.executeQuery()) {
                     return rs.next();
                 }
@@ -40,16 +47,16 @@ public final class PlainHttpStreams {
         });
     }
 
-    /** The exemption for {@link PlainHttpRedirect}: stream URLs by public or unlisted slug. */
-    public static PlainHttpRedirect.Exemption exemption(PublicSlugs slugs) {
-        Objects.requireNonNull(slugs, "slugs");
+    /** The exemption for {@link PlainHttpRedirect}: stream URLs by slug or private token. */
+    public static PlainHttpRedirect.Exemption exemption(StreamKeys keys) {
+        Objects.requireNonNull(keys, "keys");
         return request -> {
             String method = request.method();
             if (!method.equals("GET") && !method.equals("HEAD")) {
                 return false;
             }
             String key = streamKey(request.path());
-            return key != null && slugs.isPublicSlug(key);
+            return key != null && keys.isStreamKey(key);
         };
     }
 

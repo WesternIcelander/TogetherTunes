@@ -99,6 +99,7 @@ public final class LiveTsApi {
     private volatile io.siggi.togethertunes.http.Handler mp3;
     private final Set<Connection> connections = ConcurrentHashMap.newKeySet();
     private volatile OutputListeners listeners = OutputListeners.NONE;
+    private volatile CleartextTokens cleartext = CleartextTokens.NONE;
 
     /** Without a per-IP limit (tests); the per-token cap still applies. */
     public LiveTsApi(Targets targets, ProgramOutputs outputs) {
@@ -109,6 +110,11 @@ public final class LiveTsApi {
         this.targets = Objects.requireNonNull(targets, "targets");
         this.outputs = Objects.requireNonNull(outputs, "outputs");
         this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    /** Records private rooms' tokens arriving over plain HTTP ({@link CleartextTokens}). */
+    public void cleartext(CleartextTokens cleartext) {
+        this.cleartext = Objects.requireNonNull(cleartext);
     }
 
     /** Where open connections are counted ({@link OutputAutoOff}). */
@@ -228,6 +234,7 @@ public final class LiveTsApi {
         if (target == null) {
             throw HttpError.notFound();
         }
+        cleartext.presented(request, StreamOutputs.Kind.TS, token);
         if (request.method().equals("HEAD")) {
             // like VRCDN: 200, Content-Length: 0; never starts the output, never a viewer
             response.header("Content-Type", CONTENT_TYPE);

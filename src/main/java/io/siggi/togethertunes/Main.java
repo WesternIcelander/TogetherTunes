@@ -48,6 +48,7 @@ import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.CardGop;
+import io.siggi.togethertunes.output.CleartextTokens;
 import io.siggi.togethertunes.output.FillerSource.Filler;
 import io.siggi.togethertunes.output.LiveHlsApi;
 import io.siggi.togethertunes.output.OutputStatusFeed;
@@ -346,8 +347,8 @@ public final class Main {
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
-        // http.insecureBaseUrl: plain HTTP serves only public and unlisted rooms' stream URLs; the
-        // rest gets a 301 to https (docs/architecture.md#plain-http).
+        // http.insecureBaseUrl: plain HTTP serves only stream URLs (by slug, or a private room's
+        // token); the rest gets a 301 to https (docs/architecture.md#plain-http).
         if (config.redirectPlainHttp()) {
             appRouter.filter(new PlainHttpRedirect(config.publicBaseUrl(),
                     PlainHttpStreams.exemption(PlainHttpStreams.from(database))));
@@ -368,6 +369,9 @@ public final class Main {
         // The direct MPEG-TS output: GET/HEAD /live/{key}.ts (docs/program-output.md#direct-mpeg-ts-ts).
         LiveTsApi liveTs = new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs, liveLimits);
         liveTs.listeners(autoOff);
+        // A private room's token used over plain HTTP is recorded; the outputs panel warns about it.
+        CleartextTokens cleartextTokens = CleartextTokens.from(streamOutputs);
+        liveTs.cleartext(cleartextTokens);
         liveTs.register(appRouter);
         // The MP3 output: GET/HEAD /live/{key}.mp3 (docs/program-output.md#mp3-output), one
         // supervised ffmpeg encode per room with listeners. Null encoders without ffmpeg.
@@ -376,11 +380,13 @@ public final class Main {
         LiveMp3Api liveMp3 = new LiveMp3Api(LiveMp3Api.targetsFrom(database, settings), mp3Encoders,
                 () -> mp3Bitrate(settings), liveLimits);
         liveMp3.listeners(autoOff);
+        liveMp3.cleartext(cleartextTokens);
         liveMp3.register(liveTs);
         // HLS: GET /live/{key}/index.m3u8 and /live/{key}/seg/{seq}.ts (docs/program-output.md#hls).
         LiveHlsApi liveHls = new LiveHlsApi(LiveHlsApi.targetsFrom(database, settings), programOutputs,
                 System::currentTimeMillis, liveLimits);
         liveHls.listeners(autoOff);
+        liveHls.cleartext(cleartextTokens);
         liveHls.register(appRouter);
         // What keeps pushes and .ts/MP3 listeners in line with the outputs.
         StreamOutputControl outputControl = streamOutputControl(streamOutputs, settings, programOutputs, rtmpPushers,
