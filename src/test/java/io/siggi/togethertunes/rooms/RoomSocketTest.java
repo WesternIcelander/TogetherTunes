@@ -415,6 +415,7 @@ class RoomSocketTest {
         assertEquals("owner", you.get("role").getAsString());
         assertTrue(you.get("canSkip").getAsBoolean());
         assertTrue(you.get("canRequest").getAsBoolean());
+        assertTrue(you.get("canRequestLibrary").getAsBoolean());
         assertEquals("idle", state.getAsJsonObject("timeline").get("state").getAsString());
         assertFalse(state.has("current"));
         assertEquals(0, state.getAsJsonArray("queue").size());
@@ -631,6 +632,7 @@ class RoomSocketTest {
         JsonObject you = guest.await("state").getAsJsonObject("room").getAsJsonObject("you");
         assertTrue(you.get("canVote").getAsBoolean());
         assertTrue(you.get("canRequest").getAsBoolean());
+        assertTrue(you.get("canRequestLibrary").getAsBoolean()); // guests.canRequestLibrary is on by default
         assertFalse(you.get("canSkip").getAsBoolean());
 
         // --- media: current and next only, while guests.download is off

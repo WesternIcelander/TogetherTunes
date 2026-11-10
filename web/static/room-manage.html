@@ -21,7 +21,6 @@
       <a href="#settings" data-tab="settings">Settings</a>
       <a href="#members" data-tab="members">Members</a>
       <a href="#bans" data-tab="bans">Guest bans</a>
-      <a href="#requests" data-tab="requests">Request history</a>
     </nav>
 
     <section id="tab-settings" hidden>
@@ -82,7 +81,7 @@
 
     <section id="tab-bans" hidden>
       <h2>Guest bans</h2>
-      <p class="muted small">Ban a guest from the request history. Banning a guest identified by IP address bans
+      <p class="muted small">Ban a guest from the history on the room page. Banning a guest identified by IP address bans
         everyone sharing that address.</p>
       <table class="list bans">
         <thead><tr><th>Guest</th><th>Identified by</th><th>Banned</th><th></th></tr></thead>
@@ -93,30 +92,6 @@
       <p id="ban-error" class="error" role="alert"></p>
     </section>
 
-    <section id="tab-requests" hidden>
-      <h2>Request history</h2>
-      <form id="request-filter" class="row">
-        <label>Source
-          <select name="source" id="request-source">
-            <option value="">All</option>
-            <option value="library">Library</option>
-            <option value="upload">Upload</option>
-            <option value="youtube">YouTube</option>
-          </select></label>
-        <span id="request-requester" hidden></span>
-      </form>
-      <div id="request-bulk" class="row" hidden>
-        <button type="button" id="request-add-selected">Add selected to my library</button>
-        <span id="request-bulk-status" class="muted small" role="status"></span>
-      </div>
-      <table class="list requests">
-        <thead><tr><th id="request-select-head"></th><th>Item</th><th>Requested by</th><th>When</th><th></th></tr></thead>
-        <tbody id="request-rows"></tbody>
-      </table>
-      <p id="request-empty" class="muted" hidden>No requests.</p>
-      <button id="request-more" type="button" hidden>Load more</button>
-      <p id="request-error" class="error" role="alert"></p>
-    </section>
   </div>
 </body>
 </html>

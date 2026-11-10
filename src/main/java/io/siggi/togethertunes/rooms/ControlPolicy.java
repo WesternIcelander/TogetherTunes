@@ -65,7 +65,8 @@ public final class ControlPolicy {
 
     /**
      * The request path of an {@code add}: {@code via} is {@code library} (an item id),
-     * {@code upload} or {@code youtube} ({@link RoomQueue.Source#via}). A guest needs the matching
+     * {@code upload}, {@code youtube} or {@code history} (an item of the room's history, which
+     * counts as a library request) ({@link RoomQueue.Source#via}). A guest needs the matching
      * effective capability ({@code 403 guest_library_requests_disabled} /
      * {@code guest_uploads_disabled} / {@code guest_youtube_disabled}); a user the matching
      * permission ({@code 403 forbidden}). The other checks of an add ({@link #add}) come on top.
@@ -73,7 +74,7 @@ public final class ControlPolicy {
     public static void requireSource(RoomActor a, String via) {
         a.requireIdentity();
         boolean allowed = switch (via) {
-            case "library" -> a.canRequestLibrary();
+            case "library", "history" -> a.canRequestLibrary();
             case "upload" -> a.canUpload();
             case "youtube" -> a.canYoutube();
             default -> throw new IllegalArgumentException("unknown request path: " + via);

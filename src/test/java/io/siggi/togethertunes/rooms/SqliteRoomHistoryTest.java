@@ -5,8 +5,8 @@ import io.siggi.togethertunes.db.SqliteDialect;
 import java.sql.SQLException;
 import java.util.Properties;
 
-/** {@link RoomRequestsContract} on a SQLite file. */
-class SqliteRoomRequestsTest extends RoomRequestsContract {
+/** {@link RoomHistoryContract} on a SQLite file. */
+class SqliteRoomHistoryTest extends RoomHistoryContract {
     @Override
     protected Database open() throws SQLException {
         return Database.open("jdbc:sqlite:" + dir.resolve("test.db"), new Properties(),

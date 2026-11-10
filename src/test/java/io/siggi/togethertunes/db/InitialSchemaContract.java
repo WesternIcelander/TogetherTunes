@@ -62,11 +62,9 @@ abstract class InitialSchemaContract {
         t("room_members", "room_id", "user_id", "role", "joined_at");
         t("room_guest_bans", "room_id", "guest_id", "created_at");
         t("queue_entries", "id", "room_id", "item_id", "added_by_user_id", "added_by_guest_id", "added_at",
-                "state", "position", "pinned", "played_at");
+                "state", "position", "pinned", "played_at", "via", "added_by_name");
         t("votes", "entry_id", "voter_user_id", "voter_guest_id", "value", "at");
         t("skip_votes", "entry_id", "voter_user_id", "voter_guest_id", "at");
-        t("room_requests", "id", "room_id", "item_id", "by_user_id", "by_guest_id", "by_name", "via", "at",
-                "entry_id", "added_to_owner_library");
         t("stream_outputs", "id", "room_id", "kind", "token", "rtmp_url", "rtmp_key_enc", "enabled",
                 "created_at", "rtmp_key", "stopped_reason", "stopped_at", "stopped_idle_minutes");
         t("uploads", "id", "user_id", "guest_id", "room_id", "filename", "size", "created_at", "updated_at",
@@ -160,15 +158,13 @@ abstract class InitialSchemaContract {
         seedUserGuestItemRoom();
         exec("UPDATE rooms SET current_entry_id = 'q1', playback_state = 'playing' WHERE id = 'r1'");
         exec("INSERT INTO votes (entry_id, voter_user_id, value, at) VALUES ('q1', 'u1', 1, 1)");
-        exec("INSERT INTO room_requests (id, room_id, item_id, by_guest_id, by_name, via, at, entry_id)"
-                + " VALUES ('rq1', 'r1', 'i1', 'g1', 'Calm Otter', 'youtube', 1, 'q1')");
         exec("INSERT INTO stream_outputs (id, room_id, kind, token, created_at) VALUES ('o1', 'r1', 'ts', 'tok', 1)");
         exec("INSERT INTO room_members (room_id, user_id, role, joined_at) VALUES ('r1', 'u1', 'owner', 1)");
         exec("INSERT INTO room_guest_bans (room_id, guest_id, created_at) VALUES ('r1', 'g1', 1)");
 
         exec("DELETE FROM rooms WHERE id = 'r1'");
 
-        for (String table : List.of("rooms", "queue_entries", "votes", "room_requests", "stream_outputs",
+        for (String table : List.of("rooms", "queue_entries", "votes", "stream_outputs",
                 "room_members", "room_guest_bans")) {
             assertEquals(0, count(table), table);
         }
@@ -176,17 +172,11 @@ abstract class InitialSchemaContract {
     }
 
     @Test
-    void removingTheCurrentEntryClearsItAndRequestsKeepTheirHistory() throws SQLException {
+    void removingTheCurrentEntryClearsIt() throws SQLException {
         seedUserGuestItemRoom();
         exec("UPDATE rooms SET current_entry_id = 'q1' WHERE id = 'r1'");
-        exec("INSERT INTO room_requests (id, room_id, item_id, by_guest_id, by_name, via, at, entry_id)"
-                + " VALUES ('rq1', 'r1', 'i1', 'g1', 'Calm Otter', 'youtube', 1, 'q1')");
         exec("DELETE FROM queue_entries WHERE id = 'q1'");
         assertNull(string("SELECT current_entry_id FROM rooms WHERE id = 'r1'"));
-        assertNull(string("SELECT entry_id FROM room_requests WHERE id = 'rq1'"));
-        exec("DELETE FROM guests WHERE id = 'g1'");
-        assertNull(string("SELECT by_guest_id FROM room_requests WHERE id = 'rq1'"));
-        assertEquals("Calm Otter", string("SELECT by_name FROM room_requests WHERE id = 'rq1'"));
     }
 
     @Test

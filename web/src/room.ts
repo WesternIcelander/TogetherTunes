@@ -36,6 +36,11 @@ import {
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
 import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
 import { canRetryEntry, ingestText, lookupText } from "./jobtext.js";
+import { banGuestConfirmed } from "./guestban.js";
+import {
+  libraryAction, markInLibrary, mergeFirstPage, queueAction, viaText, type HistoryPage, type HistoryRow,
+  type HistoryViewer,
+} from "./history.js";
 import {
   positionAt, RoomConnection, type CurrentEntry, type HistoryEntry, type NewRequest, type RoomItem, type RoomState,
   type Timeline, type WaitingEntry,
@@ -291,7 +296,7 @@ function renderHeader(s: RoomState): void {
   const mode = { owner: "Owner picks", vote: "Vote", open: "Open" }[s.room.controlMode] ?? s.room.controlMode;
   const role = s.room.you.role;
   element("room-meta").textContent = "Control: " + mode + (role !== undefined ? " · You are " + role : "");
-  // The management view (settings, members, guest bans, request history) for the owner and moderators.
+  // The management view (settings, members, guest bans) for the owner and moderators.
   const manage = element<HTMLAnchorElement>("room-manage-link");
   manage.hidden = !s.room.you.canModerate;
   manage.href = "/rooms/" + encodeURIComponent(s.room.slug) + "/manage";
@@ -613,24 +618,140 @@ function renderSuggestions(s: RoomState): void {
   el.replaceChildren(h("h2", { text: "Suggestions (" + s.suggestions.length + ")" }), list);
 }
 
+// ------------------------------------------------------------------ history
+
+// The room's history (docs/rooms.md#history) comes from GET /api/rooms/{room}/history, 50 at a
+// time ("Show more"); the first page is loaded again whenever the room state's own (short) history
+// changes, so it follows what plays. What each row offers is decided in history.ts.
+
+/** The rows shown, newest first. */
+let historyRows: HistoryRow[] = [];
+let historyCursor: string | undefined;
+let historyWindow = 0;
+/** The newest history entry of the room state when the first page was last loaded. */
+let historyTop: string | undefined;
+let historyLoading = false;
+let historyAgain = false;
+/** What the list was drawn for, so it is only drawn again when that changes. */
+let historyKey = "";
+const historyStatus = h("p", { class: "muted small", role: "status" });
+
+function historyViewer(s: RoomState): HistoryViewer {
+  return { user: me.kind === "user", moderates: s.room.you.canModerate,
+    canRequestLibrary: s.room.you.canRequestLibrary === true };
+}
+
 function renderHistory(s: RoomState): void {
-  const el = element("room-history");
-  if (s.history.length === 0) {
-    el.replaceChildren(h("h2", { text: "History" }), h("p", { class: "muted", text: "Nothing has played yet." }));
+  const top = s.history.length > 0 ? s.history[0]!.entryId : "";
+  if (top !== historyTop) {
+    historyTop = top;
+    void loadHistory(true);
+  }
+  drawHistory(s);
+}
+
+async function loadHistory(first: boolean): Promise<void> {
+  if (historyLoading) {
+    if (first) historyAgain = true;
     return;
   }
-  const list = h("ul", { class: "entries history" });
-  for (const e of s.history as HistoryEntry[]) {
-    list.append(h("li", { class: "entry" },
-      cover(e.item, "cover entry-cover"),
-      h("div", { class: "grow" },
-        itemTitle(e.item),
-        h("div", { class: "row" },
-          e.state === "skipped" ? h("span", { class: "badge", text: "Skipped" }) : null,
-          h("span", { class: "muted small", text: formatTime(e.playedAt) }),
-          addedByLine(e.addedBy)))));
+  historyLoading = true;
+  try {
+    const params = new URLSearchParams({ limit: "50" });
+    if (!first && historyCursor !== undefined) params.set("cursor", historyCursor);
+    const page = await api<HistoryPage>("GET", "/api/rooms/" + encodeURIComponent(roomId) + "/history?" + params);
+    historyWindow = page.noRepeatWindow;
+    if (first) {
+      const more = historyRows.length > page.items.length;
+      historyRows = page.items.length === 0 ? [] : mergeFirstPage(historyRows, page.items);
+      if (!more) historyCursor = page.nextCursor;
+    } else {
+      historyRows = historyRows.concat(page.items.filter((r) => !historyRows.some((o) => o.entryId === r.entryId)));
+      historyCursor = page.nextCursor;
+    }
+    historyKey = "";
+    if (shown !== undefined) drawHistory(shown);
+  } catch (e) {
+    historyStatus.textContent = "History: " + message(e);
+  } finally {
+    historyLoading = false;
+    if (historyAgain) {
+      historyAgain = false;
+      void loadHistory(true);
+    }
   }
-  el.replaceChildren(h("h2", { text: "History" }), list);
+}
+
+function drawHistory(s: RoomState): void {
+  const viewer = historyViewer(s);
+  const key = [viewer.user, viewer.moderates, viewer.canRequestLibrary, s.room.controlMode].join(",");
+  if (key === historyKey) return;
+  historyKey = key;
+  const el = element("room-history");
+  if (historyRows.length === 0) {
+    el.replaceChildren(h("h2", { text: "History" }), h("p", { class: "muted", text: "Nothing has played yet." }),
+      historyStatus);
+    return;
+  }
+  // Covers come with the room state's recent history (the REST rows are metadata only).
+  const covers = new Map<string, RoomItem>();
+  for (const e of s.history as HistoryEntry[]) covers.set(e.item.id, e.item);
+  const list = h("ul", { class: "entries history" });
+  for (const r of historyRows) list.append(historyRow(r, viewer, s, covers.get(r.item.id)));
+  const more = h("button", { type: "button", text: "Show more" });
+  more.hidden = historyCursor === undefined;
+  more.addEventListener("click", () => void loadHistory(false));
+  el.replaceChildren(h("h2", { text: "History" }), historyStatus, list, more);
+}
+
+function historyRow(r: HistoryRow, viewer: HistoryViewer, s: RoomState, withCover: RoomItem | undefined): HTMLElement {
+  const actions = h("div", { class: "row entry-actions" });
+  const lib = libraryAction(r, viewer);
+  if (lib === "in-library") {
+    actions.append(h("span", { class: "badge", text: "In your library" }));
+  } else if (lib === "add") {
+    actions.append(button("Add to Library", async () => {
+      await api("PUT", "/api/library/" + encodeURIComponent(r.item.id));
+      markInLibrary(historyRows, r.item.id);
+      historyStatus.textContent = (r.item.title ?? "") + ": added to your library.";
+      historyKey = "";
+      drawHistory(shown ?? s);
+    }, (e) => { historyStatus.textContent = message(e); }, "small"));
+  }
+  const q = queueAction(r, viewer, historyWindow);
+  if (q.shown) {
+    const add = button(requestVerb(s), async () => {
+      const ack = await conn.request({ type: "queue.add", historyEntryId: r.entryId });
+      historyStatus.textContent = (r.item.title ?? "") + ": " + addedMessage(ack);
+    }, (e) => { if (e !== CANCELLED) historyStatus.textContent = message(e); }, "small");
+    if (q.disabled) {
+      add.disabled = true;
+      add.title = q.reason ?? "";
+    }
+    actions.append(add);
+    if (q.disabled && q.reason !== undefined) actions.append(h("span", { class: "muted small", text: q.reason }));
+  }
+  if (viewer.moderates && r.addedBy !== undefined && r.addedBy.isGuest) {
+    const guest = r.addedBy;
+    actions.append(button("Ban guest", async () => {
+      if (await banGuestConfirmed("/api/rooms/" + encodeURIComponent(roomId), guest)) {
+        historyStatus.textContent = guest.name + " is banned from this room.";
+      }
+    }, (e) => { historyStatus.textContent = message(e); }, "small"));
+  }
+  const item: RoomItem = withCover ?? { id: r.item.id, title: r.item.title, artist: r.item.artist };
+  const via = viaText(r.via);
+  return h("li", { class: "entry" },
+    cover(item, "cover entry-cover"),
+    h("div", { class: "grow" },
+      itemTitle({ id: r.item.id, title: r.item.title, artist: r.item.artist }),
+      h("div", { class: "row" },
+        r.state === "skipped" ? h("span", { class: "badge", text: "Skipped" }) : null,
+        r.item.status === "purged" ? h("span", { class: "badge", text: "Expired" }) : null,
+        h("span", { class: "muted small", text: formatTime(r.playedAt) }),
+        addedByLine(r.addedBy),
+        via !== "" ? h("span", { class: "muted small", text: via }) : null)),
+    actions);
 }
 
 // ------------------------------------------------------------------ requests
@@ -1085,7 +1206,8 @@ async function sendDiagnostics(): Promise<void> {
 }
 
 function onRequest(r: NewRequest): void {
-  const via = { library: "from the library", upload: "by upload", youtube: "from YouTube" }[r.via] ?? r.via;
+  const via = { library: "from the library", upload: "by upload", youtube: "from YouTube",
+    history: "from the history" }[r.via] ?? r.via;
   const node = h("span", {}, r.by !== undefined ? actorLabel(r.by) : "Someone", " requested ",
     h("a", { href: itemPath(r.item.id), text: r.item.title ?? "an item" }), " " + via + ".");
   notice("", node);

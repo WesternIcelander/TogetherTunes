@@ -13,8 +13,9 @@ import org.junit.jupiter.api.Test;
  * The room's management view ({@code /rooms/{room}/manage}): runs the unit tests of the settings
  * logic ({@code src/test/resources/web-tests/roomsettings.test.mjs}) against the compiled
  * {@code web/js/roomsettings.js}, and checks that the page uses every API it needs (settings and
- * server switches, members, guest bans, request history and add-to-library) and is linked from the
- * room page.
+ * server switches, members, guest bans) and is linked from the room page. Also the room's history
+ * ({@code history.test.mjs} against {@code web/js/history.js}) and its wiring on the room page (the
+ * request history is gone).
  */
 class RoomManageJsTest {
     private static String read(String path) throws Exception {
@@ -27,6 +28,24 @@ class RoomManageJsTest {
     }
 
     @Test
+    void historyUnitTestsPass() throws Exception {
+        NodeTests.run("history.test.mjs", Map.of("HISTORY_JS", "web/js/history.js"));
+    }
+
+    @Test
+    void roomPageShowsTheHistory() throws Exception {
+        String history = read("web/js/history.js");
+        for (String s : List.of("document.", "fetch(", "createElement")) {
+            assertFalse(history.contains(s), s);
+        }
+        String room = read("web/js/room.js");
+        for (String s : List.of("from \"./history.js\"", "\"/history?\"", "historyEntryId: r.entryId",
+                "\"/api/library/\"", "libraryAction(", "queueAction(", "banGuestConfirmed(", "\"Show more\"")) {
+            assertTrue(room.contains(s), s);
+        }
+    }
+
+    @Test
     void managementPageUsesTheRoomApis() throws Exception {
         String settings = read("web/js/roomsettings.js");
         for (String s : List.of("document.", "fetch(", "createElement")) {
@@ -35,15 +54,17 @@ class RoomManageJsTest {
         String page = read("web/js/roommanage.js");
         for (String s : List.of("from \"./session.js\"", "from \"./roomsettings.js\"", "\"/server-switches\"",
                 "\"PATCH\"", "\"/members\"", "\"/members?\"", "\"/guest-bans/\"", "\"/guest-bans?\"",
-                "\"/requests?\"", "\"/requests/add-to-library\"", "serverDisabledReason(", "requester", "source")) {
+                "serverDisabledReason(")) {
             assertTrue(page.contains(s), s);
         }
+        assertFalse(page.contains("/requests"), "the request history is gone");
+        assertTrue(read("web/js/guestban.js").contains("/guest-bans/"));
         String html = read("web/room-manage.html");
         for (String s : List.of("src=\"/js/roommanage.js\"", "id=\"site-nav\"", "id=\"tab-settings\"",
-                "id=\"tab-members\"", "id=\"tab-bans\"", "id=\"tab-requests\"", "id=\"request-source\"",
-                "id=\"request-add-selected\"", "id=\"member-add\"")) {
+                "id=\"tab-members\"", "id=\"tab-bans\"", "id=\"member-add\"")) {
             assertTrue(html.contains(s), s);
         }
+        assertFalse(html.contains("tab-requests"), html);
         assertTrue(read("web/room.html").contains("id=\"room-manage-link\""));
         assertTrue(read("web/js/room.js").contains("/manage"));
         assertTrue(read("web/css/main.css").contains(".server-disabled"));

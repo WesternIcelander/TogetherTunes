@@ -67,11 +67,11 @@ public interface RoomEvent {
     }
 
     /**
-     * A request was written to the room's request history ({@code room_requests}) together with
-     * its entry: {@code via} is {@code library}, {@code upload} or {@code youtube}. The WebSocket
-     * layer tells the owner and moderators ({@code request.new}).
+     * Someone other than the owner (or a moderator in {@code owner} mode) requested an item:
+     * {@code via} is {@code library}, {@code upload}, {@code youtube} or {@code history}. The
+     * WebSocket layer tells the owner and moderators ({@code request.new}).
      */
-    record RequestAdded(String requestId, String entryId, String via) implements RoomEvent {
+    record RequestAdded(String entryId, String via) implements RoomEvent {
     }
 
     /** A queued entry was moved before {@code beforeEntryId} ({@code null}: to the end) of a manual queue. */

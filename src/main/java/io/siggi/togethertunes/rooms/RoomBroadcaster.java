@@ -639,7 +639,6 @@ final class RoomBroadcaster implements RoomListener {
         }
         RoomViews.Lookup l = views.lookup(List.of(e), List.of());
         JsonObject request = new JsonObject();
-        request.addProperty("id", r.requestId());
         request.addProperty("entryId", r.entryId());
         request.add("item", RoomViews.item(l, e.itemId()));
         ActorRef by = RoomViews.addedBy(l, e.addedByUserId(), e.addedByGuestId());
@@ -691,6 +690,8 @@ final class RoomBroadcaster implements RoomListener {
         o.addProperty("identified", a.identified());
         o.addProperty("canVote", c.canVote());
         o.addProperty("canRequest", c.canRequest());
+        // requests by item id (library search, the history's Add to Queue)
+        o.addProperty("canRequestLibrary", a.identified() && (a.moderates() || a.canRequestLibrary()));
         o.addProperty("canUpload", c.canUpload());
         o.addProperty("canYoutube", c.canYoutube());
         o.addProperty("canSkip", c.canSkip());

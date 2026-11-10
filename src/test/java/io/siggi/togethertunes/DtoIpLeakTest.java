@@ -149,11 +149,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBan",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBanPage",
             "io.siggi.togethertunes.rooms.RequestSearch$Page",
-            "io.siggi.togethertunes.rooms.RoomRequests$Request",
-            "io.siggi.togethertunes.rooms.RoomRequests$Page",
-            "io.siggi.togethertunes.rooms.RoomRequests$Added",
-            "io.siggi.togethertunes.rooms.RoomRequests$AddResults",
-            "io.siggi.togethertunes.rooms.RoomRequests$Failure",
+            "io.siggi.togethertunes.rooms.RoomHistory$Row",
+            "io.siggi.togethertunes.rooms.RoomHistory$Page",
             "io.siggi.togethertunes.settings.StringList",
             "io.siggi.togethertunes.settings.UploadQuota");
 
@@ -662,16 +659,11 @@ class DtoIpLeakTest {
             produced.add(bans);
             produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
                     .search(aliceActor, r.id(), null, null, null, io.siggi.togethertunes.rooms.RequestSearch.LIST_MAX));
-            io.siggi.togethertunes.rooms.RoomRequests roomRequests = new io.siggi.togethertunes.rooms.RoomRequests(
-                    database, rooms, library, TestUploads.policy(permissions, settings),
-                    settings::roomsRequestHistoryDays, clock);
-            io.siggi.togethertunes.rooms.RoomRequests.Page history = roomRequests.list(aliceActor, r.id(), null, null,
-                    null, io.siggi.togethertunes.rooms.RoomRequests.LIST_MAX);
-            produced.add(history);
-            List<String> requestIds = new ArrayList<>();
-            history.items().forEach(q -> requestIds.add(q.id()));
-            requestIds.add(io.siggi.togethertunes.db.UuidV7.newId()); // a failure
-            produced.add(roomRequests.addToLibrary(aliceActor, r.id(), requestIds));
+            io.siggi.togethertunes.rooms.RoomHistory roomHistory = new io.siggi.togethertunes.rooms.RoomHistory(
+                    database, rooms, settings::roomsRequestHistoryDays, clock);
+            produced.add(roomHistory.list(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.RoomHistory.LIST_MAX));
+            produced.add(roomHistory.list(Actor.ANONYMOUS, r.id(), null,
+                    io.siggi.togethertunes.rooms.RoomHistory.LIST_MAX));
             for (io.siggi.togethertunes.rooms.RoomGuests.GuestBan b : bans.items()) {
                 produced.add(roomGuests.get(aliceActor, r.id(), b.guest().id()));
             }
@@ -816,7 +808,7 @@ class DtoIpLeakTest {
                 "/media/" + f.itemId + "/v/0/audio.m4a", "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
-                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/requests",
+                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/history",
                 "/api/rooms/" + f.roomSlug + "/server-switches");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
@@ -1038,15 +1030,14 @@ class DtoIpLeakTest {
         expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/guest-bans", null);
         expect(204, alice, "DELETE", banPath, null);
         expect(201, alice, "PUT", banPath, null);
-        // the request history: a request by the cookie guest (as the room's queue writes it), listed
-        // and added to alice's library
+        // the history: an entry the cookie guest added that has played, listed for alice
         String roomId = json(expect(200, alice, "GET", "/api/rooms/" + roomSlug, null)).get("id").getAsString();
-        String requestId = io.siggi.togethertunes.db.UuidV7.newId();
         String requestedItem = insertItem(adminId);
         database.write(c -> {
-            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO room_requests (id, room_id, item_id,"
-                    + " by_guest_id, by_name, via, at) VALUES (?, ?, ?, ?, 'Blue Fox Two', 'upload', ?)")) {
-                ps.setString(1, requestId);
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id,"
+                    + " added_by_guest_id, added_at, state, position, played_at, via, added_by_name)"
+                    + " VALUES (?, ?, ?, ?, 1, 'played', 1, ?, 'upload', 'Blue Fox Two')")) {
+                ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
                 ps.setString(2, roomId);
                 ps.setString(3, requestedItem);
                 ps.setString(4, cookieGuestId);
@@ -1055,10 +1046,8 @@ class DtoIpLeakTest {
             }
             return null;
         });
-        assertEquals(1, json(expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/requests", null))
+        assertEquals(1, json(expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/history", null))
                 .getAsJsonArray("items").size());
-        expect(200, alice, "POST", "/api/rooms/" + roomSlug + "/requests/add-to-library",
-                "{\"requestIds\":[\"" + requestId + "\"]}");
         // the room socket: alice joins and plays the requested item, an anonymous visitor follows;
         // every message is scanned like a response body
         try (SimpleWebsocket owner = roomSocket(alice); SimpleWebsocket visitor = roomSocket(anon.withForwarded(V4_GUEST))) {

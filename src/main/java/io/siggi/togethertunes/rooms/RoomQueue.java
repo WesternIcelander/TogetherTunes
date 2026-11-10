@@ -39,23 +39,36 @@ public final class RoomQueue {
     private final AddMediaPolicy addMedia;
     private final Random random;
 
-    /** Where an added item comes from: exactly one of the three is set. */
-    public record Source(String itemId, String uploadId, String youtubeUrl) {
+    /**
+     * Where an added item comes from: exactly one of the four is set. {@code historyEntryId} is an
+     * entry of this room's history (one that started playing): its item is added again, with no
+     * request scope check (it was available here already).
+     */
+    public record Source(String itemId, String uploadId, String youtubeUrl, String historyEntryId) {
+        public Source(String itemId, String uploadId, String youtubeUrl) {
+            this(itemId, uploadId, youtubeUrl, null);
+        }
+
         public static Source item(String itemId) {
-            return new Source(itemId, null, null);
+            return new Source(itemId, null, null, null);
         }
 
         public static Source upload(String uploadId) {
-            return new Source(null, uploadId, null);
+            return new Source(null, uploadId, null, null);
         }
 
         public static Source youtube(String url) {
-            return new Source(null, null, url);
+            return new Source(null, null, url, null);
         }
 
-        /** {@code library}, {@code upload} or {@code youtube} (as {@code room_requests.via}). */
+        public static Source history(String entryId) {
+            return new Source(null, null, null, entryId);
+        }
+
+        /** {@code library}, {@code upload}, {@code youtube} or {@code history} ({@code queue_entries.via}). */
         public String via() {
-            return itemId != null ? "library" : uploadId != null ? "upload" : "youtube";
+            return itemId != null ? "library" : uploadId != null ? "upload" : youtubeUrl != null ? "youtube"
+                    : QueueOps.VIA_HISTORY;
         }
     }
 
@@ -75,11 +88,13 @@ public final class RoomQueue {
     }
 
     /**
-     * {@code queue.add}: see {@link QueueOps#add}. A request (not by the owner, nor by a moderator
-     * in {@code owner} mode) is written to the room's request history with its entry
-     * ({@link RoomRequests}).
+     * {@code queue.add}: see {@link QueueOps#add}. The entry records how it was added
+     * ({@link Source#via}). A history entry's item is added like a library request (the same guest
+     * capability, {@code requestsPerActor}, {@code noRepeatWindow}, control mode), but without the
+     * request scope check.
      *
-     * @throws HttpError {@code 400 invalid_source} (not exactly one source), as
+     * @throws HttpError {@code 400 invalid_source} (not exactly one source), {@code 404
+     *                   history_entry_not_found} (not an entry of this room that started playing), as
      *                   {@link ControlPolicy#requireSource} (the actor's right to this request path:
      *                   for a guest the effective guest capability) and {@link QueueOps#add};
      *                   by item id, outside the owner and moderators, the room's request scope
@@ -100,9 +115,10 @@ public final class RoomQueue {
     public QueueOps.Added add(String roomId, Actor actor, RoomActor a, Source source,
                               YoutubeLookupStage.Listener lookup) throws Exception {
         int given = (source.itemId() != null ? 1 : 0) + (source.uploadId() != null ? 1 : 0)
-                + (source.youtubeUrl() != null ? 1 : 0);
+                + (source.youtubeUrl() != null ? 1 : 0) + (source.historyEntryId() != null ? 1 : 0);
         if (given != 1) {
-            throw new HttpError(400, "invalid_source", "Give exactly one of itemId, uploadId and youtubeUrl");
+            throw new HttpError(400, "invalid_source",
+                    "Give exactly one of itemId, uploadId, youtubeUrl and historyEntryId");
         }
         ControlPolicy.requireSource(a, source.via());
         Scope scope = registry.call(roomId, tx -> {
@@ -113,6 +129,12 @@ public final class RoomQueue {
         if (source.itemId() != null) {
             itemId = source.itemId();
             RequestSearch.requireInScope(db, scope.requestScope(), scope.ownerId(), a, itemId);
+            refetchIfNeeded(roomId, actor, itemId);
+        } else if (source.historyEntryId() != null) {
+            itemId = RoomHistory.itemOf(db, roomId, source.historyEntryId());
+            if (itemId == null) {
+                throw new HttpError(404, "history_entry_not_found", "That isn't in this room's history");
+            }
             refetchIfNeeded(roomId, actor, itemId);
         } else if (source.uploadId() != null) {
             Uploads.Upload upload = uploads.get(actor, source.uploadId());

@@ -52,7 +52,11 @@ final class RoomViews {
 
     /** A played or skipped entry of the room's history. */
     record HistoryRow(String entryId, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
-                      String state, long playedAt) {
+                      String state, long playedAt, String via, String addedByName) {
+        HistoryRow(String entryId, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
+                   String state, long playedAt) {
+            this(entryId, itemId, addedByUserId, addedByGuestId, addedAt, state, playedAt, null, null);
+        }
     }
 
     /** Items and actors looked up for one message. */
@@ -64,13 +68,14 @@ final class RoomViews {
         return db.read(c -> {
             List<HistoryRow> out = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement("SELECT id, item_id, added_by_user_id, added_by_guest_id,"
-                    + " added_at, state, played_at FROM queue_entries WHERE room_id = ? AND state IN ('played', 'skipped')"
+                    + " added_at, state, played_at, via, added_by_name FROM queue_entries"
+                    + " WHERE room_id = ? AND state IN ('played', 'skipped')"
                     + " AND played_at IS NOT NULL ORDER BY played_at DESC, id DESC LIMIT " + HISTORY_SIZE)) {
                 ps.setString(1, roomId);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         out.add(new HistoryRow(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                                rs.getLong(5), rs.getString(6), rs.getLong(7)));
+                                rs.getLong(5), rs.getString(6), rs.getLong(7), rs.getString(8), rs.getString(9)));
                     }
                 }
             }
@@ -329,7 +334,10 @@ final class RoomViews {
         return o;
     }
 
-    /** The history: {@code [{entryId, state, item, addedBy?, playedAt}]}, latest first. */
+    /**
+     * The history: {@code [{entryId, state, item, addedBy?, via?, playedAt}]}, latest first;
+     * {@code addedBy}'s name is the one it had when the entry was added, where that was kept.
+     */
     static JsonArray history(Lookup l, List<HistoryRow> rows) {
         JsonArray a = new JsonArray();
         for (HistoryRow h : rows) {
@@ -338,8 +346,14 @@ final class RoomViews {
             o.addProperty("state", h.state());
             o.add("item", item(l, h.itemId()));
             ActorRef by = addedBy(l, h.addedByUserId(), h.addedByGuestId());
+            if (by != null && h.addedByName() != null && !h.addedByName().isEmpty()) {
+                by = by.isGuest() ? ActorRef.guest(by.id(), h.addedByName()) : ActorRef.user(by.id(), h.addedByName());
+            }
             if (by != null) {
                 o.add("addedBy", actor(by));
+            }
+            if (h.via() != null) {
+                o.addProperty("via", h.via());
             }
             o.addProperty("playedAt", h.playedAt());
             a.add(o);

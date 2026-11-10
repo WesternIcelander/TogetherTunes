@@ -264,11 +264,27 @@ final class RoomStore {
         }
     }
 
-    /** Inserts a new {@code queue_entries} row for {@code e} in the room. */
+    /** Inserts a new {@code queue_entries} row for {@code e} in the room, with no {@code via}. */
     static void insertEntry(Connection c, String roomId, QueueEntry e) throws SQLException {
+        insertEntry(c, roomId, e, null);
+    }
+
+    /**
+     * Inserts a new {@code queue_entries} row for {@code e} in the room. The adder's display name
+     * now is kept with it ({@code added_by_name}, for the history).
+     *
+     * @param via how it was added ({@code library}, {@code upload}, {@code youtube},
+     *            {@code playlist}, {@code history}), or {@code null}
+     */
+    static void insertEntry(Connection c, String roomId, QueueEntry e, String via) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id,"
-                + " added_by_user_id, added_by_guest_id, added_at, state, position, pinned, played_at)"
-                + " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)")) {
+                + " added_by_user_id, added_by_guest_id, added_at, state, position, pinned, played_at, via,"
+                + " added_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?,"
+                + " COALESCE((SELECT display_name FROM users WHERE id = ?),"
+                + " (SELECT display_name FROM guests WHERE id = ?)))")) {
+            ps.setString(10, via);
+            ps.setString(11, e.addedByUserId());
+            ps.setString(12, e.addedByGuestId());
             ps.setString(1, e.id());
             ps.setString(2, roomId);
             ps.setString(3, e.itemId());

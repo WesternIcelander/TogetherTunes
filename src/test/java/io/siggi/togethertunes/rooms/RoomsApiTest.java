@@ -73,8 +73,7 @@ class RoomsApiTest {
         Rooms rooms = new Rooms(db, permissions, clock);
         RoomGuests guests = new RoomGuests(db, settings, permissions, rooms, registry);
         new RoomsApi(rooms, registry, permissions, guests, new RequestSearch(db, rooms, guests),
-                new RoomRequests(db, rooms, new Library(db, TestUploads.youtube(db, config, Tools.from(config), clock),
-                        clock), TestUploads.policy(permissions, settings), settings::roomsRequestHistoryDays, clock))
+                new RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock))
                 .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
@@ -365,12 +364,12 @@ class RoomsApiTest {
     }
 
     @Test
-    void requestHistory() throws Exception {
+    void history() throws Exception {
         JsonObject room = json(call(alice, "POST", "/api/rooms", "{\"name\":\"History Room\",\"visibility\":\"public\"}"));
         String slug = room.get("slug").getAsString();
         String roomId = room.get("id").getAsString();
         String itemId = io.siggi.togethertunes.db.UuidV7.newId();
-        String requestId = io.siggi.togethertunes.db.UuidV7.newId();
+        String entryId = io.siggi.togethertunes.db.UuidV7.newId();
         db.write(c -> {
             try (var ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, source, added_by_user_id,"
                     + " added_at, status, output_profile, last_referenced_at) VALUES (?, 'audio', 'Blue Monday',"
@@ -379,72 +378,57 @@ class RoomsApiTest {
                 ps.setString(2, bobId);
                 ps.executeUpdate();
             }
-            try (var ps = c.prepareStatement("INSERT INTO room_requests (id, room_id, item_id, by_user_id, by_name,"
-                    + " via, at) VALUES (?, ?, ?, ?, 'Bob', 'upload', ?)")) {
-                ps.setString(1, requestId);
+            try (var ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id,"
+                    + " added_at, state, position, played_at, via, added_by_name)"
+                    + " VALUES (?, ?, ?, ?, 1, 'skipped', 1, ?, 'upload', 'Bobby')")) {
+                ps.setString(1, entryId);
                 ps.setString(2, roomId);
                 ps.setString(3, itemId);
                 ps.setString(4, bobId);
                 ps.setLong(5, clock.millis());
                 ps.executeUpdate();
             }
+            try (var ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at, via)"
+                    + " VALUES (?, ?, 1, 'upload')")) {
+                ps.setString(1, bobId);
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
             return null;
         });
-        String path = "/api/rooms/" + slug + "/requests";
+        String path = "/api/rooms/" + slug + "/history";
         HttpResponse<String> r = call(alice, "GET", path, null);
         assertEquals(200, r.statusCode(), r.body());
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(null));
         JsonObject body = json(r);
         assertFalse(body.has("nextCursor"), r.body());
-        JsonObject req = body.getAsJsonArray("items").get(0).getAsJsonObject();
-        assertEquals(requestId, req.get("id").getAsString());
-        assertEquals(itemId, req.getAsJsonObject("item").get("id").getAsString());
-        assertEquals("Blue Monday", req.getAsJsonObject("item").get("title").getAsString());
-        JsonObject requester = req.getAsJsonObject("requester");
-        assertEquals(bobId, requester.get("id").getAsString());
-        assertEquals("user", requester.get("kind").getAsString());
-        assertEquals("Bob", requester.get("name").getAsString());
-        assertEquals("Bob", req.get("requesterName").getAsString());
-        assertEquals("upload", req.get("via").getAsString());
-        assertEquals(clock.millis(), req.get("at").getAsLong());
-        assertFalse(req.has("entryId"));
-        assertFalse(req.get("addedToOwnerLibrary").getAsBoolean());
-        assertFalse(req.get("inOwnerLibrary").getAsBoolean());
-        assertEquals(1, json(call(alice, "GET", path + "?source=upload&requester=" + bobId, null))
-                .getAsJsonArray("items").size());
-        assertEquals(0, json(call(alice, "GET", path + "?source=youtube", null)).getAsJsonArray("items").size());
-        assertEquals(1, json(call(root, "GET", path, null)).getAsJsonArray("items").size(), "rooms.moderateAny");
-        expectError(400, "invalid_source", call(alice, "GET", path + "?source=x", null));
-        expectError(400, "invalid_requester", call(alice, "GET", path + "?requester=x", null));
+        assertEquals(10, body.get("noRepeatWindow").getAsInt());
+        JsonObject row = body.getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals(entryId, row.get("entryId").getAsString());
+        assertEquals("skipped", row.get("state").getAsString());
+        assertEquals(clock.millis(), row.get("playedAt").getAsLong());
+        assertEquals(itemId, row.getAsJsonObject("item").get("id").getAsString());
+        assertEquals("Blue Monday", row.getAsJsonObject("item").get("title").getAsString());
+        JsonObject by = row.getAsJsonObject("addedBy");
+        assertEquals(bobId, by.get("id").getAsString());
+        assertEquals("user", by.get("kind").getAsString());
+        assertEquals("Bobby", by.get("name").getAsString(), "the name it had then");
+        assertEquals("upload", row.get("via").getAsString());
+        assertFalse(row.get("inYourLibrary").getAsBoolean());
+        assertTrue(row.get("recentlyPlayed").getAsBoolean());
+        // per viewer: bob has it; anonymous visitors have no library
+        assertTrue(json(call(bob, "GET", path, null)).getAsJsonArray("items").get(0).getAsJsonObject()
+                .get("inYourLibrary").getAsBoolean());
+        JsonObject anonRow = json(call(null, "GET", path, null)).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertFalse(anonRow.has("inYourLibrary"), anonRow.toString());
+        assertEquals(1, json(call(root, "GET", path, null)).getAsJsonArray("items").size());
         expectError(400, "invalid_limit", call(alice, "GET", path + "?limit=0", null));
+        expectError(400, "invalid_limit", call(alice, "GET", path + "?limit=201", null));
         expectError(400, "invalid_cursor", call(alice, "GET", path + "?cursor=x", null));
-        expectError(403, "forbidden", call(bob, "GET", path, null));
-        expectError(401, "not_authenticated", call(null, "GET", path, null));
-        expectError(404, "room_not_found", call(alice, "GET", "/api/rooms/no-such-room/requests", null));
-
-        String add = path + "/add-to-library";
-        String ids = "{\"requestIds\":[\"" + requestId + "\"]}";
-        expectError(403, "forbidden", call(root, "POST", add, ids));
-        expectError(403, "forbidden", call(bob, "POST", add, ids));
-        expectError(401, "not_authenticated", call(null, "POST", add, ids));
-        expectError(400, "invalid_request_ids", call(alice, "POST", add, "{\"requestIds\":\"x\"}"));
-        expectError(400, "invalid_request_ids", call(alice, "POST", add, "{\"requestIds\":[1]}"));
-        expectError(400, "invalid_request_ids", call(alice, "POST", add, "{}"));
-        expectError(400, "unknown_field", call(alice, "POST", add, "{\"ids\":[]}"));
-        r = call(alice, "POST", add, ids);
-        assertEquals(200, r.statusCode(), r.body());
-        JsonObject result = json(r).getAsJsonArray("results").get(0).getAsJsonObject();
-        assertEquals(requestId, result.get("requestId").getAsString());
-        assertEquals(itemId, result.get("itemId").getAsString());
-        assertTrue(result.get("created").getAsBoolean());
-        assertFalse(result.has("error"));
-        String missing = io.siggi.togethertunes.db.UuidV7.newId();
-        result = json(call(alice, "POST", add, "{\"requestIds\":[\"" + missing + "\"]}"))
-                .getAsJsonArray("results").get(0).getAsJsonObject();
-        assertEquals("request_not_found", result.getAsJsonObject("error").get("code").getAsString());
-        req = json(call(alice, "GET", path, null)).getAsJsonArray("items").get(0).getAsJsonObject();
-        assertTrue(req.get("addedToOwnerLibrary").getAsBoolean());
-        assertTrue(req.get("inOwnerLibrary").getAsBoolean());
+        expectError(400, "invalid_cursor", call(alice, "GET", path + "?cursor=1_x", null));
+        expectError(404, "room_not_found", call(alice, "GET", "/api/rooms/no-such-room/history", null));
+        // the request history is gone
+        assertEquals(404, call(alice, "GET", "/api/rooms/" + slug + "/requests", null).statusCode());
     }
 
     @Test

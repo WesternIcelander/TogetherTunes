@@ -1,17 +1,17 @@
-// The room's management view (/rooms/{idOrSlug}/manage; docs/rooms.md, docs/libraries.md#room-owners-request-history).
+// The room's management view (/rooms/{idOrSlug}/manage; docs/rooms.md).
 //
-// Four tabs: settings (name, link name, visibility, control mode and every room setting; options
+// Three tabs: settings (name, link name, visibility, control mode and every room setting; options
 // the server has turned off are greyed out with "disabled by the server admin"; only the owner
 // saves, moderators see them read-only; the owner or rooms.moderateAny may delete the room),
 // members (roles as the viewer may give them, ownership transfer for the owner, adding by
-// username), guest bans (list, unban; a guest is banned from the request history, with the
-// IP-mode warning first) and the request history (filters by source and requester, "Add to my
-// library" per row or for a selection, owner only; moderators read it).
+// username) and guest bans (list, unban; a guest is banned from the room page's history, with the
+// IP-mode warning first). The request history is gone: the room page's history replaces it.
 import { api, ApiError } from "./api.js";
+import type { GuestBan } from "./guestban.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { navigate, pageSignal, reloadPage } from "./nav.js";
 import { button, formatTime, h } from "./dom.js";
-import { itemPath, statusBadge, type ItemSummary, type Page } from "./media.js";
+import { type Page } from "./media.js";
 import {
   assignableRoles, buildPatch, canManageMember, describeDefault, getPath, GROUPS, parseInput, serverCapNote,
   serverDisabledReason,
@@ -34,29 +34,6 @@ interface RoomView {
 }
 
 interface Member { user: ActorRef; role: string; joinedAt: number }
-
-interface GuestBan {
-  guest: ActorRef;
-  identifiedBy: "cookie" | "ip" | string;
-  banned: boolean;
-  bannedAt?: number;
-  warning?: string;
-  ip?: string;
-}
-
-interface RequestView {
-  id: string;
-  item: ItemSummary;
-  requester?: ActorRef;
-  requesterName: string;
-  via: "library" | "upload" | "youtube" | string;
-  at: number;
-  entryId?: string;
-  addedToOwnerLibrary: boolean;
-  inOwnerLibrary: boolean;
-}
-
-interface AddResult { requestId: string; itemId?: string; created?: boolean; error?: { code: string; message: string } }
 
 /** The room from `/rooms/{idOrSlug}/manage` (or `?room=` when the page is opened as a plain file). */
 function roomFromLocation(): string {
@@ -91,7 +68,7 @@ function setStatus(text: string): void {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["settings", "members", "bans", "requests"] as const;
+const TABS = ["settings", "members", "bans"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -112,8 +89,7 @@ async function showTab(): Promise<void> {
   loaded.add(tab);
   if (tab === "settings") renderSettings();
   else if (tab === "members") await loadMembers(true);
-  else if (tab === "bans") await loadBans(true);
-  else await loadRequests(true);
+  else await loadBans(true);
 }
 
 // ------------------------------------------------------------------ settings
@@ -425,171 +401,6 @@ function banRow(b: GuestBan): HTMLTableRowElement {
   return row;
 }
 
-/** Bans a guest after confirming (with the IP-mode warning, and the address for ip.view holders). */
-async function banGuest(guest: ActorRef): Promise<boolean> {
-  const path = roomPath() + "/guest-bans/" + encodeURIComponent(guest.id);
-  const current = await api<GuestBan>("GET", path);
-  if (current.banned) {
-    alert(guest.name + " is already banned from this room.");
-    return false;
-  }
-  let text = "Ban the guest " + guest.name + " from this room?";
-  if (current.warning !== undefined) text += "\n\n" + current.warning;
-  if (current.ip !== undefined) text += "\n\nIP address: " + current.ip;
-  if (!confirm(text)) return false;
-  await api<GuestBan>("PUT", path);
-  loaded.delete("bans");
-  return true;
-}
-
-// ------------------------------------------------------------------ request history
-
-let requestCursor: string | undefined;
-let requester: ActorRef | undefined;
-/** The requests on the page, by id (for the selection). */
-const requestsShown = new Map<string, { request: RequestView; row: HTMLTableRowElement }>();
-const selected = new Set<string>();
-
-function requestError(e: unknown): void {
-  element("request-error").textContent = message(e);
-}
-
-async function loadRequests(reset: boolean): Promise<void> {
-  const rows = element("request-rows");
-  element("request-error").textContent = "";
-  if (reset) {
-    rows.replaceChildren();
-    requestsShown.clear();
-    selected.clear();
-    requestCursor = undefined;
-    updateBulk();
-  }
-  const params = new URLSearchParams({ limit: "50" });
-  const source = element<HTMLSelectElement>("request-source").value;
-  if (source !== "") params.set("source", source);
-  if (requester !== undefined) params.set("requester", requester.id);
-  if (requestCursor !== undefined) params.set("cursor", requestCursor);
-  try {
-    const page = await api<Page<RequestView>>("GET", roomPath() + "/requests?" + params);
-    for (const r of page.items) {
-      const row = requestRow(r);
-      requestsShown.set(r.id, { request: r, row });
-      rows.append(row);
-    }
-    requestCursor = page.nextCursor;
-    element("request-more").hidden = page.nextCursor === undefined;
-    element("request-empty").hidden = rows.children.length > 0;
-  } catch (e) {
-    requestError(e);
-  }
-}
-
-const VIA_TEXT: Record<string, string> = { library: "from the library", upload: "by upload", youtube: "by YouTube link" };
-
-function filterBy(actor: ActorRef | undefined): void {
-  requester = actor;
-  const el = element("request-requester");
-  if (actor === undefined) {
-    el.hidden = true;
-    el.replaceChildren();
-  } else {
-    const clear = h("button", { type: "button", class: "link small", text: "Show everyone" });
-    clear.addEventListener("click", () => filterBy(undefined));
-    el.replaceChildren("Requested by ", actorLabel(actor), " ", clear);
-    el.hidden = false;
-  }
-  void loadRequests(true);
-}
-
-function libraryState(r: RequestView): HTMLElement | null {
-  if (r.inOwnerLibrary) return h("span", { class: "badge", text: "In your library" });
-  return null;
-}
-
-function requestRow(r: RequestView): HTMLTableRowElement {
-  const owner = isOwner();
-  const select = h("input", { type: "checkbox", "aria-label": "Select " + r.item.title });
-  select.addEventListener("change", () => {
-    if (select.checked) selected.add(r.id);
-    else selected.delete(r.id);
-    updateBulk();
-  });
-  const who = h("div", {}, r.requester !== undefined ? actorLabel(r.requester)
-    : h("span", { text: r.requesterName, title: "This account or guest no longer exists" }));
-  const actions = h("div", { class: "row" });
-  if (owner && !r.inOwnerLibrary) {
-    actions.append(button("Add to my library", async () => {
-      await addToLibrary([r.id]);
-    }, requestError, "small"));
-  }
-  if (r.requester !== undefined) {
-    const actor = r.requester;
-    const only = h("button", { type: "button", class: "link small", text: "Only theirs" });
-    only.addEventListener("click", () => filterBy(actor));
-    actions.append(only);
-    if (actor.isGuest) {
-      actions.append(button("Ban guest", async () => {
-        if (await banGuest(actor)) actions.append(h("span", { class: "muted small", text: "Banned." }));
-      }, requestError, "small"));
-    }
-  }
-  const status = statusBadge(r.item.status);
-  const row = h("tr", {},
-    h("td", {}, owner && !r.inOwnerLibrary ? select : null),
-    h("td", {}, h("div", { class: "item-title" },
-      h("a", { href: itemPath(r.item.id), text: r.item.title }),
-      r.item.artist !== undefined && r.item.artist !== "" ? h("div", { class: "muted small", text: r.item.artist }) : null),
-    status, " ", libraryState(r)),
-    h("td", {}, who, h("div", { class: "muted small", text: VIA_TEXT[r.via] ?? r.via })),
-    h("td", { class: "muted small", text: formatTime(r.at) }),
-    h("td", { class: "actions" }, actions));
-  return row;
-}
-
-function updateBulk(): void {
-  element("request-bulk").hidden = !isOwner() || selected.size === 0;
-  element<HTMLButtonElement>("request-add-selected").textContent = "Add " + selected.size + " to my library";
-}
-
-/** "Add to my library" for these requests (owner only); each one succeeds or fails on its own. */
-async function addToLibrary(ids: string[]): Promise<void> {
-  element("request-error").textContent = "";
-  const result = await api<{ results: AddResult[] }>("POST", roomPath() + "/requests/add-to-library", { requestIds: ids });
-  const failures: string[] = [];
-  for (const res of result.results) {
-    const shown = requestsShown.get(res.requestId);
-    if (res.error !== undefined) {
-      failures.push((shown?.request.item.title ?? res.requestId) + ": " + res.error.message);
-      continue;
-    }
-    if (shown !== undefined) {
-      // Every request for that item is now in the owner's library.
-      for (const other of Array.from(requestsShown.values())) {
-        if (other.request.item.id !== shown.request.item.id) continue;
-        other.request.inOwnerLibrary = true;
-        other.request.addedToOwnerLibrary = true;
-        const replacement = requestRow(other.request);
-        other.row.replaceWith(replacement);
-        other.row = replacement;
-        selected.delete(other.request.id);
-      }
-    }
-  }
-  updateBulk();
-  element("request-bulk-status").textContent = failures.length === 0 ? "" : failures.length + " couldn't be added.";
-  if (failures.length > 0) throw new Error(failures.join("; "));
-}
-
-function setUpRequests(): void {
-  element("request-source").addEventListener("change", () => void loadRequests(true));
-  element("request-more").addEventListener("click", () => void loadRequests(false));
-  const add = element<HTMLButtonElement>("request-add-selected");
-  add.addEventListener("click", () => {
-    add.disabled = true;
-    addToLibrary(Array.from(selected)).catch(requestError).finally(() => { add.disabled = false; });
-  });
-}
-
 // ------------------------------------------------------------------ start
 
 function renderHeader(): void {
@@ -637,7 +448,6 @@ async function start(): Promise<void> {
   element("manage-tabs").hidden = false;
   setUpSettings();
   setUpMembers();
-  setUpRequests();
   element("ban-more").addEventListener("click", () => void loadBans(false));
   window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
   await showTab();

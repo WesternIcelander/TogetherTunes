@@ -11,8 +11,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
-/** {@link RoomRequestsContract} against PostgreSQL 16 in Docker. */
-class PostgresRoomRequestsIT extends RoomRequestsContract {
+/** {@link RoomHistoryContract} against PostgreSQL 16 in Docker. */
+class PostgresRoomHistoryIT extends RoomHistoryContract {
     private static PostgreSQLContainer postgres;
 
     @BeforeAll

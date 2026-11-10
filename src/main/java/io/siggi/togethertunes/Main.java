@@ -84,7 +84,7 @@ import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.storage.DiskSpace;
 import io.siggi.togethertunes.rooms.DiagnosticsApi;
 import io.siggi.togethertunes.rooms.RequestSearch;
-import io.siggi.togethertunes.rooms.RoomRequests;
+import io.siggi.togethertunes.rooms.RoomHistory;
 import io.siggi.togethertunes.rooms.RoomGuests;
 import io.siggi.togethertunes.rooms.RoomQueue;
 import io.siggi.togethertunes.rooms.RoomRegistry;
@@ -320,10 +320,10 @@ public final class Main {
         } catch (SQLException e) {
             System.err.println("WARNING: could not start idle rooms with ready entries: " + e.getMessage());
         }
-        RoomRequests roomRequests = new RoomRequests(database, rooms, library, addMedia,
-                settings::roomsRequestHistoryDays, Clock.systemUTC());
+        RoomHistory roomHistory = new RoomHistory(database, rooms, settings::roomsRequestHistoryDays,
+                Clock.systemUTC());
         RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests,
-                new RequestSearch(database, rooms, roomGuests), roomRequests);
+                new RequestSearch(database, rooms, roomGuests), roomHistory);
         RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
@@ -396,7 +396,7 @@ public final class Main {
         }
         RetentionSweeper retention = new RetentionSweeper(database, items, settings::retentionUnreferencedDays,
                 Clock.systemUTC());
-        retention.alsoRun("trimmed request history rows", roomRequests::trim);
+        retention.alsoRun("trimmed room history entries", roomHistory::trim);
         retention.start();
         // Starts the enabled RTMP pushes, then re-checks every 10 s.
         outputControl.start();
@@ -824,7 +824,7 @@ public final class Main {
     /** The web UI file served for {@code /rooms/{idOrSlug}} (and, by redirect, {@code /r/{slug}}). */
     static final String ROOM_PAGE = "room.html";
 
-    /** The web UI file served for {@code /rooms/{idOrSlug}/manage}: settings, members, guest bans, request history. */
+    /** The web UI file served for {@code /rooms/{idOrSlug}/manage}: settings, members, guest bans. */
     static final String ROOM_MANAGE_PAGE = "room-manage.html";
 
     /**

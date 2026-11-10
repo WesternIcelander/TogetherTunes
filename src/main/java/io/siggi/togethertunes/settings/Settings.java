@@ -107,7 +107,10 @@ public final class Settings {
             "storage.minFreeBytes", 5 * GIB, 0, MAX_BYTES);
 
     // Rooms
-    /** Days a room's request history is kept ({@code room_requests}); 0 means never trim. */
+    /**
+     * Days a room's history (entries that played) is kept; 0 means never trim. The key keeps its
+     * old name from the request history it replaced, so stored values stay valid.
+     */
     public static final SettingKey<Integer> ROOMS_REQUEST_HISTORY_DAYS = SettingKey.integer(
             "rooms.requestHistoryDays", 90, 0, 36_500);
 
@@ -402,7 +405,7 @@ public final class Settings {
         return get(RETENTION_UNREFERENCED_DAYS);
     }
 
-    /** Days a room's request history is kept; 0 means never trim. */
+    /** Days a room's history is kept ({@link #ROOMS_REQUEST_HISTORY_DAYS}); 0 means never trim. */
     public int roomsRequestHistoryDays() throws SQLException {
         return get(ROOMS_REQUEST_HISTORY_DAYS);
     }

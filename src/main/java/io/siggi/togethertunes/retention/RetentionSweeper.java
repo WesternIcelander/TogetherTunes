@@ -122,7 +122,7 @@ public final class RetentionSweeper implements AutoCloseable {
      * Runs {@code chore} after each scheduled sweep (also when the sweep failed or is disabled);
      * a failing chore is logged and doesn't stop the others.
      *
-     * @param name what it does, for the log (e.g. "trimmed request history rows")
+     * @param name what it does, for the log (e.g. "trimmed room history entries")
      */
     public void alsoRun(String name, Chore chore) {
         chores.add(new NamedChore(Objects.requireNonNull(name), Objects.requireNonNull(chore)));

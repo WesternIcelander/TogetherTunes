@@ -69,6 +69,7 @@ export interface HistoryEntry {
   state: "played" | "skipped" | string;
   item: RoomItem;
   addedBy?: ActorRef;
+  via?: string;
   playedAt: number;
 }
 
@@ -85,6 +86,8 @@ export interface You {
   canYoutube: boolean;
   canSkip: boolean;
   canModerate: boolean;
+  /** May request items by id (library search, the history's Add to Queue). */
+  canRequestLibrary?: boolean;
 }
 
 export interface RoomSettingsView {
@@ -121,11 +124,10 @@ export interface RoomState {
 }
 
 export interface NewRequest {
-  id: string;
   entryId: string;
   item: RoomItem;
   by?: ActorRef;
-  via: "library" | "upload" | "youtube" | string;
+  via: "library" | "upload" | "youtube" | "history" | string;
 }
 
 /** What the page is told about. */

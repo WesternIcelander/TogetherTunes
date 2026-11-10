@@ -614,9 +614,11 @@ public final class RoomSocket {
             String itemId = optionalString(msg, "itemId");
             String uploadId = optionalString(msg, "uploadId");
             String youtubeUrl = optionalString(msg, "youtubeUrl");
+            String historyEntryId = optionalString(msg, "historyEntryId");
             return room((j, a) -> {
                 QueueOps.Added added = queue.add(j.roomId(), actor, a,
-                        new RoomQueue.Source(itemId, uploadId, youtubeUrl), stage -> lookupStage(rid, stage));
+                        new RoomQueue.Source(itemId, uploadId, youtubeUrl, historyEntryId),
+                        stage -> lookupStage(rid, stage));
                 JsonObject o = new JsonObject();
                 o.addProperty("entryId", added.entryId());
                 o.addProperty("itemId", added.itemId());

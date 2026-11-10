@@ -37,7 +37,7 @@ public final class Library {
     public static final int QUERY_MAX_TERMS = 10;
     /** {@code library_entries.via} of an item added by id ({@code PUT /api/library/{itemId}}). */
     public static final String VIA_MANUAL = "manual";
-    /** {@code library_entries.via} of an item a room owner added from the room's request history. */
+    /** {@code library_entries.via} of an item a room owner added from the old request history (no longer written). */
     public static final String VIA_REQUEST = "request";
 
     private final Database db;
@@ -238,7 +238,7 @@ public final class Library {
 
     /**
      * {@link #add(Actor.User, String, YoutubeCheck)} with the entry's {@code via}:
-     * {@link #VIA_MANUAL} or {@link #VIA_REQUEST} (from a room's request history).
+     * {@link #VIA_MANUAL} or {@link #VIA_REQUEST} (the old request history; kept for tests and old rows).
      */
     public Added add(Actor.User user, String itemId, String via, YoutubeCheck mayFetchYoutube)
             throws SQLException, InterruptedException {

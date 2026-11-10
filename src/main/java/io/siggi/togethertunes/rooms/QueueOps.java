@@ -27,7 +27,23 @@ public final class QueueOps {
     /** {@code previous} within this much of the start goes to the previous entry; later it restarts the current one. */
     public static final long PREVIOUS_RESTART_MS = 3000;
 
+    /** {@code queue_entries.via} of an entry added from a playlist. */
+    public static final String VIA_PLAYLIST = "playlist";
+    /** {@code queue_entries.via} of an entry added again from the room's history. */
+    public static final String VIA_HISTORY = "history";
+
     private QueueOps() {
+    }
+
+    /**
+     * Whether an add by {@code a} is a request: not by the owner, nor by a moderator in
+     * {@code owner} mode (who adds directly there).
+     */
+    static boolean isRequest(RoomState s, RoomActor a) {
+        if (!a.identified() || (a.userId() != null && a.userId().equals(s.ownerId()))) {
+            return false;
+        }
+        return !(a.moderates() && s.controlMode() == Rooms.ControlMode.OWNER);
     }
 
     /** What {@link #add} did: the new entry and where it landed ({@code queued} or {@code suggested}). */
@@ -71,11 +87,13 @@ public final class QueueOps {
     }
 
     /**
-     * {@link #add(RoomTx, RoomActor, String)}, also writing the request to the room's request
-     * history ({@link RoomRequests#isRequest}: not for the owner, nor for a moderator in
-     * {@code owner} mode) in the same transaction as the entry.
+     * {@link #add(RoomTx, RoomActor, String)}, recording how the item was added on the entry
+     * ({@code queue_entries.via}, shown in the history). A request ({@link #isRequest}: not by the
+     * owner, nor by a moderator in {@code owner} mode) with a {@code via} also raises
+     * {@link RoomEvent.RequestAdded} ({@code request.new} to the owner and moderators).
      *
-     * @param via {@code library}, {@code upload} or {@code youtube}; {@code null} writes no request
+     * @param via {@code library}, {@code upload}, {@code youtube} or {@code history}; {@code null}
+     *            records nothing and raises no event
      */
     public static Added add(RoomTx tx, RoomActor a, String itemId, String via) throws SQLException {
         RoomState s = tx.state();
@@ -95,16 +113,9 @@ public final class QueueOps {
                         + (window == 1 ? " entry" : " entries") + " here; try again later");
             }
         }
-        QueueEntry e = insert(tx, a, item, as.entryState(), QueueControl.endPosition(s));
-        if (via != null && RoomRequests.isRequest(s, a)) {
-            String requestId = UuidV7.newId();
-            String roomId = s.id();
-            long now = tx.now();
-            tx.persist(c -> {
-                RoomRequests.insert(c, requestId, roomId, a, item.id(), via, now, e.id());
-                return null;
-            });
-            tx.event(new RoomEvent.RequestAdded(requestId, e.id(), via));
+        QueueEntry e = insert(tx, a, item, as.entryState(), QueueControl.endPosition(s), via);
+        if (via != null && isRequest(s, a)) {
+            tx.event(new RoomEvent.RequestAdded(e.id(), via));
         }
         if (e.state() == QueueEntry.State.QUEUED) {
             Playback.startIfIdle(tx);
@@ -138,7 +149,7 @@ public final class QueueOps {
                 skipped++;
                 continue;
             }
-            added.add(insert(tx, a, item, QueueEntry.State.QUEUED, position++).id());
+            added.add(insert(tx, a, item, QueueEntry.State.QUEUED, position++, VIA_PLAYLIST).id());
         }
         if (!added.isEmpty()) {
             Playback.startIfIdle(tx);
@@ -383,14 +394,14 @@ public final class QueueOps {
     }
 
     private static QueueEntry insert(RoomTx tx, RoomActor a, RoomStore.ItemRow item, QueueEntry.State state,
-                                     double position) {
+                                     double position, String via) {
         RoomState s = tx.state();
         long now = tx.now();
         QueueEntry e = new QueueEntry(UuidV7.newId(), item.id(), a.userId(), a.guestId(), now, state, position,
                 false, null, item.status(), item.durationMs(), tx.store().filesUsable(item));
         String roomId = s.id();
         tx.persist(c -> {
-            RoomStore.insertEntry(c, roomId, e);
+            RoomStore.insertEntry(c, roomId, e, via);
             References.touch(c, e.itemId(), now);
             return null;
         });
