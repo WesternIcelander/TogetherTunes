@@ -12,7 +12,7 @@ The overlay is **static per room**. It is baked into video frames and never chan
 | Room owner | Room setting `overlay.enabled`, plus position and size. Only available when the server allows it |
 | Music videos | Re-encoded with the overlay **only** if the room owner holds `output.overlayVideo` through one of their roles. Otherwise music videos play from the plain mezzanine, with no overlay; cards still show it |
 
-The decision is recorded per queue entry when the overlay job is planned, so a change of role or setting takes effect from the next entry.
+The decision is recorded per queue entry when the overlay job is planned, so a change of role or setting takes effect from the next entry. As implemented (`overlay/OverlayDecisions`): the first `decide(entryId)` (when the program output plans the entry's overlay, as it becomes next or current) evaluates the server switch, the room switch and the owner's roles as they are then and writes the result to `queue_entries.overlay` (`off`, `cards` or `video`; `video` includes cards; migration 0020); every later call, also after a restart, returns the recorded value. The decision says what is allowed: whether an entry plays as a video at all (not presented as audio, not audio-only) is the caller's part, and only then does `video` matter. A disabled owner holds no permissions, so their rooms get `cards` at most.
 
 ## The overlay image
 

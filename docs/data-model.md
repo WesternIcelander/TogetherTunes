@@ -131,7 +131,8 @@ queue_entries(id PK, room_id FK, item_id FK,
       state TEXT,                           -- 'queued'|'suggested'|'playing'|'played'|'skipped'|'removed'
       position REAL, pinned INTEGER, played_at NULL,
       via TEXT NULL,                        -- 'library'|'upload'|'youtube'|'playlist'|'history' (NULL: older entries)
-      added_by_name TEXT NULL)              -- adder's display name at add time (NULL: older entries)
+      added_by_name TEXT NULL,              -- adder's display name at add time (NULL: older entries)
+      overlay TEXT NULL)                    -- 'off'|'cards'|'video': the QR overlay decision, recorded once (0020; overlay.md#permissions)
 -- The room's history is the entries with played_at set and state played/skipped
 -- (index (room_id, played_at)); trimmed after rooms.requestHistoryDays. room_requests was
 -- dropped in 0011 (its via and by_name copied onto the entries).
