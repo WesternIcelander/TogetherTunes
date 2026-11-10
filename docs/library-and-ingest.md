@@ -71,6 +71,16 @@ The YouTube **video ID** is the cache key. Every YouTube item stores it in `item
 
 Because one ID maps to one item, the "audio only" choice is not a separate item. Every video item can be **presented as audio**: an item flag `presentAsAudio` (`items.present_as_audio`) makes the packager use the item's card instead of its video. It's useful for "Topic" uploads, which are just a still image. Anyone who can edit the item's metadata can set it, and the importer can set it at import time: when the import creates the item, or brings a purged or failed one back. Importing an item that already exists ignores it (changing it is a metadata edit).
 
+### Retrying a failed YouTube item
+
+Added 2026-11-10 (Siggi: "If a YouTube yt-dlp item fails to ingest, there should be a retry button both on its page and where it's listed in the queue."). YouTube failures are often temporary (network, throttling, an outdated yt-dlp), so a failed YouTube item can be fetched again on request instead of waiting the 10 minutes an import of its link waits: **Retry** on the item page (`POST /api/items/{id}/retry`) and on its queue entry or suggestion in a room (`queue.retry`, [rooms.md](rooms.md#room-state)); API in [api.md](api.md#items-libraries-playlists-sharing). `YoutubeImports.retry`:
+
+- **What it does:** a new `youtube` job on the same row (a `refetch` if the failed job was one), which makes the item `pending` again; the preset tier is decided when the job starts (quick while a room waits for it). The rooms that have it hear about the status change, so its entries show "Waiting to download…" again. It runs under the same per-video lock as imports.
+- **Refused:** not a YouTube item (`409 not_youtube`: **uploads aren't covered**, a failed upload's file isn't kept, so the uploader uploads it again; the item page says so instead of showing a button), purged (`409 item_purged`; adding it to a library fetches it again), a job already queued or running (`409 ingest_in_progress`, e.g. a second click), not failed (`409 item_not_failed`), `ytdlp.enabled` off (`403 feature_disabled`, for everyone), below the free-space minimum (`507 insufficient_storage`).
+- **Rate limit:** after a retry, the next retry of the same item waits **30 s** (`429 retry_too_soon` with `Retry-After`), whoever asks, so a button can't hammer YouTube. In memory only (a restart forgets it).
+- **Who:** on the item page, users who may edit the item (the adder while it is in their library, or `library.editAny`) and holders of `admin.jobs` (`you.canRetry`); in a room, the owner and moderators and the entry's requester while they may add YouTube links there.
+- **Audited** as `item.ingest_retried` (target the item; details `jobId`, `kind`, and `roomId` for a retry from a room). The admin jobs page's own Retry stays as it is (`job.retried`).
+
 Operational notes:
 
 - YouTube often blocks datacenter IPs. Support an optional cookies file: the `ytdlp.cookiesFile` setting (a Netscape-format cookies file on the server), passed as `--cookies` to every `-J` and download. It is read for each call, so a change applies to the next import. A path that isn't a readable file is logged and ignored. yt-dlp writes refreshed cookies back to the file, so the server should be able to write it.
