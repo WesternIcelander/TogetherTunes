@@ -130,6 +130,7 @@ The RTMP service handles distribution to viewers, so this server sends one strea
 
 - The packager starts when the owner enables an output, or when the first `.ts`/HLS request arrives for an enabled output.
 - It stops 60 s after the last consumer leaves, unless an RTMP push is enabled. A new start resets the output clock, which only affects new connections.
+- As built (`output/ProgramOutputs`, `ProgramPipeline`): consumers are leases (`.ts` connections, the RTMP pusher); an HLS fetch or enabling an output counts as activity at that moment; a sweep every 5 s stops an output with no lease, no RTMP push and no activity for 60 s. A packager that stopped by itself is restarted by the next request, or by the sweep while RTMP is enabled. `ProgramOutputs` is the rooms' `PackagerHook`: each committed change is copied on the room's executor and, for rooms with an output, turned into a `ProgramCue` (item kinds from the database) on another thread; an output started before it saw a change reads the room once with a read-only mutation.
 - Item indexes are loaded into memory for the current and next entry only. Files are read with positional reads (`FileChannel.read(buf, pos)`).
 - **Expected cost per room:** reading about 1.5 MB per 2 s for a 1080p video item (much less for audio items, whose cards are cached in memory), and a few µs of muxing per frame. A single core can run many rooms.
 
