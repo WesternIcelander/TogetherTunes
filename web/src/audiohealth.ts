@@ -23,7 +23,10 @@
 //   the output has no steady dropouts. The player recreates the context at the implied rate, or
 //   falls back to the direct path (Auto).
 // - `webAudioPlan`: the per-device "Web Audio" setting (Auto / On / Off), `?webaudio=0/1` and
-//   what Auto learnt on this browser, in that order of precedence.
+//   what Auto learnt on this browser, in that order of precedence. Auto plays straight from the
+//   elements wherever the page can set their `volume` (`volumeSettable`): Mac Safari's Web Audio
+//   path plays 0.5–1 s late with `outputLatency` 0 (report arqrbq), so Web Audio is used only
+//   where it is needed for gain and crossfades (iOS/iPadOS, where `volume` is read-only).
 //
 // No DOM access and no imports, so it can be tested outside a browser.
 
@@ -444,23 +447,60 @@ export interface WebAudioPlan {
   sampleRate?: number;
   /** May switch to the direct path by itself when the check fails (Auto only). */
   autoFallback: boolean;
-  /** What decided: the URL override, the setting, Auto's memory, or the default. */
-  why: "url" | "setting" | "remembered" | "default";
+  /**
+   * What decided: the URL override, the setting, Auto's memory, Auto because the page can set the
+   * elements' volume ("volume": no Web Audio needed), or the default.
+   */
+  why: "url" | "setting" | "remembered" | "volume" | "default";
+  /** Whether the page can set `HTMLMediaElement.volume` here (`volumeSettable`), for diagnostics. */
+  volumeSettable?: boolean;
+}
+
+/** The part of a media element `volumeSettable` touches. */
+export interface VolumeTarget {
+  volume: number;
 }
 
 /**
- * Precedence: `?webaudio=0/1` (testing) over the setting over Auto's memory. On and `?webaudio=1`
- * use Web Audio (with the rate fix) but never fall back by themselves; Off and `?webaudio=0` play
- * straight from the elements; Auto uses Web Audio unless it learnt that only the direct path works
- * here, and falls back by itself.
+ * Whether the page can set a media element's `volume` (feature detection, no UA sniffing): sets it
+ * to 0.5 on a spare element and reads it back. iOS/iPadOS ignore the write (reading always gives
+ * 1); a throwing setter counts as not settable. The element's volume is put back afterwards.
+ */
+export function volumeSettable(el: VolumeTarget): boolean {
+  let before = 1;
+  try {
+    before = el.volume;
+    el.volume = 0.5;
+    const ok = Math.abs(el.volume - 0.5) < 0.01;
+    el.volume = before;
+    return ok;
+  } catch {
+    try {
+      el.volume = before;
+    } catch {
+      // read-only
+    }
+    return false;
+  }
+}
+
+/**
+ * Precedence: `?webaudio=0/1` (testing) over the setting over Auto. On and `?webaudio=1` use Web
+ * Audio (with the rate fix) but never fall back by themselves; Off and `?webaudio=0` play straight
+ * from the elements. Auto plays straight from the elements where the page can set their volume
+ * (`volumeSettable`: gain and crossfades via `volume`, and none of WebKit's hidden Web Audio output
+ * delay); elsewhere (iOS) it uses Web Audio unless it learnt that only the direct path works here,
+ * and falls back by itself.
  */
 export function webAudioPlan(override: boolean | undefined, setting: WebAudioSetting,
-    memory: WebAudioMemory | undefined): WebAudioPlan {
+    memory: WebAudioMemory | undefined, volumeSettable = false): WebAudioPlan {
   const rate = memory?.rate !== undefined ? { sampleRate: memory.rate } : {};
-  if (override === false) return { webAudio: false, autoFallback: false, why: "url" };
-  if (override === true) return { webAudio: true, ...rate, autoFallback: false, why: "url" };
-  if (setting === "off") return { webAudio: false, autoFallback: false, why: "setting" };
-  if (setting === "on") return { webAudio: true, ...rate, autoFallback: false, why: "setting" };
-  if (memory?.direct === true) return { webAudio: false, autoFallback: false, why: "remembered" };
-  return { webAudio: true, ...rate, autoFallback: true, why: memory?.rate !== undefined ? "remembered" : "default" };
+  const vs = { volumeSettable };
+  if (override === false) return { webAudio: false, autoFallback: false, why: "url", ...vs };
+  if (override === true) return { webAudio: true, ...rate, autoFallback: false, why: "url", ...vs };
+  if (setting === "off") return { webAudio: false, autoFallback: false, why: "setting", ...vs };
+  if (setting === "on") return { webAudio: true, ...rate, autoFallback: false, why: "setting", ...vs };
+  if (volumeSettable) return { webAudio: false, autoFallback: false, why: "volume", ...vs };
+  if (memory?.direct === true) return { webAudio: false, autoFallback: false, why: "remembered", ...vs };
+  return { webAudio: true, ...rate, autoFallback: true, why: memory?.rate !== undefined ? "remembered" : "default", ...vs };
 }

@@ -77,8 +77,25 @@ class ListenJsTest {
         }
         String html = read("web/room.html");
         for (String s : List.of("id=\"room-webaudio\"", "value=\"auto\"", "value=\"on\"", "value=\"off\"",
-                "id=\"room-webaudio-note\"", "no\n        crossfade")) {
+                "id=\"room-webaudio-note\"", "no crossfade")) {
             assertTrue(html.contains(s), s);
+        }
+    }
+
+    /**
+     * Mac Safari's Web Audio path plays the sound 0.5–1 s late (report arqrbq): Auto plays straight
+     * from the elements wherever the page can set their volume (checked at runtime, volumeSettable),
+     * and on that path an original needing a positive gain plays audio.m4a (DIRECT_MAX_GAIN_DB).
+     */
+    @Test
+    void autoPlaysDirectWhereTheVolumeCanBeSet() throws Exception {
+        String player = read("web/js/listen.js");
+        for (String s : List.of("DIRECT_MAX_GAIN_DB", "originalSkippedGainDb", "el.volume = ")) {
+            assertTrue(player.contains(s), s);
+        }
+        String room = read("web/js/room.js");
+        for (String s : List.of("volumeSettable(document.createElement(\"audio\"))", "canSetVolume())", "volumeSettable:")) {
+            assertTrue(room.contains(s), s);
         }
     }
 

@@ -444,6 +444,27 @@ test("audio item with a playable original plays the original with its gain", () 
     { url: "/media/a/original", gainDb: -3.2, video: false, original: true });
 });
 
+test("direct path: an original with a positive gain plays audio.m4a, a negative gain stays a volume", () => {
+  const loud = { ...audioItem, originalGainDb: -3.2 };
+  const quiet = { ...audioItem, originalGainDb: 2.5 };
+  // Negative gain: the original, its gain applied as volume.
+  assert.deepEqual(L.chooseSource(loud, yes, false, false, L.DIRECT_MAX_GAIN_DB),
+    { url: "/media/a/original", gainDb: -3.2, video: false, original: true });
+  // Positive gain: volume can't exceed 1, so the loudness-normalised audio.m4a, with the reason.
+  assert.deepEqual(L.chooseSource(quiet, yes, false, false, L.DIRECT_MAX_GAIN_DB),
+    { url: "/media/a/audio.m4a", gainDb: 0, video: false, original: false, originalSkippedGainDb: 2.5 });
+  // Exactly 0 dB or no gain: the original.
+  assert.equal(L.chooseSource({ ...audioItem, originalGainDb: 0 }, yes, false, false, L.DIRECT_MAX_GAIN_DB).original, true);
+  assert.equal(L.chooseSource({ ...audioItem, originalGainDb: undefined }, yes, false, false, L.DIRECT_MAX_GAIN_DB).original, true);
+  // Web Audio (no limit, the default): the original with its positive gain.
+  assert.deepEqual(L.chooseSource(quiet, yes, false),
+    { url: "/media/a/original", gainDb: 2.5, video: false, original: true });
+  // No audio.m4a to fall back to: the original anyway.
+  const { audioUrl: _a, ...noAudio } = quiet;
+  assert.equal(L.chooseSource(noAudio, yes, false, false, L.DIRECT_MAX_GAIN_DB).url, "/media/a/original");
+  assert.equal(L.DIRECT_MAX_GAIN_DB, 0);
+});
+
 test("canPlayType saying no, or a given-up original, falls back to audio.m4a", () => {
   const fallback = { url: "/media/a/audio.m4a", gainDb: 0, video: false, original: false };
   assert.deepEqual(L.chooseSource(audioItem, no, false), fallback);

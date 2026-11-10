@@ -228,22 +228,64 @@ test("webAudioPlan: URL over setting over Auto's memory", () => {
   const direct = { direct: true, rate: 48000, at: 1 };
   const rate = { rate: 48000, at: 1 };
   // Default: Auto, Web Audio, may fall back.
-  assert.deepEqual(A.webAudioPlan(undefined, "auto", undefined), { webAudio: true, autoFallback: true, why: "default" });
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", undefined), { webAudio: true, autoFallback: true, why: "default", volumeSettable: false });
+
   // Auto with memory.
-  assert.deepEqual(A.webAudioPlan(undefined, "auto", direct), { webAudio: false, autoFallback: false, why: "remembered" });
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", direct), { webAudio: false, autoFallback: false, why: "remembered", volumeSettable: false });
   assert.deepEqual(A.webAudioPlan(undefined, "auto", rate),
-    { webAudio: true, sampleRate: 48000, autoFallback: true, why: "remembered" });
+    { webAudio: true, sampleRate: 48000, autoFallback: true, why: "remembered", volumeSettable: false });
   // On: Web Audio even if Auto learnt "direct" (the rate it learnt is used), never falls back.
-  assert.deepEqual(A.webAudioPlan(undefined, "on", direct), { webAudio: true, sampleRate: 48000, autoFallback: false, why: "setting" });
-  assert.deepEqual(A.webAudioPlan(undefined, "on", undefined), { webAudio: true, autoFallback: false, why: "setting" });
+  assert.deepEqual(A.webAudioPlan(undefined, "on", direct), { webAudio: true, sampleRate: 48000, autoFallback: false, why: "setting", volumeSettable: false });
+  assert.deepEqual(A.webAudioPlan(undefined, "on", undefined), { webAudio: true, autoFallback: false, why: "setting", volumeSettable: false });
   // Off.
-  assert.deepEqual(A.webAudioPlan(undefined, "off", rate), { webAudio: false, autoFallback: false, why: "setting" });
+  assert.deepEqual(A.webAudioPlan(undefined, "off", rate), { webAudio: false, autoFallback: false, why: "setting", volumeSettable: false });
   // ?webaudio=0/1 overrides everything.
   for (const setting of ["auto", "on", "off"]) {
-    assert.deepEqual(A.webAudioPlan(false, setting, rate), { webAudio: false, autoFallback: false, why: "url" });
+    assert.deepEqual(A.webAudioPlan(false, setting, rate), { webAudio: false, autoFallback: false, why: "url", volumeSettable: false });
     assert.equal(A.webAudioPlan(true, setting, direct).webAudio, true);
     assert.equal(A.webAudioPlan(true, setting, direct).autoFallback, false);
   }
+});
+
+test("webAudioPlan: Auto plays direct where the volume can be set; On, Off and the URL still force a path", () => {
+  const direct = { direct: true, at: 1 };
+  const rate = { rate: 48000, at: 1 };
+  // Desktop Safari, Chrome, Firefox, Android: Auto is direct, whatever it learnt before.
+  for (const memory of [undefined, direct, rate]) {
+    assert.deepEqual(A.webAudioPlan(undefined, "auto", memory, true),
+      { webAudio: false, autoFallback: false, why: "volume", volumeSettable: true });
+  }
+  // iOS (volume read-only): Auto is Web Audio with the fallback, as before.
+  assert.deepEqual(A.webAudioPlan(undefined, "auto", undefined, false),
+    { webAudio: true, autoFallback: true, why: "default", volumeSettable: false });
+  assert.equal(A.webAudioPlan(undefined, "auto", direct, false).why, "remembered");
+  // On / ?webaudio=1 force Web Audio, Off / ?webaudio=0 force direct.
+  assert.deepEqual(A.webAudioPlan(undefined, "on", undefined, true),
+    { webAudio: true, autoFallback: false, why: "setting", volumeSettable: true });
+  assert.equal(A.webAudioPlan(true, "auto", undefined, true).webAudio, true);
+  assert.equal(A.webAudioPlan(true, "auto", undefined, true).why, "url");
+  assert.equal(A.webAudioPlan(undefined, "off", undefined, true).why, "setting");
+  assert.equal(A.webAudioPlan(false, "on", undefined, true).why, "url");
+});
+
+test("volumeSettable: reads the volume back after setting 0.5, and restores it", () => {
+  // Desktop: the write sticks.
+  const desktop = { volume: 0.8 };
+  assert.equal(A.volumeSettable(desktop), true);
+  assert.equal(desktop.volume, 0.8);
+  // iOS: the write is ignored, reading always gives 1.
+  const ios = {};
+  Object.defineProperty(ios, "volume", { get: () => 1, set: () => undefined });
+  assert.equal(A.volumeSettable(ios), false);
+  // A throwing setter is not settable.
+  const throwing = {};
+  Object.defineProperty(throwing, "volume", { get: () => 1, set: () => { throw new Error("read-only"); } });
+  assert.equal(A.volumeSettable(throwing), false);
+  // A setter that rounds coarsely still counts if 0.5 reads back as 0.5.
+  let v = 1;
+  const rounding = { get volume() { return v; }, set volume(x) { v = Math.round(x * 100) / 100; } };
+  assert.equal(A.volumeSettable(rounding), true);
+  assert.equal(v, 1);
 });
 
 test("WebAudioCheck on the first health samples of report uhmxlu (iPod touch 7) trips within 3 s of running", () => {

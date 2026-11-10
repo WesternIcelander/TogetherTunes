@@ -391,7 +391,18 @@ export interface Source {
   video: boolean;
   /** The item's original (an audio upload's kept file), which may still fall back to `audio.m4a`. */
   original: boolean;
+  /**
+   * Set when the item has a playable original but `audio.m4a` was chosen because the original's
+   * gain is above what the path can apply (`maxGainDb`): the original's `originalGainDb`.
+   */
+  originalSkippedGainDb?: number;
 }
+
+/**
+ * The highest gain (dB) the direct path (no Web Audio) can apply: `volume` can't exceed 1, so an
+ * original that needs to be made louder plays `audio.m4a` (loudness-normalised) instead.
+ */
+export const DIRECT_MAX_GAIN_DB = 0;
 
 /** The fields of an item that decide its source. */
 export type SourceItem = Pick<RoomItem, "kind" | "presentAsAudio" | "audioUrl" | "videoUrl" | "originalUrl"
@@ -402,20 +413,31 @@ export type SourceItem = Pick<RoomItem, "kind" | "presentAsAudio" | "audioUrl" |
  *
  * - Audio items: the original when the server offers one (web-playable upload), `canPlay` agrees
  *   with its type and it wasn't given up this session (`avoidOriginal`); else `audio.m4a`.
+ *   An original whose gain is above `maxGainDb` (the direct path can't make it louder, see
+ *   DIRECT_MAX_GAIN_DB) plays `audio.m4a` too, marked with `originalSkippedGainDb`.
  * - Video items shown as audio (`presentAsAudio`): `audio.m4a`.
  * - Other video items: `mezz.mp4`, or `audio.m4a` in audio-only mode (then the video is never
  *   requested).
  */
 export function chooseSource(item: SourceItem, canPlay: (type: string) => boolean, avoidOriginal: boolean,
-    audioOnly = false): Source | undefined {
+    audioOnly = false, maxGainDb = Number.POSITIVE_INFINITY): Source | undefined {
   if (item.kind === "video" && item.presentAsAudio !== true && item.videoUrl !== undefined && !audioOnly) {
     return { url: item.videoUrl, gainDb: 0, video: true, original: false };
   }
+  let skipped: number | undefined;
   if (item.kind === "audio" && !avoidOriginal && item.originalUrl !== undefined
       && (item.originalType === undefined || canPlay(item.originalType))) {
-    return { url: item.originalUrl, gainDb: item.originalGainDb ?? 0, video: false, original: true };
+    const gainDb = item.originalGainDb ?? 0;
+    if (!(gainDb > maxGainDb) || item.audioUrl === undefined) {
+      return { url: item.originalUrl, gainDb, video: false, original: true };
+    }
+    skipped = gainDb;
   }
-  if (item.audioUrl !== undefined) return { url: item.audioUrl, gainDb: 0, video: false, original: false };
+  if (item.audioUrl !== undefined) {
+    const src: Source = { url: item.audioUrl, gainDb: 0, video: false, original: false };
+    if (skipped !== undefined) src.originalSkippedGainDb = skipped;
+    return src;
+  }
   return undefined;
 }
 

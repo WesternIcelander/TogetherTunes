@@ -4,10 +4,14 @@
 // Elements: a fixed pool of two `<audio>` and two `<video>` elements, reused for every entry (one
 // plays, the other holds the preloaded next entry). Reusing them matters on iOS, where an element
 // may only start playing with sound after a user gesture has touched it: the "Click to listen"
-// click touches all four. Each element goes through its own Web Audio `GainNode` (created once per
-// element via `MediaElementAudioSourceNode`), which applies `originalGainDb` to originals, keeps the
-// preloaded element silent, and is what the video / audio-only crossfade ramps (on iOS, `volume`
-// can't be set from script).
+// click touches all four. Where the page can set an element's `volume` (desktop Safari, Chrome,
+// Firefox, Android; `volumeSettable`), Auto plays straight from the elements: `volume` applies a
+// negative `originalGainDb`, keeps the preloaded element silent and is stepped for the crossfade
+// (Mac Safari's Web Audio path plays 0.5–1 s late, invisibly to the page, report arqrbq). An
+// original that would need a positive gain plays `audio.m4a` on the direct path (`volume` can't
+// exceed 1). Where `volume` can't be set (iOS/iPadOS), each element goes through its own Web Audio
+// `GainNode` (created once per element via `MediaElementAudioSourceNode`), which applies the gain,
+// keeps the preloaded element silent, and is what the crossfade ramps.
 //
 // Video / audio-only switch (docs/rooms.md#audio-only-switching): in audio-only mode video items
 // play `audio.m4a` and `mezz.mp4` is never requested. Switching while the timeline plays keeps the
@@ -42,9 +46,9 @@
 // be heard has produced only exact zeros for 10 s after having been heard, the player offers "Tap
 // to restore sound", and that tap rebuilds the pool without Web Audio (fresh elements, touched in
 // the gesture), playing straight from the elements for the rest of the page's life. `?webaudio=0`
-// on the room URL starts that way (the A/B switch). Without Web Audio there is no gain: originals
-// play without `originalGainDb`, and on iOS (read-only `volume`) the audio-only switch can't
-// crossfade. A seek stuck for 5 s on an element routed through Web Audio hands the entry to the
+// on the room URL starts that way (the A/B switch). Without Web Audio the gain is the element's
+// `volume` (at most 1; an original needing more plays `audio.m4a`), and on iOS (read-only
+// `volume`) originals play without `originalGainDb` and the audio-only switch can't crossfade. A seek stuck for 5 s on an element routed through Web Audio hands the entry to the
 // other element of its kind instead of reloading the stuck one (WebKit's provider for a routed
 // element is suspected to break when its pipeline is restarted). The context is resumed when
 // WebKit reports it `interrupted`/`suspended` and when the page becomes visible again.
@@ -66,7 +70,7 @@ import {
 } from "./audiohealth.js";
 import { describeError, recordDecision, recordError, recordEvent, recordHealth } from "./diagnostics.js";
 import {
-  chooseSource, CROSSFADE_MS, dbToGain, DriftController, HARD_SEEK_MS, inEndGuard, nextToPreload, SEEK_MODE_MS, SeekGuard,
+  chooseSource, CROSSFADE_MS, dbToGain, DIRECT_MAX_GAIN_DB, DriftController, HARD_SEEK_MS, inEndGuard, nextToPreload, SEEK_MODE_MS, SeekGuard,
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
@@ -113,7 +117,10 @@ export interface SoundInfo {
   sampleRate?: number;
   /** The context was rebuilt at this rate by the rate fix. */
   fixedRate?: number;
-  /** Why it plays direct: "url", "setting", "remembered", "mute", "clock", "gaps", "rate-fix-start". */
+  /**
+   * Why it plays direct: "volume" (Auto, the page can set the volume), "url", "setting",
+   * "remembered", "mute", "clock", "gaps", "rate-fix-start".
+   */
   off?: string;
   /** The last WebAudioCheck verdict. */
   verdict?: string;
@@ -262,8 +269,9 @@ export class ListenPlayer {
   /** Undefined without Web Audio (`?webaudio=0`, no AudioContext, or after "Tap to restore sound"). */
   #ctx: AudioContext | undefined;
   /**
-   * Why there is no Web Audio: "url" (`?webaudio=0`), "setting" (Off), "remembered" (Auto learnt
-   * it), "mute" (it went silent), "clock"/"gaps"/"rate-fix-start" (WebAudioCheck, Auto).
+   * Why there is no Web Audio: "volume" (Auto where the page can set the volume), "url"
+   * (`?webaudio=0`), "setting" (Off), "remembered" (Auto learnt it), "mute" (it went silent),
+   * "clock"/"gaps"/"rate-fix-start" (WebAudioCheck, Auto).
    */
   #webAudioOff: string | undefined;
   #plan: WebAudioPlan;
@@ -542,6 +550,7 @@ export class ListenPlayer {
       source: d?.src?.url,
       original: d?.src?.original,
       gainDb: d?.src?.gainDb,
+      originalSkippedGainDb: d?.src?.originalSkippedGainDb,
       rate: d?.el.playbackRate,
       driftMs: d !== undefined && t !== undefined ? d.el.currentTime * 1000 - positionAt(t, this.#serverNow()) : undefined,
       positionMs: d !== undefined ? d.el.currentTime * 1000 : undefined,
@@ -774,7 +783,9 @@ export class ListenPlayer {
       } catch {
         return true;
       }
-    }, this.#fallback.has(entry.item.id), this.#audioOnly);
+    }, this.#fallback.has(entry.item.id), this.#audioOnly,
+    // Direct path: `volume` can't exceed 1, so an original that needs a positive gain plays audio.m4a.
+    this.#ctx === undefined ? DIRECT_MAX_GAIN_DB : Number.POSITIVE_INFINITY);
   }
 
   /** A deck of the kind that isn't one of `keep` (those playing), preferring an empty one. */
@@ -803,7 +814,8 @@ export class ListenPlayer {
     deck.landing = undefined;
     deck.lastPosMs = -1;
     deck.el.src = src.url;
-    recordEvent("load", { el: deck.name, url: src.url });
+    recordEvent("load", { el: deck.name, url: src.url, gainDb: src.gainDb, original: src.original,
+      originalSkippedGainDb: src.originalSkippedGainDb });
   }
 
   /**
