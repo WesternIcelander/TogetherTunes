@@ -65,9 +65,17 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
-      media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows, kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
+      media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows (an undo links the old files into a new version), kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
+
+media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the current and the kept undo version were made with
+      published_at BIGINT, kind, duration_ms, output_profile, loudness_lufs, encode_preset, encode_quality,  -- the items publish columns
+      edit_json TEXT NULL)                  -- edit settings (trims) as JSON (library-and-ingest.md#undo)
+
+media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)
+      switched_at BIGINT,                   -- when the item switched away from it; kept for media.undoHours from then
+      undoable INTEGER)                     -- 1: that switch was a person's change (edit or undo); 0: a system re-encode (no Undo)
 
 ingest_jobs(id PK, item_id FK, kind TEXT,   -- 'upload' | 'youtube' | 'reencode' | 'refetch' | 'quality'
       state TEXT, attempts, progress REAL, created_at, started_at NULL, finished_at NULL, log TEXT NULL,
