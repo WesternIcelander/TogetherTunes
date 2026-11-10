@@ -39,3 +39,37 @@ The packager can only splice by remuxing if the incoming video matches the profi
 
 - The packager's source abstraction should not assume that sources are files with a known duration.
 - The room timeline's state is already an extensible enum (`playback_state`; see [rooms.md](rooms.md#room-state)), so `LIVE` can be added without a schema change.
+
+## Mobile apps (iOS and Android)
+
+**Goal:** native apps for iOS and Android with the same library management and media player features as the web UI (library, playlists, uploads, YouTube import, rooms, room management), plus **offline playback** of playlists the user picks, and joining online rooms without downloading the current item when it is already stored on the device. Planned for after the current plan is complete (noted 2026-11-10).
+
+### Why native
+
+The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is the hard platform for synchronised playback: rate changes raise the pitch and stall video, every seek is followed by a ~300 ms hidden clock pause, iOS ignores seeks made before playback starts, and the Web Audio path stutters or goes silent on older devices (iPod touch 7, iOS 15). A WKWebView wrapper would inherit all of that. A native player avoids it:
+
+- **iOS (AVFoundation):** `AVPlayer.setRate(_:time:atHostTime:)` starts at an exact media time at an exact host time, `preroll(atRate:)` and zero-tolerance `seek(to:toleranceBefore:toleranceAfter:)` land exactly, rate nudges keep pitch (`audioTimePitchAlgorithm`), and `AVAudioSession.outputLatency` reports speaker/Bluetooth delay so it can be compensated. Background audio and lock-screen controls come with it.
+- **Android (Media3 / ExoPlayer):** exact seeks (`SeekParameters.EXACT`) and pitch-preserving speed changes. Chromium-based browsers on Android already synced flawlessly, so on Android the app is mainly for convenience (background playback, notifications, uploads, offline).
+
+### Sketch
+
+- **Shared UI, native playback.** The screens are the bulk of the work and the same on both platforms, so share them (Kotlin Multiplatform with Compose Multiplatform is the suggested fit, being close to the server's Java; Flutter is the alternative). Playback is a small native module per platform behind one interface: "play this item at this media position at this server time", plus the same clock sync and sync rules as the web client.
+- **Same API.** The apps use the existing JSON API, the WebSocket protocol and the chunked resumable uploads, authenticated with bearer tokens (`/api/auth/token`).
+- **Offline playlists.** The user marks playlists as available offline; the app downloads their items (by default `audio.m4a` only: small, the same for every item, and what audio-only mode plays; video per playlist as an option) and keeps the playlist in sync. With no connection, it plays from those copies with no server at all.
+- **Rooms from local copies.** In a room, the app needs only the timeline over the WebSocket. If the current (or next) item is stored locally and its file version matches, it plays the local copy in sync instead of streaming it, so joining a room costs almost no data.
+
+### Open questions
+
+- May a device keep playing its copy of an item the server has purged (retention) or the user has lost access to?
+- Should offline downloading need its own permission or server switch (it amounts to downloading whole playlists), and how does it relate to `guests.download`?
+- Video in offline playlists: per playlist, per item, or never?
+- How should the app handle a local copy whose version is outdated: stream the new one at once and replace the copy later on Wi-Fi?
+
+### What current work should keep open
+
+- **File versions:** every media file served from `/media/{id}/…` should have a stable version a client can compare (a content hash in the item data, and a strong `ETag`), changing whenever the bytes change: a profile re-encode, or a purged YouTube item fetched again into the same row. Clients must be able to tell whether a stored copy is current. An outdated copy still plays in sync (all versions share one timeline), so it can be used until replaced.
+- **Playlist change tracking:** playlists (and libraries) should be syncable incrementally, e.g. a version per playlist or a "changed since" query, so an app need not refetch a 500-entry playlist to learn that nothing changed.
+- **Purging is server-side only:** retention deletes the server's files; nothing may assume no copies exist elsewhere. A purged item keeps its id, so a device copy stays linked to it.
+- **Bearer-authenticated WebSockets without `Origin`:** keep accepting an upgrade with no `Origin` header and no cookie, authenticated by the first `{type:"auth"}` message ([auth.md](auth.md)); the Origin check exists to protect cookies, which native apps don't send.
+- **OIDC / OAuth login for apps (M6):** keep the login flow usable from an app: started in `ASWebAuthenticationSession` (iOS) or Custom Tabs (Android), finished by handing the app a bearer token (e.g. via a registered redirect back into the app and a one-time code exchanged for a token), not only by setting a browser cookie.
+- **Item data for local playback:** whatever the web client needs to play a file correctly (e.g. `originalGainDb`, `presentAsAudio`, durations) must stay in the API, so an app can play its own copy the same way.
