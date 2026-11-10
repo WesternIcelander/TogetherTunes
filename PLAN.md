@@ -371,7 +371,8 @@ Web client:
   - **4. Events:** with both playing, as owner: seek (forward and back), pause and play, skip to next, let an item end naturally into the next one, toggle audio-only on one device. After each, both should be back within ~50 ms within about 2 s (hard seek at >750 ms, rate nudge above 40 ms).
   - **5. Long run:** leave both playing for 10+ minutes (one with the screen locked / app in the background, on iOS this may pause audio, which is expected; on unlock it must catch up). Check again with steps 1–2.
   - **Report:** per pair, the measured or heard offset and anything that drifts beyond ~50 ms or keeps hard-seeking (`debug()` output and browser version). If it holds, flip this to `[x]`.
-- [?] *(manual)* Video ↔ audio-only switching has no audible gap in Chrome, Firefox and iOS Safari.
+- [x] *(manual)* Video ↔ audio-only switching has no audible gap in Chrome, Firefox and iOS Safari.
+  - **Checked by Siggi 2026-11-10 (main `c8ae132`):** no gap in Brave and Firefox. Safari doesn't switch smoothly on any device (Mac, iPhone X, iPad); Siggi's decision: Safari/WebKit is best effort and doesn't block this check (see CLAUDE.md, Frontend). iOS users will get smooth switching from the native app later.
   - **Partly checked by Siggi 2026-11-10 (main `c8ae132`):** no gap in Brave and Firefox. Still to check: Mac Safari, iPhone X and iPad Pro. (Firefox on macOS showed the OS microphone permission dialog when audio started, with no site permission prompt; the page never asks for the microphone and creates no AudioContext on the direct path, so that comes from Firefox's audio backend, not from TogetherTunes.)
   - **iPod touch 7 is out of scope (Siggi, 2026-11-10):** test on the iPhone X and the iPad for iOS; the iPod is optional.
   - iOS devices: iPad Pro M1 (iPadOS 26.1), iPhone X (iOS 15.1) and iPod touch 7th gen (iOS 15.1, can't update). Test on all three. No 15.0 device is available, so 15.1 is the oldest version actually tested.

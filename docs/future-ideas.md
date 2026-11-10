@@ -46,6 +46,8 @@ The packager can only splice by remuxing if the incoming video matches the profi
 
 ### Why native
 
+Since 2026-11-10 Safari/WebKit is only best effort for the web client (Siggi's decision after the M3 browser tests): iOS users are meant to use the native app.
+
 The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is the hard platform for synchronised playback: rate changes raise the pitch and stall video, every seek is followed by a ~300 ms hidden clock pause, iOS ignores seeks made before playback starts, and the Web Audio path stutters or goes silent on older devices (iPod touch 7, iOS 15). A WKWebView wrapper would inherit all of that. A native player avoids it:
 
 - **iOS (AVFoundation):** `AVPlayer.setRate(_:time:atHostTime:)` starts at an exact media time at an exact host time, `preroll(atRate:)` and zero-tolerance `seek(to:toleranceBefore:toleranceAfter:)` land exactly, rate nudges keep pitch (`audioTimePitchAlgorithm`), and `AVAudioSession.outputLatency` reports speaker/Bluetooth delay so it can be compensated. Background audio and lock-screen controls come with it.
