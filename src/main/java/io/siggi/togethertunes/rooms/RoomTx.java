@@ -18,11 +18,16 @@ public final class RoomTx {
     private boolean closeRoom;
     private boolean rescheduleAdvance;
     private final RoomStore store;
+    private final PackagerHook packager;
 
-    RoomTx(RoomState state, long now, RoomStore store) {
+    /** The longest an abrupt start is put off ({@link #abruptStartAt()}). */
+    public static final long MAX_START_DELAY_MS = 4000;
+
+    RoomTx(RoomState state, long now, RoomStore store, PackagerHook packager) {
         this.state = state;
         this.now = now;
         this.store = store;
+        this.packager = packager;
     }
 
     RoomStore store() {
@@ -41,6 +46,24 @@ public final class RoomTx {
     /** The time the mutation started, epoch ms (from the executor's clock). */
     public long now() {
         return now;
+    }
+
+    /**
+     * When an entry started abruptly in this mutation (skip, previous, a start from idle; not a
+     * natural end) begins ({@code docs/rooms.md#room-state}): {@link #now()} unless the room's
+     * program output runs; then the output's next unit it can start the entry at from 0:00
+     * ({@link PackagerHook#itemStartAt}), at most {@link #MAX_START_DELAY_MS} from now. The
+     * timeline then starts the entry at that (future) time, so web listeners and the stream both
+     * begin it at 0:00.
+     */
+    public long abruptStartAt() {
+        long at;
+        try {
+            at = packager.itemStartAt(state.id(), now);
+        } catch (RuntimeException e) {
+            return now;
+        }
+        return at <= now ? now : Math.min(at, now + MAX_START_DELAY_MS);
     }
 
     /**

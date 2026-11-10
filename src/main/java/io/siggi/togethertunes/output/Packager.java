@@ -3,6 +3,7 @@ package io.siggi.togethertunes.output;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.OptionalLong;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -59,6 +60,11 @@ public final class Packager implements AutoCloseable {
     private boolean closeCalled;
     private volatile boolean stopped;
     private volatile Throwable failure;
+    /** Start of the unit the thread builds next, or is building now ({@link #building}); NONE before the thread runs. */
+    private volatile long pendingStart = NONE;
+    private volatile boolean building;
+
+    private static final long NONE = Long.MIN_VALUE;
 
     /**
      * @param name     for the thread name and logs (e.g. the room id; never a stream token)
@@ -113,6 +119,28 @@ public final class Packager implements AutoCloseable {
     /** Why the packager stopped by itself, or null. */
     public Throwable failure() {
         return failure;
+    }
+
+    /**
+     * The earliest server time (epoch ms) at which an item started now can begin at its position 0
+     * in this output ({@code docs/program-output.md#applying-timeline-changes}, abrupt starts): the
+     * start of the first unit the thread hasn't begun to build, mapped to server time. A unit is
+     * built {@link #LEAD_MS} before it is due, so this is about LEAD to LEAD + one unit from now. A
+     * unit whose build is due within {@code marginMs} counts as begun (the change might not reach
+     * the follower in time), and so does one being built; the start is then one unit
+     * ({@link UnitBuilder#UNIT_TICKS}) later. That assumes the source playing runs on in whole
+     * units; the follower starts the item at the boundary nearest the timeline's start anyway.
+     * Any thread; never blocks. Empty when the packager isn't running (or hasn't started yet).
+     */
+    public OptionalLong nextItemStartServerMs(long marginMs) {
+        long p = pendingStart;
+        if (stopped || p == NONE) {
+            return OptionalLong.empty();
+        }
+        if (building || clock.nanoTimeAt(p) - leadNanos - time.nanoTime() < TimeUnit.MILLISECONDS.toNanos(marginMs)) {
+            p += UnitBuilder.UNIT_TICKS;
+        }
+        return OptionalLong.of(clock.serverMsAt(p));
     }
 
     /** The most recent unit emitted, or null before the first one. */
@@ -173,7 +201,9 @@ public final class Packager implements AutoCloseable {
     private void run() {
         try {
             while (!stopped) {
-                long due = clock.nanoTimeAt(producer.nextUnitStart()) - leadNanos;
+                long next = producer.nextUnitStart();
+                pendingStart = next;
+                long due = clock.nanoTimeAt(next) - leadNanos;
                 long wait = due - time.nanoTime();
                 if (wait > 0) {
                     time.sleepNanos(wait);
@@ -187,9 +217,11 @@ public final class Packager implements AutoCloseable {
                     LOG.log(System.Logger.Level.WARNING, "Packager {0} fell {1} ms behind; pacing moved forward",
                             name, TimeUnit.NANOSECONDS.toMillis(late));
                 }
+                building = true;
                 Unit u = producer.nextUnit();
                 byte[] ts = muxer.mux(u);
                 publish(u, ts);
+                building = false;
             }
         } catch (InterruptedException e) {
             // stopping

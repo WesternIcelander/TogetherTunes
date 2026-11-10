@@ -294,6 +294,35 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         }
     }
 
+    /**
+     * How long before a unit's build a skip must arrive to make it into that unit
+     * ({@link Packager#nextItemStartServerMs}): the cue reaches the follower on a virtual thread
+     * right after the room commits.
+     */
+    static final long START_MARGIN_MS = 250;
+
+    /**
+     * Where an abrupt start in the room should begin so this output plays the entry from 0:00:
+     * the room's running packager's next unit it hasn't begun ({@link Packager#nextItemStartServerMs});
+     * {@code nowMs} when the room has no running output. Never waits (only the cue feed's monitor,
+     * which the executor already takes in {@link #offer}).
+     */
+    @Override
+    public long itemStartAt(String roomId, long nowMs) {
+        RoomOutput ro = rooms.get(roomId);
+        if (ro == null) {
+            return nowMs;
+        }
+        Output out;
+        synchronized (ro.feed) {
+            out = ro.feeding;
+        }
+        if (out == null) {
+            return nowMs;
+        }
+        return out.packager().nextItemStartServerMs(START_MARGIN_MS).orElse(nowMs);
+    }
+
     @Override
     public void roomClosed(String roomId, boolean deleted) {
         if (deleted) {

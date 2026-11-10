@@ -37,6 +37,16 @@ public record Timeline(PlaybackState state, String entryId, long anchorServerMs,
         return new Timeline(PlaybackState.PLAYING, entryId, nowMs, Math.max(0, positionMs));
     }
 
+    /**
+     * Playing {@code entryId} from its start at server time {@code startServerMs}, which may be in
+     * the future (an abrupt start put off until the program output can play the entry from 0:00,
+     * {@code docs/rooms.md#room-state}): until then {@link #positionAt(long)} is negative, and
+     * clients keep the entry silent at 0.
+     */
+    public static Timeline startingAt(String entryId, long startServerMs) {
+        return new Timeline(PlaybackState.PLAYING, entryId, startServerMs, 0);
+    }
+
     /** Paused in {@code entryId} at {@code positionMs}, re-anchored at {@code nowMs}. */
     public static Timeline paused(String entryId, long nowMs, long positionMs) {
         return new Timeline(PlaybackState.PAUSED, entryId, nowMs, Math.max(0, positionMs));
@@ -45,7 +55,8 @@ public record Timeline(PlaybackState state, String entryId, long anchorServerMs,
     /**
      * The position in the current entry at server time {@code serverNowMs}:
      * {@code anchorPositionMs + (serverNowMs − anchorServerMs)} while playing, the anchor position
-     * otherwise (paused: frozen; idle: 0). Not clamped to the entry's duration (see
+     * otherwise (paused: frozen; idle: 0). Negative before an entry's delayed start
+     * ({@link #startingAt}). Not clamped to the entry's duration (see
      * {@link #positionAt(long, long)}).
      */
     public long positionAt(long serverNowMs) {

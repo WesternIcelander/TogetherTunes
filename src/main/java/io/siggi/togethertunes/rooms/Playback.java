@@ -91,11 +91,22 @@ public final class Playback {
      * Ends the current entry (if any) as {@code endedAs} ({@link QueueEntry.State#PLAYED} at its
      * natural end, {@link QueueEntry.State#SKIPPED} when skipped) and starts the next eligible
      * entry at position 0, or goes idle when there is none. Item statuses are read again first,
-     * so entries whose ingest finished in the meantime are eligible.
+     * so entries whose ingest finished in the meantime are eligible. A skip is an abrupt start
+     * ({@link #advance(RoomTx, QueueEntry.State, boolean)}); a natural end isn't.
      *
      * @return the entry now playing, or {@code null} if the room is idle
      */
     public static QueueEntry advance(RoomTx tx, QueueEntry.State endedAs) throws SQLException {
+        return advance(tx, endedAs, endedAs == QueueEntry.State.SKIPPED);
+    }
+
+    /**
+     * {@link #advance(RoomTx, QueueEntry.State)}; with {@code abrupt} (a skip, a start from idle:
+     * anything but the natural end of the previous entry) the next entry starts at
+     * {@link RoomTx#abruptStartAt()}, which is in the future while the room's program output
+     * runs, so the stream plays it from 0:00 too ({@code docs/rooms.md#room-state}).
+     */
+    public static QueueEntry advance(RoomTx tx, QueueEntry.State endedAs, boolean abrupt) throws SQLException {
         if (endedAs != QueueEntry.State.PLAYED && endedAs != QueueEntry.State.SKIPPED) {
             throw new IllegalArgumentException("an entry ends as played or skipped, not " + endedAs);
         }
@@ -126,13 +137,14 @@ public final class Playback {
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
         s.forget(playing.id());
         s.current(playing);
-        tx.timeline(Timeline.playing(playing.id(), now, 0));
+        tx.timeline(abrupt ? Timeline.startingAt(playing.id(), tx.abruptStartAt()) : Timeline.playing(playing.id(), now, 0));
         return playing;
     }
 
     /**
      * Starts the next eligible entry if the room is idle (for example after something was added
-     * to an empty queue, or an item became ready).
+     * to an empty queue, or an item became ready). An abrupt start: it may begin a moment later
+     * while the program output runs ({@link #advance(RoomTx, QueueEntry.State, boolean)}).
      *
      * @return whether it started something
      */
@@ -141,7 +153,7 @@ public final class Playback {
             case IDLE -> {
                 RoomState s = tx.state();
                 s.refreshItems(tx.store().itemInfo(s));
-                yield nextEligible(s) != null && advance(tx, QueueEntry.State.PLAYED) != null;
+                yield nextEligible(s) != null && advance(tx, QueueEntry.State.PLAYED, true) != null;
             }
             case PLAYING, PAUSED -> false;
         };

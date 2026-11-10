@@ -357,7 +357,8 @@ public final class QueueOps {
         });
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
         s.current(playing);
-        tx.timeline(paused ? Timeline.paused(playing.id(), now, 0) : Timeline.playing(playing.id(), now, 0));
+        // an abrupt start (docs/rooms.md#room-state): put off until the program output can play it from 0:00
+        tx.timeline(paused ? Timeline.paused(playing.id(), now, 0) : Timeline.startingAt(playing.id(), tx.abruptStartAt()));
         return true;
     }
 

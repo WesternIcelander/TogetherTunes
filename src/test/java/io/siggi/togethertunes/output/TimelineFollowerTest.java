@@ -242,6 +242,91 @@ class TimelineFollowerTest {
         assertEquals(expected, b.startMs);
     }
 
+    /** The first audio frame's number and the first picture's number of a unit (FakeItem payloads). */
+    static int[] firstFrames(Unit u) {
+        byte[] v = u.video().get(0).data();
+        return new int[] {SourcesTest.audioNumber(u.audio().get(0).data()), ((v[5] & 0xFF) << 8) | (v[6] & 0xFF)};
+    }
+
+    /**
+     * A skip while the output runs ({@code docs/rooms.md#room-state}, abrupt starts): the room starts
+     * the next entry at the output's first unit it hasn't built. Until then the skipped item plays on;
+     * that unit starts the new item at media position 0 (its first picture and first AAC frame), at
+     * the timeline's start time (to the audio frame), with no discontinuity.
+     */
+    @Test
+    void aDelayedSkipStartsTheNewItemFromZeroAtItsStartTime() throws Exception {
+        follower.update(playing(C, T0, 0, null));
+        unit();
+        FakeItem c1 = factory.last();
+        long start = serverMsAt(S0 + 2 * UnitBuilder.UNIT_TICKS); // the room's start for B: two units on
+        follower.update(playing(B, start, 0, null));
+        Unit u2 = unit();
+        assertSame(c1, u2.source(), "the skipped item plays on until B starts");
+        assertSame(C, follower.playingEntry());
+        Unit u3 = unit();
+        FakeItem b = factory.last();
+        assertSame(B, b.entry);
+        assertSame(b, u3.source());
+        assertEquals(0, b.startMs, "from 0:00");
+        assertEquals(u2.audioEndPts(), u3.startPts());
+        long at = serverMsAt(u3.startPts());
+        assertTrue(at >= start && at - start < 22, "starts at the timeline's start time: " + (at - start));
+        org.junit.jupiter.api.Assertions.assertArrayEquals(new int[] {0, 0}, firstFrames(u3),
+                "the item's first AAC frame and first picture");
+        assertEquals(1, factory.started.stream().filter(f -> f.entry == B).count());
+        // and it plays on as the timeline's entry
+        assertSame(b, unit().source());
+    }
+
+    /**
+     * The start isn't on a boundary the output reaches (e.g. the delay was capped): the item starts
+     * from 0 at the first boundary at most half a unit before it; a second skip in the gap moves the
+     * start again; a start from the idle filler keeps the filler until then.
+     */
+    @Test
+    void delayedStartsOffTheBoundariesAndDoubleSkipsAndStartsFromIdle() throws Exception {
+        follower.update(ProgramCue.IDLE);
+        Unit u1 = unit();
+        assertSame(Filler.IDLE, follower.playingFiller());
+        // started from idle, 3.5 s after the next boundary: the filler runs on there
+        follower.update(playing(A, nextMs() + 1500 + 2000, 0, C));
+        Unit u2 = unit();
+        assertSame(u1.source(), u2.source());
+        // a second skip in the gap (to B, again later): the filler still runs on
+        follower.update(playing(B, nextMs() + 2600, 0, null));
+        Unit u3 = unit();
+        assertSame(u1.source(), u3.source());
+        assertTrue(factory.started.isEmpty(), "nothing started early");
+        // the next boundary is 600 ms before B's start: B starts there, from 0
+        Unit u4 = unit();
+        FakeItem b = factory.last();
+        assertSame(B, b.entry);
+        assertEquals(0, b.startMs);
+        assertSame(b, u4.source());
+        assertEquals(1, factory.started.size());
+    }
+
+    /** The skipped item ends by itself before the start: the Loading filler bridges the gap. */
+    @Test
+    void aDelayedStartAfterTheSkippedItemEndsBridgesWithLoading() throws Exception {
+        follower.update(playing(A, T0, 2000, null)); // A: 5 s, from 2 s: ends mid second unit
+        unit();
+        Unit u2 = unit();
+        assertTrue(u2.sourceEnded());
+        long start = serverMsAt(u2.audioEndPts()) + 4000; // the skip to B, 4 s past A's end
+        follower.update(playing(B, start, 0, null));
+        unit();
+        assertSame(Filler.LOADING, follower.playingFiller());
+        unit();
+        assertSame(Filler.LOADING, follower.playingFiller(), "still 2 s before the start");
+        Unit u5 = unit();
+        assertSame(B, follower.playingEntry());
+        assertEquals(0, factory.last().startMs);
+        long at = serverMsAt(u5.startPts());
+        assertTrue(at >= start && at - start < 100, "starts at the timeline's start time: " + (at - start));
+    }
+
     @Test
     void naturalEndMidUnitStartsTheNextItemAtEnAndAdoptsTheRoomsAdvance() throws Exception {
         follower.update(playing(A, T0, 0, B)); // A: 5 s → 235 AAC frames, ends mid-unit
@@ -309,20 +394,21 @@ class TimelineFollowerTest {
 
     @Test
     void outputBehindKeepsPlayingItsItemToTheEnd() throws Exception {
-        // the output started A 1.5 s late (e.g. a keyframe-aligned start): the room advances first
-        follower.update(playing(A, T0 + 1500, 0, B));
+        // the output started A 0.9 s early (the timeline's start was put off by less than half a
+        // unit past the output's boundary): the room advances first
+        follower.update(playing(A, T0 + 900, 0, B));
         FakeItem a = null;
         unit();
         a = factory.last();
         unit();
-        follower.update(playing(B, T0 + 6500, 0, C, "eA")); // A ended on the timeline at T0 + 6.5 s
+        follower.update(playing(B, T0 + 5900, 0, C, "eA")); // A ended on the timeline at T0 + 5.9 s
         Unit u3 = unit();
         assertSame(a, u3.source(), "no correction mid-item");
         assertTrue(u3.sourceEnded());
         Unit u4 = unit();
         FakeItem b = factory.last();
         assertSame(B, b.entry);
-        assertEquals(0, b.startMs, "1.5 s behind is within the 3 s allowance: B from 0");
+        assertEquals(0, b.startMs, "0.9 s apart is within the 3 s allowance: B from 0");
         assertSame(b, u4.source());
     }
 

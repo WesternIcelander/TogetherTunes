@@ -572,3 +572,15 @@ test("switch gate: after 3 s it crossfades if the element plays, never while it 
   assert.equal(g.sample(4250, 300), true);
   assert.equal(L.CROSSFADE_MS, 150);
 });
+
+test("delayed start: silent until the timeline's entry starts, then 0", () => {
+  const t = { state: "playing", anchorServerMs: 10_000, anchorPositionMs: 0 };
+  assert.equal(L.msUntilStart(t, 7_500), 2500);
+  assert.equal(L.msUntilStart(t, 10_000), 0);
+  assert.equal(L.msUntilStart(t, 12_000), 0);
+  // an ordinary anchor (now, position ≥ 0) has started
+  assert.equal(L.msUntilStart({ state: "playing", anchorServerMs: 10_000, anchorPositionMs: 3000 }, 9_000), 0);
+  // paused and idle timelines never wait to start
+  assert.equal(L.msUntilStart({ state: "paused", anchorServerMs: 10_000, anchorPositionMs: 0 }, 7_500), 0);
+  assert.equal(L.msUntilStart({ state: "idle", anchorServerMs: 0, anchorPositionMs: 0 }, 7_500), 0);
+});

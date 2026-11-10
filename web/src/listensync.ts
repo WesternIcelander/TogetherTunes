@@ -354,6 +354,18 @@ export class SeekLead {
 export const END_GUARD_MS = 1000;
 
 /**
+ * How long until a playing timeline's entry starts, in ms (0 once it has started, and for a paused
+ * or idle timeline). Positive after an abrupt start (a skip, a start from idle) that the server put
+ * a moment in the future so the stream plays the entry from 0:00 too (docs/rooms.md#room-state):
+ * until then the entry is shown as current but kept silent at 0.
+ */
+export function msUntilStart(t: { state: string; anchorServerMs: number; anchorPositionMs: number },
+  serverNowMs: number): number {
+  if (t.state !== "playing") return 0;
+  return Math.max(0, -(t.anchorPositionMs + (serverNowMs - t.anchorServerMs)));
+}
+
+/**
  * Whether the element is in the end guard: a seek aimed at `targetMs + leadMs` (a negative lead
  * counts as 0) would land within END_GUARD_MS of `endMs`. False when the end isn't known.
  */

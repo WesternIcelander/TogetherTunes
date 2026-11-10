@@ -130,6 +130,8 @@ class ListenJsTest {
             assertTrue(player.contains(s), s);
         }
         assertTrue(!player.contains("\"stuck\""), "a stuck seek is no longer redone as a seek");
+        // A delayed start (docs/rooms.md#room-state): silent at 0 until the timeline's start time.
+        assertTrue(player.contains("msUntilStart("), "the player waits for a delayed start");
         String room = read("web/js/room.js");
         assertTrue(room.contains("from \"./listen.js\""), room);
         assertTrue(room.contains("new ListenPlayer("), room);

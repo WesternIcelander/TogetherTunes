@@ -24,6 +24,18 @@ public interface PackagerHook {
         roomChanged(change);
     }
 
+    /**
+     * Where an entry started abruptly now (a skip, a start from idle; not a natural end) should
+     * start, so the program output plays it from 0:00 ({@code docs/rooms.md#room-state}, abrupt
+     * starts): the server time (epoch ms) of the output's first unit it hasn't built yet, or
+     * {@code nowMs} when the room's program output isn't running. Called on the room's executor
+     * thread: it must answer from what the output already knows, without waiting. This only reads
+     * the output's schedule; the output still never changes the timeline (invariant 4).
+     */
+    default long itemStartAt(String roomId, long nowMs) {
+        return nowMs;
+    }
+
     /** The room was deleted or the server is stopping. */
     default void roomClosed(String roomId, boolean deleted) {
     }

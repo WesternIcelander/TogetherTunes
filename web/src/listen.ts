@@ -70,7 +70,8 @@ import {
 } from "./audiohealth.js";
 import { describeError, recordDecision, recordError, recordEvent, recordHealth } from "./diagnostics.js";
 import {
-  chooseSource, CROSSFADE_MS, dbToGain, DIRECT_MAX_GAIN_DB, DriftController, HARD_SEEK_MS, inEndGuard, nextToPreload, SEEK_MODE_MS, SeekGuard,
+  chooseSource, CROSSFADE_MS, dbToGain, DIRECT_MAX_GAIN_DB, DriftController, HARD_SEEK_MS, inEndGuard, msUntilStart, nextToPreload,
+  SEEK_MODE_MS, SeekGuard,
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
@@ -287,6 +288,8 @@ export class ListenPlayer {
   #needsRestore = false;
   /** A deck whose seek is stuck, handed to the other element after this tick. */
   #handOffPending: Deck | undefined;
+  /** Ticks once a delayed start is due (between the 250 ms ticks). */
+  #startTimer: number | undefined;
   readonly #clockWatch = new ClockWatch();
   /** The context has been running (so a later suspension is an interruption, not autoplay policy). */
   #wasRunning = false;
@@ -618,7 +621,8 @@ export class ListenPlayer {
     }
     const a = this.#active;
     const t = this.#state?.timeline;
-    if (a !== undefined && a.src !== undefined && t !== undefined && t.state === "playing") {
+    if (a !== undefined && a.src !== undefined && t !== undefined && t.state === "playing"
+        && msUntilStart(t, this.#serverNow()) === 0) {
       // Inside the gesture: move it to the timeline first (iOS has loaded nothing before this click,
       // and may drop a seek made before playback starts; the loop sees that and seeks again), then
       // call play() even if one is pending, since only a play() in the gesture unlocks the element.
@@ -694,9 +698,16 @@ export class ListenPlayer {
     this.#switch = sw;
 
     const t = s.timeline;
-    const target = positionAt(t, this.#serverNow());
+    const serverNow = this.#serverNow();
+    const target = positionAt(t, serverNow);
     const duration = cur.item.durationMs;
-    const playing = t.state === "playing" && (duration === undefined || target < duration);
+    // A delayed start (docs/rooms.md#room-state): the entry is current but silent at 0 until it starts.
+    const startsIn = msUntilStart(t, serverNow);
+    if (startsIn > 0 && startsIn < 250) {
+      window.clearTimeout(this.#startTimer);
+      this.#startTimer = window.setTimeout(() => this.tick(), startsIn);
+    }
+    const playing = t.state === "playing" && startsIn === 0 && (duration === undefined || target < duration);
     if (sw !== undefined && (!playing || !this.#audible() || sw.from.el.paused)) {
       // Nothing is heard (paused, autoplay blocked, not started): switch at once.
       this.#clear(sw.from);

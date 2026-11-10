@@ -242,7 +242,7 @@ public final class RoomExecutor {
     // ------------------------------------------------------------------ on the executor thread
 
     private <T> T run(RoomMutation<T> mutation) throws Exception {
-        RoomTx tx = new RoomTx(state, EpochMs.now(clock), store);
+        RoomTx tx = new RoomTx(state, EpochMs.now(clock), store, packager);
         T value;
         try {
             value = mutation.apply(tx);

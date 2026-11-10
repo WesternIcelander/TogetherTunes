@@ -26,6 +26,9 @@ import java.io.IOException;
  * {@link #RESYNC_MS} behind the timeline, the next item starts at the timeline's position for it
  * instead of 0; if it is more than that ahead (the item ended in the output while the timeline
  * still has more than 3 s of it), a {@link Filler#LOADING} filler plays until the timeline moves on.</li>
+ * <li><b>Delayed starts.</b> A timeline whose entry starts in the future (an abrupt start put
+ * off until the output can play it from 0:00) keeps the output on what it plays until the first
+ * boundary at most {@link #START_EARLY_MS} before that start, where the entry starts from 0.</li>
  * <li>An item that can't be played yet ({@link SourceFactory#item} gives null or fails) → the
  * {@link Filler#LOADING} filler, retried at every boundary.</li>
  * </ul>
@@ -40,6 +43,15 @@ public final class TimelineFollower implements UnitProducer {
     public static final long RESYNC_MS = 3000;
     /** A re-anchor of the playing entry that moves its position by less than this isn't a seek. */
     public static final long SAME_POSITION_MS = 100;
+    /**
+     * An entry whose start the timeline put in the future (a skip while the output runs,
+     * {@code docs/rooms.md#room-state}) starts from 0 at the first unit boundary at most this far
+     * before its start time (half a unit); at boundaries further ahead the output keeps playing
+     * what it plays. A boundary less than {@link #SAME_POSITION_MS} past the start of a timeline
+     * anchored at position 0 starts it from 0 too (the switch point lies up to one audio frame
+     * past the unit boundary the room aimed at).
+     */
+    public static final long START_EARLY_MS = 1000;
 
     /** Maps the (unwrapped) output clock to server time (epoch ms); set up by the pacing. */
     @FunctionalInterface
@@ -247,8 +259,14 @@ public final class TimelineFollower implements UnitProducer {
                         return; // keep what plays after it (the next item or a filler)
                     }
                 }
-                long pos = Math.max(0, c.positionAt(now));
-                if (itemBoundary && pos <= RESYNC_MS) {
+                long raw = c.positionAt(now);
+                if (raw < -START_EARLY_MS && c.playedOut() == null) {
+                    // (a natural advance is never put off: a start ahead of it is the output being ahead)
+                    waitForStart(c);
+                    return;
+                }
+                long pos = Math.max(0, raw);
+                if ((itemBoundary && pos <= RESYNC_MS) || (c.anchorPositionMs() == 0 && pos < SAME_POSITION_MS)) {
                     pos = 0;
                 }
                 if (pos >= x.durationMs()) {
@@ -266,6 +284,18 @@ public final class TimelineFollower implements UnitProducer {
                 startItem(c, x, pos);
             }
         }
+    }
+
+    /**
+     * The timeline starts its entry later than this boundary (an abrupt start put off until the
+     * output can play it from 0:00): whatever plays runs on until then (the previous item, or the
+     * filler playing); if nothing does any more (the previous item ended), {@link Filler#LOADING}.
+     */
+    private void waitForStart(ProgramCue c) {
+        if (builder.source() != null && !builder.sourceEnded()) {
+            return;
+        }
+        playFiller(Filler.LOADING, c);
     }
 
     private void startItem(ProgramCue c, ProgramCue.Entry x, long startMs) {

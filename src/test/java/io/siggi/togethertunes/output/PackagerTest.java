@@ -531,4 +531,52 @@ class PackagerTest {
         }
         assertEquals(Filler.PAUSED, follower.playingFiller()); // no cue → paused
     }
+
+    /**
+     * Where an abrupt start can begin from 0:00 ({@code docs/rooms.md#room-state}): the first unit
+     * the thread hasn't begun to build, in server time; one unit later while a unit is being built
+     * or its build is due within the margin; nothing once stopped.
+     */
+    @Test
+    void nextItemStartIsTheFirstUnitNotBegun() throws Exception {
+        FakeTime base = new FakeTime();
+        AtomicBoolean sleeping = new AtomicBoolean();
+        Semaphore wake = new Semaphore(0);
+        TimeSource time = new TimeSource() {
+            @Override
+            public long nanoTime() {
+                return base.nanoTime();
+            }
+
+            @Override
+            public long millis() {
+                return base.millis();
+            }
+
+            @Override
+            public void sleepNanos(long nanos) throws InterruptedException {
+                sleeping.set(true);
+                wake.acquire();
+                sleeping.set(false);
+                base.sleepNanos(nanos);
+            }
+        };
+        PacingClock clock = new PacingClock(time);
+        FakeProducer prod = new FakeProducer(time, U);
+        Packager pk = packager(prod, time, clock);
+        assertTrue(pk.nextItemStartServerMs(250).isEmpty(), "not started");
+        pk.start();
+        // the first unit is being built (it waits for its permit): the one after it
+        await(() -> prod.permits.hasQueuedThreads());
+        assertEquals(T0 + 2000, pk.nextItemStartServerMs(250).getAsLong());
+        prod.permits.release(1);
+        // unit 1 (2 s) is built at 1 s: the thread waits for it
+        await(sleeping::get);
+        assertEquals(T0 + 2000, pk.nextItemStartServerMs(250).getAsLong());
+        base.advanceMs(800); // its build is due in 200 ms, within the margin: the unit after it
+        assertEquals(T0 + 4000, pk.nextItemStartServerMs(250).getAsLong());
+        assertEquals(T0 + 2000, pk.nextItemStartServerMs(100).getAsLong());
+        pk.close();
+        assertTrue(pk.nextItemStartServerMs(250).isEmpty(), "stopped");
+    }
 }

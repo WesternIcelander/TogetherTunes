@@ -186,6 +186,43 @@ class ProgramOutputsRoomsTest {
         lease.close();
     }
 
+    /**
+     * Abrupt starts ({@code docs/rooms.md#room-state}): while the room's output runs, a skip starts
+     * the next entry at the output's next unbuilt unit (this fake one's is an hour away: capped at
+     * 4 s), and the cue the output gets says so; without a running output it is immediate.
+     */
+    @Test
+    void skipsWaitForTheRunningOutput() throws Exception {
+        String a = entry("audio", false, 20_000, 1);
+        String b = entry("audio", false, 20_000, 2);
+        String c = entry("audio", false, 20_000, 3);
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(io.siggi.togethertunes.rooms.Timeline.playing(a, clock.millis(), 0),
+                registry.call(roomId, tx -> tx.state().timeline()), "no output: at once");
+
+        ProgramOutputs.Lease lease = outputs.acquire(roomId);
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (outputs.itemStartAt(roomId, clock.millis()) == clock.millis() && System.nanoTime() < until) {
+            Thread.sleep(5); // the packager thread hasn't looked at its first unit yet
+        }
+        assertTrue(outputs.itemStartAt(roomId, clock.millis()) > clock.millis());
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        long start = clock.millis() + io.siggi.togethertunes.rooms.RoomTx.MAX_START_DELAY_MS;
+        assertEquals(io.siggi.togethertunes.rooms.Timeline.startingAt(b, start),
+                registry.call(roomId, tx -> tx.state().timeline()));
+        ProgramCue cue = nextUpdate();
+        assertEquals(b, cue.current().entryId());
+        assertEquals(start, cue.anchorServerMs());
+        assertEquals(0, cue.anchorPositionMs());
+        lease.close();
+
+        outputs.stop(roomId);
+        assertEquals(clock.millis(), outputs.itemStartAt(roomId, clock.millis()));
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(io.siggi.togethertunes.rooms.Timeline.playing(c, clock.millis(), 0),
+                registry.call(roomId, tx -> tx.state().timeline()), "the output stopped: at once");
+    }
+
     @Test
     void followsTheRoom() throws Exception {
         String video = entry("video", false, 60_000, 1);

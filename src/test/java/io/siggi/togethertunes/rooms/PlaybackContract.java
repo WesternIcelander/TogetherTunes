@@ -84,8 +84,22 @@ abstract class PlaybackContract {
         }
     }
 
+    /** How far ahead the fake program output can start an item from 0:00; negative: no output running. */
+    private volatile long outputStartInMs = -1;
+
     private RoomRegistry newRegistry() {
-        return new RoomRegistry(db, clock, changes::add);
+        return new RoomRegistry(db, clock, new PackagerHook() {
+            @Override
+            public void roomChanged(RoomChange change) {
+                changes.add(change);
+            }
+
+            @Override
+            public long itemStartAt(String room, long nowMs) {
+                long in = outputStartInMs;
+                return in < 0 ? nowMs : nowMs + in;
+            }
+        });
     }
 
     /** A queued entry for a new item with this status and duration. Returns {entryId, itemId}. */
@@ -781,5 +795,70 @@ abstract class PlaybackContract {
         unusable.remove(later[1]);
         registry.call(roomId, Playback::itemsChanged);
         assertEquals(later[0], timeline().entryId());
+    }
+
+    /**
+     * Abrupt starts ({@code docs/rooms.md#room-state}): while the program output runs, a skip or a
+     * start from idle starts the next entry at the output's next unit it can play it from 0:00
+     * (at most 4 s ahead); without an output at once. A second skip in the gap skips again by the
+     * same rule; a pause in the gap pauses at 0; natural ends start the next entry at once.
+     */
+    @Test
+    void abruptStartsWaitForTheProgramOutput() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("ready", 60_000L);
+        String[] c = entry("ready", 60_000L);
+        String[] d = entry("ready", 30_000L);
+        String[] e = entry("ready", 30_000L);
+        registry.close();
+        registry = newRegistry();
+
+        // no output: a start from idle and a skip are immediate
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(Timeline.playing(a[0], T0, 0), timeline());
+        clock.advance(5_000);
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(Timeline.playing(b[0], T0 + 5_000, 0), timeline());
+
+        // the output runs: a skip starts the next entry when the output reaches it
+        outputStartInMs = 2_600;
+        clock.advance(5_000);
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        Timeline t = timeline();
+        assertEquals(Timeline.startingAt(c[0], T0 + 12_600), t);
+        assertEquals(PlaybackState.PLAYING, t.state());
+        assertEquals(-2_600, t.positionAt(clock.millis()), "silent until it starts");
+        assertEquals(0, t.positionAt(clock.millis(), 60_000));
+        assertEquals(62_600, registry.call(roomId, tx -> Playback.advanceDelayMs(tx.state(), tx.now())).getAsLong(),
+                "it ends 60 s after it starts");
+        List<Object> row = roomRow();
+        assertEquals(List.of(c[0], T0 + 12_600, 0L), row.subList(1, 4), "persisted as is");
+
+        // a second skip in the gap: skips again, by the same rule
+        clock.advance(1_000);
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(Timeline.startingAt(d[0], T0 + 13_600), timeline());
+        assertEquals("skipped", entryRow(c[0]).get(0));
+
+        // a pause in the gap pauses at 0; play resumes at once
+        assertTrue((boolean) registry.call(roomId, Playback::pause));
+        assertEquals(Timeline.paused(d[0], T0 + 11_000, 0), timeline());
+        assertTrue((boolean) registry.call(roomId, Playback::play));
+        assertEquals(Timeline.playing(d[0], T0 + 11_000, 0), timeline());
+
+        // a natural end starts the next entry at once, also while the output runs
+        tick(30_000);
+        Timeline natural = awaitTimeline(e[0]).timeline();
+        assertEquals(Timeline.playing(e[0], T0 + 41_000, 0), natural);
+
+        // capped at 4 s; the queue runs empty: idle; adding to an idle room is an abrupt start too
+        outputStartInMs = 60_000;
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(Timeline.IDLE, timeline());
+        String[] f = entry("ready", 30_000L);
+        registry.close();
+        registry = newRegistry(); // reads the new entry
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(Timeline.startingAt(f[0], T0 + 41_000 + RoomTx.MAX_START_DELAY_MS), timeline());
     }
 }
