@@ -39,6 +39,7 @@ import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.FillerSource.Filler;
+import io.siggi.togethertunes.output.LiveTsApi;
 import io.siggi.togethertunes.output.ProgramMedia;
 import io.siggi.togethertunes.output.ProgramOutputs;
 import io.siggi.togethertunes.output.ProgramPipeline;
@@ -250,11 +251,14 @@ public final class Main {
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
                 roomRegistry, roomQueue, database, Clock.systemUTC());
+        Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
+                uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
+                roomsApi, roomSocket);
+        // The direct MPEG-TS output: GET/HEAD /live/{token}.ts (docs/program-output.md#direct-mpeg-ts-ts).
+        new LiveTsApi(LiveTsApi.targetsFrom(database, settings), programOutputs).register(appRouter);
         WebServer web;
         try {
-            web = WebServer.start(config.httpBind(), config.httpPort(), router(config, staticFiles, actors, setup, auth,
-                            sessionsApi, me, admin, activity, uploadsApi, youtubeApi, libraryApi, itemsApi,
-                            playlistsApi, sharesApi, userLibrariesApi, mediaApi, roomsApi, roomSocket),
+            web = WebServer.start(config.httpBind(), config.httpPort(), appRouter,
                     tmpDir.toFile(), config.trustedProxies());
         } catch (IOException e) {
             System.err.println("Could not listen on " + config.httpBind() + ":" + config.httpPort() + ": " + e);
