@@ -37,6 +37,12 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.output.CardGop;
+import io.siggi.togethertunes.output.FillerSource.Filler;
+import io.siggi.togethertunes.output.ProgramMedia;
+import io.siggi.togethertunes.output.ProgramOutputs;
+import io.siggi.togethertunes.output.ProgramPipeline;
+import io.siggi.togethertunes.output.TimeSource;
 import io.siggi.togethertunes.library.AddMediaPolicy;
 import io.siggi.togethertunes.library.GuestUploadQuota;
 import io.siggi.togethertunes.library.Uploads;
@@ -56,7 +62,6 @@ import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.rooms.DiagnosticsApi;
-import io.siggi.togethertunes.rooms.PackagerHook;
 import io.siggi.togethertunes.rooms.RequestSearch;
 import io.siggi.togethertunes.rooms.RoomRequests;
 import io.siggi.togethertunes.rooms.RoomGuests;
@@ -79,6 +84,8 @@ import java.sql.SQLException;
 import java.time.Clock;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
@@ -150,9 +157,9 @@ public final class Main {
         }
         // TODO(overlay, M5): the overlay encoder verifies its encodes against this too.
         ReferenceCard referenceCard = loadReferenceCard(config, dataDir, System.out, System.err);
-        // TODO(packager, M4): the packager plays these when a room is paused, idle or loading.
+        // The packager plays these when a room is paused, idle or loading.
         FillerCards fillerCards = loadFillerCards(config, dataDir, referenceCard, System.out, System.err);
-        // TODO(packager, M4): repeated next to the filler cards.
+        // Repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
         Settings settings = new Settings(database, config);
         Supplier<String> cookiesFile = cookiesFile(settings);
@@ -196,8 +203,11 @@ public final class Main {
         } catch (SQLException | IOException e) {
             System.err.println("WARNING: could not clean up abandoned uploads: " + e.getMessage());
         }
-        // The packager comes in M4: until then room changes go nowhere but the room's listeners.
-        RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), PackagerHook.NONE);
+        // The rooms' program outputs follow the room timelines (the registry's packager hook).
+        ProgramOutputs programOutputs = programOutputs(config, dataDir, database, referenceCard, fillerCards,
+                silence);
+        RoomRegistry roomRegistry = new RoomRegistry(database, Clock.systemUTC(), programOutputs);
+        programOutputs.snapshotsFrom(roomRegistry);
         Rooms rooms = new Rooms(database, permissions, Clock.systemUTC());
         RoomGuests roomGuests = new RoomGuests(database, settings, permissions, rooms, roomRegistry);
         // Guests add media only as a request in a room that allows it (server AND room setting).
@@ -260,6 +270,7 @@ public final class Main {
         retention.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            programOutputs.close();
             // After the web server (no new requests), before the database (rooms persist on the way out).
             roomRegistry.close();
             retention.close();
@@ -396,6 +407,46 @@ public final class Main {
             err.println("WARNING: could not create the " + config.outputProfile() + " filler cards: " + e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * The program outputs ({@code docs/program-output.md#lifecycle}). Each start opens a
+     * {@link ProgramMedia} on {@code <data>/media}; the filler cards are indexed (ffprobe) on the
+     * first start and kept. Without the reference card, the filler cards or the silence frame every
+     * start fails (the warning about them was printed at startup).
+     */
+    static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, ReferenceCard reference,
+            FillerCards fillerCards, SilenceFrame silence) {
+        ProgramOutputs.ItemKinds kinds = ProgramOutputs.itemKindsFrom(database);
+        if (reference == null || fillerCards == null || silence == null) {
+            return new ProgramOutputs((roomId, cue) -> {
+                throw new IOException("program output unavailable: the reference card, filler cards or silence"
+                        + " frame could not be created at startup");
+            }, kinds, System::currentTimeMillis);
+        }
+        ProgramMedia.CardLoader cardLoader = ProgramMedia.ffprobeCardLoader(Tools.from(config), config.outputProfile());
+        AtomicReference<Map<Filler, CardGop>> fillers = new AtomicReference<>();
+        ReentrantLock fillersLock = new ReentrantLock();
+        ProgramPipeline.SourcesOpener opener = () -> {
+            Map<Filler, CardGop> cards;
+            fillersLock.lock();
+            try {
+                if (fillers.get() == null) {
+                    fillers.set(ProgramMedia.loadFillerCards(fillerCards, cardLoader));
+                }
+                cards = fillers.get();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("interrupted while loading the filler cards", e);
+            } finally {
+                fillersLock.unlock();
+            }
+            return new ProgramMedia(dataDir.media(), config.outputProfile(), reference.avcC(), cardLoader, cards,
+                    silence.frame(), r -> Thread.ofVirtual().start(r), ProgramMedia.DEFAULT_WAIT_MS,
+                    System::currentTimeMillis);
+        };
+        return new ProgramOutputs(new ProgramPipeline(opener, reference.avcC(), TimeSource.system(Clock.systemUTC())),
+                kinds, System::currentTimeMillis);
     }
 
     /**

@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  *       in one transaction,</li>
  *   <li>bumps {@link RoomState#version()},</li>
  *   <li>broadcasts the {@link RoomChange} to the {@link RoomListener}s,</li>
- *   <li>notifies the {@link PackagerHook} (a no-op until M4).</li>
+ *   <li>notifies the {@link PackagerHook} (the program output).</li>
  * </ol>
  * If the mutation throws something other than an {@link HttpError} (or throws after registering a
  * write or event), or the transaction fails, the state is reloaded from the database, so memory
@@ -290,7 +290,7 @@ public final class RoomExecutor {
             }
         }
         try {
-            packager.roomChanged(change);
+            packager.roomChanged(s, change);
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING, "Packager hook failed in room " + roomId, t);
         }
