@@ -30,19 +30,25 @@ import java.util.Objects;
 
 /**
  * Renders a room's QR overlay ({@code docs/overlay.md#the-overlay-image}) with Java2D: a QR code
- * for {@code {publicBaseUrl}/r/{slug}} (ZXing, error correction M, 4-module quiet zone, black on
- * white) and the line "Requests at {url}" (the URL without its scheme). The QR code's white
- * square stands on its own; only the text has a backdrop: a rounded, semi-opaque dark box hugging
- * the text (padding and corner radius scaled with the text size), separated from the QR square by
- * a small transparent gap. The text goes on the side of the QR code that faces the middle of the
- * frame (below it in the bottom corners, above it in the top corners), aligned to the same edge.
+ * for {@code {publicBaseUrl}/r/{slug}} (ZXing, error correction M, 4-module quiet zone) and the
+ * line "Requests at {url}" (the URL without its scheme). Both sit on the same rounded,
+ * semi-opaque dark backdrop ({@link #BACKDROP}): the QR code is drawn <em>inverted</em>, white
+ * modules on a backdrop-coloured square (quiet zone included) with rounded corners (radius scaled
+ * like the text backdrop's, but always inside the quiet zone, so no module is clipped); modern
+ * phone camera apps (iOS, Android, Google Lens) read inverted QR codes. The text's backdrop hugs
+ * the text (padding and corner radius scaled with the text size) and is separated from the QR
+ * square by a small transparent gap. The text goes on the side of the QR code that faces the
+ * middle of the frame (below it in the bottom corners, above it in the top corners), aligned to
+ * the same edge. The backdrop is translucent, so the contrast between modules and backdrop varies
+ * with the picture behind it; at alpha 176 the backdrop over pure white is still about 31% grey
+ * against the modules' 100%, which scans (covered by {@code OverlayRendererTest}).
  *
- * <p>The result is one ARGB image holding the QR square and the backdrop with its text,
+ * <p>The result is one ARGB image holding the QR square and the text backdrop with its text,
  * transparent everywhere else, plus where it goes in the frame ({@link Rendered#x()},
  * {@link Rendered#y()}), so cards composite it and the music-video encoder overlays it at that
  * position. Position and size are even (4:2:0 chroma).
  *
- * <p>Sizes: {@code overlay.heightPct} is the side of the QR code's white square (quiet zone
+ * <p>Sizes: {@code overlay.heightPct} is the side of the QR code's square (quiet zone
  * included) in % of the frame height, rounded down to whole pixels per module (at least
  * {@value #MIN_MODULE_PX}) so the modules stay sharp (neighbouring percentages can therefore give
  * the same image and the same {@code overlayHash}); {@code overlay.margin} is the distance of the
@@ -58,7 +64,7 @@ public final class OverlayRenderer {
      * looks makes stored renders (and through {@code overlayHash}, every cache made from them)
      * stale. Bump it whenever the output of {@link #render} changes for the same spec.
      */
-    public static final int RENDER_VERSION = 2;
+    public static final int RENDER_VERSION = 3;
 
     static final int QUIET_ZONE = 4;
     /** Fewer pixels per module don't survive scaling and video compression. */
@@ -74,8 +80,9 @@ public final class OverlayRenderer {
     static final double V_PAD_PER_TEXT = 0.2;
     /** The backdrop's corner radius, as a fraction of the text size. */
     static final double RADIUS_PER_TEXT = 0.3;
-    /** The transparent gap between the QR code's white square and the backdrop, as a fraction of the text size. */
+    /** The transparent gap between the QR code's square and the backdrop, as a fraction of the text size. */
     static final double GAP_PER_TEXT = 0.3;
+    /** Behind the text and the QR code (its light modules and quiet zone); the QR's dark modules are white. */
     static final Color BACKDROP = new Color(0, 0, 0, 176);
     static final Color TEXT = Color.WHITE;
 
@@ -244,11 +251,14 @@ public final class OverlayRenderer {
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
-            // Modules on whole pixels, no antialiasing: crisp edges for scanning.
+            // The QR square: rounded backdrop, with the same radius as the text's backdrop but
+            // kept inside the quiet zone (at least one pixel short of it) so no module is clipped.
+            double qrRadius = Math.min(size * RADIUS_PER_TEXT, QUIET_ZONE * modulePx - 1.0);
+            g.setColor(BACKDROP);
+            g.fill(new RoundRectangle2D.Double(qrX, qrY, qrSide, qrSide, 2 * qrRadius, 2 * qrRadius));
+            // Inverted: the dark modules white, on whole pixels, no antialiasing (crisp edges for scanning).
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
-            g.setColor(Color.WHITE);
-            g.fillRect(qrX, qrY, qrSide, qrSide);
-            g.setColor(Color.BLACK);
+            g.setColor(TEXT);
             for (int my = 0; my < modules; my++) {
                 for (int mx = 0; mx < modules; mx++) {
                     if (matrix.get(mx, my)) {

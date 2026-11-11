@@ -5,14 +5,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
-import com.google.zxing.BinaryBitmap;
-import com.google.zxing.DecodeHintType;
 import com.google.zxing.NotFoundException;
 import com.google.zxing.ChecksumException;
 import com.google.zxing.FormatException;
 import com.google.zxing.PlanarYUVLuminanceSource;
-import com.google.zxing.common.HybridBinarizer;
-import com.google.zxing.qrcode.QRCodeReader;
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.config.X264Preset;
@@ -26,6 +22,7 @@ import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.overlay.OverlayRenderer;
+import io.siggi.togethertunes.overlay.OverlayRendererTest;
 import io.siggi.togethertunes.overlay.OverlayVideoJobs;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.rooms.RoomSettings;
@@ -329,19 +326,25 @@ class NextVideoOverlayTest {
         int size = w * h;
         assertEquals(0, px.length % size);
         boolean[] out = new boolean[px.length / size];
-        QRCodeReader reader = new QRCodeReader();
+        int[] sq = OverlayRendererTest.qrSquare(panel);
         for (int i = 0; i < out.length; i++) {
             byte[] frame = new byte[size];
             System.arraycopy(px, i * size, frame, 0, size);
-            BinaryBitmap bitmap = new BinaryBitmap(new HybridBinarizer(
-                    new PlanarYUVLuminanceSource(frame, w, h, 0, 0, w, h, false)));
-            try {
-                out[i] = url.equals(reader.decode(bitmap, Map.of(DecodeHintType.TRY_HARDER, true)).getText());
-            } catch (NotFoundException | ChecksumException | FormatException e) {
-                out[i] = false;
-            }
-            reader.reset();
+            // The overlay's QR code is inverted (white modules on the dark backdrop). First the
+            // whole panel region, then just the QR square: over a busy picture beside the code
+            // (testsrc2's checkerboard) ZXing's finder search sometimes picks wrong candidates in
+            // the larger region although the code itself is clean; a phone aims at the code.
+            out[i] = decodes(new PlanarYUVLuminanceSource(frame, w, h, 0, 0, w, h, false), url)
+                    || decodes(new PlanarYUVLuminanceSource(frame, w, h, sq[0], sq[1], sq[2], sq[2], false), url);
         }
         return out;
+    }
+
+    private static boolean decodes(com.google.zxing.LuminanceSource source, String url) throws Exception {
+        try {
+            return url.equals(OverlayRendererTest.decode(source).getText());
+        } catch (NotFoundException | ChecksumException | FormatException e) {
+            return false;
+        }
     }
 }
