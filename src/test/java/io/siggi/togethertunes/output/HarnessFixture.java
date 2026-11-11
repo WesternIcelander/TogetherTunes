@@ -117,10 +117,18 @@ final class HarnessFixture {
     /** As above, audio-only output padded to {@code audioOnlyBitrateBps} (0: the same rate). */
     static OfflineHarness.Result run(Tools tools, Media m, ScriptedTimeline script, long durationMs,
             long streamBitrateBps, long audioOnlyBitrateBps, Path out) throws Exception {
+        return run(tools, m, script, durationMs, streamBitrateBps, audioOnlyBitrateBps, null, out);
+    }
+
+    /** As above, with the room's overlay ({@link ProgramMedia.OverlayCards}; null for none). */
+    static OfflineHarness.Result run(Tools tools, Media m, ScriptedTimeline script, long durationMs,
+            long streamBitrateBps, long audioOnlyBitrateBps, ProgramMedia.OverlayCards overlay, Path out)
+            throws Exception {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
-        try (ProgramMedia sources = new ProgramMedia(m.media(), profile, m.avcC(),
+        Path mediaDir = m.media();
+        try (ProgramMedia sources = new ProgramMedia(itemId -> mediaDir.resolve(itemId), profile, m.avcC(),
                 ProgramMedia.ffprobeCardLoader(tools, profile), m.fillers(), m.silence(), Runnable::run, 0,
-                script::startServerMs);
+                script::startServerMs, overlay);
                 OutputStream os = new BufferedOutputStream(Files.newOutputStream(out))) {
             return OfflineHarness.run(sources, m.avcC(), streamBitrateBps, audioOnlyBitrateBps, script, durationMs,
                     os);

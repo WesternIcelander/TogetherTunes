@@ -1,0 +1,73 @@
+# Packager golden file with overlay substitution: PackagerOverlayGoldenFileTest, 48 scripted seconds through OfflineHarness.
+# Regenerate after an intended change: mvn test -Dtest=PackagerOverlayGoldenFileTest -Dtt.golden.update=true
+[harness]
+units=28 videoFrames=1461 audioFrames=2285 endPts=5287200 durationMs=48746
+[log]
+timeline 0 ms: add [v0, a0, w0, x0, y0]
+unit 1 pts 900000..1080480 video item video1@0ms
+unit 2 pts 1080000..1260960 video item video1@0ms
+unit 3 pts 1260000..1441440 video item video1@0ms
+unit 4 pts 1440000..1620000 video item video1@0ms
+unit 5 pts 1620000..1800480 video item video1@0ms
+unit 6 pts 1800000..1827360 video item video1@0ms (ended)
+unit 7 pts 1827360..2007840 audio item audio1@0ms
+timeline 10300 ms: natural end of v0
+unit 8 pts 2007360..2188320 audio item audio1@0ms
+unit 9 pts 2187360..2368800 audio item audio1@0ms
+unit 10 pts 2367360..2503200 audio item audio1@0ms (ended)
+unit 11 pts 2503200..2683680 video item video1@0ms
+timeline 17800 ms: natural end of a0
+unit 12 pts 2683200..2864160 video item video1@0ms
+unit 13 pts 2863200..3044640 video item video1@0ms
+unit 14 pts 3043200..3223200 video item video1@0ms
+unit 15 pts 3223200..3403680 video item video1@0ms
+unit 16 pts 3403200..3430560 video item video1@0ms (ended)
+unit 17 pts 3430560..3611040 video item video1@0ms
+timeline 28100 ms: natural end of w0
+unit 18 pts 3610560..3791520 video item video1@0ms
+timeline 31000 ms: seek to 6000 ms
+unit 19 pts 3791520..3972000 video item video1@5994ms
+unit 20 pts 3971520..4152480 video item video1@5994ms
+unit 21 pts 4151520..4179360 video item video1@5994ms (ended)
+timeline 35300 ms: natural end of x0
+unit 22 pts 4179360..4359840 video item video1@0ms
+unit 23 pts 4359360..4540320 video item video1@0ms
+unit 24 pts 4539360..4720800 video item video1@0ms
+unit 25 pts 4719360..4899360 video item video1@0ms
+unit 26 pts 4899360..5079840 video item video1@0ms
+unit 27 pts 5079360..5106720 video item video1@0ms (ended)
+timeline 45600 ms: natural end of y0
+unit 28 pts 5106720..5287200 filler idle
+[overlay]
+play v0 (video1)
+v0 GOP 0 (frame 0): not complete
+v0 GOP 1 (frame 60): not complete
+v0 GOP 2 (frame 120): 60 frames
+v0 GOP 3 (frame 180): 60 frames
+v0 GOP 4 (frame 240): 60 frames
+v0 GOP 5 (frame 300): 9 frames
+play w0 (video1)
+w0 GOP 0 (frame 0): 60 frames
+w0 GOP 1 (frame 60): 60 frames
+w0 GOP 2 (frame 120): not complete
+w0 GOP 3 (frame 180): 60 frames
+w0 GOP 4 (frame 240): 60 frames
+w0 GOP 5 (frame 300): 9 frames
+play x0 (video1)
+x0 GOP 0 (frame 0): 60 frames
+x0 GOP 1 (frame 60): 60 frames
+x0 GOP 2 (frame 120): 60 frames
+play x0 (video1)
+x0 GOP 3 (frame 180): 60 frames
+x0 GOP 4 (frame 240): 60 frames
+x0 GOP 5 (frame 300): 9 frames
+play y0 (video1)
+# output video frames in decode order, with or without the overlay panel
+[panel]
+frames 0..119 no overlay
+frames 120..308 overlay
+frames 309..533 no overlay
+frames 534..653 overlay
+frames 654..713 no overlay
+frames 714..1091 overlay
+frames 1092..1460 no overlay

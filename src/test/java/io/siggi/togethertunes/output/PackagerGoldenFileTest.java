@@ -65,7 +65,7 @@ class PackagerGoldenFileTest {
             assertNotNull(in, GOLDEN + " missing; create it with -Dtt.golden.update=true");
             expected = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-        compare(expected, actual);
+        compare(GOLDEN, expected, actual);
     }
 
     /** The file's structure, as stored in the golden file. */
@@ -95,17 +95,18 @@ class PackagerGoldenFileTest {
         return sb.toString();
     }
 
-    private static void compare(String expected, String actual) {
+    /** Compares two golden texts line by line, ignoring comments and blank lines. */
+    static void compare(String golden, String expected, String actual) {
         List<String> e = lines(expected);
         List<String> a = lines(actual);
         for (int i = 0; i < Math.min(e.size(), a.size()); i++) {
             if (!e.get(i).equals(a.get(i))) {
-                fail("differs from " + GOLDEN + " at line " + (i + 1) + " (ignoring comments)\nexpected: " + e.get(i)
+                fail("differs from " + golden + " at line " + (i + 1) + " (ignoring comments)\nexpected: " + e.get(i)
                         + "\nactual:   " + a.get(i) + "\nIf the change is intended, regenerate with "
                         + "-Dtt.golden.update=true and review the diff.");
             }
         }
-        assertEquals(e.size(), a.size(), "line count differs from " + GOLDEN);
+        assertEquals(e.size(), a.size(), "line count differs from " + golden);
     }
 
     private static List<String> lines(String s) {
@@ -119,7 +120,7 @@ class PackagerGoldenFileTest {
         return out;
     }
 
-    private static List<Long> unitStarts(OfflineHarness.Result r) {
+    static List<Long> unitStarts(OfflineHarness.Result r) {
         List<Long> starts = new ArrayList<>();
         for (String line : r.log()) {
             Matcher mt = UNIT.matcher(line);
@@ -131,7 +132,7 @@ class PackagerGoldenFileTest {
         return starts;
     }
 
-    private static List<Long> keyframes(Tools tools, Path out) throws Exception {
+    static List<Long> keyframes(Tools tools, Path out) throws Exception {
         String packets = tools.ffprobe("-v", "error", "-select_streams", "v", "-show_entries", "packet=pts,flags",
                 "-of", "csv=p=0", out.toString()).stdoutToString(1 << 28).run().stdoutString();
         List<Long> k = new ArrayList<>();
