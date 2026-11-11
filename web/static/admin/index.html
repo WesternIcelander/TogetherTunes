@@ -17,6 +17,7 @@
     <a href="#settings" data-tab="settings">Settings</a>
     <a href="#fonts" data-tab="fonts">Fonts</a>
     <a href="#jobs" data-tab="jobs">Jobs</a>
+    <a href="#audit" data-tab="audit">Audit log</a>
   </nav>
   <p id="admin-status" role="status"></p>
 
@@ -81,6 +82,17 @@
       <p id="storage-line"></p>
       <p id="storage-warning" class="notice error" role="alert" hidden></p>
     </section>
+    <section id="ytdlp-box" aria-live="polite">
+      <h3>yt-dlp</h3>
+      <p>YouTube changes often, and old yt-dlp versions stop working. The button runs <code>yt-dlp -U</code>
+        on the server (this works for yt-dlp's own release files; a package-manager install says how to update it
+        instead).</p>
+      <p id="ytdlp-version"></p>
+      <button id="ytdlp-update" type="button">Update yt-dlp</button>
+      <p id="ytdlp-status" hidden></p>
+      <pre id="ytdlp-log" class="job-log small" hidden></pre>
+      <p id="ytdlp-error" class="error" role="alert"></p>
+    </section>
     <form id="settings-form">
       <div id="settings-fields"></div>
       <button type="submit">Save settings</button>
@@ -100,6 +112,25 @@
       one can be cancelled (a new item's ingest then leaves the item failed, a re-encode is only dropped).
       The lists update every few seconds.</p>
     <div id="jobs-root"></div>
+  </section>
+
+  <section id="tab-audit" hidden>
+    <h2>Audit log</h2>
+    <p>Logins, account and admin changes, room and item actions, newest first. Click an actor or an action to
+      show only theirs. IP addresses show only with the IP address permission.</p>
+    <form id="audit-filter" class="row">
+      <input name="action" list="audit-actions" placeholder="Action, e.g. auth.login" aria-label="Action">
+      <datalist id="audit-actions"></datalist>
+      <input name="actor" placeholder="User or guest id" aria-label="Actor id">
+      <button type="submit">Filter</button>
+      <button type="reset">Clear</button>
+    </form>
+    <table class="list">
+      <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr></thead>
+      <tbody id="audit-rows"></tbody>
+    </table>
+    <p id="audit-empty" class="muted" hidden>No entries.</p>
+    <button id="audit-more" type="button" hidden>Load more</button>
   </section>
 </body>
 </html>

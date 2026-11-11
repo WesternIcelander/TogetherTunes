@@ -1,7 +1,11 @@
-// The admin pages (/admin/): users, roles, server settings and encode jobs, on top of /api/admin/...
+// The admin pages (/admin/): users, roles, server settings (with the yt-dlp update), fonts, encode jobs and
+// the audit log, on top of /api/admin/...
 // (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
+import { actorLabel } from "./actor.js";
 import { api, ApiError } from "./api.js";
+import { AUDIT_ACTIONS, auditPath, detailsText, formatTime, type AuditEntry, type AuditFilter,
+  type AuditPage } from "./audit.js";
 import { busy, CJK_VARIANTS, cardFontChoices, cardFontSetting, downloadAllText, formatSize, statusText,
   type FontsInfo } from "./fonts.js";
 import { mountJobs, type JobsView } from "./jobs.js";
@@ -9,6 +13,7 @@ import { pageSignal } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
+import { updateText, updating, versionText, type YtdlpInfo, type YtdlpUpdate } from "./ytdlp.js";
 
 interface RoleRef { id: string; name: string }
 
@@ -122,7 +127,7 @@ function formValue(form: HTMLFormElement, name: string): string {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["users", "roles", "providers", "settings", "fonts", "jobs"] as const;
+const TABS = ["users", "roles", "providers", "settings", "fonts", "jobs", "audit"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -154,6 +159,8 @@ async function showTab(): Promise<void> {
       await loadJobs();
     } else if (tab === "fonts") {
       await loadFonts();
+    } else if (tab === "audit") {
+      await loadAudit(true);
     } else {
       await loadSettings();
     }
@@ -515,6 +522,51 @@ async function loadSettings(): Promise<void> {
   loadedSettings = withoutFonts((await api<{ items: Setting[] }>("GET", "/api/admin/settings")).items);
   renderSettings();
   await loadStorage();
+  await loadYtdlp();
+}
+
+// ------------------------------------------------------------------ yt-dlp
+
+let ytdlpPoll: number | undefined;
+
+/** The yt-dlp box (admin.settings): version, the Update button and the last run's output; polls while it runs. */
+async function loadYtdlp(): Promise<void> {
+  if (ytdlpPoll !== undefined) {
+    clearTimeout(ytdlpPoll);
+    ytdlpPoll = undefined;
+  }
+  let info: YtdlpInfo;
+  try {
+    info = await api<YtdlpInfo>("GET", "/api/admin/ytdlp");
+  } catch (e) {
+    element("ytdlp-version").textContent = "yt-dlp: " + message(e);
+    return;
+  }
+  renderYtdlp(info);
+  if (updating(info) && currentTab() === "settings") {
+    ytdlpPoll = window.setTimeout(() => void loadYtdlp(), 2000);
+  }
+}
+
+function renderYtdlp(info: YtdlpInfo): void {
+  element("ytdlp-version").textContent = versionText(info);
+  element<HTMLButtonElement>("ytdlp-update").disabled = !info.available || updating(info);
+  const text = updateText(info.update);
+  const line = element("ytdlp-status");
+  line.textContent = text ?? "";
+  line.hidden = text === undefined;
+  const log = element("ytdlp-log");
+  log.textContent = info.update?.log ?? "";
+  log.hidden = info.update === undefined || info.update.log === "";
+}
+
+function setUpYtdlp(): void {
+  const button = element<HTMLButtonElement>("ytdlp-update");
+  const error = element("ytdlp-error");
+  button.addEventListener("click", () => void run(error, button, async () => {
+    await api<YtdlpUpdate>("POST", "/api/admin/ytdlp/update");
+    await loadYtdlp();
+  }));
 }
 
 async function loadStorage(): Promise<void> {
@@ -867,6 +919,63 @@ async function loadJobs(): Promise<void> {
   await jobsView.refresh();
 }
 
+// ------------------------------------------------------------------ audit log
+
+let auditFilter: AuditFilter = { action: "", actor: "" };
+let auditCursor: string | undefined;
+
+/** The Audit log tab (admin.users): newest first, filtered by action and actor, "Load more" pages on. */
+async function loadAudit(reset: boolean): Promise<void> {
+  const page = await api<AuditPage>("GET", auditPath(auditFilter, reset ? undefined : auditCursor));
+  const rows = element("audit-rows");
+  if (reset) rows.replaceChildren();
+  for (const entry of page.items) rows.append(auditRow(entry));
+  auditCursor = page.nextCursor;
+  element("audit-more").hidden = auditCursor === undefined;
+  element("audit-empty").hidden = rows.childElementCount > 0;
+}
+
+function auditRow(e: AuditEntry): HTMLTableRowElement {
+  let who: Child = e.actor === undefined ? h("span", { class: "muted", text: "(none)" }) : null;
+  if (e.actor !== undefined) {
+    const actor = e.actor;
+    const link = h("button", { type: "button", class: "link", title: "Show only this actor's entries" },
+      actorLabel(actor));
+    link.addEventListener("click", () => setAuditFilter({ action: auditFilter.action, actor: actor.id }));
+    who = link;
+  }
+  const action = h("button", { type: "button", class: "link", title: "Show only this action", text: e.action });
+  action.addEventListener("click", () => setAuditFilter({ action: e.action, actor: auditFilter.actor }));
+  return h("tr", {},
+    h("td", { text: formatTime(e.at) }),
+    h("td", {}, who),
+    h("td", {}, action),
+    h("td", { text: e.target ?? "" }),
+    h("td", { text: detailsText(e.details) }),
+    h("td", { text: e.ip ?? "" }));
+}
+
+function setAuditFilter(filter: AuditFilter): void {
+  auditFilter = filter;
+  const form = element<HTMLFormElement>("audit-filter");
+  (form.elements.namedItem("action") as HTMLInputElement).value = filter.action;
+  (form.elements.namedItem("actor") as HTMLInputElement).value = filter.actor;
+  void run(null, null, () => loadAudit(true));
+}
+
+function setUpAudit(): void {
+  const list = element("audit-actions");
+  for (const a of AUDIT_ACTIONS) list.append(h("option", { value: a }));
+  const form = element<HTMLFormElement>("audit-filter");
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    setAuditFilter({ action: formValue(form, "action"), actor: formValue(form, "actor") });
+  });
+  form.addEventListener("reset", () => setAuditFilter({ action: "", actor: "" }));
+  const more = element<HTMLButtonElement>("audit-more");
+  more.addEventListener("click", () => void run(null, more, () => loadAudit(false)));
+}
+
 // ------------------------------------------------------------------ start
 
 async function start(): Promise<void> {
@@ -887,6 +996,8 @@ async function start(): Promise<void> {
   setUpUsers();
   setUpRoles();
   setUpSettings();
+  setUpYtdlp();
+  setUpAudit();
   window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
   void showTab();
 }

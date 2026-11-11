@@ -70,6 +70,8 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.ingest.YtdlpApi;
+import io.siggi.togethertunes.ingest.YtdlpUpdater;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.CleartextTokens;
 import io.siggi.togethertunes.output.FillerSource.Filler;
@@ -508,6 +510,9 @@ public final class Main {
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
         jobList.steps(ingest::liveStep);
         new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
+        // The admin's "Update yt-dlp" button (yt-dlp -U) and the installed version.
+        new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC())
+                .register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
         new OverlayPreviewApi(rooms, overlays).register(appRouter);
         // Queue entries whose item isn't ready show what its ingest is doing (the rooms' ingest messages).

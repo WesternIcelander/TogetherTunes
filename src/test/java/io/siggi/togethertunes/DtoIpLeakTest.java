@@ -247,6 +247,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.JobList$Row", "jobs page row; JobsApi.json builds the response from named fields (no IP column is read)"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$ItemRef", "item columns of a jobs page row; JobsApi.json copies named fields, no adder, no IP"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$Page", "a page of JobList rows; JobsApi builds the JSON"),
+            Map.entry("io.siggi.togethertunes.ingest.YtdlpUpdater$Status", "yt-dlp update run; YtdlpApi.json copies named fields (state, times, exit code, versions, the tool output), no IP"),
             Map.entry("io.siggi.togethertunes.ingest.IngestQueue$LiveStep", "a running job's step name and fraction, copied into job views by named fields"),
             Map.entry("io.siggi.togethertunes.ingest.IngestProgress$Status", "room ingest message; toJson writes state, kind, position, step, progress and a short error only"),
             Map.entry("io.siggi.togethertunes.media.Mp4Boxes$Box", "MP4 box position in a media file, server-side only"),
