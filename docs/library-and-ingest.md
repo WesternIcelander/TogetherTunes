@@ -73,7 +73,7 @@ Why uploads are coupled to library requests: with a pre-check, anyone may *claim
 
 ## YouTube caching
 
-The YouTube **video ID** is the cache key. Every YouTube item stores it in `items.youtube_id`, which is unique.
+The YouTube **video ID** is the cache key. Every YouTube item stores it in `items.youtube_id`, which is unique (one row per video ID until an admin's Delete record removes that row, [media-types.md](media-types.md#after-media-is-deleted)).
 
 1. **Normalise** the pasted URL to the 11-character video ID before anything else. Accept `youtube.com/watch?v=`, `youtu.be/`, `/shorts/`, `/embed/`, `/live/`, `music.youtube.com`, and `m.` variants (also `/v/` and `youtube-nocookie.com/embed/`; with or without `https://`); ignore `t=`, `list=` and tracking parameters. Reject anything that doesn't yield an ID, including a bare ID without a link. The pasted URL is never passed to yt-dlp: every yt-dlp call uses the canonical `https://www.youtube.com/watch?v=<id>`.
 2. **Look up** `items.youtube_id`:

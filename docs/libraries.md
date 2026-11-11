@@ -94,6 +94,8 @@ The same sweep also runs **auto-delete of movies and shows** ([media-types.md](m
 
 Implementation (`retention/RetentionSweeper`): steps 3 and 4 are one manual-style purge (`Items.purge`), so the order is the purge's: mark and move the files aside in the transaction, delete them after the commit (a crash never leaves a `ready` item without files). The re-check runs the selection predicate again for the item after its row is locked (`FOR UPDATE` on PostgreSQL), and an item that gained a reference or was touched since the selection is skipped. Queued ingest jobs don't protect an item (they are cancelled, as in any purge); a running one does. Each purge writes an `item.purged` audit row without an actor, with `reason: "retention"`. Accepted race: an add that read the item as `ready` just before the sweep may commit its entry just after it, which then shows "media expired".
 
+Last, the sweep removes the **library and playlist entries of purged items** (purged for any reason: retention, auto-delete, Purge Media) whose `purged_at` is at least `retention.purgedEntryDays` old (default 30; `-1` = never; at `0` `Items.purge` already removes them in the purge transaction, and the sweep catches items purged before). Playlists that lose entries get `updated_at = now`; room history (finished queue entries) keeps its "media expired" rows. A purged YouTube item fetched again is `ready`, so its entries stay ([media-types.md](media-types.md#after-media-is-deleted)).
+
 **Purged items:**
 
 - The room's history still shows their title and artist, marked as "media expired".

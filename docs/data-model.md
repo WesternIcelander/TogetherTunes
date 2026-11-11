@@ -116,7 +116,7 @@ playlist_entries(id PK, playlist_id FK, item_id FK, position REAL, added_at)
 shares(id PK, item_id FK, from_user_id FK, to_user_id FK, message NULL, created_at, seen INTEGER)
 ```
 
-`purged` items keep their row (title, artist, `youtube_id`), so that history stays readable and a YouTube item can be fetched again. Their files are deleted.
+`purged` items keep their row (title, artist, `youtube_id`), so that history stays readable and a YouTube item can be fetched again. Their files are deleted. Their library and playlist entries are removed `retention.purgedEntryDays` after `purged_at` ([media-types.md](media-types.md#after-media-is-deleted)). Only an admin's **Delete record** removes an item row, together with every row referencing it (the foreign keys to `items` have no `ON DELETE` action, so it deletes them explicitly); `youtube_id` is then free for a new row.
 
 ### Rooms
 
