@@ -1,0 +1,3 @@
+# The image only needs the shaded jar (see Dockerfile); keep the build context small.
+*
+!target/TogetherTunes-1.0-SNAPSHOT.jar
