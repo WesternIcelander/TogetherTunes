@@ -57,7 +57,7 @@ The room setting `overlay.enabled` becomes `overlay.mode`:
 
 ## After media is deleted
 
-- When an item's media has been deleted for any reason (auto-delete, unreferenced retention, or someone's Purge Media), its **library and playlist entries are removed** `retention.purgedEntryDays` after the purge (admin setting; default 30, 0 = keep them). Room history keeps its "media expired" rows (trimmed by `rooms.requestHistoryDays` as before).
+- When an item's media has been deleted for any reason (auto-delete, unreferenced retention, or someone's Purge Media), its **library and playlist entries are removed** `retention.purgedEntryDays` after the purge (admin setting; default 30; **0 = right away**, at the purge; **-1 = keep them forever**). Room history keeps its "media expired" rows (trimmed by `rooms.requestHistoryDays` as before).
 - **Delete record (admin):** an admin can delete an item's record entirely, as if it had never existed: the item row, its media versions, library, playlist, queue and history entries, jobs and files. Only the audit log keeps a row saying an admin deleted it (with its title). For YouTube items this ends the "one row per video ID" rule for that ID: adding the link again creates a new item (CLAUDE.md invariant 7).
 
 ## Next episode
