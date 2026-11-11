@@ -256,8 +256,10 @@ public final class RoomsApi {
             }
         }
         String kind = request.query("kind");
+        String type = request.query("type");
         RequestSearch.Page page = search.search(ActorResolver.actor(request), request.pathParam("room"),
-                request.query("q"), kind == null || kind.isEmpty() ? null : kind, cursor(request), limit,
+                request.query("q"), kind == null || kind.isEmpty() ? null : kind,
+                type == null || type.isEmpty() ? null : type, cursor(request), limit,
                 isTrue(request.query("all")));
         response.header("Cache-Control", "no-store");
         response.json(page);

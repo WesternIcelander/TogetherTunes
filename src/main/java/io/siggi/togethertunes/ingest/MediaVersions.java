@@ -529,8 +529,69 @@ public final class MediaVersions implements AutoCloseable {
 
     // ------------------------------------------------------------------ undo bookkeeping (database)
 
-    private static final String VERSION_COLUMNS = "kind, duration_ms, output_profile, loudness_lufs, encode_preset,"
+    /** The columns an undo restores as they are. */
+    private static final String RESTORED_COLUMNS = "kind, duration_ms, output_profile, loudness_lufs, encode_preset,"
             + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version, card_fonts";
+    /** What a version was made with: {@link #RESTORED_COLUMNS} and the media type. */
+    private static final String VERSION_COLUMNS = RESTORED_COLUMNS + ", media_type";
+
+    /**
+     * Records that the item's media type changed to {@code mediaType} without a new version (a
+     * metadata edit): its current {@code version} counts as made with that type from now on.
+     */
+    public static void typeChanged(Connection c, String itemId, int version, String mediaType) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE media_versions SET media_type = ? WHERE item_id = ? AND version = ?")) {
+            ps.setString(1, mediaType);
+            ps.setString(2, itemId);
+            ps.setInt(3, version);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Restores the media type with an undo to {@code version}: only when the type plays as audio on
+     * one side ({@code audio}: a still image published as audio and its video, docs/media-types.md);
+     * a classification between video types made meanwhile stays. A {@code show} without its
+     * details (cleared meanwhile) becomes {@code uncategorized}; a type other than {@code show}
+     * has none.
+     */
+    private static void restoreType(Connection c, String itemId, int version) throws SQLException {
+        String restored = null;
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT media_type FROM media_versions WHERE item_id = ? AND version = ?")) {
+            ps.setString(1, itemId);
+            ps.setInt(2, version);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    restored = rs.getString(1);
+                }
+            }
+        }
+        if (restored != null) {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = ?"
+                    + " WHERE id = ? AND (media_type = 'audio' OR ? = 'audio')")) {
+                ps.setString(1, restored);
+                ps.setString(2, itemId);
+                ps.setString(3, restored);
+                ps.executeUpdate();
+            }
+        }
+        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = 'audio' WHERE id = ? AND kind = 'audio'")) {
+            ps.setString(1, itemId);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = 'uncategorized' WHERE id = ?"
+                + " AND media_type = 'show' AND (show_name IS NULL OR episode_number IS NULL)")) {
+            ps.setString(1, itemId);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET show_name = NULL, season_number = NULL,"
+                + " episode_number = NULL WHERE id = ? AND media_type <> 'show'")) {
+            ps.setString(1, itemId);
+            ps.executeUpdate();
+        }
+    }
 
     /**
      * Records the item's current {@code items} columns as what {@code version} (its current one)
@@ -809,8 +870,8 @@ public final class MediaVersions implements AutoCloseable {
                         throw new UndoRefused("nothing_to_undo", "The item changed meanwhile; reload and try again");
                     }
                     snapshotIfMissing(c, itemId, k.current(), now);
-                    try (PreparedStatement ps = c.prepareStatement("UPDATE items SET (" + VERSION_COLUMNS
-                            + ") = (SELECT " + VERSION_COLUMNS + " FROM media_versions WHERE item_id = ? AND version = ?),"
+                    try (PreparedStatement ps = c.prepareStatement("UPDATE items SET (" + RESTORED_COLUMNS
+                            + ") = (SELECT " + RESTORED_COLUMNS + " FROM media_versions WHERE item_id = ? AND version = ?),"
                             + " media_version = ? WHERE id = ?")) {
                         ps.setString(1, itemId);
                         ps.setInt(2, k.version());
@@ -818,6 +879,7 @@ public final class MediaVersions implements AutoCloseable {
                         ps.setString(4, itemId);
                         ps.executeUpdate();
                     }
+                    restoreType(c, itemId, k.version());
                     recordVersion(c, itemId, v, now, k.editJson());
                     recordKept(c, itemId, v, k.current(), true, now);
                     result[0] = new Undone(k.current(), k.version(), v, k.editJson());

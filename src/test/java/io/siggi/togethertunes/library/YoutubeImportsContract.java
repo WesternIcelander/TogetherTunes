@@ -151,7 +151,8 @@ abstract class YoutubeImportsContract {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT kind, title, artist, album, duration_ms, source,"
                     + " youtube_id, added_by_user_id, added_by_guest_id, status, output_profile, metadata_json,"
-                    + " present_as_audio, last_referenced_at, content_sha256 FROM items WHERE id = ?")) {
+                    + " CASE WHEN media_type = 'audio' THEN 1 ELSE 0 END AS present_as_audio, last_referenced_at,"
+                    + " content_sha256, media_type FROM items WHERE id = ?")) {
                 ps.setString(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {

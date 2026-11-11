@@ -29,20 +29,25 @@ import java.util.Set;
  *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
+ *       "mediaType", "show"?: {"name", "season"?, "episode"},
  *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry"},
  *       "undo"?: {"changedAt"}}}. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
- *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "presentAsAudio"?}} →
+ *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "mediaType"?, "show"?}} →
  *       the item page. The adder while it is in their library, or {@code library.editAny}
  *       ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403 forbidden} for
  *       other users). Values are
  *       cleaned like upload metadata (control characters and runs of whitespace become one space,
  *       trimmed); {@code artist}/{@code album} {@code null} or blank clears them. {@code 400
  *       invalid_title} (missing, blank or not a string), {@code invalid_artist},
- *       {@code invalid_album}, {@code invalid_present_as_audio}, {@code metadata_too_long} (over
- *       {@value UploadMetadata#MAX_CHARS} characters), {@code unknown_field}, {@code not_a_video}
- *       ({@code presentAsAudio: true} on an audio item).</li>
+ *       {@code invalid_album}, {@code invalid_media_type}, {@code invalid_show} ({@code show}:
+ *       {@code {"name", "season"?, "episode"}}, name required, numbers whole and ≥ 0),
+ *       {@code metadata_too_long} (over {@value UploadMetadata#MAX_CHARS} characters),
+ *       {@code unknown_field}, {@code not_a_video} (a type other than {@code audio} on an audio
+ *       item), {@code show_required} (type {@code show} without show details), {@code not_a_show}
+ *       (show details for another type). Show details are cleared when the type changes away from
+ *       {@code show}. {@code presentAsAudio} is derived: a video item of type {@code audio}.</li>
  *   <li>{@code POST /api/items/{id}/undo} (no body) → the item page: go back to the previous media
  *       version ({@code docs/library-and-ingest.md#undo}, {@link Items#undo}). Users who may edit
  *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
@@ -74,7 +79,7 @@ import java.util.Set;
  * </ul>
  */
 public final class ItemsApi {
-    private static final Set<String> FIELDS = Set.of("title", "artist", "album", "presentAsAudio");
+    private static final Set<String> FIELDS = Set.of("title", "artist", "album", "mediaType", "show");
 
     private final Items items;
     private final Permissions permissions;
@@ -150,7 +155,8 @@ public final class ItemsApi {
             }
         }
         ItemSearch.Page page = search.search(ItemSearch.Scope.server(), user.userId(), request.query("q"),
-                emptyToNull(request.query("kind")), emptyToNull(request.query("cursor")), limit);
+                emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
+                emptyToNull(request.query("cursor")), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }
@@ -287,7 +293,7 @@ public final class ItemsApi {
     /** The edit in a PATCH body; see the class comment for the rules. */
     static Items.Edit parse(JsonObject body) {
         if (body == null) {
-            return new Items.Edit(null, null, false, null, false, null);
+            return new Items.Edit(null, null, false, null, false);
         }
         for (String key : body.keySet()) {
             if (!FIELDS.contains(key)) {
@@ -303,16 +309,62 @@ public final class ItemsApi {
         }
         String artist = body.has("artist") ? text(body.get("artist"), "invalid_artist") : null;
         String album = body.has("album") ? text(body.get("album"), "invalid_album") : null;
-        Boolean presentAsAudio = null;
-        if (body.has("presentAsAudio")) {
-            JsonElement e = body.get("presentAsAudio");
-            if (!(e instanceof JsonPrimitive p) || !p.isBoolean()) {
-                throw new HttpError(400, "invalid_present_as_audio", "presentAsAudio must be true or false");
+        MediaType mediaType = null;
+        if (body.has("mediaType")) {
+            JsonElement e = body.get("mediaType");
+            mediaType = e instanceof JsonPrimitive p && p.isString() ? MediaType.of(p.getAsString()) : null;
+            if (mediaType == null) {
+                throw new HttpError(400, "invalid_media_type",
+                        "mediaType must be audio, uncategorized, music_video, movie or show");
             }
-            presentAsAudio = p.getAsBoolean();
         }
+        MediaType.Show show = body.has("show") ? show(body.get("show")) : null;
         return new Items.Edit(title, artist, body.has("artist") && artist == null, album,
-                body.has("album") && album == null, presentAsAudio);
+                body.has("album") && album == null, mediaType, show);
+    }
+
+    /**
+     * A show's details: {@code {"name", "season"?, "episode"}} (name required, numbers whole and
+     * ≥ 0; season null or absent for none). {@code 400 invalid_show} otherwise.
+     */
+    static MediaType.Show show(JsonElement e) {
+        if (!(e instanceof JsonObject o)) {
+            throw new HttpError(400, "invalid_show", "show must be {name, season?, episode}");
+        }
+        for (String key : o.keySet()) {
+            if (!key.equals("name") && !key.equals("season") && !key.equals("episode")) {
+                throw new HttpError(400, "unknown_field", "Unknown field: show." + key);
+            }
+        }
+        String name = text(o.get("name"), "invalid_show");
+        if (name == null) {
+            throw new HttpError(400, "invalid_show", "A show episode needs the show's name");
+        }
+        Integer season = null;
+        JsonElement s = o.get("season");
+        if (s != null && !s.isJsonNull()) {
+            season = number(s);
+            if (season == null) {
+                throw new HttpError(400, "invalid_show", "The season must be a whole number ≥ 0, or null");
+            }
+        }
+        Integer episode = number(o.get("episode"));
+        if (episode == null) {
+            throw new HttpError(400, "invalid_show", "The episode must be a whole number ≥ 0");
+        }
+        return new MediaType.Show(name, season, episode);
+    }
+
+    /** A whole number 0..{@link MediaType.Show#MAX_NUMBER}, or null. */
+    private static Integer number(JsonElement e) {
+        if (!(e instanceof JsonPrimitive p) || !p.isNumber()) {
+            return null;
+        }
+        double d = p.getAsDouble();
+        if (!Double.isFinite(d) || d < 0 || d > MediaType.Show.MAX_NUMBER || d != Math.rint(d)) {
+            return null;
+        }
+        return (int) d;
     }
 
     /** A cleaned string, or null for JSON null / blank. */

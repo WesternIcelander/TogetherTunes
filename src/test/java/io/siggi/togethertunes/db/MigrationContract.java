@@ -252,6 +252,67 @@ abstract class MigrationContract {
         assertEquals(Map.of("outputs.maxAutoOffMinutes", "30", "outputs.ts.enabled", "false"), settings);
     }
 
+    /**
+     * 0023 adds the media types (docs/media-types.md): audio items and video items presented as
+     * audio become {@code audio}, other videos {@code uncategorized}; {@code present_as_audio} is
+     * gone; media version rows take the type (an audio version {@code audio}).
+     */
+    @Test
+    void mediaTypeMigrationFoldsPresentAsAudio() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration mediaTypes = files.stream().filter(m -> m.name().contains("media_types")).findFirst().orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < mediaTypes.version()).toList()).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u', 'U', 1)");
+        String insert = "INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at, present_as_audio) VALUES ";
+        exec(insert + "('a', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 0)");
+        exec(insert + "('v', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 0)");
+        exec(insert + "('p', 'video', 't', 'youtube', 'u1', 1, 'ready', '720p30', 1, 1)");
+        String version = "INSERT INTO media_versions (item_id, version, published_at, kind, output_profile) VALUES ";
+        exec(version + "('v', 1, 1, 'video', '720p30')");
+        exec(version + "('v', 2, 1, 'audio', '720p30')");
+        exec(version + "('p', 1, 1, 'video', '720p30')");
+        new MigrationRunner(db, files).migrate();
+        Map<String, String> types = new java.util.HashMap<>();
+        Map<String, String> versions = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement()) {
+                try (ResultSet rs = st.executeQuery("SELECT id, media_type, show_name, season_number, episode_number,"
+                        + " last_viewed_at, pinned_at, pinned_by_user_id FROM items")) {
+                    while (rs.next()) {
+                        types.put(rs.getString(1), rs.getString(2));
+                        for (int i = 3; i <= 8; i++) {
+                            rs.getObject(i);
+                            assertTrue(rs.wasNull(), rs.getString(1) + " column " + i);
+                        }
+                    }
+                }
+                try (ResultSet rs = st.executeQuery("SELECT item_id, version, media_type FROM media_versions")) {
+                    while (rs.next()) {
+                        versions.put(rs.getString(1) + rs.getInt(2), rs.getString(3));
+                    }
+                }
+            }
+            return null;
+        });
+        assertEquals(Map.of("a", "audio", "v", "uncategorized", "p", "audio"), types);
+        assertEquals(Map.of("v1", "uncategorized", "v2", "audio", "p1", "audio"), versions);
+        assertThrows(SQLException.class, () -> exec("SELECT present_as_audio FROM items"));
+        assertThrows(SQLException.class, () -> exec("UPDATE items SET media_type = 'song' WHERE id = 'v'"));
+        assertThrows(SQLException.class, () -> exec("UPDATE items SET episode_number = -1 WHERE id = 'v'"));
+        // new rows default to uncategorized
+        exec(insert.replace(", present_as_audio)", ")")
+                + "('n', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        assertEquals("uncategorized", db.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT media_type FROM items WHERE id = 'n'")) {
+                rs.next();
+                return rs.getString(1);
+            }
+        }));
+    }
+
     /** Runs {@code sql} on the write connection. */
     protected void exec(String sql) throws SQLException {
         db.write((Connection c) -> {

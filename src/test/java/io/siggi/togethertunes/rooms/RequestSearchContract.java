@@ -297,6 +297,13 @@ abstract class RequestSearchContract {
                 ids(search.search(carol, roomId, null, "audio", null, 50)));
         assertEquals(Set.of(video), ids(search.search(carol, roomId, null, "video", null, 50, true)));
         assertEquals("invalid_kind", refused(() -> search.search(carol, roomId, null, "image", null, 50)));
+        // the type= filter (docs/media-types.md)
+        assertEquals(Set.of(video, purgedYoutube),
+                ids(search.search(carol, roomId, null, null, "uncategorized", null, 50, false)));
+        assertEquals(Set.of(ownLib, ownList, shared, carolOnly),
+                ids(search.search(carol, roomId, null, null, "audio", null, 50, false)));
+        assertEquals(Set.of(), ids(search.search(carol, roomId, null, null, "movie,show", null, 50, true)));
+        assertEquals("invalid_type", refused(() -> search.search(carol, roomId, null, null, "song", null, 50, false)));
         assertEquals("invalid_query", refused(() -> search.search(carol, roomId, "x".repeat(201), null, null, 50)));
         assertEquals("invalid_cursor", refused(() -> search.search(carol, roomId, null, null, "nope", 50)));
         // pages of 2: newest item first, no item twice, nothing skipped
@@ -321,7 +328,7 @@ abstract class RequestSearchContract {
             RequestSearch.Page page = search.search(carol, roomId, null, null, null, 50, all);
             JsonObject json = Json.GSON.toJsonTree(page).getAsJsonObject();
             Set<String> allowed = Set.of("id", "kind", "title", "artist", "album", "durationMs", "source",
-                    "youtubeId", "status", "presentAsAudio");
+                    "youtubeId", "status", "presentAsAudio", "mediaType", "show");
             for (JsonElement e : json.getAsJsonArray("items")) {
                 for (String key : e.getAsJsonObject().keySet()) {
                     assertFalse(!allowed.contains(key), "unexpected field " + key + " in " + e);

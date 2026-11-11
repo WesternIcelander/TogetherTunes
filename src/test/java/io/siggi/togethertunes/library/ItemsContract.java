@@ -176,7 +176,7 @@ abstract class ItemsContract {
     }
 
     private static Items.Edit title(String title) {
-        return new Items.Edit(title, null, false, null, false, null);
+        return new Items.Edit(title, null, false, null, false);
     }
 
     private static String code(Executable e) {
@@ -224,8 +224,9 @@ abstract class ItemsContract {
     void pageShowsTheItemAndTheCallersRights() throws Exception {
         String id = aliceItem("audio");
         Items.ItemPage page = items.get(alice, id, NONE);
-        assertEquals(new Items.ItemPage(id, "audio", "Song", "Artist", null, 5000L, "upload", null, "ready", false, 7,
-                null, 0, new Items.You(true, true, false)), page);
+        assertEquals(new Items.ItemPage(id, "audio", "Song", "Artist", null, 5000L, "upload", null, "ready", "audio",
+                null, 7, null, 0, new Items.You(true, true, false)), page);
+        assertFalse(page.presentAsAudio());
 
         assertEquals(new Items.You(false, false, false), items.get(bob, id, NONE).you());
         assertEquals(new Items.You(false, true, false), items.get(bob, id, EDIT_ANY).you());
@@ -253,7 +254,7 @@ abstract class ItemsContract {
     void theAdderEditsWhileTheItemIsInTheirLibrary() throws Exception {
         String id = aliceItem("audio");
         Items.ItemPage edited = items.update(alice, id, new Items.Edit("New Title", "New Artist", false, "Album",
-                false, null), NONE, "192.0.2.5");
+                false), NONE, "192.0.2.5");
         assertEquals("New Title", edited.title());
         assertEquals("New Artist", edited.artist());
         assertEquals("Album", edited.album());
@@ -263,13 +264,13 @@ abstract class ItemsContract {
                 audit(Items.AUDIT_UPDATED));
 
         // clearing artist and album; an unchanged edit writes nothing
-        Items.ItemPage cleared = items.update(alice, id, new Items.Edit(null, null, true, null, true, null), NONE, null);
+        Items.ItemPage cleared = items.update(alice, id, new Items.Edit(null, null, true, null, true), NONE, null);
         assertNull(cleared.artist());
         assertNull(cleared.album());
         assertEquals("New Title", cleared.title());
         assertNull(column(id, "artist"));
         items.update(alice, id, title("New Title"), NONE, null);
-        items.update(alice, id, new Items.Edit(null, null, false, null, false, null), NONE, null);
+        items.update(alice, id, new Items.Edit(null, null, false, null, false), NONE, null);
         assertEquals(2, audit(Items.AUDIT_UPDATED).size());
 
         // others can't; library.editAny can; the adder can't once it left their library
@@ -284,21 +285,65 @@ abstract class ItemsContract {
         assertEquals("item_not_found", code(() -> items.update(alice, UuidV7.newId(), title("x"), EDIT_ANY, null)));
     }
 
+    private static Items.Edit type(MediaType type, MediaType.Show show) {
+        return new Items.Edit(null, null, false, null, false, type, show);
+    }
+
     @Test
-    void presentAsAudioOnlyForVideoItems() throws Exception {
+    void mediaTypeRules() throws Exception {
         String audio = aliceItem("audio");
         String video = aliceItem("video");
-        Items.Edit on = new Items.Edit(null, null, false, null, false, true);
-        assertEquals("not_a_video", code(() -> items.update(alice, audio, on, NONE, null)));
-        // false on an audio item is no change
-        assertFalse(items.update(alice, audio, new Items.Edit(null, null, false, null, false, false), NONE, null)
-                .presentAsAudio());
-        assertTrue(items.update(alice, video, on, NONE, null).presentAsAudio());
-        assertEquals("1", column(video, "present_as_audio"));
-        assertFalse(items.update(alice, video, new Items.Edit(null, null, false, null, false, false), NONE, null)
-                .presentAsAudio());
-        assertEquals(List.of(alice.userId() + " " + video + " {\"presentAsAudio\":true} null",
-                alice.userId() + " " + video + " {\"presentAsAudio\":false} null"), audit(Items.AUDIT_UPDATED));
+        assertEquals("audio", items.get(alice, audio, NONE).mediaType());
+        assertEquals("uncategorized", items.get(alice, video, NONE).mediaType());
+        // an audio item is always audio
+        assertEquals("not_a_video", code(() -> items.update(alice, audio, type(MediaType.MUSIC_VIDEO, null), NONE, null)));
+        assertEquals("audio", items.update(alice, audio, type(MediaType.AUDIO, null), NONE, null).mediaType());
+
+        // audio on a video item: presented as audio (the derived field)
+        Items.ItemPage asAudio = items.update(alice, video, type(MediaType.AUDIO, null), NONE, null);
+        assertEquals("audio", asAudio.mediaType());
+        assertTrue(asAudio.presentAsAudio());
+        assertEquals("audio", column(video, "media_type"));
+        Items.ItemPage mv = items.update(alice, video, type(MediaType.MUSIC_VIDEO, null), NONE, null);
+        assertFalse(mv.presentAsAudio());
+        assertNull(mv.show());
+
+        // show: details required, and only for show
+        assertEquals("show_required", code(() -> items.update(alice, video, type(MediaType.SHOW, null), NONE, null)));
+        assertEquals("not_a_show", code(() -> items.update(alice, video,
+                type(MediaType.MOVIE, new MediaType.Show("X", null, 1)), NONE, null)));
+        assertEquals("not_a_show", code(() -> items.update(alice, video,
+                type(null, new MediaType.Show("X", null, 1)), NONE, null)), "still a music video");
+        Items.ItemPage show = items.update(alice, video, type(MediaType.SHOW, new MediaType.Show("Series", 2, 5)),
+                NONE, null);
+        assertEquals(new MediaType.Show("Series", 2, 5), show.show());
+        assertEquals("Series", column(video, "show_name"));
+        // details alone change a show; the type stays
+        assertEquals(new MediaType.Show("Series", null, 0), items.update(alice, video,
+                type(null, new MediaType.Show("Series", null, 0)), NONE, null).show());
+        assertNull(column(video, "season_number"));
+        assertEquals("0", column(video, "episode_number"));
+        // a title edit keeps the show
+        assertEquals(new MediaType.Show("Series", null, 0), items.update(alice, video, title("T"), NONE, null).show());
+        // changing the type away clears the details
+        Items.ItemPage movie = items.update(alice, video, type(MediaType.MOVIE, null), NONE, null);
+        assertEquals("movie", movie.mediaType());
+        assertNull(movie.show());
+        assertNull(column(video, "show_name"));
+        assertNull(column(video, "episode_number"));
+        assertEquals("movie", items.get(bob, video, NONE).mediaType());
+
+        // same edit rights as the other metadata
+        assertEquals("forbidden", code(() -> items.update(bob, video, type(MediaType.SHOW,
+                new MediaType.Show("B", 1, 1)), NONE, null)));
+        assertEquals("show", items.update(bob, video, type(MediaType.SHOW, new MediaType.Show("B", 1, 1)), EDIT_ANY,
+                null).mediaType());
+
+        List<String> audits = audit(Items.AUDIT_UPDATED);
+        assertTrue(audits.contains(alice.userId() + " " + video + " {\"mediaType\":\"audio\"} null"), audits.toString());
+        assertTrue(audits.contains(alice.userId() + " " + video
+                + " {\"mediaType\":\"show\",\"show\":{\"name\":\"Series\",\"season\":2,\"episode\":5}} null"),
+                audits.toString());
     }
 
     @Test

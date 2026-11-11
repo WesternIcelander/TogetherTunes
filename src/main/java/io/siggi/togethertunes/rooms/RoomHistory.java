@@ -91,8 +91,7 @@ public final class RoomHistory {
 
     private static final String SELECT = "SELECT q.id, q.state, q.played_at, q.added_by_user_id,"
             + " q.added_by_guest_id, COALESCE(q.added_by_name, u.display_name, g.display_name), q.via,"
-            + " i.id, i.kind, i.title, i.artist, i.album, i.duration_ms, i.source, i.youtube_id, i.status,"
-            + " i.present_as_audio,"
+            + " " + Library.ItemView.COLUMNS + ","
             + " CASE WHEN EXISTS (SELECT 1 FROM library_entries le WHERE le.user_id = ? AND le.item_id = q.item_id)"
             + " THEN 1 ELSE 0 END"
             + " FROM queue_entries q JOIN items i ON i.id = q.item_id"
@@ -176,14 +175,10 @@ public final class RoomHistory {
         }
         ActorRef by = userId != null ? ActorRef.user(userId, name)
                 : guestId != null ? ActorRef.guest(guestId, name) : null;
-        long duration = rs.getLong(13);
-        Long durationMs = rs.wasNull() ? null : duration;
         String itemId = rs.getString(8);
-        Library.ItemView item = new Library.ItemView(itemId, rs.getString(9), rs.getString(10), rs.getString(11),
-                rs.getString(12), durationMs, rs.getString(14), rs.getString(15), rs.getString(16),
-                rs.getInt(17) != 0);
+        Library.ItemView item = Library.ItemView.read(rs, 8);
         return new Row(rs.getString(1), rs.getString(2), rs.getLong(3), item, by, rs.getString(7),
-                user ? (Boolean) (rs.getInt(18) != 0) : null, recent.contains(itemId));
+                user ? (Boolean) (rs.getInt(21) != 0) : null, recent.contains(itemId));
     }
 
     /**

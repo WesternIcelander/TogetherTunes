@@ -318,16 +318,11 @@ public final class Playlists {
 
     // ------------------------------------------------------------------ entries
 
-    private static final String ENTRY = "SELECT e.id, e.added_at, i.id, i.kind, i.title, i.artist, i.album,"
-            + " i.duration_ms, i.source, i.youtube_id, i.status, i.present_as_audio"
+    private static final String ENTRY = "SELECT e.id, e.added_at, " + Library.ItemView.COLUMNS
             + " FROM playlist_entries e JOIN items i ON i.id = e.item_id";
 
     private static Entry entry(ResultSet rs) throws SQLException {
-        long duration = rs.getLong(8);
-        Long durationMs = rs.wasNull() ? null : duration;
-        Library.ItemView item = new Library.ItemView(rs.getString(3), rs.getString(4), rs.getString(5),
-                rs.getString(6), rs.getString(7), durationMs, rs.getString(9), rs.getString(10), rs.getString(11),
-                rs.getInt(12) != 0);
+        Library.ItemView item = Library.ItemView.read(rs, 3);
         return new Entry(rs.getString(1), item, rs.getLong(2));
     }
 

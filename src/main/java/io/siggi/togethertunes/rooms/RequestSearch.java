@@ -69,6 +69,15 @@ public final class RequestSearch {
      */
     public Page search(Actor actor, String idOrSlug, String query, String kind, String cursor, int limit,
                        boolean all) throws SQLException {
+        return search(actor, idOrSlug, query, kind, null, cursor, limit, all);
+    }
+
+    /**
+     * As {@link #search(Actor, String, String, String, String, int, boolean)}, with the
+     * {@code type=} filter ({@link io.siggi.togethertunes.library.MediaType#filter}; {@code 400 invalid_type}).
+     */
+    public Page search(Actor actor, String idOrSlug, String query, String kind, String type, String cursor,
+                       int limit, boolean all) throws SQLException {
         Rooms.Access access = rooms.access(actor, idOrSlug);
         Rooms.Room room = access.room();
         String userId = actor instanceof Actor.User u ? u.userId() : null;
@@ -83,7 +92,7 @@ public final class RequestSearch {
         }
         ItemSearch.Scope scope = all ? ItemSearch.Scope.server()
                 : ItemSearch.Scope.of(Arrays.asList(room.ownerId(), userId), List.of(room.ownerId()));
-        ItemSearch.Page page = items.search(scope, null, query, kind, cursor, limit);
+        ItemSearch.Page page = items.search(scope, null, query, kind, type, cursor, limit);
         return new Page(page.items().stream().map(ItemSearch.Hit::item).toList(), page.nextCursor());
     }
 }

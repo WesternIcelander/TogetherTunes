@@ -27,8 +27,10 @@ public enum Permission {
     LIBRARY_VIEW_ALL("library.viewAll", null, "Browse and search other users' libraries and playlists"),
     LIBRARY_EDIT_ANY("library.editAny", null, "Edit the metadata of any item"),
     LIBRARY_PURGE("library.purge", null, "Delete any item from the server immediately"),
+    LIBRARY_PIN("library.pin", null, "Pin items so their media is never deleted automatically"),
     ROOMS_CREATE("rooms.create", null, "Create rooms"),
     ROOMS_MODERATE_ANY("rooms.moderateAny", null, "Act as moderator in any room"),
+    ROOMS_CUSTOM_CARDS("rooms.customCards", null, "Upload custom card images for rooms this user owns"),
     OUTPUT_OVERLAY_VIDEO("output.overlayVideo", Feature.OVERLAY,
             "Rooms owned by this user may re-encode music videos to add the QR overlay");
 

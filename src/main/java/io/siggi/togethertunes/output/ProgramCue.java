@@ -129,7 +129,7 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
      * A queue entry and what the packager needs to know about its item.
      *
      * @param videoItem      {@code items.kind = 'video'}
-     * @param presentAsAudio {@code items.present_as_audio} (ignored for audio items)
+     * @param presentAsAudio a video item of media type {@code audio} (ignored for audio items)
      * @param durationMs     how long the entry plays (what the room's timeline uses: the audio-only
      *                       file's length when it plays that)
      * @param audioOnly      the entry plays audio-only ({@code docs/rooms.md#audio-only-rooms}): a

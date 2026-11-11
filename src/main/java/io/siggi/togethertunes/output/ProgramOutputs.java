@@ -222,16 +222,21 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         }
     }
 
-    /** Item kinds from {@code items.kind} and {@code items.present_as_audio}. */
+    /**
+     * Item kinds from {@code items.kind} and {@code items.media_type}: a video item of media type
+     * {@code audio} is presented as audio ({@code docs/media-types.md}).
+     */
     public static ItemKinds itemKindsFrom(io.siggi.togethertunes.db.Database db) {
         return itemId -> db.read(c -> {
-            try (var ps = c.prepareStatement("SELECT kind, present_as_audio FROM items WHERE id = ?")) {
+            try (var ps = c.prepareStatement("SELECT kind, media_type FROM items WHERE id = ?")) {
                 ps.setString(1, itemId);
                 try (var rs = ps.executeQuery()) {
                     if (!rs.next()) {
                         return null;
                     }
-                    return new ItemKind("video".equals(rs.getString(1)), rs.getInt(2) != 0);
+                    String kind = rs.getString(1);
+                    return new ItemKind("video".equals(kind),
+                            io.siggi.togethertunes.library.MediaType.presentAsAudio(kind, rs.getString(2)));
                 }
             }
         });

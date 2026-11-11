@@ -162,7 +162,7 @@ class ItemsApiTest {
         // alice's item, found by bob: item metadata and bob's own library flag, nothing about alice
         assertEquals(JsonParser.parseString("{\"items\":[{\"item\":{\"id\":\"" + song + "\",\"kind\":\"audio\","
                 + "\"title\":\"Song\",\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\","
-                + "\"presentAsAudio\":false},\"inYourLibrary\":false}]}"), json(r));
+                + "\"presentAsAudio\":false,\"mediaType\":\"audio\"},\"inYourLibrary\":false}]}"), json(r));
         assertFalse(r.body().contains(aliceId));
         assertTrue(json(call("GET", "/api/items/search", alice, null)).getAsJsonArray("items").get(0)
                 .getAsJsonObject().get("inYourLibrary").getAsBoolean());
@@ -172,6 +172,11 @@ class ItemsApiTest {
                 .getAsJsonObject().get("inYourLibrary").getAsBoolean());
         assertEquals(400, call("GET", "/api/items/search?limit=0", bob, null).statusCode());
         assertEquals("invalid_kind", code(call("GET", "/api/items/search?kind=x", bob, null)));
+        assertEquals("invalid_type", code(call("GET", "/api/items/search?type=x", bob, null)));
+        assertEquals("invalid_type", code(call("GET", "/api/items/search?type=movie,", bob, null)));
+        assertEquals(0, json(call("GET", "/api/items/search?type=movie,show", bob, null)).getAsJsonArray("items").size());
+        assertEquals(song, json(call("GET", "/api/items/search?type=audio", bob, null)).getAsJsonArray("items").get(0)
+                .getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
         assertEquals("invalid_cursor", code(call("GET", "/api/items/search?cursor=x", bob, null)));
         // a page of 1 has a cursor to the next (nothing; the purged one isn't listed)
         JsonObject first = json(call("GET", "/api/items/search?limit=1", bob, null));
@@ -187,7 +192,7 @@ class ItemsApiTest {
         JsonObject page = json(r);
         assertEquals(JsonParser.parseString("{\"id\":\"" + id + "\",\"kind\":\"video\",\"title\":\"Song\","
                 + "\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\",\"presentAsAudio\":false,"
-                + "\"addedAt\":3,\"mediaVersion\":0,\"hasCover\":false,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
+                + "\"mediaType\":\"uncategorized\",\"addedAt\":3,\"mediaVersion\":0,\"hasCover\":false,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
                 + "\"canRetry\":false}}"), page);
         JsonObject mine = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you");
         assertTrue(mine.get("inLibrary").getAsBoolean() && mine.get("canEdit").getAsBoolean());
@@ -206,28 +211,57 @@ class ItemsApiTest {
     void patchEditsAndValidates() throws Exception {
         String id = item("video");
         HttpResponse<String> r = call("PATCH", "/api/items/" + id, alice,
-                "{\"title\":\"  New\\t Title \",\"artist\":null,\"album\":\"An Album\",\"presentAsAudio\":true}");
+                "{\"title\":\"  New\\t Title \",\"artist\":null,\"album\":\"An Album\",\"mediaType\":\"audio\"}");
         assertEquals(200, r.statusCode(), r.body());
         JsonObject page = json(r);
         assertEquals("New Title", page.get("title").getAsString());
         assertFalse(page.has("artist"));
         assertEquals("An Album", page.get("album").getAsString());
-        assertTrue(page.get("presentAsAudio").getAsBoolean());
+        assertTrue(page.get("presentAsAudio").getAsBoolean(), "derived from the type");
+        assertEquals("audio", page.get("mediaType").getAsString());
         assertEquals(page, json(call("PATCH", "/api/items/" + id, alice, "{}")), "an empty edit changes nothing");
         assertEquals(page, json(call("GET", "/api/items/" + id, alice, null)));
         // blank artist clears too
         assertEquals(200, call("PATCH", "/api/items/" + id, alice, "{\"artist\":\"x\"}").statusCode());
         assertFalse(json(call("PATCH", "/api/items/" + id, alice, "{\"artist\":\"   \"}")).has("artist"));
 
-        Map<String, String> bad = Map.of(
+        // a show episode
+        JsonObject show = json(call("PATCH", "/api/items/" + id, alice,
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\" The  Show \",\"season\":1,\"episode\":0}}"));
+        assertEquals("show", show.get("mediaType").getAsString());
+        assertFalse(show.get("presentAsAudio").getAsBoolean());
+        assertEquals(JsonParser.parseString("{\"name\":\"The Show\",\"season\":1,\"episode\":0}"), show.get("show"));
+        JsonObject noSeason = json(call("PATCH", "/api/items/" + id, alice,
+                "{\"show\":{\"name\":\"The Show\",\"season\":null,\"episode\":3}}"));
+        assertEquals(JsonParser.parseString("{\"name\":\"The Show\",\"episode\":3}"), noSeason.get("show"));
+        JsonObject movie = json(call("PATCH", "/api/items/" + id, alice, "{\"mediaType\":\"movie\"}"));
+        assertEquals("movie", movie.get("mediaType").getAsString());
+        assertFalse(movie.has("show"), "cleared with the type");
+        assertEquals("show_required", code(call("PATCH", "/api/items/" + id, alice, "{\"mediaType\":\"show\"}")));
+        assertEquals("not_a_show", code(call("PATCH", "/api/items/" + id, alice,
+                "{\"show\":{\"name\":\"S\",\"episode\":1}}")));
+
+        Map<String, String> bad = new java.util.HashMap<>(Map.of(
                 "{\"title\":\"  \"}", "invalid_title",
                 "{\"title\":null}", "invalid_title",
                 "{\"title\":5}", "invalid_title",
                 "{\"artist\":[\"a\"]}", "invalid_artist",
                 "{\"album\":{}}", "invalid_album",
-                "{\"presentAsAudio\":\"yes\"}", "invalid_present_as_audio",
+                "{\"mediaType\":\"song\"}", "invalid_media_type",
+                "{\"mediaType\":null}", "invalid_media_type",
                 "{\"title\":\"" + "x".repeat(UploadMetadata.MAX_CHARS + 1) + "\"}", "metadata_too_long",
-                "{\"cover\":\"x\"}", "unknown_field");
+                "{\"cover\":\"x\"}", "unknown_field",
+                "{\"presentAsAudio\":true}", "unknown_field"));
+        bad.putAll(Map.of(
+                "{\"mediaType\":\"show\",\"show\":null}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"episode\":1}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\" \",\"episode\":1}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\"}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"episode\":-1}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"episode\":1.5}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"season\":-2,\"episode\":1}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"episode\":\"1\"}}", "invalid_show",
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"episode\":1,\"x\":1}}", "unknown_field"));
         for (Map.Entry<String, String> e : bad.entrySet()) {
             HttpResponse<String> refused = call("PATCH", "/api/items/" + id, alice, e.getKey());
             assertEquals(400, refused.statusCode(), e.getKey());
@@ -237,7 +271,7 @@ class ItemsApiTest {
                 "{\"title\":\"" + "é".repeat(UploadMetadata.MAX_CHARS) + "\"}").statusCode());
 
         String audio = item("audio");
-        HttpResponse<String> notVideo = call("PATCH", "/api/items/" + audio, alice, "{\"presentAsAudio\":true}");
+        HttpResponse<String> notVideo = call("PATCH", "/api/items/" + audio, alice, "{\"mediaType\":\"movie\"}");
         assertEquals(400, notVideo.statusCode());
         assertEquals("not_a_video", code(notVideo));
 
@@ -268,12 +302,15 @@ class ItemsApiTest {
 
     @Test
     void parseKeepsAbsentFieldsUnchanged() {
-        assertEquals(new Items.Edit(null, null, false, null, false, null), ItemsApi.parse(new JsonObject()));
-        assertEquals(new Items.Edit(null, null, true, null, true, null),
+        assertEquals(new Items.Edit(null, null, false, null, false), ItemsApi.parse(new JsonObject()));
+        assertEquals(new Items.Edit(null, null, true, null, true),
                 ItemsApi.parse(JsonParser.parseString("{\"artist\":null,\"album\":\"\"}").getAsJsonObject()));
         HttpError e = org.junit.jupiter.api.Assertions.assertThrows(HttpError.class,
-                () -> ItemsApi.parse(JsonParser.parseString("{\"presentAsAudio\":null}").getAsJsonObject()));
-        assertEquals("invalid_present_as_audio", e.code());
+                () -> ItemsApi.parse(JsonParser.parseString("{\"mediaType\":5}").getAsJsonObject()));
+        assertEquals("invalid_media_type", e.code());
+        assertEquals(new Items.Edit(null, null, false, null, false, MediaType.SHOW, new MediaType.Show("S", null, 2)),
+                ItemsApi.parse(JsonParser.parseString("{\"mediaType\":\"show\",\"show\":{\"name\":\"S\",\"episode\":2}}")
+                        .getAsJsonObject()));
     }
 
     /** A YouTube item alice added (in her library) whose download job failed. */

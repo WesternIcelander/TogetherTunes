@@ -84,7 +84,17 @@ public final class ItemSearch {
      */
     public Page search(Scope scope, String viewerUserId, String query, String kind, String cursor, int limit)
             throws SQLException {
+        return search(scope, viewerUserId, query, kind, null, cursor, limit);
+    }
+
+    /**
+     * As {@link #search(Scope, String, String, String, String, int)}, with the {@code type=} filter
+     * ({@link MediaType#filter}: comma-separated media types, null for all; {@code 400 invalid_type}).
+     */
+    public Page search(Scope scope, String viewerUserId, String query, String kind, String type, String cursor,
+                       int limit) throws SQLException {
         Objects.requireNonNull(scope);
+        List<String> types = MediaType.filter(type);
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
         }
@@ -100,8 +110,7 @@ public final class ItemSearch {
         }
         Dialect d = db.dialect();
         List<String> params = new ArrayList<>();
-        StringBuilder sql = new StringBuilder("SELECT i.id, i.kind, i.title, i.artist, i.album, i.duration_ms,"
-                + " i.source, i.youtube_id, i.status, i.present_as_audio, ");
+        StringBuilder sql = new StringBuilder("SELECT " + Library.ItemView.COLUMNS + ", ");
         if (viewerUserId != null) {
             sql.append("CASE WHEN EXISTS (SELECT 1 FROM library_entries v WHERE v.item_id = i.id AND v.user_id = ?)"
                     + " THEN 1 ELSE 0 END");
@@ -132,6 +141,7 @@ public final class ItemSearch {
             sql.append(" AND i.kind = ?");
             params.add(kind);
         }
+        MediaType.appendFilter(sql, params, types);
         String like = " LIKE ? ESCAPE '" + Dialect.LIKE_ESCAPE + "'";
         for (String term : terms) {
             sql.append(" AND (").append(d.lower("i.title")).append(like)
@@ -155,11 +165,7 @@ public final class ItemSearch {
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        long duration = rs.getLong(6);
-                        Long durationMs = rs.wasNull() ? null : duration;
-                        items.add(new Hit(new Library.ItemView(rs.getString(1), rs.getString(2), rs.getString(3),
-                                rs.getString(4), rs.getString(5), durationMs, rs.getString(7), rs.getString(8),
-                                rs.getString(9), rs.getInt(10) != 0), rs.getInt(11) != 0));
+                        items.add(new Hit(Library.ItemView.read(rs, 1), rs.getInt(14) != 0));
                     }
                 }
             }

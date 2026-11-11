@@ -23,7 +23,7 @@ public final class ItemSources {
      * </ul>
      *
      * @param videoItem      whether the item is a video item ({@code items.kind = 'video'})
-     * @param presentAsAudio {@code items.present_as_audio}; ignored for audio items
+     * @param presentAsAudio a video item of media type {@code audio}; ignored for audio items
      * @param card           the card to show when played as audio (the room's overlaid version when
      *                       the overlay is on), or null to use the audio item's indexed card
      */

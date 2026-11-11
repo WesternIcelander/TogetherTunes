@@ -537,7 +537,7 @@ public final class YoutubeImports {
                             String guestId, boolean presentAsAudio, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, duration_ms,"
                 + " source, youtube_id, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " metadata_json, present_as_audio, last_referenced_at)"
+                + " metadata_json, media_type, last_referenced_at)"
                 + " VALUES (?, 'video', ?, ?, ?, ?, 'youtube', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")) {
             ps.setString(1, itemId);
             ps.setString(2, meta.title());
@@ -554,16 +554,24 @@ public final class YoutubeImports {
             ps.setLong(9, now);
             ps.setString(10, profile.get().id());
             ps.setString(11, meta.toItemMetadata().toString());
-            ps.setInt(12, presentAsAudio ? 1 : 0);
+            ps.setString(12, MediaType.initial("video", presentAsAudio).wire());
             ps.setLong(13, now);
             ps.executeUpdate();
         }
     }
 
+    /**
+     * {@code presentAsAudio} at import: true makes the item's media type {@code audio} (show
+     * details cleared), false turns an {@code audio} type back into {@code uncategorized}; other
+     * types stay.
+     */
     private static void setPresentAsAudio(Connection c, String itemId, boolean value) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("UPDATE items SET present_as_audio = ? WHERE id = ?")) {
-            ps.setInt(1, value ? 1 : 0);
-            ps.setString(2, itemId);
+        try (PreparedStatement ps = c.prepareStatement(value
+                ? "UPDATE items SET media_type = 'audio', show_name = NULL, season_number = NULL,"
+                        + " episode_number = NULL WHERE id = ?"
+                : "UPDATE items SET media_type = 'uncategorized' WHERE id = ? AND media_type = 'audio'"
+                        + " AND kind = 'video'")) {
+            ps.setString(1, itemId);
             ps.executeUpdate();
         }
     }

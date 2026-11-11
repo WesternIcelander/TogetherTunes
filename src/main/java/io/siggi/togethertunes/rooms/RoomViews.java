@@ -6,6 +6,7 @@ import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.library.Covers;
 import io.siggi.togethertunes.library.MediaApi;
+import io.siggi.togethertunes.library.MediaType;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -29,6 +30,7 @@ import java.util.Set;
  * ({@code {kind, id, name, isGuest}}).
  */
 final class RoomViews {
+    private static final com.google.gson.Gson SHOW_JSON = new com.google.gson.Gson();
     /** How many played or skipped entries the room state lists as {@code history}. */
     static final int HISTORY_SIZE = 20;
     private static final int IN_CHUNK = 500;
@@ -45,10 +47,22 @@ final class RoomViews {
         this.covers = Objects.requireNonNull(covers);
     }
 
-    /** An item's columns as the room messages show it. */
+    /**
+     * An item's columns as the room messages show it. {@code presentAsAudio} is derived from the
+     * media type (a video item of type {@code audio}); {@code show} only for type {@code show}.
+     */
     record ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                    boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
-                   int mediaVersion, Long audioOnlyMs, boolean hasCover) {
+                   int mediaVersion, Long audioOnlyMs, boolean hasCover, String mediaType, MediaType.Show show) {
+        /** The media type from {@code kind} and {@code presentAsAudio} (tests). */
+        ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
+                boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
+                int mediaVersion, Long audioOnlyMs, boolean hasCover) {
+            this(id, kind, title, artist, durationMs, status, source, presentAsAudio, originalFile, originalWeb,
+                    originalGainDb, mediaVersion, audioOnlyMs, hasCover,
+                    MediaType.initial(kind, presentAsAudio).wire(), null);
+        }
+
         /** With a cover (tests). */
         ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                 boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
@@ -125,25 +139,28 @@ final class RoomViews {
             Map<String, ItemRow> items = new HashMap<>();
             for (List<String> chunk : chunks(itemIds)) {
                 try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, duration_ms, status,"
-                        + " source, present_as_audio, original_file, original_web, original_gain_db, media_version,"
-                        + " audio_only_ms FROM items"
+                        + " source, " + MediaType.columns(null) + ", original_file, original_web, original_gain_db,"
+                        + " media_version, audio_only_ms FROM items"
                         + " WHERE id IN (" + marks(chunk.size()) + ")")) {
                     bind(ps, chunk);
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) {
                             long duration = rs.getLong(5);
                             Long durationMs = rs.wasNull() ? null : duration;
-                            double gain = rs.getDouble(11);
+                            double gain = rs.getDouble(14);
                             Double gainDb = rs.wasNull() ? null : gain;
-                            long audioOnly = rs.getLong(13);
+                            long audioOnly = rs.getLong(16);
                             Long audioOnlyMs = rs.wasNull() ? null : audioOnly;
                             String id = rs.getString(1);
+                            String kind = rs.getString(2);
                             String status = rs.getString(6);
-                            int version = rs.getInt(12);
+                            String mediaType = MediaType.effective(kind, rs.getString(8));
+                            int version = rs.getInt(15);
                             boolean hasCover = "ready".equals(status) && cv.exists(id, version);
-                            items.put(id, new ItemRow(id, rs.getString(2), rs.getString(3),
-                                    rs.getString(4), durationMs, status, rs.getString(7), rs.getInt(8) != 0,
-                                    rs.getString(9), rs.getInt(10) != 0, gainDb, version, audioOnlyMs, hasCover));
+                            items.put(id, new ItemRow(id, kind, rs.getString(3),
+                                    rs.getString(4), durationMs, status, rs.getString(7),
+                                    MediaType.presentAsAudio(kind, mediaType), rs.getString(12), rs.getInt(13) != 0,
+                                    gainDb, version, audioOnlyMs, hasCover, mediaType, MediaType.show(rs, 8)));
                         }
                     }
                 }
@@ -201,7 +218,8 @@ final class RoomViews {
     // ------------------------------------------------------------------ JSON
 
     /**
-     * An item: {@code id, kind, presentAsAudio, title, artist?, durationMs?, status}, and once it
+     * An item: {@code id, kind, presentAsAudio, mediaType, show?: {name, season?, episode}, title,
+     * artist?, durationMs?, status}, and once it
      * is {@code ready} its media URLs: {@code coverUrl} (only if that version has a {@code cover.jpg}), {@code audioUrl}, {@code videoUrl} (video
      * items), all of the item's current media version ({@code /media/{id}/v/{N}/…}, so a play
      * that started on it stays on it after a re-encode), and for an audio upload whose original browsers can play, {@code originalUrl} with
@@ -228,6 +246,10 @@ final class RoomViews {
         }
         o.addProperty("kind", r.kind());
         o.addProperty("presentAsAudio", r.presentAsAudio());
+        o.addProperty("mediaType", r.mediaType());
+        if (r.show() != null) {
+            o.add("show", SHOW_JSON.toJsonTree(r.show()));
+        }
         o.addProperty("title", r.title());
         if (r.artist() != null) {
             o.addProperty("artist", r.artist());

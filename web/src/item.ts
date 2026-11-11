@@ -3,6 +3,7 @@
 // who may edit), and for users: add to / remove from the library, add to a playlist, share, edit
 // the metadata, purge.
 import { api, ApiError } from "./api.js";
+import { allowedTypes, mediaTypeBody, mediaTypeLabel } from "./mediatypes.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
   ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, watchItem, type ItemPage, type JobView,
@@ -111,8 +112,14 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
     h("label", {}, "Artist", h("input", { name: "artist", maxlength: "300", value: item.artist ?? "" })),
     h("label", {}, "Album", h("input", { name: "album", maxlength: "300", value: item.album ?? "" })),
     item.kind === "video"
-      ? h("label", { class: "check" }, h("input", { name: "presentAsAudio", type: "checkbox", checked: item.presentAsAudio }),
-        " Play as audio (show the card instead of the video)")
+      ? h("label", {}, "Media type", h("select", { name: "mediaType" },
+        ...allowedTypes(item.kind).map((t) => h("option", { value: t, text: mediaTypeLabel(t), selected: t === item.mediaType }))))
+      : null,
+    item.kind === "video"
+      ? h("fieldset", {}, h("legend", { text: "Show episode (media type Show episode only)" },),
+        h("label", {}, "Show name", h("input", { name: "showName", maxlength: "300", value: item.show?.name ?? "" })),
+        h("label", {}, "Season", h("input", { name: "season", inputmode: "numeric", value: item.show?.season !== undefined ? String(item.show.season) : "" })),
+        h("label", {}, "Episode", h("input", { name: "episode", inputmode: "numeric", value: item.show !== undefined ? String(item.show.episode) : "" })))
       : null,
     h("button", { type: "submit", text: "Save" }));
   const error = h("p", { class: "error", role: "alert" });
@@ -125,7 +132,15 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       artist: String(data.get("artist") ?? ""),
       album: String(data.get("album") ?? ""),
     };
-    if (item.kind === "video") body["presentAsAudio"] = data.get("presentAsAudio") !== null;
+    if (item.kind === "video") {
+      const typed = mediaTypeBody(String(data.get("mediaType") ?? ""), String(data.get("showName") ?? ""),
+        String(data.get("season") ?? ""), String(data.get("episode") ?? ""));
+      if ("error" in typed) {
+        error.textContent = typed.error;
+        return;
+      }
+      Object.assign(body, typed.body);
+    }
     const submit = form.querySelector("button");
     if (submit !== null) submit.disabled = true;
     api<ItemPage>("PATCH", "/api/items/" + encodeURIComponent(item.id), body)

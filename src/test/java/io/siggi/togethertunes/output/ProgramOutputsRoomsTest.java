@@ -136,12 +136,12 @@ class ProgramOutputsRoomsTest {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source,"
                     + " added_by_user_id, added_at, status, output_profile, last_referenced_at, duration_ms,"
-                    + " present_as_audio) VALUES (?, ?, 'Song', 'upload', ?, 1, 'ready', '720p30', 1, ?, ?)")) {
+                    + " media_type) VALUES (?, ?, 'Song', 'upload', ?, 1, 'ready', '720p30', 1, ?, ?)")) {
                 ps.setString(1, itemId);
                 ps.setString(2, kind);
                 ps.setString(3, userId);
                 ps.setLong(4, durationMs);
-                ps.setInt(5, presentAsAudio ? 1 : 0);
+                ps.setString(5, "audio".equals(kind) || presentAsAudio ? "audio" : "uncategorized");
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id,"

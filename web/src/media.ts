@@ -5,6 +5,7 @@ import { api } from "./api.js";
 import type { ActorRef } from "./actor.js";
 import { h } from "./dom.js";
 import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
+import { mediaTypeLabel, type MediaType, type ShowInfo } from "./mediatypes.js";
 
 export type ItemStatus = "pending" | "processing" | "ready" | "failed" | "purged";
 
@@ -19,7 +20,11 @@ export interface ItemSummary {
   source: "upload" | "youtube";
   youtubeId?: string;
   status: ItemStatus;
+  /** Derived from the media type: a video item of type `audio` (plays with its card). */
   presentAsAudio: boolean;
+  mediaType: MediaType;
+  /** Type `show` only. */
+  show?: ShowInfo;
 }
 
 /** `GET /api/items/{id}`. */
@@ -138,8 +143,14 @@ export function itemTitleCell(item: ItemSummary): HTMLElement {
 }
 
 export function kindLabel(item: ItemSummary): string {
-  if (item.kind === "video") return item.presentAsAudio ? "Video (as audio)" : "Video";
-  return "Audio";
+  if (item.kind === "video" && item.mediaType === "audio") return "Audio (from video)";
+  if (item.kind === "audio") return "Audio";
+  let label = mediaTypeLabel(item.mediaType);
+  if (item.show !== undefined) {
+    label += ": " + item.show.name + (item.show.season !== undefined ? " S" + item.show.season : "")
+      + " E" + item.show.episode;
+  }
+  return label;
 }
 
 // ------------------------------------------------------------------ job polling

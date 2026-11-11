@@ -277,6 +277,75 @@ class MediaVersionsTest {
                 "linked files outlive the directory they came from");
     }
 
+    private void publishKind(String item, int v, Integer kept, boolean video, long at) throws Exception {
+        Path f = MediaVersions.versionDir(data, item, v).resolve(IngestPipeline.AUDIO);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f, "audio of v" + v);
+        new IngestItems(db).published(item, video, 10_000, OutputEncoding.DEFAULT, X264Preset.VERYFAST, true, null,
+                null, v, new IngestItems.VersionChange(kept, true, null, at));
+    }
+
+    private String column(String item, String column) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT " + column + " FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    private void setType(String item, String type, String showName, Integer episode) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = ?, show_name = ?,"
+                    + " episode_number = ? WHERE id = ?")) {
+                ps.setString(1, type);
+                ps.setString(2, showName);
+                ps.setObject(3, episode);
+                ps.setString(4, item);
+                ps.executeUpdate();
+            }
+            MediaVersions.typeChanged(c, item, MediaVersions.current(db, item).orElseThrow(), type);
+            return null;
+        });
+    }
+
+    /**
+     * The media type is part of a version: a video published as audio (type {@code audio}) comes
+     * back as its video type with an undo, and the other way round; a classification between video
+     * types made after the change stays.
+     */
+    @Test
+    void undoRestoresTheMediaTypeWhenAudioIsInvolved() throws Exception {
+        AtomicLong now = new AtomicLong(1_800_000_000_000L);
+        MediaVersions versions = undoVersions(now);
+        String item = fixtures.item("ready");
+        publishKind(item, 1, null, true, now.get());
+        setType(item, "music_video", null, null);
+        publishKind(item, 2, 1, false, now.get()); // published as audio (e.g. a still image)
+        assertEquals("audio", column(item, "kind"));
+        assertEquals("audio", column(item, "media_type"));
+        now.addAndGet(HOUR);
+        versions.undo(item, (c, u) -> { });
+        assertEquals("video", column(item, "kind"));
+        assertEquals("music_video", column(item, "media_type"), "the video type is back");
+        now.addAndGet(HOUR);
+        versions.undo(item, (c, u) -> { });
+        assertEquals("audio", column(item, "media_type"), "and audio again");
+
+        // a trim between video versions, classified afterwards: the classification stays
+        String clip = fixtures.item("ready");
+        publishKind(clip, 1, null, true, now.get());
+        publishKind(clip, 2, 1, true, now.get());
+        setType(clip, "show", "Series", 4);
+        now.addAndGet(HOUR);
+        versions.undo(clip, (c, u) -> { });
+        assertEquals("show", column(clip, "media_type"));
+        assertEquals("Series", column(clip, "show_name"));
+    }
+
     /** After the window the kept version goes, and Undo with it; a window of 0 turns undo off. */
     @Test
     void theKeptVersionExpiresAfterTheWindow() throws Exception {

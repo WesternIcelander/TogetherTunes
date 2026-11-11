@@ -211,7 +211,9 @@ public final class IngestItems {
             if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
                 MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
             }
+            // An audio publish plays as audio (media type audio); a video publish keeps the type.
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = ?, duration_ms = ?,"
+                    + (video ? "" : " media_type = 'audio', show_name = NULL, season_number = NULL, episode_number = NULL,")
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?, audio_only_ms = ?,"
                     + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")

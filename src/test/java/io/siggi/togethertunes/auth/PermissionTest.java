@@ -17,7 +17,7 @@ class PermissionTest {
         assertEquals(List.of("admin.settings", "admin.users", "admin.roles", "admin.providers", "admin.jobs",
                         "ip.view",
                         "library.upload", "library.youtube", "library.viewAll", "library.editAny", "library.purge",
-                        "rooms.create", "rooms.moderateAny", "output.overlayVideo"),
+                        "library.pin", "rooms.create", "rooms.moderateAny", "rooms.customCards", "output.overlayVideo"),
                 Arrays.stream(Permission.values()).map(Permission::wireName).toList());
     }
 

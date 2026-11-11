@@ -35,7 +35,9 @@ import java.util.Objects;
  * <p><b>Who may edit</b> ({@code docs/libraries.md#items-vs-libraries}): the user who added the
  * item ({@code items.added_by_user_id}), while it is in their library, and anyone with
  * {@code library.editAny}. Guests have no library, so a guest who added an item can't edit it.
- * Editable: title, artist, album and {@code presentAsAudio} (video items only).
+ * Editable: title, artist, album, the media type ({@link MediaType}; an audio item is always
+ * {@code audio}) and a {@code show}'s details (show name, season, episode), which are cleared when
+ * the type changes away from {@code show}.
  *
  * <p><b>Purging</b> ({@code library.purge}, and the retention sweeper, {@code retention.RetentionSweeper}): the item becomes
  * {@code purged} (row and metadata kept, {@code purged_at} set) and its files are deleted. Queued
@@ -95,12 +97,14 @@ public final class Items {
      *                 the page asks for it only if so)
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
-                           String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
+                           String source, String youtubeId, String status, boolean presentAsAudio,
+                           String mediaType, MediaType.Show show, long addedAt,
                            String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover) {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
-                        String source, String youtubeId, String status, boolean presentAsAudio, long addedAt,
-                        String error, int mediaVersion, You you) {
-            this(id, kind, title, artist, album, durationMs, source, youtubeId, status, presentAsAudio, addedAt, error,
+                        String source, String youtubeId, String status, String mediaType, MediaType.Show show,
+                        long addedAt, String error, int mediaVersion, You you) {
+            this(id, kind, title, artist, album, durationMs, source, youtubeId, status,
+                    MediaType.presentAsAudio(kind, mediaType), mediaType, show, addedAt, error,
                     mediaVersion, you, null, null, false);
         }
     }
@@ -166,13 +170,18 @@ public final class Items {
 
     /**
      * A metadata edit; a null field is left unchanged. {@code artist}/{@code album} are cleared
-     * by {@link #clearArtist}/{@link #clearAlbum}.
+     * by {@link #clearArtist}/{@link #clearAlbum}. {@code show} sets a {@code show}'s details
+     * (the resulting type must be {@code show}); a type changed away from {@code show} clears them.
      */
     public record Edit(String title, String artist, boolean clearArtist, String album, boolean clearAlbum,
-                       Boolean presentAsAudio) {
+                       MediaType mediaType, MediaType.Show show) {
+        public Edit(String title, String artist, boolean clearArtist, String album, boolean clearAlbum) {
+            this(title, artist, clearArtist, album, clearAlbum, null, null);
+        }
+
         public boolean isEmpty() {
             return title == null && artist == null && !clearArtist && album == null && !clearAlbum
-                    && presentAsAudio == null;
+                    && mediaType == null && show == null;
         }
     }
 
@@ -190,12 +199,15 @@ public final class Items {
 
     /** The columns {@link #page} and the checks need. */
     record Row(String id, String kind, String title, String artist, String album, Long durationMs, String source,
-               String youtubeId, String status, boolean presentAsAudio, long addedAt, String error,
+               String youtubeId, String status, String mediaType, MediaType.Show show, long addedAt, String error,
                String addedByUserId, int mediaVersion) {
+        boolean presentAsAudio() {
+            return MediaType.presentAsAudio(kind, mediaType);
+        }
     }
 
     private static final String ROW = "SELECT id, kind, title, artist, album, duration_ms, source, youtube_id, status,"
-            + " present_as_audio, added_at, error, added_by_user_id, media_version FROM items WHERE id = ?";
+            + " added_at, error, added_by_user_id, media_version, " + MediaType.columns(null) + " FROM items WHERE id = ?";
 
     static Row row(Connection c, String itemId, boolean lock) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(ROW + (lock ? " FOR UPDATE" : ""))) {
@@ -207,8 +219,9 @@ public final class Items {
                 long duration = rs.getLong(6);
                 Long durationMs = rs.wasNull() ? null : duration;
                 return new Row(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
-                        durationMs, rs.getString(7), rs.getString(8), rs.getString(9), rs.getInt(10) != 0,
-                        rs.getLong(11), rs.getString(12), rs.getString(13), rs.getInt(14));
+                        durationMs, rs.getString(7), rs.getString(8), rs.getString(9),
+                        MediaType.effective(rs.getString(2), rs.getString(14)),
+                        MediaType.show(rs, 14), rs.getLong(10), rs.getString(11), rs.getString(12), rs.getInt(13));
             }
         }
     }
@@ -275,7 +288,7 @@ public final class Items {
                     video ? EditSettings.firstGopFrames(editJson) : null);
         }
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
-                r.youtubeId(), r.status(), r.presentAsAudio(), r.addedAt(),
+                r.youtubeId(), r.status(), r.presentAsAudio(), r.mediaType(), r.show(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
                 "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()));
     }
@@ -564,7 +577,9 @@ public final class Items {
      * never edit); a user who isn't allowed gets {@code 403 forbidden}.
      *
      * @throws HttpError {@code 404 item_not_found}, {@code 403 forbidden}, {@code 400 not_a_video}
-     *                   ({@code presentAsAudio: true} on an audio item)
+     *                   (a type other than {@code audio} on an audio item), {@code 400 show_required}
+     *                   (type {@code show} without show details), {@code 400 not_a_show} (show
+     *                   details for another type)
      */
     public ItemPage update(Actor.User actor, String itemId, Edit edit, Rights rights, String clientIp)
             throws SQLException {
@@ -580,13 +595,22 @@ public final class Items {
                 throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
                         + " someone with library.editAny can edit it");
             }
-            if (Boolean.TRUE.equals(edit.presentAsAudio()) && !"video".equals(row.kind())) {
-                throw new HttpError(400, "not_a_video", "Only video items can be presented as audio");
+            String mediaType = edit.mediaType() != null ? edit.mediaType().wire() : row.mediaType();
+            if (!"video".equals(row.kind()) && edit.mediaType() != null && edit.mediaType() != MediaType.AUDIO) {
+                throw new HttpError(400, "not_a_video", "An audio item's media type is always audio");
+            }
+            MediaType.Show show = null;
+            if (MediaType.SHOW.wire().equals(mediaType)) {
+                show = edit.show() != null ? edit.show() : row.show();
+                if (show == null) {
+                    throw new HttpError(400, "show_required", "A show episode needs a show name and an episode number");
+                }
+            } else if (edit.show() != null) {
+                throw new HttpError(400, "not_a_show", "Show details are only for the media type show");
             }
             String title = edit.title() != null ? edit.title() : row.title();
             String artist = edit.clearArtist() ? null : edit.artist() != null ? edit.artist() : row.artist();
             String album = edit.clearAlbum() ? null : edit.album() != null ? edit.album() : row.album();
-            boolean presentAsAudio = edit.presentAsAudio() != null ? edit.presentAsAudio() : row.presentAsAudio();
             Map<String, Object> changed = new LinkedHashMap<>();
             if (!title.equals(row.title())) {
                 changed.put("title", title);
@@ -597,26 +621,45 @@ public final class Items {
             if (!Objects.equals(album, row.album())) {
                 changed.put("album", album);
             }
-            if (presentAsAudio != row.presentAsAudio()) {
-                changed.put("presentAsAudio", presentAsAudio);
+            if (!mediaType.equals(row.mediaType())) {
+                changed.put("mediaType", mediaType);
+            }
+            if (!Objects.equals(show, row.show())) {
+                changed.put("show", show);
             }
             if (changed.isEmpty()) {
                 return page(c, row, you);
             }
             // TODO(M4): the item's card.mp4 still shows the old title/artist/album; re-render it
             // (and its index for audio items) before the packager shows cards.
-            try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE items SET title = ?, artist = ?, album = ?, present_as_audio = ? WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET title = ?, artist = ?, album = ?,"
+                    + " media_type = ?, show_name = ?, season_number = ?, episode_number = ? WHERE id = ?")) {
                 ps.setString(1, title);
                 ps.setString(2, artist);
                 ps.setString(3, album);
-                ps.setInt(4, presentAsAudio ? 1 : 0);
-                ps.setString(5, itemId);
+                ps.setString(4, mediaType);
+                ps.setString(5, show == null ? null : show.name());
+                if (show == null || show.season() == null) {
+                    ps.setNull(6, java.sql.Types.INTEGER);
+                } else {
+                    ps.setInt(6, show.season());
+                }
+                if (show == null) {
+                    ps.setNull(7, java.sql.Types.INTEGER);
+                } else {
+                    ps.setInt(7, show.episode());
+                }
+                ps.setString(8, itemId);
                 ps.executeUpdate();
+            }
+            if (!mediaType.equals(row.mediaType())) {
+                // The current version was made as this type from now on, so an undo of a later
+                // change comes back to it (docs/library-and-ingest.md#undo).
+                MediaVersions.typeChanged(c, itemId, row.mediaVersion(), mediaType);
             }
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_UPDATED, itemId, changed);
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),
-                    row.youtubeId(), row.status(), presentAsAudio, row.addedAt(), row.error(), row.addedByUserId(),
+                    row.youtubeId(), row.status(), mediaType, show, row.addedAt(), row.error(), row.addedByUserId(),
                     row.mediaVersion());
             return page(c, after, you);
         });

@@ -203,7 +203,8 @@ abstract class LibraryContract {
         entry(alice, id, 50, "share", bob.userId());
         Library.Entry e = library.list(alice.userId(), null, null, null, 10).items().get(0);
         assertEquals(new Library.ItemView(id, "video", "Clip", "Band", "LP", 1000L, "youtube", "dQw4w9WgXcQ",
-                "ready", false), e.item());
+                "ready", "uncategorized", null), e.item());
+        assertFalse(e.item().presentAsAudio());
         assertEquals(50, e.addedAt());
         assertEquals("share", e.via());
         assertEquals(bob.userId(), e.sharedBy().id());
@@ -243,6 +244,30 @@ abstract class LibraryContract {
 
         assertEquals("invalid_kind", assertThrows(HttpError.class,
                 () -> library.list(alice.userId(), null, "podcast", null, 10)).code());
+        // the type= filter (docs/media-types.md): audio items are audio, the video uncategorized until set
+        java.util.function.Function<String, List<String>> typed = type -> {
+            try {
+                return library.list(alice.userId(), null, null, type, null, 50).items().stream()
+                        .map(x -> x.item().id()).toList();
+            } catch (java.sql.SQLException ex) {
+                throw new RuntimeException(ex);
+            }
+        };
+        assertEquals(List.of(e), typed.apply("uncategorized"));
+        assertEquals(List.of(d, c, b, a), typed.apply("audio"));
+        assertEquals(List.of(), typed.apply("movie,show"));
+        db.write(conn -> {
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(
+                    "UPDATE items SET media_type = 'movie' WHERE id = ?")) {
+                ps.setString(1, e);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(List.of(e), typed.apply("movie,show"));
+        assertEquals("movie", library.list(alice.userId(), null, null, "movie", null, 50).items().get(0).item().mediaType());
+        assertEquals("invalid_type", assertThrows(HttpError.class,
+                () -> library.list(alice.userId(), null, null, "song", null, 10)).code());
         assertEquals("invalid_query", assertThrows(HttpError.class,
                 () -> library.list(alice.userId(), "x".repeat(Library.QUERY_MAX_CHARS + 1), null, null, 10)).code());
         assertEquals(List.of(), all(alice, "x".repeat(Library.QUERY_MAX_CHARS - 10) + " jazz", null));

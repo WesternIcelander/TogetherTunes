@@ -138,6 +138,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Library$Entry",
             "io.siggi.togethertunes.library.Library$ItemView",
             "io.siggi.togethertunes.library.Library$Page",
+            "io.siggi.togethertunes.library.MediaType$Show",
             "io.siggi.togethertunes.library.Playlists$Entry",
             "io.siggi.togethertunes.library.Playlists$Page",
             "io.siggi.togethertunes.library.Playlists$Playlist",
@@ -1270,13 +1271,14 @@ class DtoIpLeakTest {
         throw new AssertionError(where + ": no message with " + marker);
     }
 
-    /** A ready video item added by {@code userId}, in nobody's library. */
+    /** A ready video item (a show episode, so its show details are scanned too) added by {@code userId}, in nobody's library. */
     private String insertItem(String userId) throws Exception {
         String id = io.siggi.togethertunes.db.UuidV7.newId();
         database.write(c -> {
             try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist,"
-                    + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
-                    + " VALUES (?, 'video', 'Some Video', 'Someone', 'upload', ?, 1, 'ready', '720p30', 1)")) {
+                    + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at, media_type,"
+                    + " show_name, season_number, episode_number) VALUES (?, 'video', 'Some Video', 'Someone', 'upload',"
+                    + " ?, 1, 'ready', '720p30', 1, 'show', 'Some Show', 1, 2)")) {
                 ps.setString(1, id);
                 ps.setString(2, userId);
                 ps.executeUpdate();

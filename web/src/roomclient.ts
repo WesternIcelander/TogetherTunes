@@ -32,7 +32,12 @@ export interface Timeline {
 export interface RoomItem {
   id: string;
   kind?: "audio" | "video";
+  /** Derived from the media type: a video item of type `audio`. */
   presentAsAudio?: boolean;
+  /** docs/media-types.md: audio, uncategorized, music_video, movie or show. */
+  mediaType?: string;
+  /** Type `show` only. */
+  show?: { name: string; season?: number; episode: number };
   title?: string;
   artist?: string;
   durationMs?: number;

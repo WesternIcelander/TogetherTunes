@@ -244,17 +244,12 @@ public final class Shares {
 
     private static final String SELECT = "SELECT s.id, s.created_at, s.message, s.seen,"
             + " s.from_user_id, f.display_name, s.to_user_id, t.display_name,"
-            + " i.id, i.kind, i.title, i.artist, i.album, i.duration_ms, i.source, i.youtube_id, i.status,"
-            + " i.present_as_audio"
+            + " " + Library.ItemView.COLUMNS
             + " FROM shares s JOIN items i ON i.id = s.item_id"
             + " JOIN users f ON f.id = s.from_user_id JOIN users t ON t.id = s.to_user_id";
 
     private static Share share(ResultSet rs, Direction direction) throws SQLException {
-        long duration = rs.getLong(14);
-        Long durationMs = rs.wasNull() ? null : duration;
-        Library.ItemView item = new Library.ItemView(rs.getString(9), rs.getString(10), rs.getString(11),
-                rs.getString(12), rs.getString(13), durationMs, rs.getString(15), rs.getString(16), rs.getString(17),
-                rs.getInt(18) != 0);
+        Library.ItemView item = Library.ItemView.read(rs, 9);
         Boolean seen = direction == Direction.IN ? rs.getInt(4) != 0 : null;
         return new Share(rs.getString(1), item, ActorRef.user(rs.getString(5), rs.getString(6)),
                 ActorRef.user(rs.getString(7), rs.getString(8)), rs.getString(3), rs.getLong(2), seen);

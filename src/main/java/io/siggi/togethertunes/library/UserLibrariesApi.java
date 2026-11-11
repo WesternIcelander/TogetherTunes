@@ -56,7 +56,8 @@ public final class UserLibrariesApi {
     private void library(Request request, Response response) throws Exception {
         int limit = limit(request, Library.LIST_DEFAULT, Library.LIST_MAX);
         Library.Page page = libraries.library(request.pathParam("id"), request.query("q"),
-                emptyToNull(request.query("kind")), emptyToNull(request.query("cursor")), limit);
+                emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
+                emptyToNull(request.query("cursor")), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

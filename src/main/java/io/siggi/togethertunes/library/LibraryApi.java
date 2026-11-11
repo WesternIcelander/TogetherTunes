@@ -67,7 +67,7 @@ public final class LibraryApi {
             }
         }
         Library.Page page = library.list(user.userId(), request.query("q"), emptyToNull(request.query("kind")),
-                emptyToNull(request.query("cursor")), limit);
+                emptyToNull(request.query("type")), emptyToNull(request.query("cursor")), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

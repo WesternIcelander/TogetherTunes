@@ -858,7 +858,8 @@ public final class Uploads {
                             String contentId, Upload upload, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, source,"
                 + " content_sha256, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " last_referenced_at, content_id) VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?)")) {
+                + " last_referenced_at, content_id, media_type)"
+                + " VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")) {
             ps.setString(1, itemId);
             ps.setString(2, kind);
             ps.setString(3, meta.title());
@@ -871,6 +872,7 @@ public final class Uploads {
             ps.setString(10, profile.get().id());
             ps.setLong(11, now);
             ps.setString(12, contentId);
+            ps.setString(13, MediaType.initial(kind, false).wire());
             ps.executeUpdate();
         }
     }

@@ -125,8 +125,14 @@ public final class UserLibraries {
     /** {@code userId}'s library, as {@link Library#list}. @throws HttpError {@code 404 user_not_found} */
     public Library.Page library(String userId, String query, String kind, String cursor, int limit)
             throws SQLException {
+        return library(userId, query, kind, null, cursor, limit);
+    }
+
+    /** As {@link #library(String, String, String, String, int)}, with the {@code type=} filter. */
+    public Library.Page library(String userId, String query, String kind, String type, String cursor, int limit)
+            throws SQLException {
         requireUser(userId);
-        return library.list(userId, query, kind, cursor, limit);
+        return library.list(userId, query, kind, type, cursor, limit);
     }
 
     /** {@code userId}'s playlists, as {@link Playlists#list}. @throws HttpError {@code 404 user_not_found} */

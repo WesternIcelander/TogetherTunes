@@ -52,10 +52,35 @@ public final class Library {
      * @param youtubeId      the video ID of a YouTube item, else {@code null}
      * @param status         {@code pending}, {@code processing}, {@code ready}, {@code failed} or
      *                       {@code purged} (media expired)
-     * @param presentAsAudio a video item played like an audio item, with its card
+     * @param presentAsAudio a video item played like an audio item, with its card (derived: a
+     *                       video item of media type {@code audio})
+     * @param mediaType      {@link MediaType} ({@code docs/media-types.md})
+     * @param show           a {@code show}'s details, else {@code null}
      */
     public record ItemView(String id, String kind, String title, String artist, String album, Long durationMs,
-                           String source, String youtubeId, String status, boolean presentAsAudio) {
+                           String source, String youtubeId, String status, boolean presentAsAudio,
+                           String mediaType, MediaType.Show show) {
+        public ItemView(String id, String kind, String title, String artist, String album, Long durationMs,
+                        String source, String youtubeId, String status, String mediaType, MediaType.Show show) {
+            this(id, kind, title, artist, album, durationMs, source, youtubeId, status,
+                    MediaType.presentAsAudio(kind, mediaType), mediaType, show);
+        }
+
+        /** The {@code items} columns (13) {@link #read} reads, for the table alias {@code i}. */
+        public static final String COLUMNS = "i.id, i.kind, i.title, i.artist, i.album, i.duration_ms, i.source,"
+                + " i.youtube_id, i.status, " + MediaType.columns("i");
+        /** How many columns {@link #COLUMNS} has. */
+        public static final int COLUMN_COUNT = 13;
+
+        /** The item from the {@link #COLUMNS} starting at {@code first}. */
+        public static ItemView read(java.sql.ResultSet rs, int first) throws SQLException {
+            long duration = rs.getLong(first + 5);
+            Long durationMs = rs.wasNull() ? null : duration;
+            return new ItemView(rs.getString(first), rs.getString(first + 1), rs.getString(first + 2),
+                    rs.getString(first + 3), rs.getString(first + 4), durationMs, rs.getString(first + 6),
+                    rs.getString(first + 7), rs.getString(first + 8),
+                    MediaType.effective(rs.getString(first + 1), rs.getString(first + 9)), MediaType.show(rs, first + 9));
+        }
     }
 
     /**
@@ -82,8 +107,7 @@ public final class Library {
         this.clock = Objects.requireNonNull(clock);
     }
 
-    private static final String SELECT = "SELECT i.id, i.kind, i.title, i.artist, i.album, i.duration_ms, i.source,"
-            + " i.youtube_id, i.status, i.present_as_audio, e.added_at, e.via, e.shared_by_user_id, s.display_name"
+    private static final String SELECT = "SELECT " + ItemView.COLUMNS + ", e.added_at, e.via, e.shared_by_user_id, s.display_name"
             + " FROM library_entries e JOIN items i ON i.id = e.item_id"
             + " LEFT JOIN users s ON s.id = e.shared_by_user_id";
 
@@ -100,7 +124,17 @@ public final class Library {
      *               invalid_cursor} if malformed
      */
     public Page list(String userId, String query, String kind, String cursor, int limit) throws SQLException {
+        return list(userId, query, kind, null, cursor, limit);
+    }
+
+    /**
+     * As {@link #list(String, String, String, String, int)}, with the {@code type=} filter
+     * ({@link MediaType#filter}: comma-separated media types, null for all; {@code 400 invalid_type}).
+     */
+    public Page list(String userId, String query, String kind, String type, String cursor, int limit)
+            throws SQLException {
         Objects.requireNonNull(userId);
+        List<String> types = MediaType.filter(type);
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
         }
@@ -130,6 +164,7 @@ public final class Library {
             sql.append(" AND i.kind = ?");
             params.add(kind);
         }
+        MediaType.appendFilter(sql, params, types);
         String like = " LIKE ? ESCAPE '" + Dialect.LIKE_ESCAPE + "'";
         for (String term : terms) {
             sql.append(" AND (").append(d.lower("i.title")).append(like)
@@ -207,14 +242,11 @@ public final class Library {
     }
 
     private static Entry entry(ResultSet rs) throws SQLException {
-        long duration = rs.getLong(6);
-        Long durationMs = rs.wasNull() ? null : duration;
-        ItemView item = new ItemView(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                rs.getString(5), durationMs, rs.getString(7), rs.getString(8), rs.getString(9), rs.getInt(10) != 0);
-        String sharedById = rs.getString(13);
-        String sharedByName = rs.getString(14);
+        ItemView item = ItemView.read(rs, 1);
+        String sharedById = rs.getString(16);
+        String sharedByName = rs.getString(17);
         ActorRef sharedBy = sharedById != null && sharedByName != null ? ActorRef.user(sharedById, sharedByName) : null;
-        return new Entry(item, rs.getLong(11), rs.getString(12), sharedBy);
+        return new Entry(item, rs.getLong(14), rs.getString(15), sharedBy);
     }
 
     private record ItemRow(String source, String youtubeId, String status) {
