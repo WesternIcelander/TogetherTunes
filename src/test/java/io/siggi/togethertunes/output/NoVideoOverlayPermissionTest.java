@@ -52,7 +52,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Without {@code output.overlayVideo}, music videos play without the overlay while cards still
  * show it ({@code docs/overlay.md#permissions}). The real gating on a SQLite database: the server's
- * and the room's {@code overlay.enabled} on, the room owner holding only the default {@code user}
+ * and the room's {@code overlay.mode} {@code always}, the room owner holding only the default {@code user}
  * role, so {@link OverlayDecisions} records {@code cards} for every entry. The real chain
  * ({@link OverlayCards#lookupsFrom}, {@link OverlayCards#forRoom} with {@link OverlayVideoJobs} on
  * an {@link OverlayPool}, {@link ProgramMedia}) through the {@link OfflineHarness} into a
@@ -96,7 +96,7 @@ class NoVideoOverlayPermissionTest {
             String roomId = new Rooms(db, permissions, clock).create(alice, "Party", null, null, null,
                     "203.0.113.9").id();
             settings.set(Settings.OVERLAY_ENABLED, true);
-            sql(db, "UPDATE rooms SET settings_json = ? WHERE id = ?", "{\"overlay\":{\"enabled\":true}}", roomId);
+            sql(db, "UPDATE rooms SET settings_json = ? WHERE id = ?", "{\"overlay\":{\"mode\":\"always\"}}", roomId);
             assertFalse(permissions.held(aliceId).contains(Permission.OUTPUT_OVERLAY_VIDEO),
                     "the owner doesn't hold output.overlayVideo");
             // the harness media's item ids, as library items

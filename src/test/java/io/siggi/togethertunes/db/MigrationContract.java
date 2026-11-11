@@ -253,6 +253,55 @@ abstract class MigrationContract {
     }
 
     /**
+     * 0025 turns the room setting {@code overlay.enabled} into {@code overlay.mode}: true →
+     * {@code "always"}, false → nothing (the default {@code off}); other settings kept, an emptied
+     * {@code overlay} group dropped, invalid JSON left alone.
+     */
+    @Test
+    void overlayModeMigrationMovesTheRoomSwitch() throws SQLException {
+        Migration mode = MigrationRunner.loadClasspath(getClass().getClassLoader(), MigrationRunner.CLASSPATH_ROOT,
+                db.dialect()).stream().filter(m -> m.name().contains("overlay_mode")).findFirst().orElseThrow();
+        Migration tables = Migration.of("0001_tables.sql", """
+                CREATE TABLE rooms (id TEXT PRIMARY KEY, settings_json TEXT NOT NULL);
+                INSERT INTO rooms (id, settings_json) VALUES
+                    ('on', '{"overlay":{"enabled":true}}'),
+                    ('onMixed', '{"gapMs":5,"overlay":{"enabled":true,"corner":"tl","heightPct":30}}'),
+                    ('off', '{"overlay":{"enabled":false}}'),
+                    ('offMixed', '{"overlay":{"enabled":false,"margin":4},"audioOnly":true}'),
+                    ('none', '{"gapMs":5}'),
+                    ('odd', '{"overlay":7}'),
+                    ('broken', 'not json'),
+                    ('array', '[1]');
+                """);
+        runner(tables, new Migration(2, mode.name(), mode.sql(), mode.checksum())).migrate();
+        Map<String, String> rooms = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement();
+                    ResultSet rs = st.executeQuery("SELECT id, settings_json FROM rooms")) {
+                while (rs.next()) {
+                    rooms.put(rs.getString(1), rs.getString(2));
+                }
+            }
+            return null;
+        });
+        java.util.function.Function<String, com.google.gson.JsonElement> json = com.google.gson.JsonParser::parseString;
+        assertEquals(json.apply("{\"overlay\":{\"mode\":\"always\"}}"), json.apply(rooms.get("on")));
+        assertEquals(json.apply("{\"gapMs\":5,\"overlay\":{\"corner\":\"tl\",\"heightPct\":30,\"mode\":\"always\"}}"),
+                json.apply(rooms.get("onMixed")));
+        assertEquals(json.apply("{}"), json.apply(rooms.get("off")));
+        assertEquals(json.apply("{\"overlay\":{\"margin\":4},\"audioOnly\":true}"), json.apply(rooms.get("offMixed")));
+        assertEquals(json.apply("{\"gapMs\":5}"), json.apply(rooms.get("none")));
+        assertEquals(json.apply("{\"overlay\":7}"), json.apply(rooms.get("odd")));
+        assertEquals("not json", rooms.get("broken"));
+        assertEquals("[1]", rooms.get("array"));
+        // As the settings read them.
+        assertEquals(io.siggi.togethertunes.rooms.RoomSettings.OverlayMode.ALWAYS,
+                io.siggi.togethertunes.rooms.RoomSettings.parse(rooms.get("onMixed")).overlayMode());
+        assertEquals(io.siggi.togethertunes.rooms.RoomSettings.OverlayMode.OFF,
+                io.siggi.togethertunes.rooms.RoomSettings.parse(rooms.get("offMixed")).overlayMode());
+    }
+
+    /**
      * 0023 adds the media types (docs/media-types.md): audio items and video items presented as
      * audio become {@code audio}, other videos {@code uncategorized}; {@code present_as_audio} is
      * gone; media version rows take the type (an audio version {@code audio}).

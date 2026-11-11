@@ -99,7 +99,7 @@ abstract class OverlayDecisionsContract {
     }
 
     private void roomOverlay(boolean on) throws SQLException {
-        sql("UPDATE rooms SET settings_json = ? WHERE id = ?", on ? "{\"overlay\":{\"enabled\":true}}" : "{}", roomId);
+        sql("UPDATE rooms SET settings_json = ? WHERE id = ?", on ? "{\"overlay\":{\"mode\":\"always\"}}" : "{}", roomId);
     }
 
     private void serverOverlay(boolean on) throws SQLException {
@@ -131,24 +131,90 @@ abstract class OverlayDecisionsContract {
         });
     }
 
+    private static RoomSettings mode(RoomSettings.OverlayMode m) {
+        return RoomSettings.parse("{\"overlay\":{\"mode\":\"" + m.wire() + "\"}}");
+    }
+
+    private void itemType(String kind, String mediaType) throws SQLException {
+        sql("UPDATE items SET kind = ?, media_type = ? WHERE id = ?", kind, mediaType, itemId);
+    }
+
     @Test
     void decisionTable() throws Exception {
-        RoomSettings on = RoomSettings.parse("{\"overlay\":{\"enabled\":true}}");
+        RoomSettings on = mode(RoomSettings.OverlayMode.ALWAYS);
         RoomSettings off = RoomSettings.DEFAULTS;
         for (boolean server : new boolean[] {false, true}) {
             for (boolean holds : new boolean[] {false, true}) {
                 serverOverlay(server);
                 ownerHoldsOverlayVideo(holds);
-                assertEquals(Decision.OFF, decisions.evaluate(aliceId, off), server + "/" + holds);
+                assertEquals(Decision.OFF, decisions.evaluate(aliceId, off, "music_video"), server + "/" + holds);
                 Decision expected = !server ? Decision.OFF : holds ? Decision.VIDEO : Decision.CARDS;
-                assertEquals(expected, decisions.evaluate(aliceId, on), server + "/" + holds);
+                assertEquals(expected, decisions.evaluate(aliceId, on, "music_video"), server + "/" + holds);
             }
         }
         // A disabled owner holds nothing: cards only.
         serverOverlay(true);
         ownerHoldsOverlayVideo(true);
         sql("UPDATE users SET disabled = 1 WHERE id = ?", aliceId);
-        assertEquals(Decision.CARDS, decisions.evaluate(aliceId, on));
+        assertEquals(Decision.CARDS, decisions.evaluate(aliceId, on, "music_video"));
+    }
+
+    /**
+     * Media type × room mode (docs/media-types.md#qr-overlay-modes): only {@code always} gives an
+     * entry the overlay, and never for a movie or show; {@code idleOnly} leaves entries without it
+     * (only the queue-empty card has it, {@link OverlayCards#overlaidFillers}).
+     */
+    @Test
+    void decisionsPerTypeAndMode() throws Exception {
+        serverOverlay(true);
+        ownerHoldsOverlayVideo(true);
+        for (RoomSettings.OverlayMode m : RoomSettings.OverlayMode.values()) {
+            for (String type : List.of("audio", "uncategorized", "music_video", "movie", "show")) {
+                Decision expected;
+                if (m != RoomSettings.OverlayMode.ALWAYS || type.equals("movie") || type.equals("show")) {
+                    expected = Decision.OFF;
+                } else {
+                    expected = Decision.VIDEO; // whether it's played as video is up to the caller
+                }
+                assertEquals(expected, decisions.evaluate(aliceId, mode(m), type), m + "/" + type);
+
+                // The same through decide(), from the database (a video item of that type).
+                sql("UPDATE rooms SET settings_json = ? WHERE id = ?", mode(m).toStoredJson(), roomId);
+                itemType("video", type);
+                assertEquals(expected, decisions.decide(entry()), "decide " + m + "/" + type);
+            }
+        }
+        assertTrue(OverlayDecisions.neverOverlaid("movie"));
+        assertTrue(OverlayDecisions.neverOverlaid("show"));
+        assertFalse(OverlayDecisions.neverOverlaid("music_video"));
+        assertFalse(OverlayDecisions.neverOverlaid("uncategorized"));
+        assertFalse(OverlayDecisions.neverOverlaid("audio"));
+        // An audio item's effective type is audio, whatever is stored.
+        sql("UPDATE rooms SET settings_json = ? WHERE id = ?", mode(RoomSettings.OverlayMode.ALWAYS).toStoredJson(),
+                roomId);
+        itemType("audio", "movie");
+        assertEquals(Decision.VIDEO, decisions.decide(entry()));
+    }
+
+    /** A movie or show never has the overlay, also when its entry was decided before it was classified. */
+    @Test
+    void aMovieNeverHasItWhateverWasRecorded() throws Exception {
+        serverOverlay(true);
+        roomOverlay(true);
+        itemType("video", "uncategorized");
+        String e = entry();
+        assertEquals(Decision.CARDS, decisions.decide(e));
+        itemType("video", "movie");
+        assertEquals(Decision.OFF, decisions.decide(e));
+        assertEquals(Decision.CARDS, decisions.recorded(e), "the record stays");
+        // Classified back: the recorded decision applies again.
+        itemType("video", "music_video");
+        assertEquals(Decision.CARDS, decisions.decide(e));
+        // A new show entry records off.
+        itemType("video", "show");
+        String s = entry();
+        assertEquals(Decision.OFF, decisions.decide(s));
+        assertEquals(Decision.OFF, decisions.recorded(s));
     }
 
     @Test

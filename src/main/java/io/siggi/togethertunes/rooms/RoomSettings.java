@@ -38,7 +38,9 @@ import java.util.function.Function;
  *   <tr><td>{@code audioOnly}</td><td>false</td><td>audio-only room: every item plays as audio (a video's audio-only file), the program output shows cards at {@code output.audioOnlyBitrateKbps}; a change applies from the next item</td></tr>
  *   <tr><td>{@code guests.canVote}, {@code guests.canRequestLibrary}</td><td>true</td><td>effective only if the server setting is on too</td></tr>
  *   <tr><td>{@code guests.canUpload}, {@code guests.canYoutube}</td><td>false</td><td>effective only if the server setting is on too</td></tr>
- *   <tr><td>{@code overlay.enabled}</td><td>false</td><td>effective only if the server's {@code overlay.enabled} is on too</td></tr>
+ *   <tr><td>{@code overlay.mode}</td><td>{@code "off"}</td><td>{@code off} | {@code always} | {@code idleOnly}
+ *       ({@link OverlayMode}); effective only if the server's {@code overlay.enabled} is on too. Replaced the
+ *       room's {@code overlay.enabled} (migration 0025: true → {@code always})</td></tr>
  *   <tr><td>{@code overlay.corner}</td><td>{@code "br"}</td><td>{@code br} | {@code bl} | {@code tr} | {@code tl}</td></tr>
  *   <tr><td>{@code overlay.heightPct}</td><td>22</td><td>{@value #MIN_OVERLAY_HEIGHT_PCT}..{@value #MAX_OVERLAY_HEIGHT_PCT}, % of the frame height</td></tr>
  *   <tr><td>{@code overlay.margin}</td><td>3</td><td>0..{@value #MAX_OVERLAY_MARGIN}, % of the frame height</td></tr>
@@ -82,6 +84,40 @@ public final class RoomSettings {
             "uploadRequests", "libraryRequests",
             "guests.canUpload", "guests.canRequestLibrary");
 
+    /** The room's QR overlay mode ({@code overlay.mode}, {@code docs/media-types.md#qr-overlay-modes}). */
+    public enum OverlayMode {
+        /** No overlay anywhere. */
+        OFF("off"),
+        /** Every card (items, paused, queue empty, loading, transition) and music/uncategorized videos. */
+        ALWAYS("always"),
+        /** Only the queue-empty card. */
+        IDLE_ONLY("idleOnly");
+
+        private final String wire;
+
+        OverlayMode(String wire) {
+            this.wire = wire;
+        }
+
+        public String wire() {
+            return wire;
+        }
+
+        /** The mode with this wire name; {@link #OFF} for anything else. */
+        public static OverlayMode of(String wire) {
+            for (OverlayMode m : values()) {
+                if (m.wire.equals(wire)) {
+                    return m;
+                }
+            }
+            return OFF;
+        }
+
+        static String[] wires() {
+            return java.util.Arrays.stream(values()).map(OverlayMode::wire).toArray(String[]::new);
+        }
+    }
+
     // ------------------------------------------------------------------ definitions
 
     /** One setting: its dotted name, default, and how a JSON value is checked. */
@@ -107,7 +143,7 @@ public final class RoomSettings {
         def("guests.canRequestLibrary", true, RoomSettings::bool);
         def("guests.canUpload", false, RoomSettings::bool);
         def("guests.canYoutube", false, RoomSettings::bool);
-        def("overlay.enabled", false, RoomSettings::bool);
+        def("overlay.mode", OverlayMode.OFF.wire(), choice(OverlayMode.wires()));
         def("overlay.corner", "br", choice("br", "bl", "tr", "tl"));
         def("overlay.heightPct", 22, whole(MIN_OVERLAY_HEIGHT_PCT, MAX_OVERLAY_HEIGHT_PCT));
         def("overlay.margin", 3, whole(0, MAX_OVERLAY_MARGIN));
@@ -468,9 +504,17 @@ public final class RoomSettings {
         return (Boolean) values.get("guests.canYoutube");
     }
 
-    /** The room half of the overlay switch (the server's {@code overlay.enabled} must be on too). */
+    /**
+     * {@code overlay.mode} ({@code docs/media-types.md#qr-overlay-modes}): what gets the QR overlay,
+     * the room's half (the server's {@code overlay.enabled} must be on too).
+     */
+    public OverlayMode overlayMode() {
+        return OverlayMode.of((String) values.get("overlay.mode"));
+    }
+
+    /** Whether the room's overlay mode is anything but {@code off} (the server's switch must be on too). */
     public boolean overlayEnabled() {
-        return (Boolean) values.get("overlay.enabled");
+        return overlayMode() != OverlayMode.OFF;
     }
 
     /** {@code br}, {@code bl}, {@code tr} or {@code tl}. */

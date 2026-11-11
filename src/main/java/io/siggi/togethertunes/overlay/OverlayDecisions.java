@@ -3,6 +3,7 @@ package io.siggi.togethertunes.overlay;
 import io.siggi.togethertunes.auth.Permission;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.library.MediaType;
 import io.siggi.togethertunes.rooms.RoomSettings;
 import io.siggi.togethertunes.settings.Settings;
 import java.sql.PreparedStatement;
@@ -15,11 +16,18 @@ import java.util.Objects;
  * once per entry and recorded in {@code queue_entries.overlay}:
  *
  * <ul>
- *   <li>the server's {@code overlay.enabled} AND the room's {@code overlay.enabled}: the overlay is on
- *       the entry's cards ({@link Decision#CARDS});</li>
+ *   <li>the server's {@code overlay.enabled} is on AND the room's {@code overlay.mode} is
+ *       {@code always} ({@code docs/media-types.md#qr-overlay-modes}) AND the item isn't a
+ *       {@code movie} or {@code show}: the overlay is on the entry's cards ({@link Decision#CARDS});
+ *       {@code idleOnly} puts it on the queue-empty card only, which is no entry's
+ *       ({@link OverlayCards}), so its entries get {@link Decision#OFF};</li>
  *   <li>and also the room owner holds {@link Permission#OUTPUT_OVERLAY_VIDEO} through one of their
- *       roles: music videos are re-encoded with it too ({@link Decision#VIDEO}).</li>
+ *       roles: music and uncategorized videos are re-encoded with it too ({@link Decision#VIDEO}).</li>
  * </ul>
+ *
+ * <p>Movies and shows never get the overlay, in any mode: their entries are {@link Decision#OFF}
+ * whatever was recorded (the type is read at every call, so an item reclassified as a movie after
+ * its entry was decided loses it too; the other way round the recorded decision stays).
  *
  * <p>The first {@link #decide} for an entry (when the program output plans its overlay, as it becomes
  * next or current) records the decision; later calls return the recorded one, also after a restart.
@@ -33,11 +41,11 @@ import java.util.Objects;
 public final class OverlayDecisions {
     /** {@code queue_entries.overlay}. */
     public enum Decision {
-        /** No overlay (the server's or the room's switch is off). */
+        /** No overlay (the server's switch is off, the room's mode isn't {@code always}, or a movie or show). */
         OFF("off"),
         /** On cards only; music videos play from the plain mezzanine. */
         CARDS("cards"),
-        /** On cards and on music videos (re-encoded). */
+        /** On cards and on music and uncategorized videos (re-encoded). */
         VIDEO("video");
 
         private final String wire;
@@ -81,14 +89,23 @@ public final class OverlayDecisions {
         this.permissions = Objects.requireNonNull(permissions);
     }
 
+    /** Whether items of this effective media type never get the overlay ({@code movie}, {@code show}). */
+    public static boolean neverOverlaid(String mediaType) {
+        return MediaType.MOVIE.wire().equals(mediaType) || MediaType.SHOW.wire().equals(mediaType);
+    }
+
     /**
-     * What a room's overlay decision is right now, without recording anything: {@link Decision#OFF}
-     * unless both switches are on, {@link Decision#VIDEO} if the owner also holds
-     * {@code output.overlayVideo}, else {@link Decision#CARDS}.
+     * What an entry's overlay decision would be right now, without recording anything:
+     * {@link Decision#OFF} unless the server's switch is on, the room's mode is {@code always} and
+     * the item's effective media type isn't {@code movie} or {@code show}; {@link Decision#VIDEO}
+     * if the owner also holds {@code output.overlayVideo}, else {@link Decision#CARDS}.
+     *
+     * @param mediaType the item's effective media type ({@link MediaType#effective})
      */
-    public Decision evaluate(String ownerId, RoomSettings roomSettings) throws SQLException {
+    public Decision evaluate(String ownerId, RoomSettings roomSettings, String mediaType) throws SQLException {
         Objects.requireNonNull(ownerId);
-        if (!settings.overlayEnabled() || !roomSettings.overlayEnabled()) {
+        if (neverOverlaid(mediaType) || roomSettings.overlayMode() != RoomSettings.OverlayMode.ALWAYS
+                || !settings.overlayEnabled()) {
             return Decision.OFF;
         }
         // Feature-gated by overlay.enabled, which is on here; a disabled owner holds nothing.
@@ -110,21 +127,24 @@ public final class OverlayDecisions {
 
     /**
      * The entry's overlay decision: the recorded one, or, the first time, {@link #evaluate} for its
-     * room's owner and settings as they are now, which is then recorded. When two callers race, the
-     * first write wins and both get it.
+     * room's owner and settings and its item's type as they are now, which is then recorded. When
+     * two callers race, the first write wins and both get it. A movie or show is always
+     * {@link Decision#OFF}, whatever was recorded.
      *
      * @return the decision, or {@code null} if there is no such entry
      */
     public Decision decide(String entryId) throws SQLException {
         Objects.requireNonNull(entryId);
-        record Row(String overlay, String ownerId, String settingsJson) {
+        record Row(String overlay, String ownerId, String settingsJson, String mediaType) {
         }
         Row row = db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT q.overlay, r.owner_id, r.settings_json"
-                    + " FROM queue_entries q JOIN rooms r ON r.id = q.room_id WHERE q.id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT q.overlay, r.owner_id, r.settings_json, i.kind,"
+                    + " i.media_type FROM queue_entries q JOIN rooms r ON r.id = q.room_id"
+                    + " JOIN items i ON i.id = q.item_id WHERE q.id = ?")) {
                 ps.setString(1, entryId);
                 try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? new Row(rs.getString(1), rs.getString(2), rs.getString(3)) : null;
+                    return rs.next() ? new Row(rs.getString(1), rs.getString(2), rs.getString(3),
+                            MediaType.effective(rs.getString(4), rs.getString(5))) : null;
                 }
             }
         });
@@ -133,9 +153,9 @@ public final class OverlayDecisions {
         }
         Decision known = Decision.parse(row.overlay());
         if (known != null) {
-            return known;
+            return neverOverlaid(row.mediaType()) ? Decision.OFF : known;
         }
-        Decision now = evaluate(row.ownerId(), RoomSettings.parse(row.settingsJson()));
+        Decision now = evaluate(row.ownerId(), RoomSettings.parse(row.settingsJson()), row.mediaType());
         int updated = db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement(
                     "UPDATE queue_entries SET overlay = ? WHERE id = ? AND overlay IS NULL")) {

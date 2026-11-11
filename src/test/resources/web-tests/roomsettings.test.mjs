@@ -22,7 +22,7 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.mp3", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.autoOff", "outputs.autoOffMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
-    "overlay.enabled", "overlay.heightPct", "overlay.margin", "requestsPerActor", "transitionCard", "uploadRequests",
+    "overlay.heightPct", "overlay.margin", "overlay.mode", "requestsPerActor", "transitionCard", "uploadRequests",
     "voteSkipThreshold"]);
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
 });
@@ -45,7 +45,7 @@ test("server switches grey out exactly what they turn off", () => {
 
   const noOverlay = clone(ALL_ON);
   noOverlay.overlay.enabled = false;
-  for (const k of ["overlay.enabled", "overlay.corner", "overlay.heightPct", "overlay.margin"]) {
+  for (const k of ["overlay.mode", "overlay.corner", "overlay.heightPct", "overlay.margin"]) {
     assert.match(S.serverDisabledReason(k, noOverlay), /server admin/, k);
   }
 
@@ -226,7 +226,7 @@ test("overlay preview URL follows the form's valid overlay values", () => {
   assert.deepEqual([...S.OVERLAY_PREVIEW_KEYS], ["overlay.corner", "overlay.heightPct", "overlay.margin"]);
 });
 
-test("overlay notes: none while the server has it off; music videos per the owner's permission", () => {
+test("overlay notes: none while the server has it off; videos per the owner's permission; never movies and shows", () => {
   assert.deepEqual(S.overlayNotes(undefined), []);
   const off = clone(ALL_ON);
   off.overlay.enabled = false;
@@ -234,13 +234,28 @@ test("overlay notes: none while the server has it off; music videos per the owne
   const video = clone(ALL_ON);
   video.overlay.videoOverlay = true;
   const v = S.overlayNotes(video);
-  assert.equal(v.length, 2);
+  assert.equal(v.length, 3);
   assert.match(v[0], /only in the stream outputs/);
-  assert.match(v[1], /Music videos show it too/);
+  assert.match(v[1], /music videos and uncategorized videos show it too/);
+  assert.match(v[2], /Movies and shows never show it/);
   const cards = clone(ALL_ON);
   cards.overlay.videoOverlay = false;
   const c = S.overlayNotes(cards);
-  assert.match(c[1], /Music videos play without the overlay/);
+  assert.match(c[1], /Videos play without the overlay/);
   assert.match(c[1], /Cards .* still show it/);
-  assert.equal(S.overlayNotes(ALL_ON).length, 1); // an older server without videoOverlay
+  assert.equal(S.overlayNotes(ALL_ON).length, 2); // an older server without videoOverlay
+});
+
+test("overlay modes: off, always, only when the queue is empty", () => {
+  const def = S.SETTINGS.find((d) => d.key === "overlay.mode");
+  assert.equal(def.kind, "select");
+  assert.equal(def.default, "off");
+  assert.deepEqual(def.options.map((o) => o[0]), ["off", "always", "idleOnly"]);
+  assert.equal(S.parseInput(def, "idleOnly"), "idleOnly");
+  assert.throws(() => S.parseInput(def, "sometimes"));
+  assert.equal(S.describeDefault(def), "off");
+  assert.match(def.help, /Movies and shows never/);
+  // The patch carries the mode nested, as the server stores it.
+  assert.deepEqual(S.buildPatch({ overlay: { mode: "off" } }, { "overlay.mode": "idleOnly" }),
+    { overlay: { mode: "idleOnly" } });
 });

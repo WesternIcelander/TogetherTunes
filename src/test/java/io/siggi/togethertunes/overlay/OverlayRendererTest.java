@@ -33,7 +33,7 @@ public class OverlayRendererTest {
     private final OverlayRenderer renderer = new OverlayRenderer();
 
     static RoomSettings settings(String corner, int heightPct, int margin) {
-        return RoomSettings.DEFAULTS.patch(JsonParser.parseString("{\"overlay\":{\"enabled\":true,\"corner\":\""
+        return RoomSettings.DEFAULTS.patch(JsonParser.parseString("{\"overlay\":{\"mode\":\"always\",\"corner\":\""
                 + corner + "\",\"heightPct\":" + heightPct + ",\"margin\":" + margin + "}}").getAsJsonObject());
     }
 

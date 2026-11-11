@@ -44,11 +44,13 @@ import java.util.regex.Pattern;
  * {@code rooms/<roomId>/cards/}.
  *
  * <ul>
- *   <li><b>Filler cards</b> (paused, idle, loading):
+ *   <li><b>Filler cards</b> (paused, idle, loading, gap):
  *       {@code filler-<id>-<overlayHash>-<encoding>-c<cardVersion>.mp4}, made when the room's
- *       overlay is on and an output of the room needs them.</li>
+ *       overlay mode puts the overlay on them ({@link #overlaidFillers}: every one for {@code always},
+ *       the idle card for {@code idleOnly}) and an output of the room needs them.</li>
  *   <li><b>Item cards</b> (audio items, video items played as audio), for an entry that is current
- *       or next: {@code item-<itemId>-v<mediaVersion>-<overlayHash>-<encoding>-c<cardVersion>.mp4},
+ *       or next and whose decision gives it the overlay ({@link OverlayDecisions}: mode
+ *       {@code always}, never a movie or show): {@code item-<itemId>-v<mediaVersion>-<overlayHash>-<encoding>-c<cardVersion>.mp4},
  *       so the key is {@code (itemId, overlayHash, profile)} plus the encoding's bitrate, the card
  *       format and the media version.</li>
  * </ul>
@@ -302,8 +304,8 @@ public final class OverlayCards {
      * ({@link ProgramMedia.OverlayCards}).
      *
      * <ul>
-     *   <li>Filler cards follow the room as it is now: the server's and the room's
-     *       {@code overlay.enabled}.</li>
+     *   <li>Filler cards follow the room as it is now: the server's {@code overlay.enabled} and the
+     *       room's {@code overlay.mode} ({@link #overlaidFillers}).</li>
      *   <li>An entry's card follows its decision, recorded the first time it is asked
      *       ({@link OverlayDecisions}: as the entry becomes next or current): {@code cards} or
      *       {@code video} gives the overlay.</li>
@@ -378,12 +380,16 @@ public final class OverlayCards {
                 } catch (SQLException e) {
                     throw new IOException("can't read the overlay settings of room " + roomId + ": " + e.getMessage(), e);
                 }
-                if (room == null || !room.settings().overlayEnabled()) {
+                if (room == null) {
+                    return null;
+                }
+                Set<Filler> overlaid = overlaidFillers(room.settings().overlayMode());
+                if (overlaid.isEmpty()) {
                     return null;
                 }
                 OverlayRenderer.Rendered overlay = overlays.current(roomId, room.slug(), room.settings());
                 Map<Filler, ProgramMedia.CardFile> cards = new EnumMap<>(Filler.class);
-                for (Filler f : Filler.values()) {
+                for (Filler f : overlaid) {
                     cards.put(f, fillerCard(roomId, overlay, f.serverCard(), reference));
                 }
                 return cards;
@@ -410,6 +416,19 @@ public final class OverlayCards {
                 OverlayRenderer.Rendered overlay = overlays.current(roomId, room.slug(), room.settings());
                 return itemCard(roomId, overlay, entry.itemId(), item.mediaVersion(), item.card(), reference);
             }
+        };
+    }
+
+    /**
+     * The filler cards that carry the overlay in a room mode ({@code docs/media-types.md#qr-overlay-modes}):
+     * all of them for {@code always}, only the queue-empty card ({@link Filler#IDLE}) for
+     * {@code idleOnly}, none for {@code off}. The others play the plain server card.
+     */
+    public static Set<Filler> overlaidFillers(RoomSettings.OverlayMode mode) {
+        return switch (mode) {
+            case OFF -> Set.of();
+            case ALWAYS -> java.util.EnumSet.allOf(Filler.class);
+            case IDLE_ONLY -> java.util.EnumSet.of(Filler.IDLE);
         };
     }
 

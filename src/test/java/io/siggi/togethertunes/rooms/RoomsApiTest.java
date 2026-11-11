@@ -319,7 +319,7 @@ class RoomsApiTest {
         registry.executor(id).addListener((state, change) -> changes.add(change));
 
         HttpResponse<String> r = call(alice, "PATCH", "/api/rooms/set", "{\"settings\":{\"requestsPerActor\":5,"
-                + "\"voteSkipThreshold\":\"off\",\"guests\":{\"canUpload\":true},\"overlay\":{\"enabled\":true,"
+                + "\"voteSkipThreshold\":\"off\",\"guests\":{\"canUpload\":true},\"overlay\":{\"mode\":\"always\","
                 + "\"corner\":\"tl\"},\"outputs\":{\"rtmp\":{\"playbackUrl\":\"rtspt://stream.example/live/x\"}}}}");
         assertEquals(200, r.statusCode(), r.body());
         JsonObject settings = json(r).getAsJsonObject("settings");
@@ -342,7 +342,7 @@ class RoomsApiTest {
                 tx.state().controlSettings().requestsPerActor(), tx.state().version())));
         assertEquals(1, changes.size());
         assertEquals(List.of(new RoomEvent.SettingsChanged(List.of("requestsPerActor", "voteSkipThreshold",
-                "guests.canUpload", "overlay.enabled", "overlay.corner", "outputs.rtmp.playbackUrl"))),
+                "guests.canUpload", "overlay.mode", "overlay.corner", "outputs.rtmp.playbackUrl"))),
                 changes.get(0).events());
         String stored = db.read(c -> {
             try (var ps = c.prepareStatement("SELECT settings_json FROM rooms WHERE id = ?")) {
@@ -354,7 +354,7 @@ class RoomsApiTest {
             }
         });
         assertEquals(JsonParser.parseString("{\"requestsPerActor\":5,\"voteSkipThreshold\":\"off\","
-                + "\"guests\":{\"canUpload\":true},\"overlay\":{\"enabled\":true,\"corner\":\"tl\"},"
+                + "\"guests\":{\"canUpload\":true},\"overlay\":{\"mode\":\"always\",\"corner\":\"tl\"},"
                 + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"rtspt://stream.example/live/x\"}}}"),
                 JsonParser.parseString(stored));
 
@@ -365,7 +365,7 @@ class RoomsApiTest {
         settings = json(call(alice, "PATCH", "/api/rooms/set", "{\"settings\":{\"requestsPerActor\":null,"
                 + "\"overlay\":null}}")).getAsJsonObject("settings");
         assertEquals(3, settings.get("requestsPerActor").getAsInt());
-        assertFalse(settings.getAsJsonObject("overlay").get("enabled").getAsBoolean());
+        assertEquals("off", settings.getAsJsonObject("overlay").get("mode").getAsString());
         assertEquals("br", settings.getAsJsonObject("overlay").get("corner").getAsString());
         assertTrue(settings.getAsJsonObject("guests").get("canUpload").getAsBoolean(), "untouched");
         assertEquals(2L, (long) registry.call(id, tx -> tx.state().version()));

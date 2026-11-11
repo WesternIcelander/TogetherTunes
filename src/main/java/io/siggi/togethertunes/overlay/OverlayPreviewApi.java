@@ -25,8 +25,10 @@ import javax.imageio.ImageIO;
  *       always uses the saved link name. Values are validated like the room settings:
  *       {@code 400 invalid_setting}. Users only ({@code 401 not_authenticated}); the owner and
  *       moderators ({@code rooms.moderateAny} too), else {@code 403 forbidden}; {@code 404
- *       room_not_found}. It renders whether or not the overlay is on (nothing is stored), and is
- *       {@code no-store}.</li>
+ *       room_not_found}. It renders whatever the room's {@code overlay.mode} (nothing is stored), so
+ *       the owner can place the overlay before turning it on; the queue-empty card it shows is the
+ *       one card that carries the overlay in both {@code always} and {@code idleOnly}
+ *       ({@code docs/media-types.md#qr-overlay-modes}). {@code no-store}.</li>
  * </ul>
  */
 public final class OverlayPreviewApi {

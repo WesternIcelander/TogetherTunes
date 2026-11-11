@@ -124,8 +124,8 @@ public final class Overlays {
     }
 
     /**
-     * After a room was edited: regenerates its overlay now if the overlay is on (the room's switch
-     * and the server's) and the slug or overlay settings changed, so later users find it ready.
+     * After a room was edited: regenerates its overlay now if the overlay is on (the room's mode
+     * isn't {@code off} and the server's switch is on) and the slug or overlay settings changed, so later users find it ready.
      * With the overlay off nothing happens; {@link #current} renders on demand anyway.
      */
     public void roomEdited(String roomId, String slug, RoomSettings settings, boolean serverEnabled)
@@ -139,7 +139,8 @@ public final class Overlays {
      * A preview for the management view ({@code GET /api/rooms/{room}/overlay/preview.png}): the
      * room's idle card (with its name) at the output size, with the overlay for {@code settings}
      * drawn on it as the stream would show it. Nothing is stored or cached, so unsaved settings can
-     * be previewed; it renders whether or not the overlay is on.
+     * be previewed; it renders whatever the room's overlay mode (the queue-empty card has the
+     * overlay in both {@code always} and {@code idleOnly}).
      */
     public BufferedImage preview(String slug, String roomName, RoomSettings settings) throws IOException {
         OverlayRenderer.Spec spec = spec(slug, settings);

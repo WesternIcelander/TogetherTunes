@@ -106,6 +106,15 @@ class OverlayCardsTest {
     }
 
     @Test
+    void fillersOverlaidPerRoomMode() {
+        assertEquals(java.util.Set.of(), OverlayCards.overlaidFillers(RoomSettings.OverlayMode.OFF));
+        assertEquals(java.util.EnumSet.allOf(io.siggi.togethertunes.output.FillerSource.Filler.class),
+                OverlayCards.overlaidFillers(RoomSettings.OverlayMode.ALWAYS));
+        assertEquals(java.util.Set.of(io.siggi.togethertunes.output.FillerSource.Filler.IDLE),
+                OverlayCards.overlaidFillers(RoomSettings.OverlayMode.IDLE_ONLY));
+    }
+
+    @Test
     void compositeDrawsThePanelAtItsPosition() throws Exception {
         Overlays overlays = new Overlays(data.resolve("rooms"), BASE, () -> OutputProfile.P720_30);
         OverlayRenderer.Rendered r = overlays.current(ROOM, "chill", OverlayRendererTest.settings("tl", 22, 3));

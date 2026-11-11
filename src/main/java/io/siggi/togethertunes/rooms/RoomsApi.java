@@ -460,7 +460,8 @@ public final class RoomsApi {
         outputs.put("mp3", Map.of("enabled", sw.mp3Enabled()));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("guests", g);
-        // Whether music videos get the overlay too: the owner holds output.overlayVideo (a disabled
+        // Whether music and uncategorized videos get the overlay too (in the room's "always" mode; never
+        // movies or shows): the owner holds output.overlayVideo (a disabled
         // owner holds nothing), as OverlayDecisions decides it per entry.
         boolean videoOverlay = sw.overlayEnabled()
                 && permissions.held(access.room().ownerId()).contains(Permission.OUTPUT_OVERLAY_VIDEO);

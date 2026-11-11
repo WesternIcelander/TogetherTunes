@@ -41,6 +41,7 @@ class RoomSettingsTest {
         assertFalse(d.guestsCanUpload());
         assertFalse(d.guestsCanYoutube());
         assertFalse(d.overlayEnabled());
+        assertEquals(RoomSettings.OverlayMode.OFF, d.overlayMode());
         assertEquals("br", d.overlayCorner());
         assertEquals(22, d.overlayHeightPct());
         assertEquals(3, d.overlayMargin());
@@ -88,7 +89,7 @@ class RoomSettingsTest {
         assertEquals(obj("{\"libraryRequests\":true,\"uploadRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
                 + "\"audioOnly\":false,\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
-                + "\"overlay\":{\"enabled\":false,\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
+                + "\"overlay\":{\"mode\":\"off\",\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
                 + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"\"},\"autoOff\":true,\"autoOffMinutes\":10,\"ts\":{\"join\":\"next\"}},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000,\"mp3\":3000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
@@ -231,6 +232,10 @@ class RoomSettingsTest {
         assertEquals("invalid_setting", patchError("{\"overlay\":{\"heightPct\":4}}").code());
         assertEquals("invalid_setting", patchError("{\"overlay\":{\"heightPct\":51}}").code());
         assertEquals("invalid_setting", patchError("{\"overlay\":{\"margin\":21}}").code());
+        assertEquals("invalid_setting", patchError("{\"overlay\":{\"mode\":\"sometimes\"}}").code());
+        assertEquals("invalid_setting", patchError("{\"overlay\":{\"mode\":true}}").code());
+        // The old room switch is gone (migration 0025 moved it to overlay.mode).
+        assertEquals("unknown_setting", patchError("{\"overlay\":{\"enabled\":true}}").code());
         assertEquals("invalid_setting", patchError("{\"outputs\":{\"ts\":{\"join\":\"first\"}}}").code());
         assertEquals("invalid_setting", patchError("{\"outputs\":{\"rtmp\":{\"playbackUrl\":\"javascript:x\"}}}").code());
         assertEquals("invalid_setting", patchError("{\"outputs\":{\"rtmp\":{\"playbackUrl\":\"https://\"}}}").code());
@@ -240,5 +245,20 @@ class RoomSettingsTest {
         HttpError e = patchError("{\"overlay\":{\"heightPct\":99}}");
         assertEquals(400, e.status());
         assertTrue(e.getMessage().startsWith("overlay.heightPct: "), e.getMessage());
+    }
+
+    @Test
+    void overlayModes() {
+        for (RoomSettings.OverlayMode m : RoomSettings.OverlayMode.values()) {
+            RoomSettings s = RoomSettings.DEFAULTS.patch(JsonParser.parseString("{\"overlay\":{\"mode\":\""
+                    + m.wire() + "\"}}").getAsJsonObject());
+            assertEquals(m, s.overlayMode());
+            assertEquals(m != RoomSettings.OverlayMode.OFF, s.overlayEnabled());
+            assertEquals(s, RoomSettings.parse(s.toStoredJson()));
+        }
+        assertEquals("idleOnly", RoomSettings.OverlayMode.IDLE_ONLY.wire());
+        // Stored leniently: an unknown mode (or the old switch) reads as off.
+        assertEquals(RoomSettings.OverlayMode.OFF, RoomSettings.parse("{\"overlay\":{\"mode\":\"sparkles\"}}").overlayMode());
+        assertEquals(RoomSettings.OverlayMode.OFF, RoomSettings.parse("{\"overlay\":{\"enabled\":true}}").overlayMode());
     }
 }

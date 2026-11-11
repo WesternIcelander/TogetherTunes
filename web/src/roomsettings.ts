@@ -27,6 +27,13 @@ export const GROUPS: Array<[string, string]> = [
   ["outputs", "Outputs"],
 ];
 
+/** `overlay.mode` (docs/media-types.md#qr-overlay-modes): [value, label]. */
+export const OVERLAY_MODES: Array<[string, string]> = [
+  ["off", "off"],
+  ["always", "always"],
+  ["idleOnly", "only when the queue is empty"],
+];
+
 /** Every room setting, in the order the view shows them. */
 export const SETTINGS: SettingDef[] = [
   { key: "libraryRequests", label: "Allow library requests", kind: "bool", group: "requests", default: true,
@@ -53,7 +60,10 @@ export const SETTINGS: SettingDef[] = [
   { key: "audioOnly", label: "Audio-only room", kind: "bool", group: "playback", default: false,
     help: "Only audio plays, for listeners and in the stream outputs (which show each item's card at a lower"
       + " constant rate). A change applies from the next item." },
-  { key: "overlay.enabled", label: "Show the QR code overlay", kind: "bool", group: "overlay", default: false },
+  { key: "overlay.mode", label: "Show the QR code overlay", kind: "select", group: "overlay", default: "off",
+    options: OVERLAY_MODES,
+    help: "Always: on every card and on videos. Only when the queue is empty: just on the card shown while"
+      + " nothing is queued, so it never covers what plays. Movies and shows never get it." },
   { key: "overlay.corner", label: "Corner", kind: "select", group: "overlay", default: "br",
     options: [["br", "bottom right"], ["bl", "bottom left"], ["tr", "top right"], ["tl", "top left"]] },
   { key: "overlay.heightPct", label: "Height (% of the frame)", kind: "int", group: "overlay", default: 22,
@@ -130,7 +140,10 @@ function settingLabel(key: string): string {
 /** `GET /api/rooms/{id}/server-switches`. */
 export interface ServerSwitches {
   guests: { enabled: boolean; canVote: boolean; canRequestLibrary: boolean; canUpload: boolean; canYoutube: boolean };
-  /** `videoOverlay`: the overlay is on and the room's owner may re-encode music videos with it. */
+  /**
+   * `videoOverlay`: the overlay is on and the room's owner may re-encode music and uncategorized
+   * videos with it (in the `always` mode; never movies or shows).
+   */
   overlay: { enabled: boolean; videoOverlay?: boolean };
   outputs: {
     forceAutoOff?: boolean; maxAutoOffMinutes?: number;
@@ -186,11 +199,13 @@ export function overlayNotes(sw: ServerSwitches | undefined): string[] {
   const notes = ["The QR code leads to this room's request page. It is shown only in the stream outputs"
     + " (RTMP, .ts and HLS); people listening on the room page don't see it."];
   if (sw.overlay.videoOverlay === true) {
-    notes.push("Music videos show it too (they are re-encoded with the overlay while the room plays them).");
+    notes.push("With \"always\", music videos and uncategorized videos show it too (they are re-encoded with"
+      + " the overlay while the room plays them).");
   } else if (sw.overlay.videoOverlay === false) {
-    notes.push("Music videos play without the overlay: the room owner's account may not re-encode videos."
+    notes.push("Videos play without the overlay: the room owner's account may not re-encode videos."
       + " Cards (audio items, pauses, an empty queue) still show it.");
   }
+  notes.push("Movies and shows never show it, as videos or as cards.");
   return notes;
 }
 
