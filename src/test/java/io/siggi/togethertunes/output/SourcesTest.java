@@ -244,6 +244,211 @@ class SourcesTest {
         assertEquals(3600, s.nextVideo().pts());
     }
 
+    // ---- overlay substitution (docs/overlay.md#packager-substitution) ----
+
+    /**
+     * A fake overlay re-encode of a 300-frame video with IDRs where {@code idr} says: frame
+     * {@code i} carries {@code tag + i}; GOPs in {@link #complete} (by keyframe) are ready.
+     */
+    static final class FakeVideoOverlay implements VideoOverlay {
+        final int frames;
+        final java.util.function.IntPredicate idr;
+        final int tag;
+        final java.util.Set<Integer> complete = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        final List<Integer> asked = new ArrayList<>();
+        IOException fail;
+        int shortBy;
+        Integer wrongIdrAt;
+
+        FakeVideoOverlay(int frames, java.util.function.IntPredicate idr, int tag) {
+            this.frames = frames;
+            this.idr = idr;
+            this.tag = tag;
+        }
+
+        @Override
+        public int frameCount() {
+            return frames;
+        }
+
+        @Override
+        public byte[][] gop(int keyframe) throws IOException {
+            asked.add(keyframe);
+            if (fail != null) {
+                throw fail;
+            }
+            if (!complete.contains(keyframe)) {
+                return null;
+            }
+            int end = keyframe + 1;
+            while (end < frames && !idr.test(end)) {
+                end++;
+            }
+            List<byte[]> l = new ArrayList<>();
+            for (int i = keyframe; i < end - shortBy; i++) {
+                boolean key = wrongIdrAt != null && wrongIdrAt == i ? !idr.test(i) : idr.test(i);
+                l.add(frame(key, tag + i));
+            }
+            return l.toArray(new byte[0][]);
+        }
+    }
+
+    /** Plays a source's video to the end: each frame's tag, with PTS and IDR flags checked against the mezzanine's. */
+    static List<Integer> playVideo(ProgramSource s, int firstFrame, java.util.function.IntPredicate idr) throws IOException {
+        List<Integer> tags = new ArrayList<>();
+        VideoSample v;
+        int i = firstFrame;
+        while ((v = s.nextVideo()) != null) {
+            assertEquals((i - firstFrame) * 3000L, v.pts(), "frame " + i);
+            assertEquals(idr.test(i), v.idr(), "frame " + i);
+            tags.add(frameNumber(v.data()));
+            i++;
+        }
+        return tags;
+    }
+
+    /** The tags expected when GOPs starting at {@code overlaid} come from an overlay tagged {@code tag}. */
+    static List<Integer> expected(int from, int to, java.util.function.IntPredicate idr, int tag, java.util.Set<Integer> overlaid) {
+        List<Integer> l = new ArrayList<>();
+        boolean ov = false;
+        for (int i = from; i < to; i++) {
+            if (idr.test(i)) {
+                ov = overlaid.contains(i);
+            }
+            l.add(ov ? tag + i : i);
+        }
+        return l;
+    }
+
+    @Test
+    void overlayGopsReplaceCompleteGopsOnly() throws Exception {
+        Media m = videoItem();
+        java.util.function.IntPredicate idr = i -> i % 60 == 0;
+        FakeVideoOverlay ov = new FakeVideoOverlay(300, idr, 1000);
+        ov.complete.addAll(List.of(60, 180));
+        VideoItemSource s = new VideoItemSource("item", m.index(), m.data(), () -> ov, 0);
+        assertEquals(expected(0, 300, idr, 1000, java.util.Set.of(60, 180)), playVideo(s, 0, idr));
+        assertEquals(List.of(0, 60, 120, 180, 240), ov.asked, "asked once per GOP, at its start");
+        assertEquals(2, s.overlaidGops());
+        assertEquals(469, drainAudio(s), "audio is the item's own");
+
+        // all complete, started mid-item: every GOP from the start one
+        ov.complete.addAll(List.of(0, 120, 240));
+        VideoItemSource mid = new VideoItemSource("item", m.index(), m.data(), () -> ov, 5000);
+        assertEquals(expected(120, 300, idr, 1000, java.util.Set.of(120, 180, 240)), playVideo(mid, 120, idr));
+        assertEquals(3, mid.overlaidGops());
+    }
+
+    @Test
+    void overlayCompletedMidGopTakesOverAtTheNextGop() throws Exception {
+        Media m = videoItem();
+        java.util.function.IntPredicate idr = i -> i % 60 == 0;
+        FakeVideoOverlay ov = new FakeVideoOverlay(300, idr, 1000);
+        java.util.concurrent.atomic.AtomicReference<VideoOverlay> job = new java.util.concurrent.atomic.AtomicReference<>();
+        VideoItemSource s = new VideoItemSource("item", m.index(), m.data(), job::get, 0);
+        for (int i = 0; i < 30; i++) {
+            assertEquals(i, frameNumber(s.nextVideo().data()));
+        }
+        // the job appears and its first two GOPs complete while GOP 0 plays: GOP 0 stays original
+        job.set(ov);
+        ov.complete.addAll(List.of(0, 60));
+        for (int i = 30; i < 60; i++) {
+            assertEquals(i, frameNumber(s.nextVideo().data()));
+            assertFalse(s.playingOverlay());
+        }
+        for (int i = 60; i < 120; i++) {
+            assertEquals(1000 + i, frameNumber(s.nextVideo().data()));
+            assertTrue(s.playingOverlay());
+        }
+        // GOP 120 isn't complete yet: original; 180 is by then
+        assertEquals(120, frameNumber(s.nextVideo().data()));
+        assertFalse(s.playingOverlay());
+        ov.complete.add(180);
+        for (int i = 121; i < 180; i++) {
+            assertEquals(i, frameNumber(s.nextVideo().data()));
+        }
+        assertEquals(1180, frameNumber(s.nextVideo().data()));
+        assertEquals(List.of(60, 120, 180), ov.asked);
+    }
+
+    @Test
+    void overlayFollowsAShortFirstGop() throws Exception {
+        Media m = videoItem(20);
+        java.util.function.IntPredicate idr = i -> idrAt(i, 20);
+        FakeVideoOverlay ov = new FakeVideoOverlay(300, idr, 2000);
+        ov.complete.addAll(List.of(0, 80, 260));
+        VideoItemSource s = new VideoItemSource("item", m.index(), m.data(), () -> ov, 0);
+        assertEquals(expected(0, 300, idr, 2000, java.util.Set.of(0, 80, 260)), playVideo(s, 0, idr));
+        assertEquals(3, s.overlaidGops());
+        assertEquals(List.of(0, 20, 80, 140, 200, 260), ov.asked);
+    }
+
+    @Test
+    void unusableOverlayIsDroppedForThePlay() throws Exception {
+        Media m = videoItem();
+        java.util.function.IntPredicate idr = i -> i % 60 == 0;
+        java.util.Set<Integer> all = java.util.Set.of(0, 60, 120, 180, 240);
+        List<Integer> original = expected(0, 300, idr, 0, java.util.Set.of());
+
+        // another video (frame count): never used, never read
+        FakeVideoOverlay other = new FakeVideoOverlay(299, idr, 1000);
+        other.complete.addAll(all);
+        VideoItemSource s = new VideoItemSource("item", m.index(), m.data(), () -> other, 0);
+        assertEquals(original, playVideo(s, 0, idr));
+        assertEquals(List.of(), other.asked);
+
+        // a read failure at GOP 60: original from there on, the overlay isn't asked again
+        FakeVideoOverlay failing = new FakeVideoOverlay(300, idr, 1000);
+        failing.complete.addAll(all);
+        java.util.concurrent.atomic.AtomicInteger gops = new java.util.concurrent.atomic.AtomicInteger();
+        VideoOverlay failAt60 = new VideoOverlay() {
+            @Override
+            public int frameCount() {
+                return 300;
+            }
+
+            @Override
+            public byte[][] gop(int keyframe) throws IOException {
+                if (gops.incrementAndGet() == 2) {
+                    throw new IOException("disk gone");
+                }
+                return failing.gop(keyframe);
+            }
+        };
+        s = new VideoItemSource("item", m.index(), m.data(), () -> failAt60, 0);
+        assertEquals(expected(0, 300, idr, 1000, java.util.Set.of(0)), playVideo(s, 0, idr));
+        assertEquals(2, gops.get());
+
+        // a GOP with a frame missing, or an IDR in the wrong place: the original GOP plays instead
+        FakeVideoOverlay shortGop = new FakeVideoOverlay(300, idr, 1000);
+        shortGop.complete.addAll(all);
+        shortGop.shortBy = 1;
+        s = new VideoItemSource("item", m.index(), m.data(), () -> shortGop, 0);
+        assertEquals(original, playVideo(s, 0, idr));
+        assertEquals(List.of(0), shortGop.asked);
+        for (int at : new int[] {60, 75}) {
+            FakeVideoOverlay wrongIdr = new FakeVideoOverlay(300, idr, 1000);
+            wrongIdr.complete.addAll(all);
+            wrongIdr.wrongIdrAt = at;
+            s = new VideoItemSource("item", m.index(), m.data(), () -> wrongIdr, 0);
+            assertEquals(expected(0, 300, idr, 1000, java.util.Set.of(0)), playVideo(s, 0, idr), "wrong IDR at " + at);
+        }
+    }
+
+    @Test
+    void itemSourcesPassTheVideoOverlay() throws Exception {
+        Media m = videoItem();
+        FakeVideoOverlay ov = new FakeVideoOverlay(300, i -> i % 60 == 0, 1000);
+        ov.complete.add(0);
+        ProgramSource v = ItemSources.forItem("v", true, false, m.index(), m.data(), null, null, () -> ov, 0);
+        assertEquals(1000, frameNumber(v.nextVideo().data()));
+        CardGop card = CardGop.of(AVCC, cardFrames(0));
+        ProgramSource a = ItemSources.forItem("v", true, true, m.index(), m.data(), card, null, () -> ov, 0);
+        assertInstanceOf(AudioItemSource.class, a);
+        assertEquals(0, frameNumber(a.nextVideo().data()), "played as audio: the card, no overlay GOPs");
+        assertEquals(List.of(0), ov.asked);
+    }
+
     // ---- AudioItemSource ----
 
     @Test

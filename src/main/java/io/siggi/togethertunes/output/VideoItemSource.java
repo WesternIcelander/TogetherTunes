@@ -1,9 +1,11 @@
 package io.siggi.togethertunes.output;
 
+import io.siggi.togethertunes.media.AnnexB;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SampleIndex.Kind;
 import io.siggi.togethertunes.media.SampleIndex.Track;
 import java.io.IOException;
+import java.util.function.Supplier;
 
 /**
  * A video item played as video: its mezzanine GOPs from the keyframe at or before the requested
@@ -15,10 +17,19 @@ import java.io.IOException;
  * audio does. The video may end earlier (the builder holds the last picture) or later (the builder
  * drops what is past the audio's end).
  *
- * <p>Substituting the room's overlay GOPs (M5, {@code docs/overlay.md}) will happen per GOP here;
- * GOPs are read sample by sample, so nothing is read ahead that would have to be thrown away.
+ * <p><b>Overlay substitution</b> ({@code docs/overlay.md#packager-substitution}): given the room's
+ * {@link VideoOverlay}, the source decides at every GOP start (each keyframe of the mezzanine)
+ * whether to play that GOP from the overlay re-encode (when it is complete) or from the mezzanine.
+ * Both are closed GOPs with the same avcC, the same frame timing and the same IDR positions, so the
+ * switch is seamless in either direction; it never happens inside a GOP. An overlay GOP is read
+ * whole at its start (so a read failure falls back to the original GOP cleanly); original GOPs are
+ * read sample by sample. An overlay that is for another video (frame count), can't be read, or
+ * gives a GOP that doesn't match the mezzanine's layout (frame count, IDR positions) is dropped
+ * for the rest of this play, logged once, and the original plays.
  */
 public final class VideoItemSource implements ItemSource {
+    private static final System.Logger LOG = System.getLogger(VideoItemSource.class.getName());
+
     private final String itemId;
     private final long requestedStartMs;
     private final SampleData data;
@@ -30,6 +41,18 @@ public final class VideoItemSource implements ItemSource {
     private int nextAudio;
     private long lastVideoPts = -1;
 
+    /** Asked at every GOP start for the room's overlay re-encode, or null for none. */
+    private final Supplier<VideoOverlay> overlay;
+    /** The avcC's NAL layout, for checking overlay GOPs (made on first use). */
+    private final byte[] avcC;
+    private AnnexB annexB;
+    /** Set when the overlay failed: original GOPs only from then on. */
+    private boolean overlayDropped;
+    /** The overlay GOP playing (frames from {@link #gopStart}), or null when the original plays. */
+    private byte[][] gopFrames;
+    private int gopStart;
+    private long overlaidGops;
+
     /**
      * @param index   the item's index ({@code mezz.mp4} video track, {@code audio.m4a} audio track)
      * @param data    reads the index's files
@@ -38,7 +61,21 @@ public final class VideoItemSource implements ItemSource {
      * @throws IOException if the index lacks a video or audio track, or the video has no keyframe
      */
     public VideoItemSource(String itemId, SampleIndex index, SampleData data, long startMs) throws IOException {
+        this(itemId, index, data, null, startMs);
+    }
+
+    /**
+     * Like {@link #VideoItemSource(String, SampleIndex, SampleData, long)}, playing each GOP from
+     * {@code overlay} when it gives a complete one.
+     *
+     * @param overlay asked at every GOP start on the packager thread (must not block); null, or a
+     *                null result: the original GOP
+     */
+    public VideoItemSource(String itemId, SampleIndex index, SampleData data, Supplier<VideoOverlay> overlay,
+            long startMs) throws IOException {
         this.itemId = itemId;
+        this.overlay = overlay;
+        this.avcC = index.avcC();
         this.requestedStartMs = startMs;
         this.data = data;
         this.video = index.track(Kind.VIDEO);
@@ -81,12 +118,88 @@ public final class VideoItemSource implements ItemSource {
             return null;
         }
         int i = nextVideo++;
-        byte[] bytes = data.read(video.fileRef(), video.offset(i), video.size(i));
+        if (overlay != null && video.isKeyframe(i)) {
+            chooseGop(i);
+        }
+        byte[] bytes;
+        if (gopFrames != null && i - gopStart < gopFrames.length) {
+            bytes = gopFrames[i - gopStart];
+        } else {
+            gopFrames = null;
+            bytes = data.read(video.fileRef(), video.offset(i), video.size(i));
+        }
         long pts = MediaTime.rescale(video.pts(i) - videoStartPts, video.timescale(), MediaTime.CLOCK);
         // the index guarantees strictly increasing PTS; keep that after rounding to 90 kHz too
         pts = Math.max(pts, lastVideoPts + 1);
         lastVideoPts = pts;
         return new VideoSample(bytes, pts, video.isKeyframe(i));
+    }
+
+    /** Picks the overlay GOP starting at keyframe {@code k} if it is complete and usable. */
+    private void chooseGop(int k) {
+        gopFrames = null;
+        if (overlayDropped) {
+            return;
+        }
+        VideoOverlay o = overlay.get();
+        if (o == null) {
+            return;
+        }
+        if (o.frameCount() != video.sampleCount()) {
+            drop("made for " + o.frameCount() + " frames, the video has " + video.sampleCount(), null);
+            return;
+        }
+        byte[][] g;
+        try {
+            g = o.gop(k);
+        } catch (IOException e) {
+            drop("can't read the GOP at frame " + k + ": " + e.getMessage(), e);
+            return;
+        }
+        if (g == null) {
+            return;
+        }
+        int next = k + 1 < video.sampleCount() ? video.keyframeAtOrAfter(k + 1) : -1;
+        int end = next < 0 ? video.sampleCount() : next;
+        if (g.length != end - k) {
+            drop("the GOP at frame " + k + " has " + g.length + " frames, not " + (end - k), null);
+            return;
+        }
+        try {
+            if (annexB == null) {
+                annexB = new AnnexB(avcC);
+            }
+            for (int j = 0; j < g.length; j++) {
+                byte[] f = g[j];
+                if (f == null || f.length == 0 || annexB.isIdr(f, 0, f.length) != (j == 0)) {
+                    drop("frame " + (k + j) + (j == 0 ? " isn't an IDR" : f == null || f.length == 0
+                            ? " is empty" : " is an IDR"), null);
+                    return;
+                }
+            }
+        } catch (IOException e) {
+            drop("bad frame in the GOP at frame " + k + ": " + e.getMessage(), e);
+            return;
+        }
+        gopFrames = g;
+        gopStart = k;
+        overlaidGops++;
+    }
+
+    private void drop(String why, Throwable cause) {
+        overlayDropped = true;
+        LOG.log(System.Logger.Level.WARNING, "Overlay for " + itemId + " not used for the rest of this play: "
+                + why, cause);
+    }
+
+    /** How many GOPs this source has played (or is playing) from the overlay. */
+    public long overlaidGops() {
+        return overlaidGops;
+    }
+
+    /** Whether the GOP playing now comes from the overlay. */
+    public boolean playingOverlay() {
+        return gopFrames != null;
     }
 
     @Override

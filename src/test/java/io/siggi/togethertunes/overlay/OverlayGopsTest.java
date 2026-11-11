@@ -3,6 +3,7 @@ package io.siggi.togethertunes.overlay;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -67,6 +68,42 @@ class OverlayGopsTest {
         BitSet copy = g.completed();
         copy.set(0);
         assertFalse(g.isComplete(0), "completed() is a copy");
+    }
+
+    @Test
+    void completeGopsAreReadForThePackager() throws Exception {
+        Track t = track(135, 0, 60, 120);
+        OverlayGops g = new OverlayGops(dir, t);
+        ByteArrayOutputStream data = new ByteArrayOutputStream();
+        for (int f = 60; f < 135; f++) { // an encode started at GOP 1
+            byte[] frame = new byte[3 + f % 7];
+            Arrays.fill(frame, (byte) f);
+            g.frameWritten(f, data.size(), frame.length);
+            data.writeBytes(frame);
+        }
+        Files.write(g.h264File(), data.toByteArray());
+        assertEquals(135, g.frameCount());
+        assertNull(g.gop(60), "not complete yet");
+        g.markComplete(1);
+        g.markComplete(2);
+        byte[][] gop = g.gop(60);
+        assertEquals(60, gop.length);
+        for (int i = 0; i < 60; i++) {
+            assertEquals(3 + (60 + i) % 7, gop[i].length);
+            assertEquals((byte) (60 + i), gop[i][0]);
+        }
+        assertEquals(15, g.gop(120).length, "the last GOP is short");
+        assertEquals((byte) 134, g.gop(120)[14][0]);
+        assertNull(g.gop(0), "GOP 0 wasn't encoded");
+        assertNull(g.gop(61), "not a GOP start");
+        assertNull(g.gop(-1));
+        assertNull(g.gop(135));
+
+        // bytes missing from gops.h264 (deleted under a play): an error, not a short GOP
+        Files.write(g.h264File(), Arrays.copyOf(data.toByteArray(), 100));
+        assertThrows(java.io.EOFException.class, () -> g.gop(60));
+        Files.delete(g.h264File());
+        assertThrows(IOException.class, () -> g.gop(60));
     }
 
     /** Writes an index with the given entries ({frame, offset, size, flags}) and a data file of {@code dataBytes}. */

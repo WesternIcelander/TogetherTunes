@@ -1,13 +1,17 @@
 package io.siggi.togethertunes.overlay;
 
 import io.siggi.togethertunes.media.SampleIndex.Track;
+import io.siggi.togethertunes.output.VideoOverlay;
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -17,8 +21,8 @@ import java.util.Objects;
 /**
  * The overlay re-encode of one music video for one room ({@code docs/overlay.md#music-videos-re-encode-path}):
  * which of its GOPs are ready, and where each frame is. Written by {@link OverlayVideoEncoder},
- * read by the packager, which plays a GOP from here only when it is {@link #isComplete complete}
- * and the original GOP otherwise.
+ * read by the packager ({@link VideoOverlay}: {@link #gop}), which plays a GOP from here only when
+ * it is {@link #isComplete complete} and the original GOP otherwise.
  *
  * <p>GOP <i>g</i> is the mezzanine's <i>g</i>-th GOP: the frames from its <i>g</i>-th keyframe up
  * to the next one (or the end). Frame numbers are the mezzanine's video sample numbers, so frame
@@ -40,7 +44,7 @@ import java.util.Objects;
  * <p>Thread-safe: the completion set is guarded by this object, and a frame's position is stored
  * before its GOP is marked complete, so a reader that saw {@link #isComplete} true sees it.
  */
-public final class OverlayGops {
+public final class OverlayGops implements VideoOverlay {
     /** The frames ({@code rooms/<roomId>/ov/<itemId>/gops.h264} in the design). */
     public static final String H264_FILE = "gops.h264";
     /** The frame index. */
@@ -116,6 +120,7 @@ public final class OverlayGops {
     }
 
     /** The mezzanine's frame count. */
+    @Override
     public int frameCount() {
         return frameCount;
     }
@@ -168,6 +173,36 @@ public final class OverlayGops {
     /** Frame {@code frame}'s size in bytes; valid once its GOP {@link #isComplete is complete}. */
     public int size(int frame) {
         return sizes[frame];
+    }
+
+    /**
+     * The frames of the GOP starting at {@code keyframe} if it is complete, read from
+     * {@value #H264_FILE} (one positional read per frame); null if it isn't complete, or
+     * {@code keyframe} isn't the first frame of a GOP.
+     */
+    @Override
+    public byte[][] gop(int keyframe) throws IOException {
+        if (keyframe < 0 || keyframe >= frameCount) {
+            return null;
+        }
+        int g = Arrays.binarySearch(gopStarts, keyframe);
+        if (g < 0 || !isComplete(g)) {
+            return null;
+        }
+        int end = gopEnd(g);
+        byte[][] frames = new byte[end - keyframe][];
+        try (FileChannel ch = FileChannel.open(h264File(), StandardOpenOption.READ)) {
+            for (int f = keyframe; f < end; f++) {
+                ByteBuffer buf = ByteBuffer.allocate(sizes[f]);
+                while (buf.hasRemaining()) {
+                    if (ch.read(buf, offsets[f] + buf.position()) < 0) {
+                        throw new EOFException(h264File() + " ends before frame " + f);
+                    }
+                }
+                frames[f - keyframe] = buf.array();
+            }
+        }
+        return frames;
     }
 
     /** Records where a frame was written (before its GOP is marked complete). */

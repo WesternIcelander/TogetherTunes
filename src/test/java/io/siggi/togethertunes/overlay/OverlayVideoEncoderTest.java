@@ -217,6 +217,68 @@ class OverlayVideoEncoderTest {
         checkEncode(tools, m, 2); // the short last GOP alone
     }
 
+    /**
+     * The packager's substitution ({@code docs/overlay.md#packager-substitution}) over a real
+     * encode started at GOP 1: the item plays GOP 0 from the mezzanine and the rest from the
+     * overlay, and the spliced stream decodes to every frame without errors, the panel appearing
+     * exactly at the GOP boundary.
+     */
+    @Test
+    void splicedStreamDecodesWithThePanelFromTheFirstOverlayGop() throws Exception {
+        Tools tools = OverlayCardsTest.tools();
+        Mezz m = mezz(tools, 4.5, 60);
+        Path out = dir.resolve("ov-splice");
+        OverlayGops gops = new OverlayGops(out, m.video());
+        OverlayVideoEncoder.encode(tools, request(m, 1, m.avcC()), gops, p -> { }, null);
+
+        SampleIndex index = IndexBuilder.build(tools, ENC, List.of(
+                new IndexBuilder.Source(m.file(), SampleIndex.Kind.VIDEO),
+                new IndexBuilder.Source(m.file(), SampleIndex.Kind.AUDIO)), null);
+        AnnexB annexB = new AnnexB(m.avcC());
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        List<Boolean> overlaid = new ArrayList<>();
+        try (io.siggi.togethertunes.output.FileSampleData data =
+                     new io.siggi.togethertunes.output.FileSampleData(dir, index)) {
+            io.siggi.togethertunes.output.VideoItemSource src =
+                    new io.siggi.togethertunes.output.VideoItemSource("item", index, data, () -> gops, 0);
+            io.siggi.togethertunes.output.VideoSample v;
+            while ((v = src.nextVideo()) != null) {
+                overlaid.add(src.playingOverlay());
+                stream.write(annexB.accessUnit(v.data()));
+            }
+            assertEquals(2, src.overlaidGops());
+        }
+        assertEquals(135, overlaid.size());
+        for (int i = 0; i < 135; i++) {
+            assertEquals(i >= 60, overlaid.get(i), "frame " + i);
+        }
+        Path h264 = dir.resolve("spliced.h264");
+        Files.write(h264, stream.toByteArray());
+        ToolResult r = tools.ffmpeg("-v", "error", "-f", "h264", "-i", h264.toString(),
+                "-vf", "crop=2:2:" + (OX + OW / 2) + ":" + (OY + OH / 2) + ",format=rgb24",
+                "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1").stdoutToString(12 * 200).run();
+        byte[] px = r.stdout();
+        assertEquals(135 * 12, px.length, "every frame decodes");
+        assertEquals("", r.stderrTail().trim(), "no decode errors");
+        // the mezzanine at the same spot (its picture there may be red too, now and then)
+        byte[] mz = tools.ffmpeg("-v", "error", "-i", m.file().toString(),
+                "-vf", "crop=2:2:" + (OX + OW / 2) + ":" + (OY + OH / 2) + ",format=rgb24",
+                "-fps_mode", "passthrough", "-f", "rawvideo", "pipe:1").stdoutToString(12 * 200).run().stdout();
+        assertEquals(135 * 12, mz.length);
+        for (int i = 0; i < 135; i++) {
+            int red = px[i * 12] & 0xFF;
+            int green = px[i * 12 + 1] & 0xFF;
+            int blue = px[i * 12 + 2] & 0xFF;
+            if (i >= 60) {
+                assertTrue(red > 200 && green < 60 && blue < 60, "frame " + i + ": panel, got rgb " + red + "," + green + "," + blue);
+            } else {
+                int d = Math.abs(red - (mz[i * 12] & 0xFF)) + Math.abs(green - (mz[i * 12 + 1] & 0xFF))
+                        + Math.abs(blue - (mz[i * 12 + 2] & 0xFF));
+                assertTrue(d < 12, "frame " + i + ": the mezzanine's own picture, off by " + d);
+            }
+        }
+    }
+
     @Test
     void shortFirstGopKeepsTheMezzaninesKeyframes() throws Exception {
         Tools tools = OverlayCardsTest.tools();

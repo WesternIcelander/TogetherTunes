@@ -40,8 +40,19 @@ public final class ItemSources {
     public static ItemSource forItem(String itemId, boolean videoItem, boolean presentAsAudio,
             SampleIndex index, SampleData data, CardGop card, Supplier<CardGop> overlay, long startMs)
             throws IOException {
+        return forItem(itemId, videoItem, presentAsAudio, index, data, card, overlay, null, startMs);
+    }
+
+    /**
+     * {@link #forItem(String, boolean, boolean, SampleIndex, SampleData, CardGop, Supplier, long)}
+     * with the room's overlay re-encode for a video item played as video, asked at every GOP start
+     * ({@link VideoItemSource}); ignored for an item played as audio.
+     */
+    public static ItemSource forItem(String itemId, boolean videoItem, boolean presentAsAudio,
+            SampleIndex index, SampleData data, CardGop card, Supplier<CardGop> overlay,
+            Supplier<VideoOverlay> videoOverlay, long startMs) throws IOException {
         if (videoItem && !presentAsAudio) {
-            return new VideoItemSource(itemId, index, data, startMs);
+            return new VideoItemSource(itemId, index, data, videoOverlay, startMs);
         }
         if (card == null) {
             if (videoItem) {

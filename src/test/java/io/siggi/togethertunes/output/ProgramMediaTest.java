@@ -378,6 +378,17 @@ class ProgramMediaTest {
             return items.get(entry.entryId());
         }
 
+        /** Video re-encodes by entry id; every call recorded as "entryId dirName frameCount". */
+        final Map<String, VideoOverlay> videos = new java.util.concurrent.ConcurrentHashMap<>();
+        final List<String> videosAsked = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public java.util.function.Supplier<VideoOverlay> video(Entry entry, Path itemDir, SampleIndex index) {
+            videosAsked.add(entry.entryId() + " " + itemDir.getFileName() + " "
+                    + index.track(SampleIndex.Kind.VIDEO).sampleCount());
+            return () -> videos.get(entry.entryId());
+        }
+
         static ProgramMedia.CardFile card(int tag) {
             return new ProgramMedia.CardFile(Path.of("ov-" + tag + ".mp4"), "k" + tag);
         }
@@ -496,6 +507,30 @@ class ProgramMediaTest {
             assertInstanceOf(VideoItemSource.class, pm.item(VIDEO, 0));
             runLoads();
             assertEquals(List.of(), overlay.itemsAsked);
+        }
+    }
+
+    @Test
+    void videoPlayedAsVideoGetsTheOverlayReencode() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(VIDEO, AS_AUDIO));
+            runLoads();
+            ProgramSource v = pm.item(VIDEO, 0);
+            assertInstanceOf(VideoItemSource.class, v);
+            assertEquals(List.of("e1 video1 300"), overlay.videosAsked, "asked with the version dir and index");
+            assertEquals(0, nextGopTag(v), "no re-encode yet: the original GOP");
+            SourcesTest.FakeVideoOverlay job = new SourcesTest.FakeVideoOverlay(300, i -> i % 60 == 0, 1000);
+            job.complete.addAll(List.of(60, 120));
+            overlay.videos.put(VIDEO.entryId(), job);
+            assertEquals(1060, nextGopTag(v), "the overlay GOP once complete");
+            assertEquals(1120, nextGopTag(v));
+            assertEquals(180, nextGopTag(v), "the original where the re-encode isn't complete");
+
+            ProgramSource a = pm.item(AS_AUDIO, 0);
+            runLoads();
+            assertInstanceOf(AudioItemSource.class, a);
+            assertEquals(1, overlay.videosAsked.size(), "not for an entry played as audio");
         }
     }
 

@@ -54,7 +54,9 @@ import java.util.function.Supplier;
  * made and loaded in the background, and the room's overlaid filler cards are looked up when the
  * cue changes and every {@link #FILLER_RECHECK_MS} while a filler plays. Sources ask for them at
  * every 2 s GOP ({@link CardGop#repeat(java.util.function.Supplier)}) and show the plain card until
- * they are ready, so the overlay never delays a play; it appears at the next GOP boundary.
+ * they are ready, so the overlay never delays a play; it appears at the next GOP boundary. An entry
+ * played as video gets the room's overlay re-encode from {@link OverlayCards#video}, and its
+ * {@link VideoItemSource} plays each GOP from it once that GOP is complete.
  *
  * <p>One instance per {@link TimelineFollower}: it relies on the follower playing every item source
  * it returns right away, and on the unit builder playing one source at a time. The item playing is
@@ -102,6 +104,22 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
          * (its recorded decision is off).
          */
         CardFile item(ProgramCue.Entry entry) throws IOException, InterruptedException;
+
+        /**
+         * The room's overlay re-encode for an entry played as video
+         * ({@code docs/overlay.md#packager-substitution}), as a supplier the source asks at every
+         * GOP start: it gives the re-encode once there is one (null until then, or when the entry
+         * gets no overlay), and the source plays each GOP from it when that GOP is complete.
+         * Unlike the other two methods this one runs on the packager thread, when the entry
+         * starts playing, and neither it nor the supplier may block. Default: none.
+         *
+         * @param itemDir the media version directory the play reads (a re-encode is only valid
+         *                for the version it was made from)
+         * @param index   that version's index
+         */
+        default Supplier<VideoOverlay> video(ProgramCue.Entry entry, Path itemDir, SampleIndex index) {
+            return null;
+        }
     }
 
     /** Loads a card file that has no index (a video item's {@code card.mp4}, a filler card). */
@@ -376,8 +394,10 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             src = new AudioItemSource(entry.itemId(), s.index, s.data, s.card, overlaid, startMs, true);
         } else {
             CardGop card = asAudioVideo(entry) ? s.card : null;
+            Supplier<VideoOverlay> video = overlay != null && entry.videoItem() && !entry.playsAsAudio()
+                    ? overlay.video(entry, s.dir, s.index) : null;
             src = ItemSources.forItem(entry.itemId(), entry.videoItem(), entry.playsAsAudio(), s.index,
-                    s.data, entry.videoItem() ? card : s.card, overlaid, startMs);
+                    s.data, entry.videoItem() ? card : s.card, overlaid, video, startMs);
         }
         playing = s.key;
         playingEntry = entry.entryId();
