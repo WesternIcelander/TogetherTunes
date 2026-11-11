@@ -53,10 +53,12 @@
       index.bin           packager sample index (see library-and-ingest.md)
       cover.jpg           artwork (embedded, from YouTube thumbnail, or generated)
   cards/<encoding>/       (e.g. cards/720p30-3000k-v3/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading/blank.mp4 (+ .key fingerprints)
+  cards/custom/           server-wide custom card images as uploaded: <screen>-<hash>.png|jpg (media-types.md#custom-card-images)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     overlay.json          overlay.png's spec, position in the frame and overlayHash
-    cards/<key>.mp4       per-room cards with the overlay: filler-<id>-…mp4 and item-<itemId>-v<N>-…mp4 (+ .key fingerprints; overlay.md#cards-cheap-path)
+    cards/<key>.mp4       per-room cards with the overlay: filler-<id>-…mp4 and item-<itemId>-v<N>-…mp4, and cards from custom images custom-<screen>-…mp4 (+ .key fingerprints; overlay.md#cards-cheap-path)
+    custom-cards/         the room's own custom card images as uploaded: <screen>-<hash>.png|jpg
     ov/<itemId>/<version>-<overlayHash>-<encoding>-g<g0>/
                           one overlay re-encode of a music video: gops.h264 + gops.idx + the overlay.png it used,
                           and a `done` marker once finished (its mtime = last use for the LRU cache; see overlay.md)
