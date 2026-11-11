@@ -88,7 +88,9 @@ An item is **referenced** if any of these is true:
 3. deletes `media/<itemId>/` and any overlay caches for it;
 4. sets `status='purged'` and `purged_at`, keeping the row and its metadata.
 
-With `retention.unreferencedDays = 0`, nothing is ever deleted automatically. The setting is read at each sweep; the first sweep runs a minute after start.
+With `retention.unreferencedDays = 0`, unreferenced items are never deleted. The setting is read at each sweep; the first sweep runs a minute after start. **Pinned items** (`items.pinned_at`) are never selected.
+
+The same sweep also runs **auto-delete of movies and shows** ([media-types.md](media-types.md#views-auto-delete-and-pins)): `ready`, unpinned `movie`/`show` items never viewed and added more than `retention.videoUnviewedDays` ago, or last viewed more than `retention.videoAfterViewHours` ago, are purged the same way (re-check in the purge transaction, audit `reason: "auto-delete"` with both settings). For them library and playlist entries don't count as references; an entry queued, suggested or playing in a room and a running ingest job still protect them.
 
 Implementation (`retention/RetentionSweeper`): steps 3 and 4 are one manual-style purge (`Items.purge`), so the order is the purge's: mark and move the files aside in the transaction, delete them after the commit (a crash never leaves a `ready` item without files). The re-check runs the selection predicate again for the item after its row is locked (`FOR UPDATE` on PostgreSQL), and an item that gained a reference or was touched since the selection is skipped. Queued ingest jobs don't protect an item (they are cancelled, as in any purge); a running one does. Each purge writes an `item.purged` audit row without an actor, with `reason: "retention"`. Accepted race: an add that read the item as `ready` just before the sweep may commit its entry just after it, which then shows "media expired".
 
