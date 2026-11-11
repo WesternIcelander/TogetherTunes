@@ -58,7 +58,8 @@
     overlay.json          overlay.png's spec, position in the frame and overlayHash
     cards/<key>.mp4       per-room cards with the overlay: filler-<id>-…mp4 and item-<itemId>-v<N>-…mp4 (+ .key fingerprints; overlay.md#cards-cheap-path)
     ov/<itemId>/<version>-<overlayHash>-<encoding>-g<g0>/
-                          one overlay re-encode of a music video: gops.h264 + gops.idx + the overlay.png it used (see overlay.md)
+                          one overlay re-encode of a music video: gops.h264 + gops.idx + the overlay.png it used,
+                          and a `done` marker once finished (its mtime = last use for the LRU cache; see overlay.md)
   tmp/                    in-progress uploads and ingest scratch
   fonts/                  downloaded script fonts (<file>.ttf/.otf from the font manifest) + their OFL licence texts; uploads/<id>.ttf|otf (library-and-ingest.md#card-fonts)
 ```
@@ -86,7 +87,7 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 | `ingest.quickPreset` | veryfast | *admin*. x264 preset for items a room wants now; default of the admin setting of the same name ([library-and-ingest.md](library-and-ingest.md#presets)) |
 | `ingest.qualityPreset` | slow | *admin*. x264 preset for library items (quality re-encodes) |
 | `overlay.workers` | 1 | *admin*. Concurrent overlay re-encodes |
-| `overlay.cacheMaxBytes` | 20 GiB | *admin*. Least-recently-used eviction of `rooms/*/ov/` |
+| `overlay.cacheMaxBytes` | 20 GiB | *admin*. Least-recently-used eviction of `rooms/*/ov/` and `rooms/*/cards/` |
 | `http.trustedProxies` | none | CIDRs whose `X-Forwarded-For` is trusted. Required for correct guest IPs behind a reverse proxy |
 
 Runtime settings live in the DB and are edited in the admin UI: registration mode, OIDC providers, roles, guest policy, the outputs and overlay features, retention days, whether guests may download media, and the *admin* config keys above. They are listed in [auth.md](auth.md#server-settings).
