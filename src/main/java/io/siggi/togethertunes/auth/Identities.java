@@ -34,7 +34,8 @@ import java.util.Objects;
  *       the same provider is {@code provider_already_linked} (unlink the old one first). Linking
  *       the identity the user already has is fine.</li>
  * </ul>
- * Each runs in one transaction that re-reads the provider (still enabled, same issuer, else
+ * Each runs in one transaction that re-reads the provider (still enabled, same issuer and, for
+ * OAuth2, same userinfo URL and subject path, else
  * {@code provider_unavailable}); signing up and linking take the account-creation lock
  * ({@link Accounts#lockAccountCreation}) and look the identity up again under it, so two
  * concurrent callbacks for one subject can't create two rows.
@@ -376,16 +377,28 @@ public final class Identities {
         return e.isEmpty() || e.length() > EMAIL_MAX || e.chars().anyMatch(ch -> ch < 0x20 || ch == 0x7f) ? null : e;
     }
 
-    /** The provider as stored must still be the one the login started with. */
+    /**
+     * The provider as stored must still be the one the login started with: enabled, and what gives
+     * its subjects their meaning unchanged (the issuer; for OAuth2 also the userinfo URL and the
+     * subject path).
+     */
     private static void checkProvider(Connection c, Providers.Provider provider) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT enabled, issuer FROM oidc_providers WHERE id = ?")) {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT enabled, issuer, claim_mapping_json FROM oidc_providers WHERE id = ?")) {
             ps.setString(1, provider.id());
             try (ResultSet rs = ps.executeQuery()) {
-                if (!rs.next() || rs.getInt(1) == 0 || !Objects.equals(rs.getString(2), provider.issuer())) {
+                if (!rs.next() || rs.getInt(1) == 0 || !Objects.equals(rs.getString(2), provider.issuer())
+                        || provider.kind() == Providers.Kind.OAUTH2
+                        && !sameSubjectSource(ClaimMapping.fromStored(rs.getString(3)), provider.claimMapping())) {
                     throw new Refused("provider_unavailable", "the provider was disabled or changed", null);
                 }
             }
         }
+    }
+
+    private static boolean sameSubjectSource(ClaimMapping stored, ClaimMapping used) {
+        return stored != null && used != null && Objects.equals(stored.userinfoUrl(), used.userinfoUrl())
+                && Objects.equals(stored.subject(), used.subject());
     }
 
     private static Row find(Connection c, String providerId, String subject) throws SQLException {

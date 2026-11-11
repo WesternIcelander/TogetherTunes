@@ -50,8 +50,8 @@ import java.util.Objects;
  *       {@link #TTL_MS}), checks it was started for this provider, in this browser (the binding
  *       cookie, below) and, for a link, by the user still logged in, then exchanges the code at the
  *       token endpoint with the {@code code_verifier}, validates the ID token (OIDC,
- *       {@link IdTokenValidator}) and hands both to the {@link Completion} (in the server:
- *       {@link IdentityResolution}).</li>
+ *       {@link IdTokenValidator}) or fetches the userinfo URL (plain OAuth2, below) and hands the
+ *       result to the {@link Completion} (in the server: {@link IdentityResolution}).</li>
  * </ul>
  *
  * <p><b>Browser binding:</b> the start sets the cookie {@value #BINDING_COOKIE} (a random token,
@@ -69,6 +69,13 @@ import java.util.Objects;
  * {@code access_token} (and, for OIDC, an {@code id_token}); an {@code error} field fails it even
  * with status 200. Redirects aren't followed, {@value #MAX_BODY_BYTES} bytes at most.
  *
+ * <p><b>Userinfo (plain OAuth2):</b> {@code GET} the mapping's {@code userinfoUrl} with
+ * {@code Authorization: Bearer <access_token>}, {@code Accept: application/json}, a
+ * {@code User-Agent} (some APIs refuse requests without one) and {@code Client-Id} (the public
+ * client ID; some APIs want it next to the token). It must answer {@code 200} with JSON, same
+ * limits as the token request; the {@link ClaimMapping} paths are resolved against it by
+ * {@link IdentityResolution#identityOf}.
+ *
  * <p><b>Failures</b> redirect ({@code 302}) to the login page {@code /login.html?error=<code>}
  * (with {@code next}), or for a link to the account page {@code /account/?error=<code>}. Codes:
  * {@code provider_unavailable} (unknown or disabled provider, or changed while logging in),
@@ -77,9 +84,10 @@ import java.util.Objects;
  * state, or a state of another provider), {@code login_browser_mismatch} (binding cookie missing or
  * different), {@code link_session_changed}, {@code provider_denied} (the user said no),
  * {@code provider_error}, {@code token_exchange_failed}, {@code id_token_invalid} (signature,
- * algorithm, {@code iss}, {@code aud}, {@code exp}, {@code iat}, {@code nonce}), and
- * {@code login_unavailable} (the default {@link Completion}, and plain OAuth2 providers until their
- * userinfo step exists); identity resolution ({@link IdentityResolution}) adds
+ * algorithm, {@code iss}, {@code aud}, {@code exp}, {@code iat}, {@code nonce}),
+ * {@code userinfo_failed} (the userinfo request failed or its answer has no usable subject), and
+ * {@code login_unavailable} (the default {@link Completion}); identity resolution
+ * ({@link IdentityResolution}) adds
  * {@code account_disabled}, {@code signup_disabled}, {@code setup_required},
  * {@code identity_in_use} and {@code provider_already_linked}. Start and callback share a per-IP limit
  * ({@code 429 rate_limited}). Never logged: state, nonce, verifier, code, tokens, secrets.
@@ -97,6 +105,7 @@ public final class OidcLogin {
     static final int NEXT_MAX = 2048;
     static final String LOGIN_PAGE = "/login.html";
     static final String ACCOUNT_PAGE = "/account/";
+    static final String USER_AGENT = "TogetherTunes";
 
     /** What the user started the login for. */
     public enum Intent {
@@ -150,11 +159,16 @@ public final class OidcLogin {
     /**
      * A callback that got through the state checks and the code exchange.
      *
-     * @param idToken for OIDC: the validated ID token ({@link IdTokenValidator}); {@code null} for
-     *                OAuth2
+     * @param idToken  for OIDC: the validated ID token ({@link IdTokenValidator}); {@code null} for
+     *                 OAuth2
+     * @param userinfo for OAuth2: the userinfo URL's JSON answer; {@code null} for OIDC
      */
     public record Callback(Providers.Provider provider, Pending pending, TokenResponse tokens,
-                           IdTokenValidator.IdToken idToken) {
+                           IdTokenValidator.IdToken idToken, JsonElement userinfo) {
+        @Override
+        public String toString() {
+            return "Callback[" + provider.slug() + ", " + pending + "]";
+        }
     }
 
     /** What happens after the code exchange and ID-token validation: identity resolution. */
@@ -350,10 +364,14 @@ public final class OidcLogin {
                 throw new LoginException("link_session_changed", "the user who started linking isn't logged in");
             }
             TokenResponse tokens = exchange(provider, endpoints(provider), code, login.codeVerifier());
-            IdTokenValidator.IdToken idToken = provider.kind() == Providers.Kind.OIDC
-                    ? idTokens.validate(tokens.idToken(), provider.issuer(), provider.clientId(), login.nonce())
-                    : null;
-            completion.complete(request, response, new Callback(provider, login, tokens, idToken));
+            IdTokenValidator.IdToken idToken = null;
+            JsonElement userinfo = null;
+            if (provider.kind() == Providers.Kind.OIDC) {
+                idToken = idTokens.validate(tokens.idToken(), provider.issuer(), provider.clientId(), login.nonce());
+            } else {
+                userinfo = userinfo(provider, tokens);
+            }
+            completion.complete(request, response, new Callback(provider, login, tokens, idToken, userinfo));
         } catch (LoginException e) {
             LOG.log(System.Logger.Level.INFO, "Login with provider " + slug + " failed (" + e.code() + "): "
                     + e.getMessage());
@@ -466,6 +484,50 @@ public final class OidcLogin {
         }
         return new TokenResponse(accessToken, tokenType == null ? "Bearer" : tokenType, idToken,
                 string(json, "scope"), expiresIn);
+    }
+
+    /** Fetches a plain OAuth2 provider's userinfo URL with the access token. */
+    JsonElement userinfo(Providers.Provider provider, TokenResponse tokens) throws LoginException, InterruptedException {
+        ClaimMapping m = provider.claimMapping();
+        if (m == null || m.userinfoUrl() == null || m.subject() == null) {
+            throw new LoginException("provider_unavailable", "the provider has no userinfo URL configured");
+        }
+        URI uri = URI.create(m.userinfoUrl());
+        HttpRequest req = HttpRequest.newBuilder(uri)
+                .timeout(timeout)
+                .header("Authorization", "Bearer " + tokens.accessToken())
+                .header("Accept", "application/json")
+                .header("User-Agent", USER_AGENT)
+                .header("Client-Id", provider.clientId())
+                .GET()
+                .build();
+        int status;
+        String body;
+        try {
+            HttpResponse<InputStream> res = client.send(req, HttpResponse.BodyHandlers.ofInputStream());
+            status = res.statusCode();
+            try (InputStream in = res.body()) {
+                body = readCapped(in);
+            }
+        } catch (IOException e) {
+            throw new LoginException("userinfo_failed", "userinfo request to " + uri.getHost() + " failed: "
+                    + e.getClass().getSimpleName());
+        }
+        if (status != 200) {
+            throw new LoginException("userinfo_failed", "the userinfo URL answered " + status);
+        }
+        if (body == null) {
+            throw new LoginException("userinfo_failed", "the userinfo response is too large");
+        }
+        try {
+            JsonElement json = JsonParser.parseString(body);
+            if (json == null || !(json.isJsonObject() || json.isJsonArray())) {
+                throw new LoginException("userinfo_failed", "the userinfo response is not a JSON object or array");
+            }
+            return json;
+        } catch (JsonParseException e) {
+            throw new LoginException("userinfo_failed", "the userinfo response is not JSON");
+        }
     }
 
     private static String readCapped(InputStream in) throws IOException {

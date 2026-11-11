@@ -80,6 +80,9 @@ class OidcLoginTest {
     private final AtomicReference<Object[]> tokenAnswer = new AtomicReference<>();
     private final List<Map<String, String>> tokenForms = new CopyOnWriteArrayList<>();
     private final List<String> tokenAuth = new CopyOnWriteArrayList<>();
+    /** The OAuth2 userinfo URL's answer (status, body, extra header or null), and each request's Authorization. */
+    private final AtomicReference<Object[]> userinfoAnswer = new AtomicReference<>();
+    private final List<String> userinfoAuth = new CopyOnWriteArrayList<>();
     /** The nonce each login (by state) was started with, and each code was issued for. */
     private final Map<String, String> nonceByState = new ConcurrentHashMap<>();
     private final Map<String, String> nonceByCode = new ConcurrentHashMap<>();
@@ -122,6 +125,15 @@ class OidcLoginTest {
                         body = body.replace(ID_TOKEN, idToken(clientId(form, auth),
                                 nonceByCode.get(form.get("code")), "user-" + form.get("code")));
                     }
+                } else if (path.endsWith("/user")) {
+                    String auth = exchange.getRequestHeaders().getFirst("Authorization");
+                    userinfoAuth.add(auth == null ? "" : auth);
+                    Object[] answer = userinfoAnswer.get();
+                    status = (Integer) answer[0];
+                    body = (String) answer[1];
+                    if (answer[2] != null) {
+                        exchange.getResponseHeaders().add("Location", (String) answer[2]);
+                    }
                 } else {
                     exchange.sendResponseHeaders(404, -1);
                     return;
@@ -139,6 +151,7 @@ class OidcLoginTest {
         tokenAnswer.set(new Object[]{200,
                 "{\"access_token\":\"at-1\",\"token_type\":\"Bearer\",\"id_token\":\"" + ID_TOKEN
                         + "\",\"expires_in\":3600}"});
+        userinfoAnswer.set(new Object[]{200, "{\"id\":42,\"login\":\"octo\"}", null});
 
         Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", BASE), 4, dir)
                 .load(null).config();
@@ -433,6 +446,9 @@ class OidcLoginTest {
         assertEquals("one", completed.get(1).provider().slug());
         assertEquals("user-c1", completed.get(1).idToken().subject());
         assertNull(completed.get(0).idToken(), "no ID token for OAuth2");
+        assertEquals(42, completed.get(0).userinfo().getAsJsonObject().get("id").getAsInt());
+        assertNull(completed.get(1).userinfo(), "no userinfo request for OIDC");
+        assertEquals(List.of("Bearer at-2"), userinfoAuth);
     }
 
     @Test
@@ -452,6 +468,39 @@ class OidcLoginTest {
         assertEquals("", tokenAuth.get(0));
         assertNull(completed.get(0).tokens().idToken());
         assertNull(completed.get(0).pending().nonce());
+        assertEquals(List.of("Bearer gho_x"), userinfoAuth);
+        assertEquals("octo", completed.get(0).userinfo().getAsJsonObject().get("login").getAsString());
+    }
+
+    @Test
+    void oauthUserinfoFailuresNeverReachTheCompletion() throws Exception {
+        oauth("gh", null);
+        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"gho_x\"}"});
+        String big = "{\"id\":1,\"pad\":\"" + "x".repeat(OidcLogin.MAX_BODY_BYTES) + "\"}";
+        Object[][] answers = {
+                {401, "{\"message\":\"Bad credentials\"}", null},
+                {302, "{}", "http://127.0.0.1:1/elsewhere"}, // redirects aren't followed
+                {200, "<html>", null},
+                {200, "", null},
+                {200, "42", null},
+                {200, big, null},
+        };
+        for (Object[] answer : answers) {
+            userinfoAnswer.set(answer);
+            Started s = start("gh", "", null);
+            assertError("/login.html", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
+        }
+        assertTrue(completed.isEmpty());
+        assertEquals(answers.length, userinfoAuth.size());
+        // An unreachable userinfo URL.
+        String base = "http://127.0.0.1:" + idp.getAddress().getPort() + "/oauth";
+        Providers.Provider p = providers.bySlug("gh");
+        providers.update(p.id(), new Providers.Spec(p.slug(), p.displayName(), p.kind(), p.issuer(), p.clientId(),
+                p.scopes(), true, false, new ClaimMapping(base + "/authorize", base + "/token",
+                        "http://127.0.0.1:1/user", "id", null, null, null)), Providers.SecretChange.KEEP);
+        Started s = start("gh", "", null);
+        assertError("/login.html", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
+        assertTrue(completed.isEmpty());
     }
 
     @Test

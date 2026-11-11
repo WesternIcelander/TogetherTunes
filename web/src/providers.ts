@@ -25,6 +25,7 @@ export function providerErrorMessage(code: string): string {
     case "provider_unsupported": return "That login provider isn't set up in a way this server supports.";
     case "provider_denied": return "Login was cancelled at the provider.";
     case "login_expired": return "The login took too long or was already used. Please try again.";
+    case "userinfo_failed": return "The login provider didn't say who you are. Please try again later.";
     case "login_browser_mismatch": return "The login has to finish in the browser it was started in. Please try again.";
     case "not_authenticated": return "Log in first.";
     case "link_session_changed": return "You were logged out or switched accounts while linking. Please try again.";

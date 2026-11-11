@@ -86,6 +86,35 @@ public record ClaimMapping(String authorizationEndpoint, String tokenEndpoint, S
         return new ClaimMapping(authorization, token, userinfo, subject, username, displayName, email);
     }
 
+    /**
+     * The value at {@code path} in {@code root} (a userinfo response): each name looks up an object
+     * member, or for an array, a name of digits indexes it ({@code data.0.id}).
+     *
+     * @return the element, or {@code null} when the path doesn't lead anywhere (or {@code path} is
+     *         {@code null})
+     */
+    public static JsonElement resolve(JsonElement root, String path) {
+        if (root == null || path == null) {
+            return null;
+        }
+        JsonElement at = root;
+        for (String name : path.split("\\.", -1)) {
+            if (at == null || at.isJsonNull()) {
+                return null;
+            }
+            if (at.isJsonObject()) {
+                at = at.getAsJsonObject().get(name);
+            } else if (at.isJsonArray() && !name.isEmpty() && name.length() <= 9
+                    && name.chars().allMatch(ch -> ch >= '0' && ch <= '9')) {
+                int i = Integer.parseInt(name);
+                at = i < at.getAsJsonArray().size() ? at.getAsJsonArray().get(i) : null;
+            } else {
+                return null;
+            }
+        }
+        return at == null || at.isJsonNull() ? null : at;
+    }
+
     /** The stored form; {@code null} for {@code null}. */
     public static String toStored(ClaimMapping mapping) {
         return mapping == null ? null : Json.GSON.toJson(mapping.toMap());
