@@ -791,6 +791,7 @@ Web client:
 ## M6 — OIDC and OAuth
 
 - [ ] Provider admin (`/api/admin/providers`), `client_secret_enc`, `allow_signup`, `claim_mapping_json`; `/api/auth/providers`.
+  - **Several providers at once** (Siggi, 2026-11-11): any number of providers can be enabled together (e.g. Siggi's own OIDC provider and a Twitch one), each with its own login button, and a user can link several. Nothing may assume a single provider. Keep `docs/future-ideas.md#provider-gated-room-access-eg-twitch-subscribers` possible (one place that turns the token response into an identity; room request/vote checks in one server-side place), but don't build it. Tests: two providers enabled at once, logging in through each, and one user linking both.
 - [ ] Discovery + JWKS caching, refetch on unknown `kid`.
 - [ ] Authorization code + PKCE S256, `state`/`nonce` stored server-side.
 - [ ] ID-token validation via Nimbus: RS256/ES256 only by default, `iss`, `aud`, `exp`, `iat` ±60 s, `nonce`.

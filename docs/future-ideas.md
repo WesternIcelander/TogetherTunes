@@ -79,3 +79,26 @@ The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is th
 - **Bearer-authenticated WebSockets without `Origin`:** keep accepting an upgrade with no `Origin` header and no cookie, authenticated by the first `{type:"auth"}` message ([auth.md](auth.md)); the Origin check exists to protect cookies, which native apps don't send.
 - **OIDC / OAuth login for apps (M6):** keep the login flow usable from an app: started in `ASWebAuthenticationSession` (iOS) or Custom Tabs (Android), finished by handing the app a bearer token (e.g. via a registered redirect back into the app and a one-time code exchanged for a token), not only by setting a browser cookie.
 - **Item data for local playback:** whatever the web client needs to play a file correctly (e.g. `originalGainDb`, `presentAsAudio`, durations) must stay in the API, so an app can play its own copy the same way.
+
+## Provider-gated room access (e.g. Twitch subscribers)
+
+**Goal** (a friend of Siggi's, 2026-11-11): a room owner restricts who may request songs and vote to people who hold a status at an external service, for example subscribers of the owner's Twitch channel. Users log in through that service (Twitch supports OpenID Connect), and the room checks their status.
+
+### Sketch
+
+- **Login:** an ordinary OIDC provider row for Twitch, next to any others (Siggi's own provider, Discord, …). Twitch needs the `user:read:subscriptions` scope for the check below.
+- **Check:** after login (and again from time to time, since subscriptions lapse), call the service's API with the user's access token, e.g. Twitch's "check user subscription" endpoint for the broadcaster's channel. Store the result on the identity with a checked-at time.
+- **Room rule:** a room setting such as "requests and votes need a subscription to channel X, through provider Y", enforced on the server like every other permission. Guests and users without a matching identity can listen but not request or vote.
+
+### Open questions
+
+- Store the access and refresh tokens (encrypted like `client_secret_enc`) to recheck in the background, or only check at login and ask users to log in again when the result is stale?
+- How the owner proves the channel is theirs (log in with that provider themselves, and use their own identity's channel?).
+
+### What current work should keep open
+
+- **Several providers at once:** any number of providers enabled side by side, each with its own login button, and one user may link several. Nothing may assume a single provider.
+- **Per-provider settings:** scopes and provider-specific options stay per provider row (`scopes`, `claim_mapping_json`), so a provider can ask for extra scopes.
+- **A hook after the token exchange:** keep the step that turns the token response into an identity in one place, so a provider-specific step (calling the service's API with the access token, storing the result on the identity) can be added there later. Don't store access or refresh tokens until this idea is built.
+- **Room permissions:** keep request and vote checks in one server-side place per room, so an extra rule ("needs a subscription through provider Y") can be added there.
+
