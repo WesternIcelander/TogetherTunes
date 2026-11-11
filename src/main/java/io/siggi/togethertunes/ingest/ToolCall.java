@@ -1,8 +1,10 @@
 package io.siggi.togethertunes.ingest;
 
 import java.io.ByteArrayOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -30,9 +32,10 @@ import java.util.function.Consumer;
  *       line; the last {@link #STDERR_TAIL_LINES} lines also go into the result and into
  *       {@link ToolException} messages.</li>
  *   <li><b>stdout</b> is discarded by default, or captured ({@link #stdoutToString}), written to a
- *       file ({@link #stdoutToFile}), handed over line by line ({@link #stdoutLines}), or parsed
+ *       file ({@link #stdoutToFile}), handed over line by line ({@link #stdoutLines}), parsed
  *       as ffmpeg {@code -progress pipe:1} output ({@link #ffmpegProgress}, which also adds the
- *       {@code -progress pipe:1 -nostats} arguments).</li>
+ *       {@code -progress pipe:1 -nostats} arguments), or read as a binary stream
+ *       ({@link #stdoutStream}).</li>
  *   <li><b>stdin</b> is closed at once (ffmpeg would otherwise read keyboard commands from it).</li>
  *   <li><b>Secrets</b> ({@link #secret}), e.g. an RTMP stream key in an output URL, are replaced
  *       by {@code <redacted>} in everything logged and in exception messages (invariant 6).</li>
@@ -51,7 +54,17 @@ public final class ToolCall {
     /** How often the waiting thread checks the time limits. */
     private static final long POLL_MS = 100;
 
-    private enum StdoutMode { DISCARD, STRING, FILE, LINES, PROGRESS }
+    private enum StdoutMode { DISCARD, STRING, FILE, LINES, PROGRESS, STREAM }
+
+    /** Reads a tool's binary stdout ({@link #stdoutStream}). */
+    @FunctionalInterface
+    public interface StdoutHandler {
+        /**
+         * Reads {@code in} (the tool's stdout) until it ends or the handler has seen enough; what
+         * it leaves unread is discarded. Throwing stops the tool and fails the run.
+         */
+        void read(InputStream in) throws IOException;
+    }
 
     private final String tool;
     private final String executable;
@@ -67,6 +80,7 @@ public final class ToolCall {
     private Path stdoutFile;
     private Consumer<String> stdoutConsumer;
     private Consumer<FfmpegProgress> progressConsumer;
+    private StdoutHandler stdoutHandler;
     private Consumer<String> stderrConsumer;
     private boolean used;
 
@@ -164,6 +178,19 @@ public final class ToolCall {
     public ToolCall ffmpegProgress(Consumer<FfmpegProgress> consumer) {
         setStdoutMode(StdoutMode.PROGRESS);
         this.progressConsumer = Objects.requireNonNull(consumer);
+        return this;
+    }
+
+    /**
+     * Hands the binary stdout to {@code handler}, on a reader thread, e.g. a raw video stream
+     * ({@code -f h264 pipe:1}). Every read counts as activity for the idle limit. If the handler
+     * throws, the tool is stopped and the run fails with {@link ToolException.Kind#OUTPUT_FAILED}
+     * (the handler's exception as the cause); if it returns early, the rest is read and discarded.
+     * When the run ends early (time limit, interrupt), the handler sees the stream end or break.
+     */
+    public ToolCall stdoutStream(StdoutHandler handler) {
+        setStdoutMode(StdoutMode.STREAM);
+        this.stdoutHandler = Objects.requireNonNull(handler);
         return this;
     }
 
@@ -273,7 +300,8 @@ public final class ToolCall {
         });
         ByteArrayOutputStream captured = new ByteArrayOutputStream();
         Thread outReader = null;
-        if (stdoutMode == StdoutMode.STRING || stdoutMode == StdoutMode.LINES || stdoutMode == StdoutMode.PROGRESS) {
+        if (stdoutMode == StdoutMode.STRING || stdoutMode == StdoutMode.LINES || stdoutMode == StdoutMode.PROGRESS
+                || stdoutMode == StdoutMode.STREAM) {
             outReader = Thread.ofVirtual().name(tool + "-stdout").start(() -> readStdout(process, captured, lastActivity, outputFailure));
         }
 
@@ -351,6 +379,17 @@ public final class ToolCall {
                     FfmpegProgressParser parser = new FfmpegProgressParser(progressConsumer);
                     readLines(in, MAX_STDOUT_LINE_BYTES, true, lastActivity, parser::line);
                 }
+                case STREAM -> {
+                    InputStream watched = new ActivityInputStream(in, lastActivity);
+                    try {
+                        stdoutHandler.read(watched);
+                    } catch (IOException | RuntimeException e) {
+                        failure.compareAndSet(null, new ToolException(tool, ToolException.Kind.OUTPUT_FAILED,
+                                "handling stdout failed: " + redact(String.valueOf(e.getMessage())), -1, null, e));
+                        return;
+                    }
+                    watched.transferTo(OutputStream.nullOutputStream());
+                }
                 default -> throw new IllegalStateException();
             }
         } catch (LineTooLongException e) {
@@ -362,6 +401,30 @@ public final class ToolCall {
         } catch (RuntimeException e) {
             failure.compareAndSet(null, new ToolException(tool, ToolException.Kind.OUTPUT_FAILED,
                     "handling stdout failed: " + redact(String.valueOf(e)), -1, null, e));
+        }
+    }
+
+    /** Marks every read as activity for the idle limit. */
+    private static final class ActivityInputStream extends FilterInputStream {
+        private final AtomicLong lastActivity;
+
+        ActivityInputStream(InputStream in, AtomicLong lastActivity) {
+            super(in);
+            this.lastActivity = lastActivity;
+        }
+
+        @Override
+        public int read() throws IOException {
+            int b = super.read();
+            lastActivity.set(System.nanoTime());
+            return b;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            int n = super.read(b, off, len);
+            lastActivity.set(System.nanoTime());
+            return n;
         }
     }
 

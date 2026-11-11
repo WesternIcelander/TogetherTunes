@@ -289,4 +289,42 @@ class ToolCallTest {
         assertEquals("out\n", r.stdoutString());
         assertEquals(List.of("one <redacted>", "two"), seen);
     }
+
+    @Test
+    void stdoutStreamHandsOverBinaryOutput() throws Exception {
+        AtomicReference<byte[]> got = new AtomicReference<>();
+        ToolResult r = call("printf 'a\\000\\001\\377b'").stdoutStream(in -> got.set(in.readAllBytes())).run();
+        assertEquals(0, r.exitCode());
+        assertEquals(List.of(0x61, 0, 1, 0xFF, 0x62), toList(got.get()));
+    }
+
+    @Test
+    void stdoutStreamHandlerThatReturnsEarlyLetsTheToolFinish() throws Exception {
+        // much more output than a pipe buffer: the rest is drained, the tool isn't blocked
+        ToolResult r = call("i=0; while [ $i -lt 2000 ]; do echo 0123456789012345678901234567890123456789; i=$((i+1)); done")
+                .stdoutStream(in -> in.read()).run();
+        assertEquals(0, r.exitCode());
+    }
+
+    @Test
+    void stdoutStreamHandlerFailureStopsTheTool() throws Exception {
+        IOException boom = new IOException("bad stream");
+        long t0 = System.nanoTime();
+        ToolException e = assertThrows(ToolException.class,
+                () -> call("echo x; sleep 30").stdoutStream(in -> {
+                    in.read();
+                    throw boom;
+                }).run());
+        assertEquals(ToolException.Kind.OUTPUT_FAILED, e.kind());
+        assertTrue(e.getCause() == boom, "the handler's exception is the cause");
+        assertTrue(System.nanoTime() - t0 < TimeUnit.SECONDS.toNanos(20), "the tool was stopped");
+    }
+
+    private static List<Integer> toList(byte[] b) {
+        List<Integer> l = new ArrayList<>();
+        for (byte x : b) {
+            l.add(x & 0xFF);
+        }
+        return l;
+    }
 }
