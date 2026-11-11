@@ -19,7 +19,7 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
 
 ## Alone and in rooms
 
-- A user doesn't have to be in a room: **alone**, they play their own music with their own play status (current song, position, paused or playing) and queue. The alone state lives **on the server** (per user), so it follows the user to another device.
+- A user doesn't have to be in a room: **alone**, they play their own music with their own play status (current song, position, paused or playing) and queue. The alone state lives **on the server** (per user), so it follows the user to another device. **Guests can't be alone:** they only exist inside rooms (they have no library).
 - **Recents while alone** shows the user's own play history; songs that played in a room say which room.
 - **Joining a room** while alone saves the alone play status and queue.
 - **Creating a room** moves the current song and queue into the new room.
