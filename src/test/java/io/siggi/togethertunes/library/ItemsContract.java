@@ -632,6 +632,90 @@ abstract class ItemsContract {
         }));
     }
 
+    /** Publishes version {@code v} as video or audio, {@code kept} kept (undoable or as a system re-encode). */
+    private void publishKind(String item, int v, Integer kept, boolean video, boolean undoable, Boolean normalized)
+            throws Exception {
+        Path f = MediaVersions.versionDir(data, item, v).resolve(IngestPipeline.AUDIO);
+        Files.createDirectories(f.getParent());
+        Files.writeString(f, "v" + v);
+        new IngestItems(db).published(item, video, 5000, OutputEncoding.DEFAULT, X264Preset.VERYFAST, true, null,
+                null, v, new IngestItems.VersionChange(kept, undoable, null, clock.millis()), null, null, null,
+                normalized);
+    }
+
+    /** A video item classified as a music video, then detected as a still image: audio, its video kept. */
+    private String stillImage() throws Exception {
+        String id = aliceItem("video");
+        publishKind(id, 1, null, true, false, null);
+        items.update(alice, id, type(MediaType.MUSIC_VIDEO, null), NONE, null);
+        clock.advance(60_000);
+        publishKind(id, 2, 1, false, true, null);
+        Items.ItemPage page = items.get(alice, id, NONE);
+        assertEquals("audio", page.mediaType());
+        assertNotNull(page.stillImage(), "fixture: the video is kept");
+        return id;
+    }
+
+    /**
+     * Undo of a still-image item after its type changed: the type chosen for the video stays with
+     * that version through undo and redo; a show's details don't (audio has none), so it comes
+     * back uncategorized; and the audio re-encode a movie needs makes the change final.
+     */
+    @Test
+    void stillImageUndoAfterTheTypeChanged() throws Exception {
+        MediaVersions versions = new MediaVersions(data, db, clock::millis, java.time.Duration.ofMinutes(5));
+        versions.undoWindow(() -> 48 * 3_600_000L);
+        items.mediaVersions(versions);
+        items.trimJobs(jobs);
+
+        String id = stillImage();
+        clock.advance(60_000);
+        Items.ItemPage movie = items.update(alice, id, type(MediaType.MOVIE, null), NONE, null);
+        assertEquals("movie", movie.mediaType());
+        assertEquals("video", column(id, "kind"));
+        assertNull(movie.stillImage());
+        assertTrue(jobs.latestForItem(id).isEmpty(), "fixture: no original, so no loudness re-encode");
+        clock.advance(60_000);
+        Items.ItemPage audio = items.undo(alice, id, NONE, null);
+        assertEquals("audio", audio.mediaType());
+        assertNotNull(audio.stillImage(), "the warning is back");
+        clock.advance(60_000);
+        assertEquals("movie", items.undo(alice, id, NONE, null).mediaType(), "the type chosen for the video stays");
+
+        // a show chosen through the type select, undone to audio and back: the details are gone
+        String other = stillImage();
+        clock.advance(60_000);
+        items.update(alice, other, type(MediaType.SHOW, new MediaType.Show("Series", 1, 3)), NONE, null);
+        assertEquals("Series", column(other, "show_name"));
+        clock.advance(60_000);
+        assertEquals("audio", items.undo(alice, other, NONE, null).mediaType());
+        assertNull(column(other, "show_name"));
+        clock.advance(60_000);
+        Items.ItemPage back = items.undo(alice, other, NONE, null);
+        assertEquals("uncategorized", back.mediaType());
+        assertNull(back.show());
+
+        // with an original, a movie needs its audio re-encoded without the normalisation: Undo
+        // waits for it, and once that system re-encode is published the audio version is gone
+        String encoded = stillImage();
+        exec("UPDATE items SET original_file = 'original.audio.mka' WHERE id = ?", encoded);
+        clock.advance(60_000);
+        items.update(alice, encoded, type(MediaType.MOVIE, null), NONE, null);
+        IngestJob job = jobs.latestForItem(encoded).orElseThrow();
+        assertEquals(IngestJob.Kind.REENCODE, job.kind());
+        assertEquals("item_busy", code(() -> items.undo(alice, encoded, NONE, null)));
+        assertEquals(job.id(), jobs.claimNext().id());
+        int current = MediaVersions.current(db, encoded).orElseThrow();
+        publishKind(encoded, current + 1, current, true, false, false);
+        assertTrue(jobs.complete(job.id(), null));
+        Items.ItemPage done = items.get(alice, encoded, NONE);
+        assertEquals("movie", done.mediaType());
+        assertEquals("0", column(encoded, "loudness_normalized"));
+        assertNull(done.undo(), "a system re-encode can't be undone");
+        assertNull(done.stillImage());
+        assertEquals("nothing_to_undo", code(() -> items.undo(alice, encoded, NONE, null)));
+    }
+
     // ------------------------------------------------------------------ after media is deleted
 
     private void exec(String sql, Object... params) throws SQLException {

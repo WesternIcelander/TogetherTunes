@@ -142,13 +142,27 @@ public final class RetentionSweeper implements AutoCloseable {
             + " AND i.pinned_at IS NULL";
 
     /**
-     * The auto-delete predicate, on {@code items i}: a ready, unpinned movie or show, never viewed
-     * and added before cutoff 1, or last viewed before cutoff 2 (a disabled rule's cutoff is
-     * {@link Long#MIN_VALUE}), not current/queued/suggested in a room and without a running job.
+     * When the item's last refetch finished (a purged YouTube item fetched again), on
+     * {@code items i}; null if it never was. The auto-delete timers start over from it.
+     */
+    private static final String REFETCHED_AT = "(SELECT MAX(rj.finished_at) FROM ingest_jobs rj"
+            + " WHERE rj.item_id = i.id AND rj.kind = '" + IngestJob.Kind.REFETCH.wire() + "' AND rj.state = '"
+            + IngestJob.State.DONE.wire() + "')";
+
+    /**
+     * The auto-delete predicate, on {@code items i}: a ready, unpinned movie or show, not viewed
+     * since it was added or last refetched and both before cutoff 1 (parameters 1 and 2), or
+     * last viewed (after its last refetch) before cutoff 2 (parameter 3; a disabled rule's cutoff
+     * is {@link Long#MIN_VALUE}), not current/queued/suggested in a room and without a running
+     * job. A refetch starts the timers over, so a purged movie fetched again isn't purged again
+     * at the next sweep because of a view or an {@code added_at} from before.
      */
     private static final String AUTO_DELETE = "i.status = 'ready' AND i.media_type IN ('movie', 'show')"
             + " AND i.pinned_at IS NULL"
-            + " AND ((i.last_viewed_at IS NULL AND i.added_at < ?) OR i.last_viewed_at < ?)"
+            + " AND (((i.last_viewed_at IS NULL OR i.last_viewed_at < " + REFETCHED_AT + ")"
+            + " AND i.added_at < ? AND (" + REFETCHED_AT + " IS NULL OR " + REFETCHED_AT + " < ?))"
+            + " OR (i.last_viewed_at < ? AND (" + REFETCHED_AT + " IS NULL OR i.last_viewed_at >= "
+            + REFETCHED_AT + ")))"
             + " AND NOT EXISTS (SELECT 1 FROM queue_entries qe WHERE qe.item_id = i.id"
             + " AND qe.state IN ('queued', 'suggested', 'playing'))"
             + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state = '"
@@ -282,7 +296,7 @@ public final class RetentionSweeper implements AutoCloseable {
             extra.put("reason", REASON_AUTO_DELETE);
             extra.put("videoUnviewedDays", unviewedDays);
             extra.put("videoAfterViewHours", afterViewHours);
-            pass(AUTO_DELETE, new long[] {unviewedCutoff, viewedCutoff}, extra, now, counts);
+            pass(AUTO_DELETE, new long[] {unviewedCutoff, unviewedCutoff, viewedCutoff}, extra, now, counts);
         }
         int removed = 0;
         int entryDays = limits.purgedEntryDays();

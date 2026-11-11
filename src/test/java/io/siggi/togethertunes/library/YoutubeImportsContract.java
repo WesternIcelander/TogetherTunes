@@ -452,6 +452,90 @@ abstract class YoutubeImportsContract {
         assertEquals(2, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
     }
 
+    private String column(String itemId, String column) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT " + column + " FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+    }
+
+    /**
+     * A purged show (auto-deleted, say) comes back into the same row with its type and show
+     * details: adding it to another library doesn't ask for a type again, and the refetch is the
+     * quality tier for the library.
+     */
+    @Test
+    void aPurgedShowIsFetchedAgainWithItsTypeAndDetails() throws Exception {
+        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null,
+                new Classify.Classification(MediaType.SHOW, new MediaType.Show("Rick", 1, 2))).itemId();
+        finishJob(true);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'purged', purged_at = 5,"
+                    + " last_viewed_at = 4 WHERE id = ?")) {
+                ps.setString(1, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        clock.advance(86_400_000);
+        YoutubeImports.Imported r = imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, null, null);
+        assertEquals(new YoutubeImports.Imported(itemId, false, "pending"), r, "no needs_classification");
+        assertEquals(1, calls().size(), "no new metadata request");
+        IngestJob job = jobs.latestForItem(itemId).orElseThrow();
+        assertEquals(IngestJob.Kind.REFETCH, job.kind());
+        assertEquals(IngestJob.Tier.QUALITY, job.tier());
+        assertEquals("show", column(itemId, "media_type"));
+        assertEquals("Rick", column(itemId, "show_name"));
+        assertEquals("1", column(itemId, "season_number"));
+        assertEquals("2", column(itemId, "episode_number"));
+        assertEquals("youtube", libraryVia(bob, itemId));
+        assertEquals("youtube", libraryVia(alice, itemId), "alice's entry stayed");
+        // a type sent along is ignored: changing it is an edit
+        imports.importUrl(alice, "https://youtu.be/" + ID, null, null, new Classify.Classification(MediaType.MOVIE, null));
+        assertEquals("show", column(itemId, "media_type"));
+        assertEquals(1, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ? AND kind = 'refetch'", itemId));
+        finishJob(true);
+        assertEquals("ready", column(itemId, "status"));
+        assertEquals("show", column(itemId, "media_type"));
+    }
+
+    /**
+     * After an admin's delete record the video ID is free: the same link makes a new row (a new
+     * metadata lookup and a first fetch, not a refetch), uncategorized again, so a library add
+     * asks for the type again.
+     */
+    @Test
+    void deleteRecordThenTheSameLinkMakesANewItem() throws Exception {
+        String old = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId();
+        finishJob(true);
+        Items items = new Items(db, io.siggi.togethertunes.DataDir.create(dir.resolve("data")), clock);
+        items.deleteRecord(alice, old, null);
+        assertNull(item(old));
+
+        Classify.NeedsClassification e = assertThrows(Classify.NeedsClassification.class,
+                () -> imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, null, null));
+        String again = e.itemId();
+        assertNotEquals(old, again);
+        assertEquals(new Classify.Suggestion("music_video", null), e.suggested());
+        assertEquals(2, calls().size(), "looked up again");
+        Map<String, Object> row = item(again);
+        assertEquals(ID, row.get("youtube_id"));
+        assertEquals("uncategorized", row.get("media_type"));
+        assertEquals("pending", row.get("status"));
+        assertEquals(IngestJob.Kind.YOUTUBE, jobs.latestForItem(again).orElseThrow().kind());
+        assertNull(libraryVia(alice, again), "the old library entries went with the record");
+        imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV);
+        assertEquals("youtube", libraryVia(bob, again));
+        assertEquals("music_video", item(again).get("media_type"));
+        assertEquals(again, imports.importUrl(alice, "https://youtu.be/" + ID, null, false).itemId(),
+                "the new row is the one row for the ID now");
+        assertEquals(1, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
+    }
+
     @Test
     void lowDiskSpaceRefusesNewFetchesButNotReadyItems() throws Exception {
         java.util.concurrent.atomic.AtomicLong free = new java.util.concurrent.atomic.AtomicLong(1_000);

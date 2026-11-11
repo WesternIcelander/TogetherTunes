@@ -434,6 +434,55 @@ abstract class RetentionSweeperContract {
                 && r.contains("\"videoUnviewedDays\":0,\"videoAfterViewHours\":72")), "the limits in force");
     }
 
+    /** Runs a refetch of {@code itemId} to the end now (the fetch of a purged YouTube item). */
+    private void refetched(String itemId) throws Exception {
+        jobs.enqueue(itemId, IngestJob.Kind.REFETCH);
+        IngestJob job = jobs.claimNext();
+        assertEquals(itemId, job.itemId());
+        assertTrue(jobs.complete(job.id(), null));
+    }
+
+    /**
+     * A purged movie or show fetched again (added to a library again, say) starts its timers over:
+     * it counts as never viewed since the refetch, so it isn't purged again at the next sweep
+     * because of a view or an {@code added_at} from before it was purged.
+     */
+    @Test
+    void aRefetchStartsTheAutoDeleteTimersOver() throws Exception {
+        days = 0;
+        String viewedBefore = video("movie", NOW - 100 * DAY, NOW - 80 * HOUR);
+        refetched(viewedBefore);
+        String neverViewed = video("show", NOW - 100 * DAY, null);
+        refetched(neverViewed);
+        String notRefetched = video("movie", NOW - 100 * DAY, NOW - 80 * HOUR);
+        String otherJob = video("movie", NOW - 100 * DAY, null);
+        jobs.enqueue(otherJob, IngestJob.Kind.REENCODE);
+        assertTrue(jobs.complete(jobs.claimNext().id(), null));
+
+        assertEquals(new RetentionSweeper.Result(2, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(notRefetched));
+        assertEquals("purged", status(otherJob), "only a refetch starts the timers over");
+        assertEquals("ready", status(viewedBefore), "the old view doesn't count");
+        assertEquals("ready", status(neverViewed));
+
+        // not viewed since the refetch: the never-viewed timer, from the refetch
+        clock.advance(80 * HOUR);
+        assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep());
+        // a view after the refetch: the after-view timer
+        exec("UPDATE items SET last_viewed_at = ? WHERE id = ?", clock.millis(), viewedBefore);
+        clock.advance(72 * HOUR);
+        assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep());
+        clock.advance(1);
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(viewedBefore));
+        // 14 days after the refetch
+        clock.set(NOW + 14 * DAY);
+        assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep());
+        clock.advance(1);
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(neverViewed));
+    }
+
     @Test
     void autoDeleteReChecksEachItemInsideThePurgeTransaction() throws Exception {
         days = 0;
