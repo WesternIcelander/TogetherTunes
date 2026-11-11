@@ -274,8 +274,8 @@ public final class Main {
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
         Providers loginProviders = new Providers(database, secrets);
         ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, config.publicBaseUrl());
-        // The provider login flow (authorization code + PKCE); ID-token validation and identity
-        // resolution plug in as its completion.
+        // The provider login flow (authorization code + PKCE, ID-token validation); identity
+        // resolution plugs in as its completion.
         providersApi.loginFlow(new OidcLogin(loginProviders, new OidcDiscovery(), config.publicBaseUrl(),
                 config.secureCookies()));
         // An admin can't pick an x264 preset that doesn't give the reference avcC.

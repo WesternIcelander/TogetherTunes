@@ -7,6 +7,16 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.nimbusds.jose.JOSEException;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.RSASSASigner;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.KeyUse;
+import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
+import com.nimbusds.jwt.JWTClaimsSet;
+import com.nimbusds.jwt.SignedJWT;
 import com.sun.net.httpserver.HttpServer;
 import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.config.Config;
@@ -32,12 +42,15 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -46,10 +59,16 @@ import org.junit.jupiter.api.io.TempDir;
  * {@link OidcLogin}: the authorization code flow with PKCE S256 against a local fake IdP
  * ({@code com.sun.net.httpserver}, discovery and token endpoint) through the real router: the
  * authorization request, the server-side state/nonce/verifier, the browser binding, the code
- * exchange and its client authentication, and every failure redirect.
+ * exchange and its client authentication, the ID-token validation, and every failure redirect.
+ *
+ * <p>The fake IdP's token endpoint replaces {@value #ID_TOKEN} in its answer with an RS256 ID token
+ * for the requesting client, carrying the nonce of the login the code belongs to (the
+ * {@link #callback} helper records which login a code was sent for, as a real IdP would).
  */
 class OidcLoginTest {
     private static final String BASE = "https://tunes.example";
+    private static final String ID_TOKEN = "$ID_TOKEN";
+    private static RSAKey signingKey;
 
     @TempDir
     Path dir;
@@ -61,6 +80,9 @@ class OidcLoginTest {
     private final AtomicReference<Object[]> tokenAnswer = new AtomicReference<>();
     private final List<Map<String, String>> tokenForms = new CopyOnWriteArrayList<>();
     private final List<String> tokenAuth = new CopyOnWriteArrayList<>();
+    /** The nonce each login (by state) was started with, and each code was issued for. */
+    private final Map<String, String> nonceByState = new ConcurrentHashMap<>();
+    private final Map<String, String> nonceByCode = new ConcurrentHashMap<>();
 
     private Database database;
     private Providers providers;
@@ -70,6 +92,11 @@ class OidcLoginTest {
     private final List<OidcLogin.Callback> completed = new CopyOnWriteArrayList<>();
     private final HttpClient http = HttpClient.newHttpClient();
     private AuthFixtures fixtures;
+
+    @BeforeAll
+    static void generateKey() throws JOSEException {
+        signingKey = new RSAKeyGenerator(2048).keyID("k1").keyUse(KeyUse.SIGNATURE).generate();
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -81,13 +108,20 @@ class OidcLoginTest {
                 String body;
                 if (path.endsWith("/.well-known/openid-configuration")) {
                     body = discoveryDoc.get() != null ? discoveryDoc.get() : discovery(List.of("S256"), List.of());
+                } else if (path.endsWith("/jwks")) {
+                    body = new JWKSet(signingKey).toString(true);
                 } else if (path.endsWith("/token")) {
-                    tokenForms.add(parseForm(readAll(exchange.getRequestBody())));
+                    Map<String, String> form = parseForm(readAll(exchange.getRequestBody()));
+                    tokenForms.add(form);
                     String auth = exchange.getRequestHeaders().getFirst("Authorization");
                     tokenAuth.add(auth == null ? "" : auth);
                     Object[] answer = tokenAnswer.get();
                     status = (Integer) answer[0];
                     body = (String) answer[1];
+                    if (body.contains(ID_TOKEN)) {
+                        body = body.replace(ID_TOKEN, idToken(clientId(form, auth),
+                                nonceByCode.get(form.get("code")), "user-" + form.get("code")));
+                    }
                 } else {
                     exchange.sendResponseHeaders(404, -1);
                     return;
@@ -103,7 +137,8 @@ class OidcLoginTest {
         idp.start();
         issuer = "http://127.0.0.1:" + idp.getAddress().getPort() + "/idp";
         tokenAnswer.set(new Object[]{200,
-                "{\"access_token\":\"at-1\",\"token_type\":\"Bearer\",\"id_token\":\"id.token.sig\",\"expires_in\":3600}"});
+                "{\"access_token\":\"at-1\",\"token_type\":\"Bearer\",\"id_token\":\"" + ID_TOKEN
+                        + "\",\"expires_in\":3600}"});
 
         Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", BASE), 4, dir)
                 .load(null).config();
@@ -134,6 +169,37 @@ class OidcLoginTest {
     }
 
     // ------------------------------------------------------------------ fixtures
+
+    /** An RS256 ID token from the fake IdP for {@code clientId}, now, with {@code nonce}. */
+    private String idToken(String clientId, String nonce, String subject) {
+        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
+                .issuer(issuer)
+                .subject(subject)
+                .audience(clientId)
+                .issueTime(new Date(clock.millis()))
+                .expirationTime(new Date(clock.millis() + 300_000));
+        if (nonce != null) {
+            claims.claim("nonce", nonce);
+        }
+        try {
+            SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
+                    .keyID(signingKey.getKeyID()).build(), claims.build());
+            jwt.sign(new RSASSASigner(signingKey));
+            return jwt.serialize();
+        } catch (JOSEException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** The client the token request authenticated as (form or Basic). */
+    private static String clientId(Map<String, String> form, String auth) {
+        if (form.containsKey("client_id")) {
+            return form.get("client_id");
+        }
+        String pair = new String(Base64.getDecoder().decode(auth.substring("Basic ".length())),
+                StandardCharsets.UTF_8);
+        return URLDecoder.decode(pair.substring(0, pair.indexOf(':')), StandardCharsets.UTF_8);
+    }
 
     private String discovery(List<String> challengeMethods, List<String> authMethods) {
         return "{\"issuer\":\"" + issuer + "\","
@@ -228,10 +294,18 @@ class OidcLoginTest {
             jar = cookie == null ? binding
                     : cookie.contains(OidcLogin.BINDING_COOKIE + "=") ? cookie : cookie + "; " + binding;
         }
-        return new Started(url, query(url), jar);
+        Map<String, String> params = query(url);
+        if (params.get("nonce") != null) {
+            nonceByState.put(params.get("state"), params.get("nonce"));
+        }
+        return new Started(url, params, jar);
     }
 
     private HttpResponse<String> callback(String slug, String state, String code, String cookie) throws Exception {
+        String nonce = nonceByState.get(state);
+        if (nonce != null) {
+            nonceByCode.put(code, nonce);
+        }
         return get("/auth/oidc/" + slug + "/callback?state=" + state + "&code=" + code, cookie);
     }
 
@@ -276,6 +350,7 @@ class OidcLoginTest {
         assertEquals(1, login.pending().size());
 
         // completing it: the stored verifier matches the challenge, the nonce is the one sent
+        nonceByCode.put("the-code", p.get("nonce"));
         HttpResponse<String> done = callback("idp", p.get("state"), "the-code", bindingCookie(r));
         assertEquals(200, done.statusCode(), done.headers().map().toString());
         OidcLogin.Callback cb = completed.get(0);
@@ -285,7 +360,9 @@ class OidcLoginTest {
         assertEquals(OidcLogin.Intent.LOGIN, cb.pending().intent());
         assertEquals("idp", cb.provider().slug());
         assertEquals("at-1", cb.tokens().accessToken());
-        assertEquals("id.token.sig", cb.tokens().idToken());
+        assertNotNull(cb.tokens().idToken());
+        assertEquals("user-the-code", cb.idToken().subject(), "the validated ID token");
+        assertEquals("client-idp", cb.idToken().claims().getAudience().get(0));
         assertEquals(3600L, cb.tokens().expiresIn());
 
         Map<String, String> form = tokenForms.get(0);
@@ -349,12 +426,13 @@ class OidcLoginTest {
         assertEquals(2, login.pending().size());
         tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at-2\",\"token_type\":\"bearer\"}"});
         assertEquals(200, callback("two", b.state(), "c2", b.cookie()).statusCode());
-        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at-1\",\"id_token\":\"x.y.z\"}"});
+        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at-1\",\"id_token\":\"" + ID_TOKEN + "\"}"});
         assertEquals(200, callback("one", a.state(), "c1", a.cookie()).statusCode());
         assertEquals("two", completed.get(0).provider().slug());
         assertEquals("at-2", completed.get(0).tokens().accessToken());
         assertEquals("one", completed.get(1).provider().slug());
-        assertEquals("x.y.z", completed.get(1).tokens().idToken());
+        assertEquals("user-c1", completed.get(1).idToken().subject());
+        assertNull(completed.get(0).idToken(), "no ID token for OAuth2");
     }
 
     @Test
@@ -467,6 +545,38 @@ class OidcLoginTest {
     }
 
     @Test
+    void idTokenIsValidatedBeforeTheCompletion() throws Exception {
+        oidc("idp", null);
+        Started a = start("idp", "?next=%2Frooms%2Fx", null);
+        Started b = start("idp", "", a.cookie());
+        // the IdP hands out a token carrying another login's nonce (e.g. a replayed ID token)
+        nonceByCode.put("c", b.params().get("nonce"));
+        HttpResponse<String> r = get("/auth/oidc/idp/callback?state=" + a.state() + "&code=c", a.cookie());
+        assertError("/login.html", "id_token_invalid", r);
+        assertEquals("/rooms/x", query(location(r)).get("next"));
+
+        // signed by a key the provider never published
+        RSAKey rogue = new RSAKeyGenerator(2048).keyID("rogue").generate();
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().issuer(issuer).subject("u").audience("client-idp")
+                .issueTime(new Date(clock.millis())).expirationTime(new Date(clock.millis() + 300_000))
+                .claim("nonce", b.params().get("nonce")).build();
+        SignedJWT forged = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("rogue").build(), claims);
+        forged.sign(new RSASSASigner(rogue));
+        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + forged.serialize() + "\"}"});
+        assertError("/login.html", "id_token_invalid", callback("idp", b.state(), "c2", b.cookie()));
+
+        // the same token, but issued long before now: iat out of range
+        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + ID_TOKEN + "\"}"});
+        Started d = start("idp", "", a.cookie());
+        nonceByCode.put("c3", d.params().get("nonce"));
+        String early = idToken("client-idp", d.params().get("nonce"), "u");
+        clock.advance(IdTokenValidator.MAX_SKEW_MS + 1);
+        tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + early + "\"}"});
+        assertError("/login.html", "id_token_invalid", callback("idp", d.state(), "c3", d.cookie()));
+        assertTrue(completed.isEmpty());
+    }
+
+    @Test
     void linkNeedsTheSameLoggedInUser() throws Exception {
         oidc("idp", null);
         assertError("/account/", "not_authenticated", get("/auth/oidc/idp/start?intent=link", null));
@@ -507,6 +617,7 @@ class OidcLoginTest {
                     + "/auth/oidc/idp/start?next=%2Fnext"));
             HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
             Map<String, String> p = query(location(r));
+            nonceByCode.put("c", p.get("nonce"));
             HttpResponse<String> done = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"
                     + other.port() + "/auth/oidc/idp/callback?state=" + p.get("state") + "&code=c"))
                     .header("Cookie", bindingCookie(r)).build(), HttpResponse.BodyHandlers.ofString());

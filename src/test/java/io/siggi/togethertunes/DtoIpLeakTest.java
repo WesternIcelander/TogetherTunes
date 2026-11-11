@@ -197,6 +197,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.Providers$Spec", "a login provider's settings on their way in;"
                     + " the API answers with Providers.Provider"),
             Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Keep", "an update's secret handling; never sent"),
+            Map.entry("io.siggi.togethertunes.auth.IdTokenValidator$IdToken", "a validated provider ID token; server-side only"),
             Map.entry("io.siggi.togethertunes.auth.OidcDiscovery$Metadata", "a provider's discovery document; server-side only"),
             Map.entry("io.siggi.togethertunes.auth.OidcLogin$Callback", "a provider login after the code exchange; server-side only"),
             Map.entry("io.siggi.togethertunes.auth.OidcLogin$Endpoints", "a provider's endpoints for one login; server-side only"),

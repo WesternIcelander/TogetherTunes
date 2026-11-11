@@ -49,8 +49,9 @@ import java.util.Objects;
  *       store (<b>a state is good for one callback</b>, also a failed one, and for
  *       {@link #TTL_MS}), checks it was started for this provider, in this browser (the binding
  *       cookie, below) and, for a link, by the user still logged in, then exchanges the code at the
- *       token endpoint with the {@code code_verifier} and hands the token response to the
- *       {@link Completion} (ID-token validation and identity resolution are the next steps).</li>
+ *       token endpoint with the {@code code_verifier}, validates the ID token (OIDC,
+ *       {@link IdTokenValidator}) and hands both to the {@link Completion} (identity resolution is
+ *       the next step).</li>
  * </ul>
  *
  * <p><b>Browser binding:</b> the start sets the cookie {@value #BINDING_COOKIE} (a random token,
@@ -75,8 +76,9 @@ import java.util.Objects;
  * {@code not_authenticated} (link without a login), {@code login_expired} (unknown, used or expired
  * state, or a state of another provider), {@code login_browser_mismatch} (binding cookie missing or
  * different), {@code link_session_changed}, {@code provider_denied} (the user said no),
- * {@code provider_error}, {@code token_exchange_failed}, and {@code login_unavailable} (the default
- * {@link Completion} until identity resolution exists). Start and callback share a per-IP limit
+ * {@code provider_error}, {@code token_exchange_failed}, {@code id_token_invalid} (signature,
+ * algorithm, {@code iss}, {@code aud}, {@code exp}, {@code iat}, {@code nonce}), and
+ * {@code login_unavailable} (the default {@link Completion} until identity resolution exists). Start and callback share a per-IP limit
  * ({@code 429 rate_limited}). Never logged: state, nonce, verifier, code, tokens, secrets.
  */
 public final class OidcLogin {
@@ -142,11 +144,17 @@ public final class OidcLogin {
         }
     }
 
-    /** A callback that got through the state checks and the code exchange. */
-    public record Callback(Providers.Provider provider, Pending pending, TokenResponse tokens) {
+    /**
+     * A callback that got through the state checks and the code exchange.
+     *
+     * @param idToken for OIDC: the validated ID token ({@link IdTokenValidator}); {@code null} for
+     *                OAuth2
+     */
+    public record Callback(Providers.Provider provider, Pending pending, TokenResponse tokens,
+                           IdTokenValidator.IdToken idToken) {
     }
 
-    /** What happens after the code exchange: ID-token validation and identity resolution. */
+    /** What happens after the code exchange and ID-token validation: identity resolution. */
     @FunctionalInterface
     public interface Completion {
         void complete(Request request, Response response, Callback callback) throws Exception;
@@ -179,6 +187,7 @@ public final class OidcLogin {
     private final Clock clock;
     private final RateLimiter limiter;
     private final PendingLogins pending;
+    private final IdTokenValidator idTokens;
     private volatile Completion completion = (request, response, callback) -> failRedirect(response,
             callback.pending().intent(), callback.pending().next(), "login_unavailable");
 
@@ -210,6 +219,7 @@ public final class OidcLogin {
         this.clock = Objects.requireNonNull(clock);
         this.limiter = Objects.requireNonNull(limiter);
         this.pending = new PendingLogins(clock, MAX_PENDING);
+        this.idTokens = new IdTokenValidator(discovery, clock::millis);
     }
 
     /** Sets what runs after a successful code exchange. */
@@ -337,7 +347,10 @@ public final class OidcLogin {
                 throw new LoginException("link_session_changed", "the user who started linking isn't logged in");
             }
             TokenResponse tokens = exchange(provider, endpoints(provider), code, login.codeVerifier());
-            completion.complete(request, response, new Callback(provider, login, tokens));
+            IdTokenValidator.IdToken idToken = provider.kind() == Providers.Kind.OIDC
+                    ? idTokens.validate(tokens.idToken(), provider.issuer(), provider.clientId(), login.nonce())
+                    : null;
+            completion.complete(request, response, new Callback(provider, login, tokens, idToken));
         } catch (LoginException e) {
             LOG.log(System.Logger.Level.INFO, "Login with provider " + slug + " failed (" + e.code() + "): "
                     + e.getMessage());
