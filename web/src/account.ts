@@ -1,9 +1,14 @@
-// The account page (/account/): profile, and the user's sessions (`/api/me/sessions`) with
-// revoke and "log out everywhere else". Sessions carry no IP address (docs/auth.md).
+// The account page (/account/): profile, linked logins (`/api/me/identities`; linking goes through
+// `/auth/oidc/{slug}/start?intent=link`, which comes back here with `?linked=` or `?error=`), and
+// the user's sessions (`/api/me/sessions`) with revoke and "log out everywhere else". Sessions
+// carry no IP address (docs/auth.md).
 import { api } from "./api.js";
 import {
   element, formValue, LOGIN_PAGE, message, onReady, onSubmit, renderNav, requireUser, type MeUser,
 } from "./session.js";
+import {
+  providerErrorMessage, providerLinkUrl, type LinkedIdentity, type ProviderButton,
+} from "./providers.js";
 
 interface SessionItem {
   id: string;
@@ -93,6 +98,65 @@ async function loadSessions(reset: boolean): Promise<void> {
   element("session-more").hidden = cursor === undefined;
 }
 
+async function loadIdentities(): Promise<void> {
+  const [mine, providers] = await Promise.all([
+    api<{ items: LinkedIdentity[]; hasPassword: boolean }>("GET", "/api/me/identities"),
+    api<{ items: ProviderButton[] }>("GET", "/api/auth/providers"),
+  ]);
+  const tbody = element<HTMLTableSectionElement>("identity-rows");
+  tbody.replaceChildren();
+  for (const i of mine.items) {
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Remove";
+    remove.addEventListener("click", () => {
+      remove.disabled = true;
+      element("identity-error").textContent = "";
+      api("DELETE", "/api/me/identities/" + encodeURIComponent(i.id)).then(() => loadIdentities())
+        .catch((e: unknown) => {
+          remove.disabled = false;
+          element("identity-error").textContent = message(e);
+        });
+    });
+    const actions = document.createElement("td");
+    actions.append(remove);
+    const tr = document.createElement("tr");
+    tr.append(cell(i.provider.displayName + (i.provider.enabled ? "" : " (disabled)")), cell(i.email ?? ""),
+      cell(time(i.createdAt)), cell(i.lastLoginAt === undefined ? "" : time(i.lastLoginAt)), actions);
+    tbody.append(tr);
+  }
+  element("identity-table").hidden = mine.items.length === 0;
+  element("identity-none").hidden = mine.items.length !== 0;
+  const linked = new Set(mine.items.map((i) => i.provider.slug));
+  const list = element<HTMLUListElement>("identity-link-list");
+  list.replaceChildren();
+  for (const p of providers.items) {
+    if (linked.has(p.slug)) continue;
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = providerLinkUrl(p.startUrl);
+    a.textContent = p.displayName;
+    li.append(a);
+    list.append(li);
+  }
+  element("identity-link").hidden = list.childElementCount === 0;
+}
+
+/** The result of a link (`?linked=<slug>` or `?error=<code>`), shown once. */
+function showLinkResult(): void {
+  const params = new URLSearchParams(location.search);
+  const error = params.get("error");
+  const linked = params.get("linked");
+  if (error !== null) {
+    element("identity-error").textContent = providerErrorMessage(error);
+  } else if (linked !== null) {
+    const notice = element("identity-notice");
+    notice.textContent = "Login linked.";
+    notice.hidden = false;
+  }
+  if (error !== null || linked !== null) history.replaceState(null, "", location.pathname);
+}
+
 function showProfile(me: MeUser): void {
   element("account-username").textContent = me.username;
   element("account-roles").textContent = me.roles.join(", ");
@@ -135,6 +199,13 @@ async function start(): Promise<void> {
       .catch((e: unknown) => { sessionError.textContent = message(e); })
       .finally(() => { others.disabled = false; });
   });
+
+  showLinkResult();
+  try {
+    await loadIdentities();
+  } catch (e) {
+    element("identity-error").textContent = message(e);
+  }
 
   try {
     await loadSessions(true);

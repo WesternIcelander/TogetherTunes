@@ -8,6 +8,9 @@ import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.Providers;
 import io.siggi.togethertunes.auth.OidcDiscovery;
+import io.siggi.togethertunes.auth.Identities;
+import io.siggi.togethertunes.auth.IdentitiesApi;
+import io.siggi.togethertunes.auth.IdentityResolution;
 import io.siggi.togethertunes.auth.OidcLogin;
 import io.siggi.togethertunes.auth.ProvidersApi;
 import io.siggi.togethertunes.auth.Guests;
@@ -274,10 +277,14 @@ public final class Main {
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
         Providers loginProviders = new Providers(database, secrets);
         ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, config.publicBaseUrl());
-        // The provider login flow (authorization code + PKCE, ID-token validation); identity
-        // resolution plugs in as its completion.
-        providersApi.loginFlow(new OidcLogin(loginProviders, new OidcDiscovery(), config.publicBaseUrl(),
-                config.secureCookies()));
+        // The provider login flow (authorization code + PKCE, ID-token validation), ending in
+        // identity resolution (log in, sign up or link by provider and subject, never by email).
+        OidcLogin oidcLogin = new OidcLogin(loginProviders, new OidcDiscovery(), config.publicBaseUrl(),
+                config.secureCookies());
+        Identities identities = new Identities(database);
+        oidcLogin.completion(new IdentityResolution(identities, sessions, config.secureCookies()));
+        providersApi.loginFlow(oidcLogin);
+        providersApi.identities(new IdentitiesApi(identities));
         // An admin can't pick an x264 preset that doesn't give the reference avcC.
         admin.settingCheck((key, value) -> {
             if (value instanceof X264Preset preset

@@ -122,6 +122,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Roles$Role",
             "io.siggi.togethertunes.auth.Providers$Provider",
             "io.siggi.togethertunes.auth.ClaimMapping",
+            "io.siggi.togethertunes.auth.Identities$IdentityView",
             "io.siggi.togethertunes.auth.Sessions$Created",
             "io.siggi.togethertunes.auth.Sessions$Page",
             "io.siggi.togethertunes.auth.Sessions$SessionView",
@@ -196,6 +197,9 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.Actor$User", "request identity, never serialised"),
             Map.entry("io.siggi.togethertunes.auth.Providers$Spec", "a login provider's settings on their way in;"
                     + " the API answers with Providers.Provider"),
+            Map.entry("io.siggi.togethertunes.auth.Identities$ProviderIdentity", "who a provider says logged in; server-side only"),
+            Map.entry("io.siggi.togethertunes.auth.Identities$Resolved", "the account a provider login resolved to; server-side only"),
+            Map.entry("io.siggi.togethertunes.auth.Identities$Row", "an identity row's ids inside a transaction"),
             Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Keep", "an update's secret handling; never sent"),
             Map.entry("io.siggi.togethertunes.auth.IdTokenValidator$IdToken", "a validated provider ID token; server-side only"),
             Map.entry("io.siggi.togethertunes.auth.OidcDiscovery$Metadata", "a provider's discovery document; server-side only"),
@@ -749,8 +753,16 @@ class DtoIpLeakTest {
             }
         }
         produced.add(roles.list());
-        produced.add(new io.siggi.togethertunes.auth.Providers(database,
-                new io.siggi.togethertunes.secrets.SecretCipher(new byte[32])).list());
+        io.siggi.togethertunes.auth.Providers loginProviders = new io.siggi.togethertunes.auth.Providers(database,
+                new io.siggi.togethertunes.secrets.SecretCipher(new byte[32]));
+        produced.add(loginProviders.list());
+        // a linked login, written with an IP (the audit row), listed without one
+        io.siggi.togethertunes.auth.Identities identities = new io.siggi.togethertunes.auth.Identities(database, clock);
+        identities.link(loginProviders.list().get(0), new io.siggi.togethertunes.auth.Identities.ProviderIdentity(
+                "dto-subject", "alice", "Alice", "alice@example.org"), aliceId, V6_SERVICE);
+        List<io.siggi.togethertunes.auth.Identities.IdentityView> linked = identities.list(aliceId);
+        assertFalse(linked.isEmpty());
+        produced.add(linked);
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
         Class<?> closed = Class.forName("io.siggi.togethertunes.http.EchoEndpoint$Closed");
@@ -876,7 +888,7 @@ class DtoIpLeakTest {
     /** GETs every GET route as {@code who} (whatever the status) and scans the answers. */
     private void sweep(Who who, Fixture f) throws Exception {
         List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo", "/ws",
-                "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions",
+                "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions", "/api/me/identities",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
@@ -1001,6 +1013,19 @@ class DtoIpLeakTest {
                         + "\"clientId\":\"client\"}")).get("id").getAsString();
         expectOk(admin, "DELETE", "/api/admin/providers/" + spareProvider, null);
         expect(200, anon, "GET", "/api/auth/providers", null);
+        // alice links a login at it (written with her IP), lists it; an unknown identity is a 404
+        // (she has a password, so she can remove it; linked again for the sweep)
+        io.siggi.togethertunes.auth.Identities identities = new io.siggi.togethertunes.auth.Identities(database, clock);
+        io.siggi.togethertunes.auth.Providers.Provider idp = new io.siggi.togethertunes.auth.Providers(database,
+                new io.siggi.togethertunes.secrets.SecretCipher(new byte[32])).get(providerId);
+        var aliceAtIdp = new io.siggi.togethertunes.auth.Identities.ProviderIdentity("dto-subject", "alice", "Alice",
+                "alice@example.org");
+        identities.link(idp, aliceAtIdp, aliceId, V6_ALICE);
+        String identityId = json(expect(200, alice, "GET", "/api/me/identities", null)).getAsJsonArray("items")
+                .get(0).getAsJsonObject().get("id").getAsString();
+        expect(404, alice, "DELETE", "/api/me/identities/" + providerId, null);
+        expectOk(alice, "DELETE", "/api/me/identities/" + identityId, null);
+        identities.link(idp, aliceAtIdp, aliceId, V6_ALICE);
 
         // a cookie guest, renamed both ways
         HttpResponse<String> guestCreated = expect(201, anon.withForwarded(V4_GUEST), "POST", "/api/me/guest", null);

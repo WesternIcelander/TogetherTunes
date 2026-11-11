@@ -18,10 +18,12 @@ import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
 import io.siggi.togethertunes.auth.BuiltinRoles;
 import io.siggi.togethertunes.auth.Guests;
+import io.siggi.togethertunes.auth.Identities;
 import io.siggi.togethertunes.auth.IdentityTickets;
 import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
+import io.siggi.togethertunes.auth.Providers;
 import io.siggi.togethertunes.auth.Roles;
 import io.siggi.togethertunes.auth.Sessions;
 import io.siggi.togethertunes.auth.SessionsApi;
@@ -36,6 +38,7 @@ import io.siggi.togethertunes.http.RateLimiter;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
+import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.net.URI;
@@ -180,6 +183,9 @@ class PermissionMatrixTest {
             row("GET /api/me/sessions", c -> Call.get("/api/me/sessions"), 401, 401, 200, 200),
             row("DELETE /api/me/sessions", c -> Call.delete("/api/me/sessions"), 401, 401, 200, 200),
             row("DELETE /api/me/sessions/{id}", c -> Call.delete("/api/me/sessions/" + c.spareSessionId()),
+                    401, 401, 204, 204),
+            row("GET /api/me/identities", c -> Call.get("/api/me/identities"), 401, 401, 200, 200),
+            row("DELETE /api/me/identities/{id}", c -> Call.delete("/api/me/identities/" + c.spareIdentityId()),
                     401, 401, 204, 204),
 
             // Admin: admin.users / admin.roles / admin.settings / ip.view.
@@ -549,6 +555,25 @@ class PermissionMatrixTest {
                 }
                 throw new AssertionError("no spare session");
             } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * A linked login of the caller (for a user or admin, who also has a password, so it can be
+         * removed), or a random id otherwise.
+         */
+        String spareIdentityId() {
+            try {
+                if (cookie == null || !cookie.startsWith("sid=")) {
+                    return "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b";
+                }
+                String userId = json(perform(Call.get("/api/me")).body()).get("id").getAsString();
+                Identities identities = new Identities(database, clock);
+                identities.link(new Providers(database, new SecretCipher(new byte[32])).get(targetProviderId()),
+                        new Identities.ProviderIdentity("subject-" + n, null, null, null), userId, null);
+                return identities.list(userId).get(0).id();
+            } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }

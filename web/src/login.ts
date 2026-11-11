@@ -4,35 +4,10 @@ import { api, setupNeeded } from "./api.js";
 import {
   element, formValue, loadMe, nextPath, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav, withNext,
 } from "./session.js";
+import { providerErrorMessage, providerStartUrl, type ProviderButton } from "./providers.js";
 
 interface LoginResponse {
   user: { id: string; username: string; displayName: string; roles: string[]; mustChangePassword: boolean };
-}
-
-interface ProviderButton {
-  slug: string;
-  displayName: string;
-  allowSignup: boolean;
-  startUrl: string;
-}
-
-/** What `?error=<code>` from a failed provider login (`/auth/oidc/{slug}/callback`) means. */
-export function providerErrorMessage(code: string): string {
-  switch (code) {
-    case "provider_unavailable": return "That login provider isn't available.";
-    case "provider_unreachable": return "The login provider can't be reached right now. Try again later.";
-    case "provider_unsupported": return "That login provider isn't set up in a way this server supports.";
-    case "provider_denied": return "Login was cancelled at the provider.";
-    case "login_expired": return "The login took too long or was already used. Please try again.";
-    case "login_browser_mismatch": return "The login has to finish in the browser it was started in. Please try again.";
-    case "not_authenticated": return "Log in first.";
-    default: return "Logging in with the provider failed. Please try again.";
-  }
-}
-
-/** The provider's start URL, returning to `next` afterwards. */
-export function providerStartUrl(startUrl: string, next: string): string {
-  return next === "/" ? startUrl : startUrl + (startUrl.indexOf("?") < 0 ? "?" : "&") + "next=" + encodeURIComponent(next);
 }
 
 async function showProviders(next: string): Promise<void> {

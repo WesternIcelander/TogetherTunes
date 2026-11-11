@@ -28,6 +28,21 @@
     </section>
 
     <section>
+      <h2>Linked logins</h2>
+      <p id="identity-notice" class="notice" role="status" hidden></p>
+      <p id="identity-error" class="error" role="alert"></p>
+      <p id="identity-none" class="muted" hidden>No logins are linked.</p>
+      <table id="identity-table" class="list identities" hidden>
+        <thead><tr><th>Provider</th><th>Email</th><th>Linked</th><th>Last login</th><th></th></tr></thead>
+        <tbody id="identity-rows"></tbody>
+      </table>
+      <div id="identity-link" hidden>
+        <p>Link another login:</p>
+        <ul id="identity-link-list"></ul>
+      </div>
+    </section>
+
+    <section>
       <h2>Sessions</h2>
       <p class="muted">Where you are logged in: browsers, and bearer tokens for apps.</p>
       <table class="list sessions">

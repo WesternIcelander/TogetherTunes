@@ -50,8 +50,8 @@ import java.util.Objects;
  *       {@link #TTL_MS}), checks it was started for this provider, in this browser (the binding
  *       cookie, below) and, for a link, by the user still logged in, then exchanges the code at the
  *       token endpoint with the {@code code_verifier}, validates the ID token (OIDC,
- *       {@link IdTokenValidator}) and hands both to the {@link Completion} (identity resolution is
- *       the next step).</li>
+ *       {@link IdTokenValidator}) and hands both to the {@link Completion} (in the server:
+ *       {@link IdentityResolution}).</li>
  * </ul>
  *
  * <p><b>Browser binding:</b> the start sets the cookie {@value #BINDING_COOKIE} (a random token,
@@ -78,7 +78,10 @@ import java.util.Objects;
  * different), {@code link_session_changed}, {@code provider_denied} (the user said no),
  * {@code provider_error}, {@code token_exchange_failed}, {@code id_token_invalid} (signature,
  * algorithm, {@code iss}, {@code aud}, {@code exp}, {@code iat}, {@code nonce}), and
- * {@code login_unavailable} (the default {@link Completion} until identity resolution exists). Start and callback share a per-IP limit
+ * {@code login_unavailable} (the default {@link Completion}, and plain OAuth2 providers until their
+ * userinfo step exists); identity resolution ({@link IdentityResolution}) adds
+ * {@code account_disabled}, {@code signup_disabled}, {@code setup_required},
+ * {@code identity_in_use} and {@code provider_already_linked}. Start and callback share a per-IP limit
  * ({@code 429 rate_limited}). Never logged: state, nonce, verifier, code, tokens, secrets.
  */
 public final class OidcLogin {

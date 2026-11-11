@@ -79,7 +79,7 @@ public final class Accounts {
         return db.read(Accounts::anyExists);
     }
 
-    private static boolean anyExists(Connection c) throws SQLException {
+    static boolean anyExists(Connection c) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM users LIMIT 1");
              ResultSet rs = ps.executeQuery()) {
             return rs.next();
@@ -421,11 +421,11 @@ public final class Accounts {
     }
 
     /** Takes the lock that serialises account creation (see the class comment). */
-    private static void lockAccountCreation(Connection c) throws SQLException {
+    static void lockAccountCreation(Connection c) throws SQLException {
         BuiltinRoles.lockAdminRow(c);
     }
 
-    private static boolean usernameTaken(Connection c, String username) throws SQLException {
+    static boolean usernameTaken(Connection c, String username) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM users WHERE lower(username) = ?")) {
             ps.setString(1, username.toLowerCase(Locale.ROOT));
             try (ResultSet rs = ps.executeQuery()) {
@@ -435,7 +435,7 @@ public final class Accounts {
     }
 
     /** Grants the default roles, plus admin for the first account; returns the role names, sorted. */
-    private static List<String> grantRoles(Connection c, String userId, boolean first) throws SQLException {
+    static List<String> grantRoles(Connection c, String userId, boolean first) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(
                 "INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE is_default = 1 OR (? = 1 AND name = ?)")) {
             ps.setString(1, userId);
@@ -447,7 +447,7 @@ public final class Accounts {
     }
 
     /** The names of the user's roles, sorted. */
-    private static List<String> roleNames(Connection c, String userId) throws SQLException {
+    static List<String> roleNames(Connection c, String userId) throws SQLException {
         List<String> roles = new ArrayList<>();
         try (PreparedStatement ps = c.prepareStatement(
                 "SELECT r.name FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = ? ORDER BY r.name")) {

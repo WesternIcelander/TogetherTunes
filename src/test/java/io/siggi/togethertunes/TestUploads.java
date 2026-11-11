@@ -47,8 +47,13 @@ public final class TestUploads {
         var api = new io.siggi.togethertunes.auth.ProvidersApi(providers, new Permissions(db, settings), accounts,
                 config.publicBaseUrl());
         // with the login routes, as Main wires them
-        api.loginFlow(new io.siggi.togethertunes.auth.OidcLogin(providers,
-                new io.siggi.togethertunes.auth.OidcDiscovery(), config.publicBaseUrl(), config.secureCookies()));
+        var login = new io.siggi.togethertunes.auth.OidcLogin(providers,
+                new io.siggi.togethertunes.auth.OidcDiscovery(), config.publicBaseUrl(), config.secureCookies());
+        var identities = new io.siggi.togethertunes.auth.Identities(db);
+        login.completion(new io.siggi.togethertunes.auth.IdentityResolution(identities,
+                new io.siggi.togethertunes.auth.Sessions(db), config.secureCookies()));
+        api.loginFlow(login);
+        api.identities(new io.siggi.togethertunes.auth.IdentitiesApi(identities));
         return api;
     }
 

@@ -59,6 +59,7 @@ public final class ProvidersApi {
     private final Accounts accounts;
     private final String publicBaseUrl;
     private OidcLogin login;
+    private IdentitiesApi identities;
 
     public ProvidersApi(Providers providers, Permissions permissions, Accounts accounts, String publicBaseUrl) {
         this.providers = Objects.requireNonNull(providers);
@@ -76,9 +77,17 @@ public final class ProvidersApi {
         this.login = Objects.requireNonNull(login);
     }
 
+    /** The user's linked logins ({@code /api/me/identities}), registered with the other routes. */
+    public void identities(IdentitiesApi identities) {
+        this.identities = Objects.requireNonNull(identities);
+    }
+
     public void register(Router router) {
         if (login != null) {
             login.register(router);
+        }
+        if (identities != null) {
+            identities.register(router);
         }
         var perm = permissions.hook(Permission.ADMIN_PROVIDERS);
         router.get("/api/auth/providers", this::publicList);
