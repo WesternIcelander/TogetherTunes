@@ -215,6 +215,41 @@ The image is rendered with Java2D at the output resolution:
 
 Don't rely on colour alone to convey anything: use text labels and strong contrast.
 
+### Card fonts
+
+(Added 2026-11-10 after Siggi's Docker demo crashed at startup rendering the filler cards: `UnsatisfiedLinkError: … libfreetype.so.6`.) Card text (item cards, filler cards, the overlay's "Requests at …" line) is drawn by `fonts.CardFonts`, a **fallback chain resolved per character run** (`Font.canDisplay`):
+
+1. the admin's **card font** (`cards.font`): unset = the bundled DejaVu Sans; `system:<family>` an installed font family; `upload:<id>` an uploaded font file;
+2. the **bundled DejaVu Sans** 2.37, regular and bold, from the official DejaVu release (in the jar as `io/siggi/togethertunes/fonts/DejaVuSans*.ttf`, licence in `META-INF/fonts/DejaVu-LICENSE`), loaded with `Font.createFont`, so cards look the same on every host;
+3. the **downloaded script fonts** (below), the CJK one of the text's variant first;
+4. any **installed font** that has the character (`GraphicsEnvironment`, families in name order).
+
+A character no font has is drawn with the first font (a box) and reported (`CardFonts.MissingListener`). Combining marks, joiners, variation selectors and spaces stay in the run before them, so a letter and its marks are shaped together; each run is laid out with `TextLayout` (shaping and bidi per run).
+
+**Startup check** (`fonts.TextRenderingCheck`): before anything renders, `Main` (which sets `java.awt.headless=true`) measures and draws a string with a logical font and with the bundled font into a small image; if that throws, the server prints a message naming what is missing and exits with code 3 (no stack trace):
+
+```
+Java can't render text on this system, so the server can't draw its cards.
+  Error: UnsatisfiedLinkError: /usr/local/jdk/lib/libfontmanager.so: libfreetype.so.6: cannot open shared object file …
+  Missing: the FreeType library (libfreetype.so.6)
+Java's font code needs the FreeType library, fontconfig and at least one installed font,
+even though the cards use the server's own font (DejaVu Sans).
+Install them with your system's package manager, for example:
+  Debian/Ubuntu: apt-get install libfreetype6 fontconfig fonts-dejavu-core
+  Alpine:        apk add freetype fontconfig font-dejavu
+  Fedora:        dnf install freetype fontconfig dejavu-sans-fonts
+```
+
+"Missing" comes from a look at the host (on Linux: `libfreetype.so*` and `libfontconfig.so*` under `/lib`, `/lib64`, `/usr/lib`, `/usr/lib64`, `/usr/local/lib`, font files under `/usr/share/fonts`, `/usr/local/share/fonts`), else from the error. `java -cp TogetherTunes.jar io.siggi.togethertunes.fonts.TextRenderingCheck` runs the same check alone. **Verified in containers** (2026-11-10, `HeadlessFontsIT`, the Temurin 21 JRE image with packages removed): the bundled font does **not** make fontconfig or a system font optional: Java's font manager starts through fontconfig even for `Font.createFont` fonts and fails ("Fontconfig head is null") without fontconfig or without any font fontconfig finds. So the runtime requirements are FreeType, fontconfig and one font; the bundled font is about identical cards, not fewer packages.
+
+**Script fonts on demand** (Siggi, 2026-11-10: "download fonts on demand for other common scripts as well, and not just CJK", plus a "download all" option). `fonts/manifest.json` in the jar (`fonts.FontManifest`) lists Noto fonts from their official sources, each pinned to a URL at a fixed commit **and its sha256 and size**: notofonts (`notofonts/notofonts.github.io` at a commit: Thai, Devanagari, Bengali, Tamil, Telugu, Kannada, Malayalam, Gujarati, Gurmukhi, Oriya, Arabic, Hebrew, Ethiopic, Khmer, Lao, Myanmar, Sinhala, Armenian, Georgian, Serif Tibetan, Symbols, Symbols 2; hinted TTF, regular weight: bold is emboldened by Java2D), noto-cjk (`notofonts/noto-cjk`, the region-specific subset OTFs Sans JP, KR, SC, TC) and Noto Emoji (monochrome, `google/fonts`), all SIL OFL, about 29 MB together (CJK about 23 MB of it). Each entry says what it is for: Unicode scripts (`Character.UnicodeScript`), and for characters of no script (`COMMON`/`INHERITED`: emoji, symbols, CJK punctuation) the code point ranges the font has glyphs for (generated from the font files). **Mapping** (`fonts.ScriptFonts`): a letter → the entry for its script; kana → JP, hangul → KR, bopomofo → TC, Han → the text's variant: JP if the text has kana, else KR if it has hangul, else TC if bopomofo, else `fonts.cjkVariant` (default JP); a no-script character → the entries whose ranges contain it (Noto Emoji first, then Symbols, Symbols 2).
+
+- **Downloads** (`fonts.FontDownloader`, `fonts.FontLibrary`): only manifest URLs are fetched (the API names an entry, never a URL; the JDK HTTP client follows no redirects); at most the entry's size (larger `Content-Length` refused, the body cut off when it runs over), then the sha256 is checked and the file loaded with `Font.createFont` before it is moved into `<data>/fonts/<file>`, with its licence text (`OFL-*.txt`) next to it. At startup every file there is checked against the manifest again (size and sha256); a mismatch is deleted. One download at a time, deduplicated (a font queued or downloading isn't queued again); a failed download is retried after 1, 5 and 25 min, then hourly, five attempts in all (a manual Download starts over).
+- **On demand:** when a card (item, filler or overlay) is laid out with characters no available font has and `fonts.autoDownload` is on (default), the card is rendered now with what there is and the manifest font for those characters is queued. When it lands, the chain is rebuilt and the cards follow (below).
+- **Cards follow font changes:** the chain's identity (card font, CJK preference, downloaded fonts) is checked on every rebuild (a download landed, a font removed, `cards.font` or `fonts.cjkVariant` saved); when it changed, `Main.cardFontsChanged` makes the filler cards again (`OutputAssets.refreshCards`; their fingerprint covers the pixels, so only changed ones re-encode, and outputs started afterwards use them) and queues **card-only re-encodes** (`IngestJobs.enqueueCardRemakes(encoding, CardFontKey)`) for every ready item whose card was drawn with other fonts than its text gets now: items record `CardFonts.key` of their title, artist and album (`items.card_fonts`, migration 0021, also in `media_versions`): a hash of the face of every run, so a Thai font landing changes the key of Thai titles only. NULL (cards made before this) is made again once. The overlay's spec key includes the font key of its text, and overlay item cards are keyed on their pixels, so they follow on their next use.
+- **Admin panel → Fonts** (`docs/api.md#fonts`): each manifest font with its scripts, size and status (not downloaded / queued / downloading / installed / failed with the error and the next retry), Download / Remove, **Download all** (asks first with the total size still missing), the auto-download switch, the CJK variant, the card font (the bundled one, uploads, installed families) and the **characters without a font**: every character of the library's titles, artists and albums no available font has, with how many texts use it and the manifest font that would cover it.
+- **Uploads:** an admin can upload a TrueType or OpenType file (at most 32 MiB, loaded with `Font.createFont` before it is kept) to `<data>/fonts/uploads/<sha256 prefix>.ttf|otf` and pick it as the card font. **Offline servers:** auto-download fails there (and retries); upload the fonts the titles need, or install system fonts (e.g. `fonts-noto-cjk`), which the chain's last step uses.
+
 ## Silence
 
 One pre-encoded **AAC silence frame** (48 kHz stereo), generated at startup from `anullsrc` and taken from after the encoder priming. The packager pairs it with cards whenever the room is paused, idle or loading.

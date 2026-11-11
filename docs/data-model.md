@@ -67,6 +67,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
       audio_only_ms BIGINT NULL,            -- a video's audio-only file's length (audio-only.m4a from its audio trim, library-and-ingest.md#audio-trim); NULL: none, it is audio.m4a (duration_ms)
       card_version INTEGER,                 -- card format of its card.mp4 (CardEncoder.CARD_VERSION: 1 x264 GOP, 2 skip-frame card, 3 skip-frame card with our own MP4 writer; migration 0018); older ones get a card-only re-encode at startup (library-and-ingest.md#cards)
+      card_fonts TEXT NULL,                 -- which fonts drew its card's text: CardFonts.key over title, artist, album (migration 0021); differs from what the current fonts give → card-only re-encode; NULL: from before, made again once (library-and-ingest.md#card-fonts)
       media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows (an undo links the old files into a new version), kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
@@ -75,6 +76,7 @@ media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the 
       published_at BIGINT, kind, duration_ms, output_profile, loudness_lufs, encode_preset, encode_quality,  -- the items publish columns
       audio_only_ms, original_web, original_gain_db,  -- (migration 0015) also restored by an undo
       card_version,                         -- (migration 0018) also restored by an undo
+      card_fonts,                           -- (migration 0021) also restored by an undo
       edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs?, firstGopFrames? (the version's first GOP in frames when a smart trim made it shorter than 60; absent = 60) (library-and-ingest.md#trim, #audio-trim)
 
 media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)
