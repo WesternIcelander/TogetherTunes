@@ -117,6 +117,10 @@ class OverlayCardsTest {
         BufferedImage out = OverlayCards.composite(card, r);
         assertEquals(BASE + "/r/chill", qr(out, r));
         assertEquals(Color.RED.getRGB(), out.getRGB(1279, 719), "the rest of the card is untouched");
+        // Only the QR square and the text's backdrop cover the card: beside the QR square (tl: the
+        // QR code at the image's bottom left, the wider text backdrop above it) the card shows through.
+        assertEquals(Color.RED.getRGB(), out.getRGB(r.x() + r.width() - 1, r.y() + r.height() - 1),
+                "no panel around the QR code");
         assertEquals(Color.RED.getRGB() & 0xFFFFFF, card.getRGB(r.x() + r.width() / 2, r.y() + r.height() / 2) & 0xFFFFFF,
                 "the card itself isn't drawn on");
         assertThrows(java.io.IOException.class, () -> OverlayCards.composite(new BufferedImage(640, 360,

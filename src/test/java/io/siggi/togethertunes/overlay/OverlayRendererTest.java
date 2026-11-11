@@ -86,7 +86,7 @@ class OverlayRendererTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"br", "bl", "tr", "tl"})
-    void cornersPlaceThePanelAndTheTextFacingTheMiddle(String corner) throws Exception {
+    void cornersPlaceTheOverlayAndTheTextFacingTheMiddle(String corner) throws Exception {
         OverlayRenderer.Rendered r = render(corner, 22, 3, OutputProfile.P720_30);
         int margin = 22; // 3% of 720 = 21.6 → 22 (even)
         boolean right = corner.endsWith("r"), bottom = corner.startsWith("b");
@@ -129,16 +129,77 @@ class OverlayRendererTest {
         } else {
             assertTrue(textBottom < qrTop, "text above the QR code in " + corner);
         }
-        // Aligned to the QR code's edge (within a few pixels of glyph side bearing).
+        // Aligned to the QR code's edge (inset by the backdrop's padding, under the text's height).
+        int inset = textBottom - textTop;
         if (right) {
-            assertTrue(Math.abs(textRight - (qrLeft + qrSide - 1)) <= 6, "right aligned: " + textRight + " vs " + (qrLeft + qrSide));
+            int d = (qrLeft + qrSide - 1) - textRight;
+            assertTrue(d > 0 && d <= inset, "right aligned: " + textRight + " vs " + (qrLeft + qrSide));
         } else {
-            assertTrue(Math.abs(textLeft - qrLeft) <= 6, "left aligned: " + textLeft + " vs " + qrLeft);
+            int d = textLeft - qrLeft;
+            assertTrue(d > 0 && d <= inset, "left aligned: " + textLeft + " vs " + qrLeft);
         }
-        // The panel is semi-opaque: a corner pixel is transparent (rounded), an edge pixel half-covering.
-        assertEquals(0, alpha(img.getRGB(0, 0)));
-        int edge = alpha(img.getRGB(img.getWidth() / 2, right ? 1 : 1));
-        assertTrue(edge > 100 && edge < 255, "semi-opaque panel, alpha " + edge);
+        // The QR square stands alone at the outer edges; only the text has a dark backdrop.
+        assertEquals(right ? img.getWidth() - qrSide : 0, qrLeft, "QR square at the outer edge");
+        assertEquals(bottom ? 0 : img.getHeight() - qrSide, qrTop, "QR square at the outer edge");
+        int[] bd = backdrop(img, qrTop, qrSide);
+        int bdLeft = bd[0], bdTop = bd[1], bdRight = bd[2], bdBottom = bd[3];
+        assertEquals(bottom ? img.getHeight() - 1 : 0, bottom ? bdBottom : bdTop, "backdrop at the outer edge");
+        assertEquals(right ? img.getWidth() - 1 : 0, right ? bdRight : bdLeft, "backdrop aligned with the QR code");
+        int gapRows = bottom ? bdTop - (qrTop + qrSide) : qrTop - bdBottom - 1;
+        assertTrue(gapRows >= 2, "transparent gap between QR and backdrop: " + gapRows);
+        // The backdrop covers the text's bounds, with padding, and hugs it.
+        assertTrue(textLeft > bdLeft && textRight < bdRight && textTop > bdTop && textBottom < bdBottom,
+                "text " + textLeft + "," + textTop + "-" + textRight + "," + textBottom + " inside backdrop "
+                        + java.util.Arrays.toString(bd));
+        int textH = textBottom - textTop + 1;
+        assertTrue(bdBottom - bdTop + 1 < textH * 2, "backdrop hugs the text vertically");
+        assertTrue((textLeft - bdLeft) + (bdRight - textRight) < textH * 2, "backdrop hugs the text horizontally");
+        // Every pixel is either in the QR square (opaque), in the backdrop's box, or fully transparent.
+        for (int y = 0; y < img.getHeight(); y++) {
+            for (int x = 0; x < img.getWidth(); x++) {
+                int a = alpha(img.getRGB(x, y));
+                boolean inQr = x >= qrLeft && x < qrLeft + qrSide && y >= qrTop && y < qrTop + qrSide;
+                boolean inBd = x >= bdLeft && x <= bdRight && y >= bdTop && y <= bdBottom;
+                if (inQr) {
+                    assertEquals(255, a, "QR square opaque at " + x + "," + y);
+                } else if (!inBd) {
+                    assertEquals(0, a, "transparent outside QR square and backdrop at " + x + "," + y);
+                }
+            }
+        }
+        // The backdrop is semi-opaque with rounded corners; text pixels sit on it.
+        assertEquals(0, alpha(img.getRGB(bdLeft, bdTop)), "rounded corner");
+        assertEquals(0, alpha(img.getRGB(bdRight, bdBottom)), "rounded corner");
+        int edge = alpha(img.getRGB((bdLeft + bdRight) / 2, bdTop));
+        assertTrue(edge > 100 && edge < 255, "semi-opaque backdrop, alpha " + edge);
+        for (int y = bdTop; y <= bdBottom; y++) {
+            for (int x = bdLeft; x <= bdRight; x++) {
+                int p = img.getRGB(x, y);
+                if (luma(p) > 60 && alpha(p) > 0) {
+                    assertTrue(alpha(p) >= OverlayRenderer.BACKDROP.getAlpha(), "text pixel on the backdrop at " + x + "," + y);
+                }
+            }
+        }
+    }
+
+    /** {left, top, right, bottom} (inclusive) of the non-transparent pixels outside the QR square's rows. */
+    private static int[] backdrop(BufferedImage img, int qrTop, int qrSide) {
+        int left = Integer.MAX_VALUE, top = Integer.MAX_VALUE, right = -1, bottom = -1;
+        for (int y = 0; y < img.getHeight(); y++) {
+            if (y >= qrTop && y < qrTop + qrSide) {
+                continue;
+            }
+            for (int x = 0; x < img.getWidth(); x++) {
+                if (alpha(img.getRGB(x, y)) > 0) {
+                    left = Math.min(left, x);
+                    right = Math.max(right, x);
+                    top = Math.min(top, y);
+                    bottom = Math.max(bottom, y);
+                }
+            }
+        }
+        assertTrue(bottom >= 0, "a backdrop");
+        return new int[] {left, top, right, bottom};
     }
 
     /** {left, top, side} of the largest opaque white square (the QR code with its quiet zone). */

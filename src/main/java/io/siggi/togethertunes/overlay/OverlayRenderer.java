@@ -14,6 +14,8 @@ import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.font.FontRenderContext;
+import java.awt.font.TextLayout;
+import java.awt.geom.Rectangle2D;
 import java.awt.geom.RoundRectangle2D;
 import java.awt.image.BufferedImage;
 import java.nio.ByteBuffer;
@@ -29,20 +31,24 @@ import java.util.Objects;
 /**
  * Renders a room's QR overlay ({@code docs/overlay.md#the-overlay-image}) with Java2D: a QR code
  * for {@code {publicBaseUrl}/r/{slug}} (ZXing, error correction M, 4-module quiet zone, black on
- * white) and the line "Requests at {url}" (the URL without its scheme), on a rounded,
- * semi-opaque dark panel. The text goes on the side of the QR code that faces the middle of the
+ * white) and the line "Requests at {url}" (the URL without its scheme). The QR code's white
+ * square stands on its own; only the text has a backdrop: a rounded, semi-opaque dark box hugging
+ * the text (padding and corner radius scaled with the text size), separated from the QR square by
+ * a small transparent gap. The text goes on the side of the QR code that faces the middle of the
  * frame (below it in the bottom corners, above it in the top corners), aligned to the same edge.
  *
- * <p>The result is the panel only (ARGB, transparent outside the rounded corners) plus where it
- * goes in the frame ({@link Rendered#x()}, {@link Rendered#y()}), so cards composite it and the
- * music-video encoder overlays it at that position. Position and size are even (4:2:0 chroma).
+ * <p>The result is one ARGB image holding the QR square and the backdrop with its text,
+ * transparent everywhere else, plus where it goes in the frame ({@link Rendered#x()},
+ * {@link Rendered#y()}), so cards composite it and the music-video encoder overlays it at that
+ * position. Position and size are even (4:2:0 chroma).
  *
  * <p>Sizes: {@code overlay.heightPct} is the side of the QR code's white square (quiet zone
  * included) in % of the frame height, rounded down to whole pixels per module (at least
  * {@value #MIN_MODULE_PX}) so the modules stay sharp (neighbouring percentages can therefore give
- * the same image and the same {@code overlayHash}); {@code overlay.margin} is the panel's
- * distance from the two nearest frame edges, in % of the frame height. The text is sized from the QR code and shrunk to fit the
- * frame width (never cut: a shortened URL would be useless).
+ * the same image and the same {@code overlayHash}); {@code overlay.margin} is the distance of the
+ * QR square and backdrop group's outer edges from the two nearest frame edges, in % of the frame
+ * height. The text is sized from the QR code and shrunk to fit the frame width (never cut: a
+ * shortened URL would be useless).
  *
  * <p>Instances are stateless and thread-safe. Requires {@code java.awt.headless=true} on a server.
  */
@@ -52,7 +58,7 @@ public final class OverlayRenderer {
      * looks makes stored renders (and through {@code overlayHash}, every cache made from them)
      * stale. Bump it whenever the output of {@link #render} changes for the same spec.
      */
-    public static final int RENDER_VERSION = 1;
+    public static final int RENDER_VERSION = 2;
 
     static final int QUIET_ZONE = 4;
     /** Fewer pixels per module don't survive scaling and video compression. */
@@ -63,9 +69,14 @@ public final class OverlayRenderer {
     static final double TEXT_MIN_PER_HEIGHT = 0.03;
     /** Below this (fraction of the frame height) the text isn't shrunk any further to fit. */
     static final double TEXT_FLOOR_PER_HEIGHT = 0.015;
-    /** Panel padding around the content, as a fraction of the QR code's side. */
-    static final double PAD_PER_QR = 0.07;
-    static final Color PANEL = new Color(0, 0, 0, 176);
+    /** The backdrop's padding around the text's ink, horizontally and vertically, as fractions of the text size. */
+    static final double H_PAD_PER_TEXT = 0.35;
+    static final double V_PAD_PER_TEXT = 0.2;
+    /** The backdrop's corner radius, as a fraction of the text size. */
+    static final double RADIUS_PER_TEXT = 0.3;
+    /** The transparent gap between the QR code's white square and the backdrop, as a fraction of the text size. */
+    static final double GAP_PER_TEXT = 0.3;
+    static final Color BACKDROP = new Color(0, 0, 0, 176);
     static final Color TEXT = Color.WHITE;
 
     /**
@@ -117,7 +128,7 @@ public final class OverlayRenderer {
     /**
      * A rendered overlay.
      *
-     * @param image the panel, {@code TYPE_INT_ARGB}; callers must not modify it
+     * @param image the QR square and the text backdrop, {@code TYPE_INT_ARGB}; callers must not modify it
      * @param x     left edge in the frame
      * @param y     top edge in the frame
      * @param hash  {@code overlayHash}: see {@link #hash}
@@ -185,15 +196,13 @@ public final class OverlayRenderer {
         int qrSide = modules * modulePx;
 
         int margin = even((int) Math.round(frameH * spec.margin() / 100.0));
-        int pad = Math.max(4, (int) Math.round(qrSide * PAD_PER_QR));
-        int gap = Math.max(2, (int) Math.round(pad * 0.6));
 
-        // The text: sized from the QR code, shrunk to fit inside the frame's margins.
+        // The text: sized from the QR code, shrunk to fit inside the frame's margins (backdrop included).
         FontRenderContext frc = fontContext();
         String text = spec.text();
         CardFonts fonts = CardFonts.installed();
         double size = Math.max(qrSide * TEXT_PER_QR, frameH * TEXT_MIN_PER_HEIGHT);
-        double maxTextWidth = frameW - 2.0 * margin - 2.0 * pad;
+        double maxTextWidth = frameW - 2.0 * margin - 2.0 * hPad(size);
         double width = fonts.advance(text, Font.BOLD, (float) size, frc);
         if (width > maxTextWidth) {
             size = Math.max(frameH * TEXT_FLOOR_PER_HEIGHT, Math.floor(size * maxTextWidth / width));
@@ -202,18 +211,30 @@ public final class OverlayRenderer {
                 size -= 1;
             }
         }
-        double textWidth = fonts.advance(text, Font.BOLD, (float) size, frc);
-        double lineHeight = size * 1.2;
+        TextLayout layout = fonts.layout(text, Font.BOLD, (float) size, frc);
+        // The ink's bounds relative to the baseline's left end; the backdrop hugs them.
+        Rectangle2D ink = layout.getBounds();
+        int hPad = hPad(size), vPad = vPad(size);
+        int gap = Math.max(2, (int) Math.round(size * GAP_PER_TEXT));
 
-        int panelW = even((int) Math.ceil(Math.max(qrSide, textWidth) + 2.0 * pad));
-        int panelH = even((int) Math.ceil(qrSide + gap + lineHeight + 2.0 * pad));
-        panelW = Math.min(panelW, even(frameW - 2 * margin));
-        int x = spec.right() ? frameW - margin - panelW : margin;
-        int y = spec.bottom() ? frameH - margin - panelH : margin;
+        int maxW = frameW - 2 * margin;
+        int backdropW = Math.min((int) Math.ceil(ink.getWidth() + 2.0 * hPad), Math.max(2, maxW));
+        int backdropH = (int) Math.ceil(ink.getHeight() + 2.0 * vPad);
+        int imageW = even(Math.max(qrSide, backdropW));
+        int imageH = even(qrSide + gap + backdropH);
+        int x = spec.right() ? frameW - margin - imageW : margin;
+        int y = spec.bottom() ? frameH - margin - imageH : margin;
         x = Math.max(0, x - (x & 1));
         y = Math.max(0, y - (y & 1));
 
-        BufferedImage image = new BufferedImage(panelW, panelH, BufferedImage.TYPE_INT_ARGB);
+        // QR square and backdrop flush with the image's outer edges (those facing the frame's
+        // corner); the rounding to even sizes widens the gap or the inner side.
+        int qrX = spec.right() ? imageW - qrSide : 0;
+        int backdropX = spec.right() ? imageW - backdropW : 0;
+        int qrY = spec.bottom() ? 0 : imageH - qrSide;
+        int backdropY = spec.bottom() ? imageH - backdropH : 0;
+
+        BufferedImage image = new BufferedImage(imageW, imageH, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = image.createGraphics();
         try {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -223,12 +244,6 @@ public final class OverlayRenderer {
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
-            double arc = pad * 2.0;
-            g.setColor(PANEL);
-            g.fill(new RoundRectangle2D.Double(0, 0, panelW, panelH, arc, arc));
-
-            int qrX = spec.right() ? panelW - pad - qrSide : pad;
-            int qrY = spec.bottom() ? pad : panelH - pad - qrSide;
             // Modules on whole pixels, no antialiasing: crisp edges for scanning.
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
             g.setColor(Color.WHITE);
@@ -243,10 +258,14 @@ public final class OverlayRenderer {
             }
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            double lineTop = spec.bottom() ? qrY + qrSide + gap : qrY - gap - lineHeight;
-            double textX = spec.right() ? panelW - pad - textWidth : pad;
+            double arc = 2.0 * Math.min(size * RADIUS_PER_TEXT, backdropH / 2.0);
+            g.setColor(BACKDROP);
+            g.fill(new RoundRectangle2D.Double(backdropX, backdropY, backdropW, backdropH, arc, arc));
+
+            double textX = backdropX + hPad - ink.getX();
+            double baseline = backdropY + vPad - ink.getY();
             g.setColor(TEXT);
-            fonts.draw(g, text, Font.BOLD, (float) size, (float) textX, (float) (lineTop + size * 0.95));
+            layout.draw(g, (float) textX, (float) baseline);
         } finally {
             g.dispose();
         }
@@ -279,6 +298,14 @@ public final class OverlayRenderer {
             md.update(bytes.array());
         }
         return HexFormat.of().formatHex(md.digest(), 0, 8);
+    }
+
+    private static int hPad(double textSize) {
+        return Math.max(2, (int) Math.round(textSize * H_PAD_PER_TEXT));
+    }
+
+    private static int vPad(double textSize) {
+        return Math.max(2, (int) Math.round(textSize * V_PAD_PER_TEXT));
     }
 
     private static int even(int v) {
