@@ -87,6 +87,12 @@ Confirm that the close-delimited `.ts` framing copied from VRCDN plays in VRChat
 
 - Admin: failed jobs, yt-dlp update, audit log; transition cards and `gapMs`; a Docker image with ffmpeg and yt-dlp; deployment and backup notes.
 
+## M8 — Media types, auto-delete and custom cards
+
+- Media types (`audio`, `uncategorized`, `music_video`, `movie`, `show` with show name, season, episode), classify on library add, still-image detection, no loudness normalisation for movies and shows; room overlay modes (`off`, `always`, `idleOnly`; never on movies and shows); views, auto-delete of movies and shows, pins; removing library entries after media is deleted, admin delete of an item record; Next episode; custom card images. See [media-types.md](media-types.md).
+
+**Done when:** a still-image video ingests as audio with its video undoable; movies and shows never show the QR code and are deleted by the timers unless pinned; custom card images play in the stream with the overlay by the room's mode.
+
 ## Testing strategy
 
 - **Unit:** the timeline math, queue ordering per mode, guest capability resolution, the media access rules, the retention predicate, YouTube URL normalisation, the index reader, ADTS, AVCC→Annex B, the Annex-B access-unit splitter, the TS packetiser, the HLS playlist.

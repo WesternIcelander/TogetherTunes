@@ -23,7 +23,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 - Crossfades between tracks: hard cuts only, with an optional transition card.
 - Overlays that change continuously. The QR overlay is static for each room.
 - A native mobile app. The API is designed so one can be built against it later.
-- Video-library features beyond music videos: series, seasons, subtitles, multi-audio.
+- Video-library features beyond media types and show episodes (M8, [media-types.md](media-types.md)): subtitles, multi-audio, metadata scraping.
 - DRM, and transcoding per client at playback time.
 - Live input from OBS (screen sharing in the program output). This is a future idea; see [future-ideas.md](future-ideas.md).
 
@@ -52,6 +52,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, the room's history, clock sync, web playback modes |
 | [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS / MP3 outputs |
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
+| [media-types.md](media-types.md) | Media types (audio, uncategorized, music video, movie, show), still-image detection, auto-delete and pins, custom card images (M8) |
 | [api.md](api.md) | REST endpoints and WebSocket messages |
 | [milestones.md](milestones.md) | Build order, with acceptance criteria and testing strategy |
 | [user-guide.md](user-guide.md) | External user documentation: using the stream URLs in VRChat (allowlist, "Allow Untrusted URLs"), an RTMP service like VRCDN, HLS desync, MP3 in Euro Truck Simulator 2 / American Truck Simulator radio (`live_streams.sii`). The UI itself names no third-party products |

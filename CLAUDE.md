@@ -26,7 +26,7 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 4. The room timeline is the only source of truth. The program output follows it and never feeds back into it.
 5. **IP addresses are never exposed** to an actor without `ip.view`, in any response, message or export. Only `IpAccess` reads IP columns.
 6. Stream URL tokens (private rooms) and RTMP keys are capabilities. Never log them in full. (Public and unlisted rooms' stream URLs use the room slug, which isn't a secret. Tokens may travel over plain HTTP when the owner uses the `http.insecureBaseUrl` URL; that use is recorded and warned about, never logged.)
-7. One YouTube video ID maps to exactly one item row, forever (purged items are refetched into the same row).
+7. One YouTube video ID maps to at most one item row at a time (purged items are refetched into the same row). Only an admin's **delete record** ([media-types.md](docs/media-types.md#after-media-is-deleted)) removes the row; after that the ID may get a new one.
 
 ## Upstream libraries (SiggiHTTP, SimpleWebsocket)
 
