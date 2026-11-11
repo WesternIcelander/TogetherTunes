@@ -26,7 +26,8 @@ user_identities(id PK, user_id FK, provider_id FK, subject TEXT,
 
 oidc_providers(id PK, slug UNIQUE, display_name, issuer, client_id,
       client_secret_enc, scopes, enabled INTEGER, allow_signup INTEGER,
-      claim_mapping_json)
+      claim_mapping_json,                                              -- see auth.md#login-providers
+      kind TEXT)                                                       -- 'oidc' | 'oauth2', fixed
 
 roles(id PK, name UNIQUE, builtin INTEGER, is_default INTEGER)         -- builtin: 'admin', 'user'
 role_permissions(role_id FK, permission TEXT, PRIMARY KEY(role_id, permission))

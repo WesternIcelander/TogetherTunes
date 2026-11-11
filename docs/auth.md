@@ -36,6 +36,18 @@ Implement a minimal relying party; no framework.
 4. **Resolve the identity** by `(provider_id, sub)`: log in, link (when the intent is `link`), sign up (when `allow_signup` is on), or show an error.
 5. **Plain OAuth2 providers** (Discord, GitHub): use `claim_mapping_json`, which holds the userinfo URL and JSON paths for subject, username and display name.
 
+### Login providers
+
+Any number of providers can be enabled at once, each with its own login button; a user can link several. Admins manage them at `/api/admin/providers` (*admin.providers*).
+
+- **kind** `oidc` or `oauth2`, fixed at creation. **slug** (lower-case letters, digits, `-`, at most 32) is in the login URLs and the redirect URI `{publicBaseUrl}/auth/oidc/{slug}/callback`.
+- **issuer:** required for OIDC (compared exactly with `iss`); for OAuth it only names the provider (default: the authorization endpoint's origin). Provider URLs must be `https` (`http` only for a loopback host).
+- **client secret:** optional (public clients), write-only, stored encrypted with the server key (`client_secret_enc`, context `oidc_providers.client_secret_enc:<id>`).
+- **scopes:** space-separated; OIDC must include `openid` (default `openid profile email`).
+- **claim_mapping_json:** OIDC: optional claim names `username`, `displayName`, `email` (defaults `preferred_username`, `name`, `email`; the subject is always `sub`). OAuth: `authorizationEndpoint`, `tokenEndpoint`, `userinfoUrl` and `subject` (required), `username`, `displayName`, `email` (optional). Paths are dot-separated names; a number indexes an array (`data.0.id`).
+- **enabled** (default on), **allow_signup** (default off).
+- While a provider has identities, what gives its subjects their meaning can't change (OIDC: the issuer; OAuth: the userinfo URL and subject path), and it can't be deleted; disable it instead (`409 provider_has_identities`).
+
 ## Sessions
 
 - **Web:** an opaque 256-bit token in cookie `sid` with `HttpOnly; Secure; SameSite=Lax; Path=/`. The DB stores only its SHA-256 hash. Sliding expiry of 30 days.
