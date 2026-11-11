@@ -78,6 +78,8 @@ As implemented: **entries** are removed by `library.PurgedEntries`: in the purge
 
 In a room, the owner can press **Next episode** on a `show` item (the current entry, or the last one played): it queues the item with the same show name and the next episode, ordered by (season, episode): the next episode number in the same season, otherwise the lowest episode of the next season that exists. It looks in the owner's library. If there's none, it says so.
 
+As implemented: `library.Episodes` holds the order (no season number first, then season 0, 1, ...; then episode; equal places by item id) and the next-episode rule (the lowest place after the current one, so gaps in episodes or seasons are skipped and the episode itself or a duplicate of it is never next); show names match trimmed and case-insensitively. `GET /api/library/shows` groups a library's shows with it, and the library page's "Shows (grouped)" choice shows them. In a room the owner and moderators send `queue.nextEpisode` ([api.md](api.md)): the basis is the current entry, or, with nothing current, the entry that started playing last; the next episode comes from the **room owner's** library (also when a moderator asks), skipping uploads that are purged or failed (they can't play again; a purged YouTube episode is fetched again), and is queued like a library request. `404 no_next_episode` when there is none, `409 not_a_show` when the basis isn't a show. The web client's DOM-free `shows.ts` mirrors the order and decides when the button shows (the owner and moderators, while a show episode is current or nothing is).
+
 ## Custom card images
 
 The cards a room's stream outputs show between items can be replaced by images:
