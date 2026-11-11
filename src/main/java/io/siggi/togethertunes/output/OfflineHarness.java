@@ -11,7 +11,7 @@ import java.util.Objects;
  * The packager's offline harness ({@code docs/program-output.md#testing-the-packager}): runs the
  * real {@link TimelineFollower}, {@link UnitBuilder} and {@link TsMuxer} against a
  * {@link ScriptedTimeline} and writes the MPEG-TS to a stream as fast as it can be built, with no
- * real-time pacing. The result is checked with {@code ffmpeg -v error -i out.ts -f null -} and
+ * real-time pacing (unless asked for). The result is checked with {@code ffmpeg -v error -i out.ts -f null -} and
  * ffprobe.
  *
  * <p>Time is simulated the way the {@link Packager} sees it: output clock {@link OutputClock#START}
@@ -77,6 +77,18 @@ public final class OfflineHarness {
     public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
             long audioOnlyBitrateBps, ScriptedTimeline timeline, long durationMs, OutputStream out)
             throws IOException {
+        return run(sources, avcC, streamBitrateBps, audioOnlyBitrateBps, timeline, durationMs, out, false);
+    }
+
+    /**
+     * As above; with {@code realTime}, each unit is built no earlier (wall clock, from the start of
+     * the run) than the live packager would build it ({@link Packager#LEAD_MS} before it is due), so
+     * work running beside the output on real time (overlay re-encodes) gets the time it would get
+     * live. The output and the simulated timeline are the same either way.
+     */
+    public static Result run(TimelineFollower.SourceFactory sources, byte[] avcC, long streamBitrateBps,
+            long audioOnlyBitrateBps, ScriptedTimeline timeline, long durationMs, OutputStream out,
+            boolean realTime) throws IOException {
         Objects.requireNonNull(sources, "sources");
         Objects.requireNonNull(avcC, "avcC");
         Objects.requireNonNull(timeline, "timeline");
@@ -85,6 +97,7 @@ public final class OfflineHarness {
             throw new IllegalArgumentException("durationMs must be positive");
         }
         long startMs = timeline.startServerMs();
+        long wallStart = System.nanoTime();
         PacingClock clock = new PacingClock(frozenAt(startMs));
         List<String> log = new ArrayList<>();
         timeline.advanceTo(0).forEach(c -> log.add(describe(c)));
@@ -100,6 +113,17 @@ public final class OfflineHarness {
         try (TimelineFollower follower = new TimelineFollower(new UnitBuilder(), sources, clock, timeline.cue())) {
             while (endPts < endTarget) {
                 long buildAtMs = clock.serverMsAt(follower.nextUnitStart()) - Packager.LEAD_MS - startMs;
+                if (realTime) {
+                    long waitNanos = wallStart + buildAtMs * 1_000_000 - System.nanoTime();
+                    if (waitNanos > 0) {
+                        try {
+                            Thread.sleep(waitNanos / 1_000_000, (int) (waitNanos % 1_000_000));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new java.io.InterruptedIOException("interrupted while pacing");
+                        }
+                    }
+                }
                 for (ScriptedTimeline.Change c : timeline.advanceTo(buildAtMs)) {
                     log.add(describe(c));
                     follower.update(c.cue());

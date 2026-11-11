@@ -301,7 +301,7 @@ class NextVideoOverlayTest {
     }
 
     /** Video packet PTS of {@code ts} in decode order (= presentation order: no B-frames). */
-    private static List<Long> videoPts(Tools tools, Path ts) throws Exception {
+    static List<Long> videoPts(Tools tools, Path ts) throws Exception {
         String packets = tools.ffprobe("-v", "error", "-select_streams", "v", "-show_entries", "packet=pts",
                 "-of", "csv=p=0", ts.toString()).stdoutToString(1 << 26).run().stdoutString();
         List<Long> pts = new ArrayList<>();
@@ -317,7 +317,7 @@ class NextVideoOverlayTest {
      * Extracts every decoded frame's panel region (grey) and returns, per frame, whether the room's
      * QR code decodes from it to {@code url}.
      */
-    private static boolean[] qrFrames(Tools tools, Path ts, OverlayRenderer.Rendered panel, String url)
+    static boolean[] qrFrames(Tools tools, Path ts, OverlayRenderer.Rendered panel, String url)
             throws Exception {
         int w = panel.width();
         int h = panel.height();
