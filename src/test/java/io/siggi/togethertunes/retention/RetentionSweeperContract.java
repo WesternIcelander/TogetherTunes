@@ -47,6 +47,9 @@ abstract class RetentionSweeperContract {
     private String userId;
     private String roomId;
     private int days = 14;
+    private int unviewedDays = 14;
+    private int afterViewHours = 72;
+    static final long HOUR = 60L * 60 * 1000;
 
     /** Opens a fresh, empty database. */
     protected abstract Database open() throws SQLException;
@@ -57,7 +60,8 @@ abstract class RetentionSweeperContract {
         MigrationRunner.migrate(db);
         data = DataDir.create(dir.resolve("data"));
         jobs = new IngestJobs(db, clock);
-        sweeper = new RetentionSweeper(db, new Items(db, data, clock), () -> days, clock);
+        sweeper = new RetentionSweeper(db, new Items(db, data, clock),
+                () -> new RetentionSweeper.Limits(days, unviewedDays, afterViewHours), clock);
         userId = UuidV7.newId();
         exec("INSERT INTO users (id, username, display_name, created_at, disabled) VALUES (?, 'u', 'u', ?, 0)",
                 userId, 1L);
@@ -85,6 +89,25 @@ abstract class RetentionSweeperContract {
         Files.createDirectories(itemDir);
         Files.writeString(itemDir.resolve("audio.m4a"), "audio");
         return id;
+    }
+
+    /**
+     * A ready video item of {@code mediaType}, added at {@code addedAt}, last viewed at
+     * {@code lastViewedAt} (null: never), and referenced just now (so only auto-delete applies).
+     */
+    private String video(String mediaType, long addedAt, Long lastViewedAt) throws Exception {
+        String id = UuidV7.newId();
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at, media_type, last_viewed_at) VALUES (?, 'video', 'Film', 'upload', ?, ?,"
+                + " 'ready', '720p30', ?, ?, ?)", id, userId, addedAt, NOW, mediaType, lastViewedAt);
+        Path itemDir = IngestPipeline.itemDir(data, id);
+        Files.createDirectories(itemDir);
+        Files.writeString(itemDir.resolve("audio.m4a"), "media");
+        return id;
+    }
+
+    private void pin(String itemId) throws SQLException {
+        exec("UPDATE items SET pinned_at = ?, pinned_by_user_id = ? WHERE id = ?", NOW, userId, itemId);
     }
 
     private String old() throws Exception {
@@ -133,7 +156,7 @@ abstract class RetentionSweeperContract {
         return db.read(c -> {
             List<String> rows = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement("SELECT actor_user_id, actor_guest_id, ip, target,"
-                    + " details_json FROM audit_log WHERE action = ? ORDER BY target")) {
+                    + " details_json FROM audit_log WHERE action = ? ORDER BY target, details_json")) {
                 ps.setString(1, Items.AUDIT_PURGED);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -297,5 +320,141 @@ abstract class RetentionSweeperContract {
         });
         sweeper.runChores();
         assertEquals(List.of("first", "broken", "last"), ran, "a failing chore doesn't stop the others");
+    }
+
+    @Test
+    void pinnedItemsAreNeverPurgedByTheUnreferencedRule() throws Exception {
+        String pinned = old();
+        pin(pinned);
+        String expired = old();
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep());
+        assertEquals("ready", status(pinned));
+        assertTrue(hasFiles(pinned));
+        assertEquals("purged", status(expired));
+
+        exec("UPDATE items SET pinned_at = NULL, pinned_by_user_id = NULL WHERE id = ?", pinned);
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep(), "unpinned: the rule applies again");
+        assertEquals("purged", status(pinned));
+    }
+
+    @Test
+    void autoDeletesMoviesAndShowsByTheirTimers() throws Exception {
+        // Never viewed: 14 days after added_at.
+        String unviewedMovie = video("movie", NOW - 14 * DAY - 1, null);
+        String unviewedShow = video("show", NOW - 20 * DAY, null);
+        String unviewedBoundary = video("movie", NOW - 14 * DAY, null);
+        String unviewedRecent = video("show", NOW - 13 * DAY, null);
+        // Viewed: 72 hours after last_viewed_at, whenever it was added.
+        String viewedMovie = video("movie", NOW - 100 * DAY, NOW - 72 * HOUR - 1);
+        String viewedBoundary = video("show", NOW - 100 * DAY, NOW - 72 * HOUR);
+        String viewedRecently = video("movie", NOW - 100 * DAY, NOW - HOUR);
+        String viewedButNew = video("show", NOW - DAY, NOW - 2 * HOUR);
+        // Library and playlist entries don't protect movies and shows.
+        String inLibrary = video("movie", NOW - 20 * DAY, null);
+        libraryEntry(inLibrary);
+        String inPlaylist = video("show", NOW - 20 * DAY, NOW - 80 * HOUR);
+        playlistEntry(inPlaylist);
+        String played = video("movie", NOW - 20 * DAY, null);
+        queueEntry(played, "played");
+        // Protected: pinned, current/queued/suggested in a room, a running ingest job.
+        String pinned = video("movie", NOW - 20 * DAY, NOW - 80 * HOUR);
+        pin(pinned);
+        String queued = video("show", NOW - 20 * DAY, null);
+        queueEntry(queued, "queued");
+        String suggested = video("show", NOW - 20 * DAY, null);
+        queueEntry(suggested, "suggested");
+        String playing = video("movie", NOW - 20 * DAY, NOW - 80 * HOUR);
+        queueEntry(playing, "playing");
+        String running = video("movie", NOW - 20 * DAY, null);
+        jobs.enqueue(running, IngestJob.Kind.REENCODE);
+        assertEquals(running, jobs.claimNext().itemId());
+        // Other media types never auto-delete.
+        String musicVideo = video("music_video", NOW - 20 * DAY, NOW - 80 * HOUR);
+        String uncategorized = video("uncategorized", NOW - 20 * DAY, null);
+        String audio = video("audio", NOW - 20 * DAY, null);
+        String failedMovie = video("movie", NOW - 20 * DAY, null);
+        exec("UPDATE items SET status = 'failed' WHERE id = ?", failedMovie);
+
+        List<String> gone = List.of(unviewedMovie, unviewedShow, viewedMovie, inLibrary, inPlaylist, played);
+        assertEquals(new RetentionSweeper.Result(gone.size(), 0, 0), sweeper.sweep());
+        for (String id : gone) {
+            assertEquals("purged", status(id), id);
+            assertEquals(String.valueOf(NOW), column(id, "purged_at"));
+            assertFalse(hasFiles(id));
+        }
+        for (String id : List.of(unviewedBoundary, unviewedRecent, viewedBoundary, viewedRecently, viewedButNew,
+                pinned, queued, suggested, playing, running, musicVideo, uncategorized, audio)) {
+            assertEquals("ready", status(id), id);
+            assertTrue(hasFiles(id), id);
+        }
+        assertEquals("failed", status(failedMovie));
+
+        List<String> expected = new ArrayList<>();
+        for (String id : gone.stream().sorted().toList()) {
+            expected.add("null null null " + id + " {\"previousStatus\":\"ready\",\"reason\":\"auto-delete\","
+                    + "\"videoUnviewedDays\":14,\"videoAfterViewHours\":72}");
+        }
+        assertEquals(expected, audit(), "audited without an actor or IP");
+
+        // The fake clock moves on: the boundary items and the recent ones expire in turn.
+        clock.advance(1);
+        assertEquals(new RetentionSweeper.Result(2, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(unviewedBoundary));
+        assertEquals("purged", status(viewedBoundary));
+        clock.advance(DAY);
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(unviewedRecent));
+        clock.advance(2 * DAY);
+        assertEquals(new RetentionSweeper.Result(2, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(viewedRecently));
+        assertEquals("purged", status(viewedButNew));
+        assertEquals("ready", status(pinned), "pinned: never");
+    }
+
+    @Test
+    void eachAutoDeleteTimerCanBeTurnedOff() throws Exception {
+        String unviewed = video("movie", NOW - 20 * DAY, null);
+        String viewed = video("show", NOW - 20 * DAY, NOW - 80 * HOUR);
+        days = 0;
+        unviewedDays = 0;
+        afterViewHours = 0;
+        assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep());
+
+        afterViewHours = 72;
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep(), "the settings are read at each sweep");
+        assertEquals("purged", status(viewed));
+        assertEquals("ready", status(unviewed), "never viewed: its own timer, off");
+
+        afterViewHours = 0;
+        unviewedDays = 14;
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), sweeper.sweep());
+        assertEquals("purged", status(unviewed));
+        assertTrue(audit().stream().anyMatch(r -> r.startsWith("null null null " + viewed)
+                && r.contains("\"videoUnviewedDays\":0,\"videoAfterViewHours\":72")), "the limits in force");
+    }
+
+    @Test
+    void autoDeleteReChecksEachItemInsideThePurgeTransaction() throws Exception {
+        days = 0;
+        String viewed = video("movie", NOW - 20 * DAY, null);
+        String pinned = video("show", NOW - 20 * DAY, null);
+        String queuedInRoom = video("movie", NOW - 20 * DAY, null);
+        String untouched = video("show", NOW - 20 * DAY, null);
+        String inLibrary = video("movie", NOW - 20 * DAY, null);
+        sweeper.afterSelect = ids -> {
+            assertEquals(5, ids.size());
+            exec("UPDATE items SET last_viewed_at = ? WHERE id = ?", NOW, viewed);
+            pin(pinned);
+            queueEntry(queuedInRoom, "queued");
+            libraryEntry(inLibrary);
+        };
+        assertEquals(new RetentionSweeper.Result(2, 3, 0), sweeper.sweep());
+        for (String id : List.of(viewed, pinned, queuedInRoom)) {
+            assertEquals("ready", status(id), id);
+            assertTrue(hasFiles(id));
+        }
+        assertEquals("purged", status(untouched));
+        assertEquals("purged", status(inLibrary), "a library entry doesn't protect a movie or show");
+        assertEquals(2, audit().size(), "no audit row for the skipped items");
     }
 }

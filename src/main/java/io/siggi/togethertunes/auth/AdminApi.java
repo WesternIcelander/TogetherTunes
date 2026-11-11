@@ -679,6 +679,9 @@ public final class AdminApi {
         if (name.startsWith("guests.")) {
             return "guests";
         }
+        if (name.startsWith("retention.")) {
+            return "retention";
+        }
         if (name.startsWith("storage.")) {
             return "storage";
         }

@@ -36,6 +36,15 @@ import java.util.concurrent.TimeUnit;
  * {@code Items.purge}'s purge listener), marks the row {@code purged} with {@code purged_at}, and writes an
  * {@code item.purged} audit row without an actor ({@code reason: "retention"}).
  *
+ * <p><b>Auto-delete</b> ({@code docs/media-types.md#views-auto-delete-and-pins}): the same sweep
+ * also purges {@code ready} {@code movie}/{@code show} items that were never viewed and were added
+ * more than {@code retention.videoUnviewedDays} ago, or whose most recent view is more than
+ * {@code retention.videoAfterViewHours} old (each {@code 0} = off). Library and playlist entries
+ * don't protect them; an entry current, queued or suggested in a room and a running ingest job
+ * do. Same re-check inside the purge transaction, audit {@code reason: "auto-delete"}.
+ *
+ * <p><b>Pinned items</b> ({@code items.pinned_at}) are never purged by either rule.
+ *
  * <p>Remaining race (both dialects, accepted): an add that read the item as {@code ready} just
  * before the sweep commits its library/playlist entry just after it; the entry then shows the
  * item as "media expired", as after a manual purge. It needs an item that was unreferenced for
@@ -48,9 +57,12 @@ public final class RetentionSweeper implements AutoCloseable {
     public static final Duration FIRST_DELAY = Duration.ofMinutes(1);
     /** Details value of the sweeper's audit rows. */
     public static final String REASON = "retention";
+    /** Details value of the auto-delete audit rows. */
+    public static final String REASON_AUTO_DELETE = "auto-delete";
 
     static final int PAGE = 500;
     private static final long DAY_MS = 24L * 60 * 60 * 1000;
+    private static final long HOUR_MS = 60L * 60 * 1000;
 
     private static final System.Logger LOG = System.getLogger(RetentionSweeper.class.getName());
 
@@ -58,6 +70,16 @@ public final class RetentionSweeper implements AutoCloseable {
     @FunctionalInterface
     public interface Days {
         int get() throws SQLException;
+    }
+
+    /** The three retention settings, read at each sweep; each {@code 0} disables its rule. */
+    public record Limits(int unreferencedDays, int videoUnviewedDays, int videoAfterViewHours) {
+    }
+
+    /** Reads the {@link Limits} at each sweep. */
+    @FunctionalInterface
+    public interface Policy {
+        Limits get() throws SQLException;
     }
 
     /** Other housekeeping run after each scheduled sweep (e.g. trimming room request histories). */
@@ -93,17 +115,31 @@ public final class RetentionSweeper implements AutoCloseable {
             + " AND NOT EXISTS (SELECT 1 FROM queue_entries qe WHERE qe.item_id = i.id"
             + " AND qe.state IN ('queued', 'suggested', 'playing'))"
             + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state = '"
+            + IngestJob.State.RUNNING.wire() + "')"
+            + " AND i.pinned_at IS NULL";
+
+    /**
+     * The auto-delete predicate, on {@code items i}: a ready, unpinned movie or show, never viewed
+     * and added before cutoff 1, or last viewed before cutoff 2 (a disabled rule's cutoff is
+     * {@link Long#MIN_VALUE}), not current/queued/suggested in a room and without a running job.
+     */
+    private static final String AUTO_DELETE = "i.status = 'ready' AND i.media_type IN ('movie', 'show')"
+            + " AND i.pinned_at IS NULL"
+            + " AND ((i.last_viewed_at IS NULL AND i.added_at < ?) OR i.last_viewed_at < ?)"
+            + " AND NOT EXISTS (SELECT 1 FROM queue_entries qe WHERE qe.item_id = i.id"
+            + " AND qe.state IN ('queued', 'suggested', 'playing'))"
+            + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state = '"
             + IngestJob.State.RUNNING.wire() + "')";
 
     private final Database db;
     private final Items items;
-    private final Days days;
+    private final Policy policy;
     private final Clock clock;
     private ScheduledExecutorService scheduler;
 
     /** Tests: candidates per page. */
     int pageSize = PAGE;
-    /** Tests: runs after each page of candidates is selected, before any of them is purged. */
+    /** Tests: runs after each non-empty page of candidates is selected, before any of them is purged. */
     volatile SelectHook afterSelect = ids -> { };
 
     @FunctionalInterface
@@ -111,10 +147,16 @@ public final class RetentionSweeper implements AutoCloseable {
         void selected(List<String> ids) throws SQLException;
     }
 
+    /** Only the unreferenced-items rule (auto-delete off). */
     public RetentionSweeper(Database db, Items items, Days days, Clock clock) {
+        this(db, items, (Policy) () -> new Limits(days.get(), 0, 0), clock);
+        Objects.requireNonNull(days);
+    }
+
+    public RetentionSweeper(Database db, Items items, Policy policy, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.items = Objects.requireNonNull(items);
-        this.days = Objects.requireNonNull(days);
+        this.policy = Objects.requireNonNull(policy);
         this.clock = Objects.requireNonNull(clock);
     }
 
@@ -158,7 +200,7 @@ public final class RetentionSweeper implements AutoCloseable {
         try {
             Result r = sweep();
             if (r.purged() > 0 || r.failed() > 0) {
-                LOG.log(System.Logger.Level.INFO, "Retention: purged " + r.purged() + " unreferenced items"
+                LOG.log(System.Logger.Level.INFO, "Retention: purged " + r.purged() + " items"
                         + (r.failed() > 0 ? ", " + r.failed() + " failed" : ""));
             }
         } catch (Throwable t) {
@@ -186,24 +228,47 @@ public final class RetentionSweeper implements AutoCloseable {
     }
 
     /**
-     * One sweep. Does nothing when {@code retention.unreferencedDays} is 0. An item whose purge
-     * fails (a file error, a database error) is logged and skipped; the next sweep tries again.
+     * One sweep: the unreferenced-items rule, then auto-delete of movies and shows. A rule whose
+     * setting is 0 does nothing. An item whose purge fails (a file error, a database error) is
+     * logged and skipped; the next sweep tries again.
      *
-     * @throws SQLException if the setting or the candidates can't be read
+     * @throws SQLException if the settings or the candidates can't be read
      */
     public Result sweep() throws SQLException {
-        int unreferencedDays = days.get();
-        if (unreferencedDays <= 0) {
-            return new Result(0, 0, 0);
-        }
+        Limits limits = policy.get();
         long now = EpochMs.now(clock);
-        long cutoff = now - unreferencedDays * DAY_MS;
-        int purged = 0;
-        int skipped = 0;
-        int failed = 0;
+        int[] counts = new int[3];
+        int unreferencedDays = limits.unreferencedDays();
+        if (unreferencedDays > 0) {
+            long cutoff = now - unreferencedDays * DAY_MS;
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("reason", REASON);
+            extra.put("unreferencedDays", unreferencedDays);
+            pass(ELIGIBLE, new long[] {cutoff}, extra, now, counts);
+        }
+        int unviewedDays = limits.videoUnviewedDays();
+        int afterViewHours = limits.videoAfterViewHours();
+        if (unviewedDays > 0 || afterViewHours > 0) {
+            long unviewedCutoff = unviewedDays > 0 ? now - unviewedDays * DAY_MS : Long.MIN_VALUE;
+            long viewedCutoff = afterViewHours > 0 ? now - afterViewHours * HOUR_MS : Long.MIN_VALUE;
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("reason", REASON_AUTO_DELETE);
+            extra.put("videoUnviewedDays", unviewedDays);
+            extra.put("videoAfterViewHours", afterViewHours);
+            pass(AUTO_DELETE, new long[] {unviewedCutoff, viewedCutoff}, extra, now, counts);
+        }
+        return new Result(counts[0], counts[1], counts[2]);
+    }
+
+    /** Purges every item matching {@code predicate} (on {@code items i}, parameters {@code cutoffs}). */
+    private void pass(String predicate, long[] cutoffs, Map<String, Object> extra, long now, int[] counts)
+            throws SQLException {
         String after = "";
         while (!Thread.currentThread().isInterrupted()) {
-            List<String> page = candidates(cutoff, after, pageSize);
+            List<String> page = candidates(predicate, cutoffs, after, pageSize);
+            if (page.isEmpty()) {
+                break;
+            }
             afterSelect.selected(page);
             for (String itemId : page) {
                 if (Thread.currentThread().isInterrupted()) {
@@ -211,21 +276,20 @@ public final class RetentionSweeper implements AutoCloseable {
                 }
                 try {
                     items.purge(itemId, (c, id, status) -> {
-                        if (!stillEligible(c, id, cutoff)) {
+                        if (!stillEligible(c, predicate, cutoffs, id)) {
                             throw new StillReferenced();
                         }
                         Map<String, Object> details = new LinkedHashMap<>();
                         details.put("previousStatus", status);
-                        details.put("reason", REASON);
-                        details.put("unreferencedDays", unreferencedDays);
+                        details.putAll(extra);
                         AuditLog.write(c, now, null, null, null, Items.AUDIT_PURGED, id, details);
                     });
-                    purged++;
+                    counts[0]++;
                 } catch (StillReferenced | HttpError e) {
-                    // Referenced again since the selection (an HttpError: a job started).
-                    skipped++;
+                    // Referenced (or viewed, or pinned) again since the selection (an HttpError: a job started).
+                    counts[1]++;
                 } catch (SQLException | IOException | RuntimeException e) {
-                    failed++;
+                    counts[2]++;
                     LOG.log(System.Logger.Level.WARNING, "Retention: could not purge item " + itemId + ": " + e, e);
                 }
             }
@@ -234,17 +298,19 @@ public final class RetentionSweeper implements AutoCloseable {
             }
             after = page.get(page.size() - 1);
         }
-        return new Result(purged, skipped, failed);
     }
 
-    /** Eligible item ids after {@code after}, in id order. */
-    List<String> candidates(long cutoff, String after, int limit) throws SQLException {
+    /** Item ids matching {@code predicate} after {@code after}, in id order. */
+    private List<String> candidates(String predicate, long[] cutoffs, String after, int limit) throws SQLException {
         return db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT i.id FROM items i WHERE " + ELIGIBLE
+            try (PreparedStatement ps = c.prepareStatement("SELECT i.id FROM items i WHERE " + predicate
                     + " AND i.id > ? ORDER BY i.id LIMIT ?")) {
-                ps.setLong(1, cutoff);
-                ps.setString(2, after);
-                ps.setInt(3, limit);
+                int n = 1;
+                for (long cutoff : cutoffs) {
+                    ps.setLong(n++, cutoff);
+                }
+                ps.setString(n++, after);
+                ps.setInt(n, limit);
                 List<String> ids = new ArrayList<>();
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -256,10 +322,14 @@ public final class RetentionSweeper implements AutoCloseable {
         });
     }
 
-    private static boolean stillEligible(Connection c, String itemId, long cutoff) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items i WHERE " + ELIGIBLE + " AND i.id = ?")) {
-            ps.setLong(1, cutoff);
-            ps.setString(2, itemId);
+    private static boolean stillEligible(Connection c, String predicate, long[] cutoffs, String itemId)
+            throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items i WHERE " + predicate + " AND i.id = ?")) {
+            int n = 1;
+            for (long cutoff : cutoffs) {
+                ps.setLong(n++, cutoff);
+            }
+            ps.setString(n, itemId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next();
             }

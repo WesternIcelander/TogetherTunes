@@ -393,7 +393,7 @@ class AdminApiTest {
         JsonObject list = call(200, "GET", "/api/admin/roles", null, admin);
         assertEquals(List.of("admin", "user"), strings(list.getAsJsonArray("items")));
         JsonArray perms = list.getAsJsonArray("permissions");
-        assertEquals(14, perms.size());
+        assertEquals(16, perms.size());
         JsonObject youtube = perms.asList().stream().map(JsonElement::getAsJsonObject)
                 .filter(p -> p.get("name").getAsString().equals("library.youtube")).findFirst().orElseThrow();
         assertEquals("ytdlp.enabled", youtube.get("feature").getAsString());
@@ -614,6 +614,9 @@ class AdminApiTest {
         assertEquals("string", cookies.get("type").getAsString());
         assertFalse(cookies.has("value"));
         assertEquals("integer", find(items, "retention.unreferencedDays").get("type").getAsString());
+        assertEquals("retention", find(items, "retention.unreferencedDays").get("group").getAsString());
+        assertEquals(72, find(items, "retention.videoAfterViewHours").get("value").getAsInt());
+        assertEquals(14, find(items, "retention.videoUnviewedDays").get("default").getAsInt());
         assertEquals("boolean", find(items, "overlay.enabled").get("type").getAsString());
         assertEquals("outputs", find(items, "outputs.ts.enabled").get("group").getAsString());
 

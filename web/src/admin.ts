@@ -57,6 +57,7 @@ const GROUPS: Record<string, string> = {
   accounts: "Accounts",
   guests: "Guests",
   library: "Library",
+  retention: "Retention",
   storage: "Storage",
   output: "Output encoding",
   outputs: "Outputs",

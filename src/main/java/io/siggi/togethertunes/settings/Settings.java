@@ -70,6 +70,12 @@ public final class Settings {
     public static final SettingKey<String> YTDLP_COOKIES_FILE = SettingKey.optionalString("ytdlp.cookiesFile");
     public static final SettingKey<Integer> RETENTION_UNREFERENCED_DAYS = SettingKey.integer(
             "retention.unreferencedDays", 14, 0, 36_500);
+    /** Days a never-viewed movie or show is kept after it was added; 0 = off ({@code docs/media-types.md}). */
+    public static final SettingKey<Integer> RETENTION_VIDEO_UNVIEWED_DAYS = SettingKey.integer(
+            "retention.videoUnviewedDays", 14, 0, 36_500);
+    /** Hours a viewed movie or show is kept after its most recent view; 0 = off. */
+    public static final SettingKey<Integer> RETENTION_VIDEO_AFTER_VIEW_HOURS = SettingKey.integer(
+            "retention.videoAfterViewHours", 72, 0, 876_000);
     /** Default here is the documented 1800; {@link #Settings(Database, Config)} uses the config file's value. */
     public static final SettingKey<Integer> INGEST_MAX_DURATION_SECONDS = SettingKey.integer(
             "ingest.maxDurationSeconds", 1800, 1, Integer.MAX_VALUE);
@@ -209,7 +215,8 @@ public final class Settings {
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
-                YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS, INGEST_MAX_DURATION_SECONDS,
+                YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS,
+                RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,
                 STORAGE_MIN_FREE_BYTES, MEDIA_UNDO_HOURS,
                 ROOMS_REQUEST_HISTORY_DAYS,
@@ -473,6 +480,16 @@ public final class Settings {
     /** Days an unreferenced item is kept; 0 means never delete. */
     public int retentionUnreferencedDays() throws SQLException {
         return get(RETENTION_UNREFERENCED_DAYS);
+    }
+
+    /** Days a never-viewed movie or show is kept after it was added; 0 means off. */
+    public int retentionVideoUnviewedDays() throws SQLException {
+        return get(RETENTION_VIDEO_UNVIEWED_DAYS);
+    }
+
+    /** Hours a viewed movie or show is kept after its most recent view; 0 means off. */
+    public int retentionVideoAfterViewHours() throws SQLException {
+        return get(RETENTION_VIDEO_AFTER_VIEW_HOURS);
     }
 
     /** Days a room's history is kept ({@link #ROOMS_REQUEST_HISTORY_DAYS}); 0 means never trim. */

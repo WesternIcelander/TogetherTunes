@@ -571,7 +571,9 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        RetentionSweeper retention = new RetentionSweeper(database, items, settings::retentionUnreferencedDays,
+        RetentionSweeper retention = new RetentionSweeper(database, items,
+                () -> new RetentionSweeper.Limits(settings.retentionUnreferencedDays(),
+                        settings.retentionVideoUnviewedDays(), settings.retentionVideoAfterViewHours()),
                 Clock.systemUTC());
         retention.alsoRun("trimmed room history entries", roomHistory::trim);
         retention.start();
