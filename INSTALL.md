@@ -4,6 +4,9 @@ TogetherTunes runs either as a Docker image (ffmpeg, yt-dlp and the font librari
 plain jar on a host that provides them. Either way it needs a public **HTTPS** URL (normally a
 reverse proxy in front of port 8080) and keeps everything in one data directory.
 
+[DEPLOYMENT.md](DEPLOYMENT.md) has the rest of what a real deployment needs: HTTPS, the reverse
+proxy (with an nginx example), trusted proxies, VRChat, card fonts on offline servers and backups.
+
 ## Docker
 
 The image is built from this repository. The jar is built first, outside Docker, because the build
