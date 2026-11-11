@@ -29,6 +29,7 @@
         <sqlite-jdbc.version>3.54.1.0</sqlite-jdbc.version>
         <postgresql.version>42.7.14</postgresql.version>
         <zxing.version>3.5.3</zxing.version>
+        <nimbus-jose-jwt.version>10.10</nimbus-jose-jwt.version>
         <testcontainers.version>2.0.5</testcontainers.version>
         <junit.version>5.13.4</junit.version>
 
@@ -115,6 +116,14 @@
             <groupId>com.google.zxing</groupId>
             <artifactId>core</artifactId>
             <version>${zxing.version}</version>
+        </dependency>
+
+        <!-- OIDC: JWK sets and ID-token validation (docs/auth.md#oidc). Its own
+             dependencies are optional and left out (Bouncy Castle is only used for Argon2id). -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>${nimbus-jose-jwt.version}</version>
         </dependency>
 
         <dependency>
