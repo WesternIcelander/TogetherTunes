@@ -32,7 +32,7 @@ Implement a minimal relying party; no framework.
 3. **Callback:** exchange the code, then validate the ID token:
    - signature against JWKS (RS256 and ES256; reject `none` and HS* unless explicitly configured),
    - `iss`, `aud`, `exp` and `iat` (±60 s), and `nonce`.
-   Use Nimbus JOSE+JWT, unless you'd rather hand-roll it.
+   Use Nimbus JOSE+JWT, unless you'd rather hand-roll it. (`IdTokenValidator`, run by `OidcLogin` after the code exchange: only signed tokens with an allowed `alg`, by default RS256 and ES256; HS* is never accepted, as no setting enables it; the key comes from the JWKS with one refetch for an unknown `kid`; `iss` exact; `aud` contains the client ID, with several audiences `azp` is required, and a present `azp` must be the client ID; `exp` and `iat` required, `exp` (and a present `nbf`) with 60 s of skew, `iat` within ±60 s of now; `nonce` equal to the login's; `sub` required. Failures redirect with `id_token_invalid`, or `provider_unreachable` when the keys can't be fetched.)
 4. **Resolve the identity** by `(provider_id, sub)`: log in, link (when the intent is `link`), sign up (when `allow_signup` is on), or show an error.
 5. **Plain OAuth2 providers** (Discord, GitHub): use `claim_mapping_json`, which holds the userinfo URL and JSON paths for subject, username and display name.
 
