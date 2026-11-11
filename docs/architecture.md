@@ -57,7 +57,8 @@
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     overlay.json          overlay.png's spec, position in the frame and overlayHash
     cards/<key>.mp4       per-room cards with the overlay: filler-<id>-…mp4 and item-<itemId>-v<N>-…mp4 (+ .key fingerprints; overlay.md#cards-cheap-path)
-    ov/<itemId>/          overlay re-encode of a music video: gops.h264 + gops.idx (see overlay.md)
+    ov/<itemId>/<version>-<overlayHash>-<encoding>-g<g0>/
+                          one overlay re-encode of a music video: gops.h264 + gops.idx + the overlay.png it used (see overlay.md)
   tmp/                    in-progress uploads and ingest scratch
   fonts/                  downloaded script fonts (<file>.ttf/.otf from the font manifest) + their OFL licence texts; uploads/<id>.ttf|otf (library-and-ingest.md#card-fonts)
 ```
