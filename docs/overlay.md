@@ -86,6 +86,6 @@ For each GOP of a video item, the packager uses the overlay GOP if it's complete
 ### Scheduling and caching
 
 - Queue a job when an entry becomes **current** (high priority) or **next** (normal priority), if the conditions above hold. In `vote` mode, "next" can change; cancel the job for an entry that stops being next, unless it's more than 50% done.
-- Pool size `overlay.workers` (default 1). If the pool is busy, the item plays without the overlay rather than waiting.
+- Pool size `overlay.workers` (default 1). If the pool is busy, the item plays without the overlay rather than waiting. As implemented (`OverlayPool`): jobs in memory only, keyed (one job per key), high before normal priority, no preemption of running jobs; cancel interrupts a running job; `busy()` counts running plus queued jobs against the worker count; the admin setting resizes the pool at once.
 - Cache key: `(roomId, itemId, overlayHash, profile)`. Completed encodes are kept, because songs repeat. They're evicted by LRU when `overlay.cacheMaxBytes` is exceeded, and deleted when the item is purged, the room is deleted, or `overlayHash` changes.
 - On restart, partial encodes are discarded and recreated as needed.
