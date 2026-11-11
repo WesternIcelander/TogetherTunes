@@ -147,7 +147,7 @@ class OverlayCardsTest {
         Map<Filler, ProgramMedia.CardFile> fillers = room.fillers();
         assertNotNull(fillers);
         assertEquals(Filler.values().length, fillers.size());
-        assertEquals(3, cards.encodes());
+        assertEquals(Filler.values().length, cards.encodes());
         OverlayRenderer.Rendered overlay = overlays.current(ROOM, "chill", lookups.room.settings());
         for (Map.Entry<Filler, ProgramMedia.CardFile> f : fillers.entrySet()) {
             Path file = f.getValue().file();
@@ -168,25 +168,25 @@ class OverlayCardsTest {
         OverlayCards restarted = new OverlayCards(roomsDir, tools);
         assertEquals(fillers, restarted.forRoom(ROOM, reference, overlays, lookups).fillers());
         assertEquals(0, restarted.encodes());
-        assertEquals(3, cards.encodes());
+        assertEquals(Filler.values().length, cards.encodes());
 
         // item card: by the entry's decision
         ProgramMedia.CardFile item = room.item(ENTRY);
         assertNotNull(item);
-        assertEquals(4, cards.encodes());
+        assertEquals(Filler.values().length + 1, cards.encodes());
         assertTrue(item.file().getFileName().toString().startsWith("item-item1-v1-" + overlay.hash() + "-"
                 + encoding.id() + "-c"), item.file().toString());
         assertTrue(reference.matches(Mp4Boxes.readAvcC(item.file())));
         assertEquals(BASE + "/r/chill", qr(firstFrame(tools, item.file(), data), overlay));
         assertEquals(item, room.item(ENTRY), "reused");
-        assertEquals(4, cards.encodes());
+        assertEquals(Filler.values().length + 1, cards.encodes());
 
         // an edited title: same name, new content and key
         lookups.item = new OverlayCards.ItemInfo(1, new CardRenderer.ItemCard("Song (edit)", "Artist", "Album", null));
         ProgramMedia.CardFile edited = room.item(ENTRY);
         assertEquals(item.file(), edited.file());
         assertNotEquals(item.key(), edited.key());
-        assertEquals(5, cards.encodes());
+        assertEquals(Filler.values().length + 2, cards.encodes());
 
         // a new media version: a new card
         lookups.item = new OverlayCards.ItemInfo(2, new CardRenderer.ItemCard("Song (edit)", "Artist", "Album", null));

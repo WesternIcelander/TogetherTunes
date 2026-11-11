@@ -104,7 +104,9 @@ public final class Playback {
      * {@link #advance(RoomTx, QueueEntry.State)}; with {@code abrupt} (a skip, a start from idle:
      * anything but the natural end of the previous entry) the next entry starts at
      * {@link RoomTx#abruptStartAt()}, which is in the future while the room's program output
-     * runs, so the stream plays it from 0:00 too ({@code docs/rooms.md#room-state}).
+     * runs, so the stream plays it from 0:00 too ({@code docs/rooms.md#room-state}). At a natural
+     * end the next entry starts after the room's transition gap
+     * ({@link RoomSettings#transitionGapMs()}, {@code docs/rooms.md#transitions}), at once without one.
      */
     public static QueueEntry advance(RoomTx tx, QueueEntry.State endedAs, boolean abrupt) throws SQLException {
         if (endedAs != QueueEntry.State.PLAYED && endedAs != QueueEntry.State.SKIPPED) {
@@ -137,7 +139,16 @@ public final class Playback {
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
         s.forget(playing.id());
         s.current(playing);
-        tx.timeline(abrupt ? Timeline.startingAt(playing.id(), tx.abruptStartAt()) : Timeline.playing(playing.id(), now, 0));
+        int gap = s.settings().transitionGapMs();
+        if (abrupt) {
+            tx.timeline(Timeline.startingAt(playing.id(), tx.abruptStartAt()));
+        } else if (ended != null && gap > 0) {
+            // the transition between items (docs/rooms.md#transitions): the next entry starts after
+            // the gap, silent at 0 until then, like a delayed start
+            tx.timeline(Timeline.startingAt(playing.id(), now + gap));
+        } else {
+            tx.timeline(Timeline.playing(playing.id(), now, 0));
+        }
         return playing;
     }
 

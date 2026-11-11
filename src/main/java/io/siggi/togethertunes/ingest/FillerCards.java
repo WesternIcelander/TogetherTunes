@@ -21,8 +21,9 @@ import java.util.Objects;
 /**
  * The server-wide filler cards (Paused, Queue is empty, Loading…) for one output encoding, encoded
  * once and kept in {@code <data>/cards/<encoding>/<id>.mp4} ({@code paused.mp4}, {@code idle.mp4},
- * {@code loading.mp4}). The packager pairs them with the silence frame when a room is paused, idle
- * or loading ({@code docs/program-output.md}); rooms with the QR overlay get their own overlaid
+ * {@code loading.mp4}, and {@code blank.mp4} for the gap between items without a transition
+ * card). The packager pairs them with the silence frame when a room is paused, idle, loading or
+ * between items ({@code docs/program-output.md}); rooms with the QR overlay get their own overlaid
  * copies instead ({@code docs/overlay.md}).
  *
  * <p>{@link #ensure} runs at startup. Each card is rendered (cheap) and fingerprinted together with

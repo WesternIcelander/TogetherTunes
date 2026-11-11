@@ -258,6 +258,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.OutputAssets$Assets", "the output encoding and its card files, server-side only"),
             Map.entry("io.siggi.togethertunes.Main$1LoadedFillers", "the indexed filler cards of one encoding, server-side only"),
             Map.entry("io.siggi.togethertunes.output.ProgramCue$Entry", "a queue entry as the packager sees it, server-side only"),
+            Map.entry("io.siggi.togethertunes.output.ProgramCue$Gap", "a room's transition between items as the packager sees it, server-side only"),
+            Map.entry("io.siggi.togethertunes.output.ScriptedTimeline$SetGap", "a scripted action of the harness's fake timeline, private"),
             Map.entry("io.siggi.togethertunes.output.ProgramMedia$CardFile", "a card file of a room's program output, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayCards$ItemRow", "an item's card metadata read from the database, private"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayCards$ItemInfo", "what an overlaid item card shows, server-side only"),

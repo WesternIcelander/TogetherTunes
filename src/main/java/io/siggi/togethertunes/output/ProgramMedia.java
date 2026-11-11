@@ -194,6 +194,13 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         boolean videoItem;
         /** Whether some entry plays this video item as audio, so its {@code card.mp4} is needed. */
         boolean cardWanted;
+        /**
+         * Whether a transition card wants this video item's {@code card.mp4}
+         * ({@code docs/program-output.md#transitions}). Optional: a failed load leaves the card
+         * out (the gap shows the blank card) and doesn't fail the item.
+         */
+        boolean transitionCardWanted;
+        long cardFailedAtMs;
 
         SampleIndex index;
         FileSampleData data;
@@ -362,10 +369,11 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             nextEntry = cue == null ? null : cue.next();
             evictEntryCards();
             sendVideoWanted();
+            boolean transition = cue != null && cue.gap().card() && cue.gap().audioFrames() > 0;
             for (ProgramCue.Entry e : entries) {
                 if (e != null) {
-                    ensure(e);
-                    ensureEntryCard(e);
+                    ensure(e, transition);
+                    ensureEntryCard(e, transition);
                 }
             }
             planNextVideo();
@@ -457,6 +465,47 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         }, silence);
     }
 
+    /**
+     * The transition gap before {@code next} ({@code docs/program-output.md#transitions}): its card
+     * (the room's overlaid version while the overlay is on) with silence, if {@code gap.card()} and
+     * the card is loaded; else the blank card. Never blocks.
+     */
+    @Override
+    public ProgramSource gap(ProgramCue.Entry next, ProgramCue.Gap gap) {
+        if (gap.card()) {
+            CardGop card = null;
+            EntryCard ec = null;
+            synchronized (this) {
+                if (!closed) {
+                    Slot sl = slots.get(key(next));
+                    if (sl != null && sl.data != null) {
+                        card = sl.card;
+                    }
+                    ec = ensureEntryCard(next, true);
+                }
+            }
+            if (card != null) {
+                synchronized (this) {
+                    if (!closed) {
+                        evict(null);
+                    }
+                    playing = null;
+                    playingEntry = null;
+                    if (!closed) {
+                        sendVideoWanted();
+                    }
+                }
+                EntryCard overlaid = ec;
+                FillerSource src = overlaid == null ? new FillerSource(Filler.GAP, card, silence)
+                        : new FillerSource(Filler.GAP, card, () -> overlaid.card, silence);
+                return new GapSource(src, gap.audioFrames(), true);
+            }
+            LOG.log(System.Logger.Level.DEBUG, "Program output: card of item " + next.itemId()
+                    + " not loaded, blank transition gap");
+        }
+        return new GapSource(filler(Filler.GAP), gap.audioFrames(), false);
+    }
+
     // ------------------------------------------------------------------ overlay cards
 
     /**
@@ -464,7 +513,12 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
      * output has no overlay or the entry doesn't play as audio.
      */
     private EntryCard ensureEntryCard(ProgramCue.Entry e) {
-        if (overlay == null || !e.playsAsAudio() || closed) {
+        return ensureEntryCard(e, false);
+    }
+
+    /** {@link #ensureEntryCard(ProgramCue.Entry)}; {@code transition}: also for an entry played as video (its transition card). */
+    private EntryCard ensureEntryCard(ProgramCue.Entry e, boolean transition) {
+        if (overlay == null || !(e.playsAsAudio() || transition) || closed) {
             return null;
         }
         EntryCard ec = entryCards.computeIfAbsent(e.entryId(), k -> new EntryCard(e));
@@ -657,6 +711,14 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
 
     /** The slot for {@code e}'s item, starting its load if needed (lock held). */
     private Slot ensure(ProgramCue.Entry e) {
+        return ensure(e, false);
+    }
+
+    /**
+     * {@link #ensure(ProgramCue.Entry)}; {@code transition}: the room shows transition cards, so a
+     * video item's {@code card.mp4} is loaded too (optional, after the item's files).
+     */
+    private Slot ensure(ProgramCue.Entry e, boolean transition) {
         Slot s = slots.computeIfAbsent(key(e), k -> new Slot(k, e.itemId(), e.audioOnlyFile()));
         if (s.data == null) {
             // the audio-only variant is laid out like an audio item (its card is in its index)
@@ -665,7 +727,12 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         if (asAudioVideo(e)) {
             s.cardWanted = true;
         }
-        if (s.ready(e) || s.loading != null) {
+        if (transition) {
+            s.transitionCardWanted = true;
+        }
+        boolean optionalCard = s.data != null && s.videoItem && s.transitionCardWanted && s.card == null
+                && (s.cardFailedAtMs == 0 || nowMs.getAsLong() - s.cardFailedAtMs >= RETRY_MS);
+        if ((s.ready(e) && !optionalCard) || s.loading != null) {
             return s;
         }
         if (s.failure != null && nowMs.getAsLong() - s.failedAtMs < RETRY_MS) {
@@ -681,6 +748,33 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             f.complete(null);
         }
         return s;
+    }
+
+    /**
+     * Loads a video item's {@code card.mp4} for its transition card after its files are in (runs on
+     * the executor). Optional: a failure is logged and retried after {@link #RETRY_MS}.
+     */
+    private void loadTransitionCard(Slot s, Path dir, CompletableFuture<Void> done) {
+        CardGop card = null;
+        try {
+            card = cardLoader.load(dir.resolve(IngestPipeline.CARD));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (IOException | RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Program output: no transition card for item " + s.itemId
+                    + ", the gap shows the blank card: " + e);
+        } finally {
+            synchronized (this) {
+                if (s.loading == done) {
+                    s.loading = null;
+                }
+                if (card != null && !closed && slots.get(s.key) == s && s.card == null && dir.equals(s.dir)) {
+                    s.card = card;
+                } else if (card == null) {
+                    s.cardFailedAtMs = nowMs.getAsLong();
+                }
+            }
+        }
     }
 
     /** Every item's files directly in {@code mediaDir/<itemId>}. */
@@ -704,6 +798,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             Path dir;
             boolean videoItem;
             boolean needCard;
+            boolean wantCard;
             synchronized (this) {
                 index = s.index;
                 data = s.data;
@@ -711,6 +806,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
                 dir = s.dir;
                 videoItem = s.videoItem;
                 needCard = videoItem && s.cardWanted && s.card == null;
+                wantCard = videoItem && !needCard && s.transitionCardWanted && s.card == null;
             }
             boolean newData = false;
             try {
@@ -753,6 +849,12 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
                 s.failure = null;
                 s.loggedFailure = null;
                 planNextVideo();
+                if (wantCard) {
+                    s.loading = done; // the item plays meanwhile; no second load starts
+                }
+            }
+            if (wantCard) {
+                loadTransitionCard(s, dir, done);
             }
         } catch (InterruptedException e) {
             synchronized (this) {

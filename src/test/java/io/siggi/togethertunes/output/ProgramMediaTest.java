@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.output;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -510,6 +511,96 @@ class ProgramMediaTest {
             runLoads();
             assertEquals(2, overlay.itemsAsked.size());
             assertEquals(8000, nextGopTag(a), "the playing source picks it up");
+        }
+    }
+
+    static ProgramCue cue(Entry current, Entry next, ProgramCue.Gap gap) {
+        return new ProgramCue(PlaybackState.PLAYING, current, 0, 0, next, null, false, gap);
+    }
+
+    /**
+     * Transition gaps ({@code docs/program-output.md#transitions}): without the transition card
+     * the blank card; with it the next item's card (an audio item's indexed card, a video's
+     * {@code card.mp4}, loaded after its files and only while transition cards are on), cut to the
+     * gap's frames; the blank card while the card isn't loaded.
+     */
+    @Test
+    void transitionGapsShowTheNextItemsCardOrTheBlankCard() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        write("audio1", SourcesTest.audioItem());
+        ProgramCue.Gap blank = new ProgramCue.Gap(1000, false);
+        ProgramCue.Gap card = new ProgramCue.Gap(2000, true);
+        try (ProgramMedia pm = queuedMedia()) {
+            pm.prepare(cue(AUDIO, VIDEO, blank));
+            runLoads();
+            assertEquals(0, cardLoads.get(), "no transition card: no card.mp4");
+            GapSource g = assertInstanceOf(GapSource.class, pm.gap(VIDEO, blank));
+            assertFalse(g.transitionCard());
+            assertEquals(5000 + Filler.GAP.ordinal() * 100, SourcesTest.frameNumber(g.nextVideo().data()));
+            int frames = 0;
+            while (g.nextAudio() != null) {
+                frames++;
+            }
+            assertEquals(47, frames);
+
+            // transition cards on: the video's card.mp4 is loaded after its files (which play meanwhile)
+            pm.prepare(cue(AUDIO, VIDEO, card));
+            assertNotNull(pm.item(VIDEO, 0), "the item doesn't wait for its card");
+            GapSource early = assertInstanceOf(GapSource.class, pm.gap(VIDEO, card));
+            assertFalse(early.transitionCard(), "card not loaded yet: blank");
+            runLoads();
+            assertEquals(1, cardLoads.get());
+            GapSource v = assertInstanceOf(GapSource.class, pm.gap(VIDEO, card));
+            assertTrue(v.transitionCard());
+            assertEquals(7000, SourcesTest.frameNumber(v.nextVideo().data()), "the video's card.mp4");
+            assertEquals(9999, SourcesTest.audioNumber(v.nextAudio()), "silence");
+            // an audio item's card is in its index
+            GapSource a = assertInstanceOf(GapSource.class, pm.gap(AUDIO, card));
+            assertEquals(1000, SourcesTest.frameNumber(a.nextVideo().data()));
+            pm.prepare(cue(VIDEO, AUDIO, card));
+            assertTrue(queued.isEmpty(), "loaded once");
+            assertEquals(1, cardLoads.get());
+        }
+    }
+
+    /** A missing card.mp4 leaves the transition card out but never the item. */
+    @Test
+    void aMissingTransitionCardDoesntStopTheItem() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        Files.delete(media.resolve("video1").resolve("card.mp4"));
+        ProgramCue.Gap card = new ProgramCue.Gap(2000, true);
+        try (ProgramMedia pm = new ProgramMedia(media, OutputEncoding.defaultFor(OutputProfile.P720_30),
+                SourcesTest.AVCC, f -> {
+                    throw new IOException("no card");
+                }, fillers, SourcesTest.audioFrame(9999), queued::add, 0, now::get)) {
+            pm.prepare(cue(VIDEO, null, card));
+            runLoads();
+            assertInstanceOf(VideoItemSource.class, pm.item(VIDEO, 0));
+            assertFalse(((GapSource) pm.gap(VIDEO, card)).transitionCard());
+            pm.prepare(cue(VIDEO, null, card));
+            assertTrue(queued.isEmpty(), "not retried at once");
+            now.addAndGet(ProgramMedia.RETRY_MS);
+            pm.prepare(cue(VIDEO, null, card));
+            assertEquals(1, queued.size(), "retried after the backoff");
+            runLoads();
+            assertInstanceOf(VideoItemSource.class, pm.item(VIDEO, 0));
+        }
+    }
+
+    /** With the overlay on, the transition card is the entry's overlaid card once it is made. */
+    @Test
+    void transitionCardsCarryTheOverlay() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        write("audio1", SourcesTest.audioItem());
+        overlay.items.put(VIDEO.entryId(), FakeOverlay.card(8000));
+        ProgramCue.Gap card = new ProgramCue.Gap(4000, true);
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(AUDIO, VIDEO, card));
+            runLoads();
+            assertTrue(overlay.itemsAsked.contains(VIDEO.entryId()), "asked for the video's overlaid card");
+            GapSource g = assertInstanceOf(GapSource.class, pm.gap(VIDEO, card));
+            assertTrue(g.transitionCard());
+            assertEquals(8000, nextGopTag(g));
         }
     }
 

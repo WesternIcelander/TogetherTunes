@@ -28,9 +28,12 @@ import java.util.Objects;
  * @param audioOnly        the room's {@code audioOnly} setting now: the stream rate of fillers
  *                         ({@code docs/program-output.md#constant-rate-padding}); entries carry
  *                         their own mode ({@link Entry#audioOnly()})
+ * @param gap              the room's transition between items now ({@code transitionCard} and
+ *                         {@code gapMs}, {@code docs/program-output.md#transitions}): what the
+ *                         output plays between an item's natural end and the next item
  */
 public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs, long anchorPositionMs,
-                         Entry next, String playedOut, boolean audioOnly) {
+                         Entry next, String playedOut, boolean audioOnly, Gap gap) {
     /** Nothing playing. */
     public static final ProgramCue IDLE = new ProgramCue(PlaybackState.IDLE, null, 0, 0, null, null);
 
@@ -40,7 +43,14 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
         this(state, current, anchorServerMs, anchorPositionMs, next, playedOut, false);
     }
 
+    /** A cue of a room without a transition between items. */
+    public ProgramCue(PlaybackState state, Entry current, long anchorServerMs, long anchorPositionMs, Entry next,
+                      String playedOut, boolean audioOnly) {
+        this(state, current, anchorServerMs, anchorPositionMs, next, playedOut, audioOnly, Gap.NONE);
+    }
+
     public ProgramCue {
+        gap = gap == null ? Gap.NONE : gap;
         if (state == PlaybackState.PLAYING || state == PlaybackState.PAUSED) {
             Objects.requireNonNull(current, "current");
         }
@@ -60,12 +70,18 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
 
     /** {@link #of(Timeline, Entry, Entry, String)} for a room with this {@code audioOnly} setting. */
     public static ProgramCue of(Timeline timeline, Entry current, Entry next, String playedOut, boolean audioOnly) {
+        return of(timeline, current, next, playedOut, audioOnly, Gap.NONE);
+    }
+
+    /** {@link #of(Timeline, Entry, Entry, String, boolean)} with the room's transition between items. */
+    public static ProgramCue of(Timeline timeline, Entry current, Entry next, String playedOut, boolean audioOnly,
+                                Gap gap) {
         if (current != null && !current.entryId().equals(timeline.entryId())) {
             throw new IllegalArgumentException("current entry " + current.entryId() + " isn't the timeline's "
                     + timeline.entryId());
         }
         return new ProgramCue(timeline.state(), current, timeline.anchorServerMs(), timeline.anchorPositionMs(),
-                next, playedOut, audioOnly);
+                next, playedOut, audioOnly, gap);
     }
 
     /**
@@ -79,6 +95,34 @@ public record ProgramCue(PlaybackState state, Entry current, long anchorServerMs
     /** Whether the cue is playing {@code entryId}. */
     boolean playing(String entryId) {
         return state == PlaybackState.PLAYING && current.entryId().equals(entryId);
+    }
+
+    /**
+     * The transition between items ({@code docs/program-output.md#transitions}): after an item's
+     * natural end the room starts the next entry {@link #ms} later, and the output plays that gap
+     * as silence with the next item's card ({@link #card}, the transition card) or the blank card.
+     *
+     * @param ms   the gap's length (the room's {@code RoomSettings.transitionGapMs()}), 0 for none
+     * @param card whether the gap shows the next item's card
+     */
+    public record Gap(long ms, boolean card) {
+        /** No gap: the next item starts right where the previous one ends. */
+        public static final Gap NONE = new Gap(0, false);
+
+        public Gap {
+            if (ms < 0) {
+                throw new IllegalArgumentException("ms < 0");
+            }
+        }
+
+        /**
+         * The gap as whole AAC frames (nearest), or 0 when it is shorter than one video frame (the
+         * output can't show a picture for less, so such a gap is left out).
+         */
+        public long audioFrames() {
+            long frames = Math.round(ms * 90.0 / ProgramSource.AUDIO_FRAME_TICKS);
+            return frames * ProgramSource.AUDIO_FRAME_TICKS < ProgramSource.VIDEO_FRAME_TICKS ? 0 : frames;
+        }
     }
 
     /**

@@ -46,7 +46,12 @@ public final class CardRenderer {
     public enum Filler {
         PAUSED("paused", "Paused"),
         QUEUE_EMPTY("idle", "Queue is empty"),
-        LOADING("loading", "Loading…");
+        LOADING("loading", "Loading…"),
+        /**
+         * The background alone, no icon or text: the pause between items without a transition card
+         * ({@code docs/program-output.md#transitions}).
+         */
+        BLANK("blank", "");
 
         private final String id;
         private final String label;
@@ -200,6 +205,9 @@ public final class CardRenderer {
         Graphics2D g = graphics(image);
         try {
             drawBackground(g);
+            if (filler == Filler.BLANK) {
+                return image;
+            }
             FontRenderContext frc = g.getFontRenderContext();
             double maxWidth = width - 2 * MARGIN * scale;
             List<Fitted> lines = new ArrayList<>();
@@ -413,6 +421,8 @@ public final class CardRenderer {
                         i.fill(new Ellipse2D.Double(x0 - dot / 2, y - dot / 2, dot, dot));
                         i.draw(new Line2D.Double(x0 + size * 0.2, y, x0 + w, y));
                     }
+                }
+                case BLANK -> {
                 }
                 case LOADING -> {
                     // A still spinner: 8 dots in a ring, fading round.

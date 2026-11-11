@@ -94,6 +94,15 @@ class TimelineFollowerTest {
             }
         }
 
+        /** The transition gaps asked for: (entry it leads into, gap). */
+        final List<Object[]> gaps = new ArrayList<>();
+
+        @Override
+        public ProgramSource gap(Entry next, ProgramCue.Gap gap) {
+            gaps.add(new Object[] {next, gap});
+            return TimelineFollower.SourceFactory.super.gap(next, gap);
+        }
+
         FakeItem last() {
             return started.get(started.size() - 1);
         }
@@ -531,6 +540,125 @@ class TimelineFollowerTest {
         unit();
         assertSame(B, follower.playingEntry());
         assertEquals(0, factory.last().startMs);
+    }
+
+    static ProgramCue playing(Entry e, long anchorMs, long posMs, Entry next, String playedOut, long gapMs) {
+        return new ProgramCue(PlaybackState.PLAYING, e, anchorMs, posMs, next, playedOut, false,
+                new ProgramCue.Gap(gapMs, gapMs >= 2000));
+    }
+
+    /**
+     * Transitions ({@code docs/program-output.md#transitions}): A ends naturally before the room
+     * advances; the gap (silence with the blank or the next item's card) starts at E_n and lasts the
+     * gap's AAC frames; the room advances to B meanwhile (B's start a gap after A's end); B starts
+     * from 0 where the gap ends, once.
+     */
+    @Test
+    void aNaturalEndPlaysTheGapThenTheNextItemFromZero() throws Exception {
+        follower.update(playing(A, T0, 0, B, null, 1000));
+        unit();
+        unit();
+        assertTrue(unit().sourceEnded());
+        long en = S0 + 235 * 1920L;
+        Unit gap = unit();
+        GapSource g = assertInstanceOf(GapSource.class, gap.source());
+        assertEquals(47, g.audioFrames(), "1000 ms to the nearest AAC frame");
+        assertFalse(g.transitionCard());
+        assertSame(Filler.GAP, follower.playingFiller());
+        assertSame(B, follower.gapBefore());
+        assertNull(follower.playingEntry());
+        assertEquals(en, gap.startPts(), "the gap starts at E_n");
+        assertTrue(gap.sourceEnded());
+        long gapEnd = en + 47 * 1920L;
+        assertEquals(gapEnd, gap.audioEndPts());
+        assertEquals(1, factory.started.size(), "B not started yet");
+        assertSame(B, factory.gaps.get(0)[0]);
+
+        // the room advanced 12 ms after A's end, B starting after the gap
+        follower.update(playing(B, serverMsAt(en) + 12 + 1000, 0, C, "eA", 1000));
+        Unit u = unit();
+        FakeItem b = factory.last();
+        assertSame(B, b.entry);
+        assertSame(b, u.source());
+        assertEquals(0, b.startMs);
+        assertEquals(gapEnd, u.startPts(), "B starts where the gap ends");
+        assertNull(follower.gapBefore());
+        assertSame(b, unit().source());
+        assertEquals(2, factory.started.size());
+        assertEquals(1, factory.gaps.size());
+    }
+
+    /** The room hasn't advanced by the gap's end: the output starts B itself and adopts the advance. */
+    @Test
+    void theGapEndsBeforeTheRoomAdvances() throws Exception {
+        follower.update(playing(A, T0, 0, B, null, 500));
+        unit();
+        unit();
+        unit();
+        assertInstanceOf(GapSource.class, unit().source());
+        Unit u = unit();
+        FakeItem b = factory.last();
+        assertSame(B, b.entry);
+        assertEquals(0, b.startMs);
+        follower.update(playing(B, serverMsAt(u.startPts()) + 30, 0, C, "eA", 500));
+        assertSame(b, unit().source(), "adopted");
+        assertEquals(2, factory.started.size());
+    }
+
+    /** The room advanced first (the output is a little behind): A plays to its end, then the gap, then B. */
+    @Test
+    void theRoomAdvancedFirstAndTheGapStillPlays() throws Exception {
+        follower.update(playing(A, T0 + 200, 0, B, null, 3000));
+        unit();
+        unit();
+        // A ended on the timeline at T0 + 5.2 s; B starts 3 s later (the transition card is on)
+        follower.update(playing(B, T0 + 8200, 0, C, "eA", 3000));
+        Unit u3 = unit();
+        assertTrue(u3.sourceEnded(), "A plays to its end");
+        Unit gap = unit();
+        GapSource g = assertInstanceOf(GapSource.class, gap.source());
+        assertEquals(141, g.audioFrames());
+        assertSame(B, factory.gaps.get(0)[0]);
+        assertTrue(((ProgramCue.Gap) factory.gaps.get(0)[1]).card());
+        assertFalse(gap.sourceEnded(), "3 s: across a unit boundary");
+        assertSame(g, unit().source(), "the gap runs on across the boundary");
+        Unit u = unit();
+        assertSame(B, follower.playingEntry());
+        assertEquals(0, factory.last().startMs);
+        assertEquals(u3.audioEndPts() + 141 * 1920L, u.startPts());
+    }
+
+    /** A pause or a skip during the gap applies at the next boundary; a gap under a frame is left out. */
+    @Test
+    void changesDuringTheGapAndTinyGaps() throws Exception {
+        follower.update(playing(A, T0, 0, B, null, 5000));
+        unit();
+        unit();
+        unit();
+        Unit gap = unit();
+        assertInstanceOf(GapSource.class, gap.source());
+        follower.update(playing(B, serverMsAt(gap.startPts()) + 5000, 0, C, "eA", 5000));
+        assertSame(gap.source(), unit().source());
+        // paused in the gap (at 0)
+        follower.update(paused(B, nextMs(), 0, C));
+        unit();
+        assertSame(Filler.PAUSED, follower.playingFiller());
+        assertNull(follower.gapBefore());
+        assertEquals(1, factory.started.size());
+
+        // a gap of 20 ms is shorter than a frame: none
+        lastUnit = null;
+        setUp();
+        follower.update(playing(A, T0, 0, B, null, 20));
+        unit();
+        unit();
+        Unit end = unit();
+        Unit u = unit();
+        assertSame(B, follower.playingEntry());
+        assertEquals(end.audioEndPts(), u.startPts());
+        assertTrue(factory.gaps.isEmpty());
+        assertEquals(0, new ProgramCue.Gap(20, false).audioFrames());
+        assertEquals(2, new ProgramCue.Gap(32, false).audioFrames());
     }
 
     @Test

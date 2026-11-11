@@ -64,6 +64,8 @@ import java.util.function.Function;
  */
 public final class RoomSettings {
     public static final int MAX_GAP_MS = 10_000;
+    /** The shortest pause between items while {@code transitionCard} is on: one card GOP. */
+    public static final int TRANSITION_CARD_MIN_MS = 2000;
     public static final int MIN_OVERLAY_HEIGHT_PCT = 5;
     public static final int MAX_OVERLAY_HEIGHT_PCT = 50;
     public static final int MAX_OVERLAY_MARGIN = 20;
@@ -427,6 +429,15 @@ public final class RoomSettings {
 
     public int gapMs() {
         return (Integer) values.get("gapMs");
+    }
+
+    /**
+     * The pause between an item's natural end and the next item ({@code docs/rooms.md#transitions}):
+     * {@link #gapMs()}, but at least {@value #TRANSITION_CARD_MIN_MS} ms (one card GOP) while
+     * {@link #transitionCard()} is on, so the card is seen.
+     */
+    public int transitionGapMs() {
+        return transitionCard() ? Math.max(gapMs(), TRANSITION_CARD_MIN_MS) : gapMs();
     }
 
     /**

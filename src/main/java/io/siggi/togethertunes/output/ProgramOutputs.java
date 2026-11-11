@@ -115,16 +115,24 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
      * @param next      the next eligible entry ({@link Playback#nextEligible}), or null
      * @param playedOut see {@link ProgramCue#playedOut()}
      * @param audioOnly the room's {@code audioOnly} setting (the entries carry their own mode)
+     * @param gap       the room's transition between items ({@link ProgramCue#gap()})
      */
     public record Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut,
-                           boolean audioOnly) {
+                           boolean audioOnly, ProgramCue.Gap gap) {
         public Snapshot {
             Objects.requireNonNull(timeline, "timeline");
+            gap = gap == null ? ProgramCue.Gap.NONE : gap;
         }
 
         /** A snapshot of a room that isn't audio-only. */
         public Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut) {
             this(version, timeline, current, next, playedOut, false);
+        }
+
+        /** A snapshot of a room without a transition between items. */
+        public Snapshot(long version, Timeline timeline, QueueEntry current, QueueEntry next, String playedOut,
+                        boolean audioOnly) {
+            this(version, timeline, current, next, playedOut, audioOnly, ProgramCue.Gap.NONE);
         }
     }
 
@@ -340,7 +348,8 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         Timeline t = state.timeline();
         QueueEntry current = t.state() == PlaybackState.IDLE ? null : state.current();
         return new Snapshot(state.version(), t, current, Playback.nextEligible(state), playedOut.get(state.id()),
-                state.settings().audioOnly());
+                state.settings().audioOnly(), new ProgramCue.Gap(state.settings().transitionGapMs(),
+                        state.settings().transitionCard()));
     }
 
     // ------------------------------------------------------------------ lifecycle
@@ -695,14 +704,14 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
             }
         }
         if (t.state() == PlaybackState.IDLE) {
-            return ProgramCue.of(t, null, next, s.playedOut(), s.audioOnly());
+            return ProgramCue.of(t, null, next, s.playedOut(), s.audioOnly(), s.gap());
         }
         QueueEntry cur = s.current();
         if (cur == null || !cur.id().equals(t.entryId())) {
             return new ProgramCue(null, null, 0, 0, null, null, s.audioOnly());
         }
         try {
-            return ProgramCue.of(t, entry(cur), next, s.playedOut(), s.audioOnly());
+            return ProgramCue.of(t, entry(cur), next, s.playedOut(), s.audioOnly(), s.gap());
         } catch (Exception e) {
             LOG.log(System.Logger.Level.WARNING, "Program output: can't look up item " + cur.itemId(), e);
             return new ProgramCue(null, null, 0, 0, null, null, s.audioOnly());

@@ -309,6 +309,47 @@ abstract class PlaybackContract {
         assertFalse(next.playsAudioOnlyFile());
     }
 
+    /**
+     * Transitions ({@code docs/rooms.md#transitions}): after a natural end the next entry starts
+     * {@code gapMs} later (a delayed start, silent at 0 until then), at least 2 s with the
+     * transition card on; a skip and a start from idle get no gap; nothing to play next goes idle
+     * at once.
+     */
+    @Test
+    void naturalEndsWaitForTheTransitionGap() throws Exception {
+        String[] a = entry("ready", 10_000L);
+        String[] b = entry("ready", 10_000L);
+        String[] c = entry("ready", 10_000L);
+        String[] d = entry("ready", 10_000L);
+        liveSettings("{\"gapMs\": 1500}");
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(Timeline.playing(a[0], T0, 0), timeline(), "a start from idle has no gap");
+
+        tick(10_000);
+        RoomChange toB = awaitTimeline(b[0]);
+        assertEquals(Timeline.startingAt(b[0], T0 + 11_500), toB.timeline());
+        assertEquals(List.of("playing", T0 + 10_000), entryRow(b[0]), "B is current at once");
+        assertEquals(-1500, toB.timeline().positionAt(T0 + 10_000));
+        long delay = advanceDelay();
+        assertTrue(delay > 11_000 && delay <= 11_500, "B ends 10 s after its start: " + delay);
+        assertEquals(List.of("playing", b[0], T0 + 11_500, 0L), roomRow().subList(0, 4), "persisted");
+
+        // the transition card makes the gap at least 2 s
+        liveSettings("{\"gapMs\": 500, \"transitionCard\": true}");
+        tick(11_500);
+        assertEquals(Timeline.startingAt(c[0], T0 + 23_500), awaitTimeline(c[0]).timeline());
+
+        // a skip has no gap
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(Timeline.startingAt(d[0], T0 + 21_500), timeline());
+
+        // nothing next: idle at once
+        tick(10_000);
+        awaitTimeline(null);
+        assertEquals(Timeline.IDLE, timeline());
+        assertEquals("played", entryRow(d[0]).get(0));
+    }
+
     @Test
     void advancesAtTheEndSkippingEntriesThatAreNotReady() throws Exception {
         String[] a = entry("ready", 60_000L);

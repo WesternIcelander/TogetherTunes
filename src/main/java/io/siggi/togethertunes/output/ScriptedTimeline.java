@@ -51,6 +51,9 @@ public final class ScriptedTimeline {
     private record AudioOnly(boolean on) implements Action {
     }
 
+    private record SetGap(ProgramCue.Gap gap) implements Action {
+    }
+
     private record Scheduled(long atMs, Action action) {
     }
 
@@ -78,6 +81,7 @@ public final class ScriptedTimeline {
     private long anchorPositionMs;
     private String playedOut;
     private boolean audioOnly;
+    private ProgramCue.Gap gap = ProgramCue.Gap.NONE;
     private long simulatedToMs = Long.MIN_VALUE;
     private ProgramCue cue = ProgramCue.IDLE;
 
@@ -148,6 +152,14 @@ public final class ScriptedTimeline {
     }
 
     /**
+     * Sets the room's transition between items ({@link ProgramCue#gap()}): from then on, a natural
+     * end starts the next entry that much later, as a room does.
+     */
+    public ScriptedTimeline gap(ProgramCue.Gap g) {
+        return schedule(new SetGap(Objects.requireNonNull(g, "gap")));
+    }
+
+    /**
      * Sets the room's {@code audioOnly} setting ({@link ProgramCue#audioOnly()}: the fillers' rate).
      * The entries carry their own mode, as the room gives it to them: add entries made with
      * {@code audioOnly} for those that start after the switch.
@@ -186,6 +198,9 @@ public final class ScriptedTimeline {
             if (end <= atMs && end <= scripted) {
                 String finished = current.entryId();
                 advance(end);
+                if (current != null) {
+                    anchorServerMs += gap.ms(); // the transition gap: the next entry starts later
+                }
                 playedOut = finished;
                 changes.add(change(end, "natural end of " + finished));
             } else if (scripted <= atMs) {
@@ -272,6 +287,13 @@ public final class ScriptedTimeline {
                 unknownState = true;
                 yield "unknown state";
             }
+            case SetGap g -> {
+                if (gap.equals(g.gap())) {
+                    yield null;
+                }
+                gap = g.gap();
+                yield "gap " + gap.ms() + " ms" + (gap.card() ? " with the transition card" : "");
+            }
             case AudioOnly o -> {
                 if (audioOnly == o.on()) {
                     yield null;
@@ -300,12 +322,13 @@ public final class ScriptedTimeline {
 
     private Change change(long atMs, String what) {
         if (unknownState) {
-            cue = new ProgramCue(null, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), null, audioOnly);
+            cue = new ProgramCue(null, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), null, audioOnly,
+                    gap);
         } else if (state == PlaybackState.IDLE) {
-            cue = audioOnly ? new ProgramCue(PlaybackState.IDLE, null, 0, 0, null, null, true) : ProgramCue.IDLE;
+            cue = new ProgramCue(PlaybackState.IDLE, null, 0, 0, null, null, audioOnly, gap);
         } else {
             cue = new ProgramCue(state, current, anchorServerMs, anchorPositionMs, queue.peekFirst(), playedOut,
-                    audioOnly);
+                    audioOnly, gap);
         }
         return new Change(atMs, startServerMs + atMs, cue, what);
     }

@@ -29,6 +29,12 @@ import java.io.IOException;
  * <li><b>Delayed starts.</b> A timeline whose entry starts in the future (an abrupt start put
  * off until the output can play it from 0:00) keeps the output on what it plays until the first
  * boundary at most {@link #START_EARLY_MS} before that start, where the entry starts from 0.</li>
+ * <li><b>Transitions</b> ({@code docs/program-output.md#transitions}): with the room's gap
+ * ({@link ProgramCue#gap()}) set, an item's natural end is followed by a {@link GapSource} of that
+ * length (the next item's card or the blank card, with silence), then the next item from 0. The
+ * room starts the next entry the same gap after the end, so the two stay as far apart as they
+ * were. A change of the timeline during the gap (pause, seek, skip) applies at the next boundary
+ * as usual.</li>
  * <li>An item that can't be played yet ({@link SourceFactory#item} gives null or fails) → the
  * {@link Filler#LOADING} filler, retried at every boundary.</li>
  * </ul>
@@ -72,6 +78,15 @@ public final class TimelineFollower implements UnitProducer {
         ProgramSource filler(Filler filler);
 
         /**
+         * The pause before {@code next} ({@code docs/program-output.md#transitions}): {@code gap}'s
+         * {@link ProgramCue.Gap#audioFrames()} of silence with {@code next}'s card when
+         * {@link ProgramCue.Gap#card()} (and it is loaded), else the blank card. Default: the blank card.
+         */
+        default ProgramSource gap(ProgramCue.Entry next, ProgramCue.Gap gap) {
+            return new GapSource(filler(Filler.GAP), gap.audioFrames(), false);
+        }
+
+        /**
          * Called with every cue handed to {@link #update} (on the caller's thread), so the factory
          * can load what the cue's current and next entries need ahead of time.
          */
@@ -101,6 +116,10 @@ public final class TimelineFollower implements UnitProducer {
     private ProgramCue endedCue;
     /** Whether the source playing is padded to the audio-only rate (see {@link #audioOnlyRate()}). */
     private boolean audioOnlyRate;
+    /** While a {@link GapSource} plays: the entry it leads into, the entry it follows, and the cue it plays under. */
+    private ProgramCue.Entry gapTo;
+    private String gapFrom;
+    private ProgramCue gapCue;
 
     /**
      * @param initial the timeline to start with (null: nothing known yet, played as paused)
@@ -134,9 +153,14 @@ public final class TimelineFollower implements UnitProducer {
         return entry;
     }
 
-    /** The filler playing, or null while an item plays. */
+    /** The filler playing, or null while an item plays ({@link Filler#GAP} during a transition gap). */
     public Filler playingFiller() {
         return filler;
+    }
+
+    /** The entry the transition gap playing leads into, or null when no gap plays. */
+    public ProgramCue.Entry gapBefore() {
+        return gapTo;
     }
 
     /**
@@ -177,11 +201,87 @@ public final class TimelineFollower implements UnitProducer {
     private void decide(ProgramCue c) {
         if (builder.source() == null) {
             follow(c, false);
+        } else if (gapTo != null) {
+            gapBoundary(c, builder.sourceEnded());
         } else if (builder.sourceEnded()) {
             ended(c);
         } else {
             boundary(c);
         }
+    }
+
+    /**
+     * A transition gap plays (or just ended): it runs on while the timeline is still at the item
+     * before it or at the gap's entry as the room advanced to it; when it ends there the entry starts
+     * from 0. Any other change ends the gap and is followed as usual.
+     */
+    private void gapBoundary(ProgramCue c, boolean gapEnded) {
+        ProgramCue.Entry to = gapTo;
+        String from = gapFrom;
+        ProgramCue under = gapCue;
+        long now = clock.serverMsAt(builder.switchPoint());
+        boolean keep = false;
+        boolean advanced = false;
+        if (c != null && c.state() == PlaybackState.PLAYING) {
+            String x = c.current().entryId();
+            if (x.equals(to.entryId())) {
+                // the room advanced to the gap's entry (and nothing else changed since)
+                advanced = c == under || sameMotion(under, c, now) || from.equals(c.playedOut());
+                keep = advanced;
+            } else if (x.equals(from)) {
+                // the room hasn't advanced yet (the output is a little ahead)
+                keep = c == under || sameMotion(under, c, now);
+            }
+        }
+        if (!keep) {
+            clearGap();
+            follow(c, gapEnded);
+            return;
+        }
+        gapCue = c;
+        if (!gapEnded) {
+            return;
+        }
+        clearGap();
+        if (advanced) {
+            follow(c, true);
+        } else {
+            startItem(c, to, 0);
+        }
+    }
+
+    private void clearGap() {
+        gapTo = null;
+        gapFrom = null;
+        gapCue = null;
+    }
+
+    /**
+     * Plays the room's transition gap before {@code next} if it has one ({@code from} just ended in
+     * the output): returns whether it did.
+     */
+    private boolean startGap(ProgramCue c, ProgramCue.Entry from, ProgramCue.Entry next) {
+        ProgramCue.Gap gap = c.gap();
+        if (gap.audioFrames() == 0) {
+            return false;
+        }
+        ProgramSource src;
+        try {
+            src = factory.gap(next, gap);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Program output: no transition gap before item " + next.itemId()
+                    + ": " + e, e);
+            return false;
+        }
+        builder.play(src);
+        entry = null;
+        filler = Filler.GAP;
+        audioOnlyRate = next.audioOnly();
+        followed = c;
+        gapTo = next;
+        gapFrom = from.entryId();
+        gapCue = c;
+        return true;
     }
 
     /** The playing source runs on into the next unit unless the timeline says otherwise. */
@@ -230,9 +330,17 @@ public final class TimelineFollower implements UnitProducer {
                 playFiller(Filler.IDLE, c); // the room goes idle next
             } else {
                 long behind = Math.max(0, -remaining);
-                startItem(c, c.next(), behind > RESYNC_MS ? behind : 0);
+                if (behind > RESYNC_MS || !startGap(c, endedEntry, c.next())) {
+                    startItem(c, c.next(), behind > RESYNC_MS ? behind : 0);
+                }
             }
             return;
+        }
+        if (endedEntry != null && c != null && c.state() == PlaybackState.PLAYING
+                && endedEntry.entryId().equals(c.playedOut()) && !c.current().entryId().equals(endedEntry.entryId())
+                && c.positionAt(clock.serverMsAt(builder.switchPoint())) <= RESYNC_MS
+                && startGap(c, endedEntry, c.current())) {
+            return; // the room advanced first: the gap before its entry, then the entry (follow, at its end)
         }
         follow(c, true);
     }
@@ -311,6 +419,7 @@ public final class TimelineFollower implements UnitProducer {
             return;
         }
         builder.play(src);
+        clearGap();
         entry = x;
         filler = null;
         audioOnlyRate = x.audioOnly();
@@ -325,6 +434,7 @@ public final class TimelineFollower implements UnitProducer {
     }
 
     private void playFiller(Filler f, ProgramCue c) {
+        clearGap();
         followed = c;
         audioOnlyRate = c != null && c.audioOnly();
         if (entry == null && filler == f && builder.source() != null && !builder.sourceEnded()) {

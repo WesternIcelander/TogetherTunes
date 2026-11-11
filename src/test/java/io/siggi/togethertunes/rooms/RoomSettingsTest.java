@@ -61,6 +61,15 @@ class RoomSettingsTest {
 
     /** {@code audioOnly}: a boolean; it changes nothing else (remote mode's delays stay as they are). */
     @Test
+    void transitionGapIsAtLeastOneCardWhileTheCardIsOn() {
+        assertEquals(0, RoomSettings.DEFAULTS.transitionGapMs());
+        assertEquals(1500, RoomSettings.DEFAULTS.patch(obj("{\"gapMs\":1500}")).transitionGapMs());
+        assertEquals(2000, RoomSettings.DEFAULTS.patch(obj("{\"transitionCard\":true}")).transitionGapMs());
+        assertEquals(2000, RoomSettings.DEFAULTS.patch(obj("{\"transitionCard\":true,\"gapMs\":500}")).transitionGapMs());
+        assertEquals(7000, RoomSettings.DEFAULTS.patch(obj("{\"transitionCard\":true,\"gapMs\":7000}")).transitionGapMs());
+    }
+
+    @Test
     void audioOnlySetting() {
         RoomSettings on = RoomSettings.DEFAULTS.patch(obj("{\"audioOnly\":true}"));
         assertTrue(on.audioOnly());

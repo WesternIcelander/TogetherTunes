@@ -17,7 +17,12 @@ public final class FillerSource implements ProgramSource {
         /** The room is idle: the queue is empty. Shows the room's idle card. */
         IDLE(CardRenderer.Filler.QUEUE_EMPTY),
         /** The next item's index isn't loaded yet. */
-        LOADING(CardRenderer.Filler.LOADING);
+        LOADING(CardRenderer.Filler.LOADING),
+        /**
+         * The pause between items without a transition card ({@code docs/program-output.md#transitions}):
+         * the blank card, played for the gap's length only ({@link GapSource}).
+         */
+        GAP(CardRenderer.Filler.BLANK);
 
         private final CardRenderer.Filler serverCard;
 

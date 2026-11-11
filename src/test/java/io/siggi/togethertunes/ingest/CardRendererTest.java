@@ -214,7 +214,9 @@ class CardRendererTest {
         for (Filler f : Filler.values()) {
             BufferedImage img = r.renderFiller(f);
             hashes.add(Arrays.hashCode(img.getRGB(0, 0, 1280, 720, null, 0, 1280)));
-            assertTrue(brightPixels(img, 340, 200, 940, 520) > 500, f.name());
+            // the blank card (the gap between items without a transition card) is the background alone
+            assertEquals(f == Filler.BLANK, brightPixels(img, 340, 200, 940, 520) == 0, f.name());
+            assertTrue(f == Filler.BLANK || brightPixels(img, 340, 200, 940, 520) > 500, f.name());
             assertEquals(0, brightPixels(img, 0, 0, 1280, 120), f.name());
             assertEquals(0, brightPixels(img, 0, 600, 1280, 720), f.name());
             assertEquals(0, brightPixels(img, 0, 0, 200, 720), f.name());
