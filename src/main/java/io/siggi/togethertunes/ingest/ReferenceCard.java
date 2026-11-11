@@ -2,6 +2,8 @@ package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.X264Preset;
+import io.siggi.togethertunes.media.AvcCFields;
+import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -10,7 +12,9 @@ import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.imageio.ImageIO;
 
@@ -32,6 +36,13 @@ import javax.imageio.ImageIO;
  * encoded and compared: if the installed ffmpeg/x264 now writes different bytes (e.g. after an
  * upgrade), {@link #encoderChanged()} is true, a warning is due, and new encodes will fail the
  * check until the stored reference is replaced and the library re-encoded.
+ *
+ * <p>{@link #ensure} also checks the video path ({@link #checkVideoPath}): a few frames of a
+ * BT.709-tagged, an untagged and a full-range BT.601 clip, encoded like a mezzanine, must give the
+ * reference avcC too. If one doesn't (an ffmpeg whose colour handling the encode profile doesn't
+ * pin yet), {@link #spliceProblem()} names the differing SPS fields, it is logged once as an error,
+ * and ingest refuses video encodes up front ({@link #requireSpliceableVideo()}) instead of failing
+ * every job after the encode.
  */
 public final class ReferenceCard {
     private static final System.Logger LOG = System.getLogger(ReferenceCard.class.getName());
@@ -46,18 +57,26 @@ public final class ReferenceCard {
     private final byte[] avcC;
     private final byte[] currentAvcC;
     private final boolean created;
+    private final String spliceProblem;
 
-    private ReferenceCard(OutputEncoding encoding, Path card, byte[] avcC, byte[] currentAvcC, boolean created) {
+    private ReferenceCard(OutputEncoding encoding, Path card, byte[] avcC, byte[] currentAvcC, boolean created,
+                          String spliceProblem) {
         this.encoding = encoding;
         this.card = card;
         this.avcC = avcC;
         this.currentAvcC = currentAvcC;
         this.created = created;
+        this.spliceProblem = spliceProblem;
     }
 
     /** A reference made up for tests (no file, no encode). */
     static ReferenceCard forTest(OutputEncoding encoding, Path card, byte[] avcC) {
-        return new ReferenceCard(encoding, card, avcC.clone(), avcC.clone(), false);
+        return forTest(encoding, card, avcC, null);
+    }
+
+    /** {@link #forTest(OutputEncoding, Path, byte[])} with a {@link #spliceProblem()}. */
+    static ReferenceCard forTest(OutputEncoding encoding, Path card, byte[] avcC, String spliceProblem) {
+        return new ReferenceCard(encoding, card, avcC.clone(), avcC.clone(), false, spliceProblem);
     }
 
     /** The directory holding an encoding's server-wide cards: {@code <cardsDir>/<encoding id>}. */
@@ -98,11 +117,14 @@ public final class ReferenceCard {
                 } catch (IOException e) {
                     throw new IOException(avcFile + ": " + e.getMessage(), e);
                 }
+                String problem = null;
                 if (Arrays.equals(stored, fresh)) {
                     // a fresh card in the current card format (CardEncoder.CARD_VERSION) replaces the stored one
                     CardEncoder.move(mp4, card);
+                    // (when the encoder changed, every encode fails the check anyway, with its own warning)
+                    problem = checkVideoPath(tools, dir, encoding, stored, log);
                 }
-                return new ReferenceCard(encoding, card, stored, fresh, false);
+                return new ReferenceCard(encoding, card, stored, fresh, false, problem);
             }
             Path avcTmp = Files.createTempFile(dir, ".reference-", ".avcC");
             try {
@@ -112,10 +134,91 @@ public final class ReferenceCard {
             } finally {
                 Files.deleteIfExists(avcTmp);
             }
-            return new ReferenceCard(encoding, card, fresh, fresh, true);
+            return new ReferenceCard(encoding, card, fresh, fresh, true, checkVideoPath(tools, dir, encoding, fresh, log));
         } finally {
             Files.deleteIfExists(png);
             Files.deleteIfExists(mp4);
+        }
+    }
+
+    /** A test clip of the video path check: what it stands for, and its lavfi source. */
+    record TestClip(String what, String source) {
+    }
+
+    /**
+     * The clips {@link #checkVideoPath} encodes: frames tagged like a typical download (BT.709),
+     * untagged frames (like most uploads and every card image) and full-range BT.601 frames. Each
+     * is a lavfi source, so its frames carry exactly these colour properties into the filter chain,
+     * as a decoder's would.
+     */
+    static final List<TestClip> TEST_CLIPS = List.of(
+            new TestClip("a BT.709-tagged video", "testsrc2=size=320x180:rate=30,format=yuv420p,"
+                    + "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"),
+            new TestClip("an untagged video", "testsrc2=size=320x180:rate=30,format=yuv420p"),
+            new TestClip("a full-range BT.601 video", "testsrc2=size=320x180:rate=30,format=yuv420p,"
+                    + "setparams=range=pc:color_primaries=smpte170m:color_trc=smpte170m:colorspace=smpte170m"));
+
+    /** Frames per test clip: enough for an IDR and a P-frame. */
+    static final int TEST_CLIP_FRAMES = 2;
+
+    /** The ffmpeg arguments that encode {@code clip} like a mezzanine's video (reference preset). */
+    static List<String> testClipCommand(TestClip clip, Path out, OutputEncoding encoding) {
+        List<String> args = new ArrayList<>(List.of("-y", "-f", "lavfi", "-i", clip.source(),
+                "-frames:v", Integer.toString(TEST_CLIP_FRAMES), "-vf", EncodeProfile.scaleFilter(encoding)));
+        args.addAll(EncodeProfile.videoArgs(encoding, X264Preset.REFERENCE));
+        args.addAll(List.of("-an", "-f", "mp4", out.toString()));
+        return args;
+    }
+
+    /** Whether {@link #logSpliceProblem} has logged already (once per process is enough). */
+    private static final AtomicBoolean LOGGED_SPLICE_PROBLEM = new AtomicBoolean();
+
+    /**
+     * The startup self-check of the video path: encodes each of {@link #TEST_CLIPS} like a
+     * mezzanine and compares its avcC with {@code reference}. Returns null when all match, or a
+     * description of the first mismatch naming the differing SPS fields
+     * ({@link AvcCFields#differences}), which is also logged once as an error. If ffmpeg can't
+     * encode a clip, that is logged as a warning and the check passes (the real encodes then report
+     * their own errors).
+     *
+     * @param dir the encoding's cards directory (temporary files only)
+     */
+    static String checkVideoPath(Tools tools, Path dir, OutputEncoding encoding, byte[] reference, JobLog log)
+            throws IOException, InterruptedException {
+        for (TestClip clip : TEST_CLIPS) {
+            Path mp4 = Files.createTempFile(dir, ".check-", ".mp4");
+            try {
+                byte[] avcC;
+                try {
+                    tools.ffmpeg(testClipCommand(clip, mp4, encoding)).timeout(CardEncoder.ENCODE_TIMEOUT).log(log).run();
+                    avcC = Mp4Boxes.readAvcC(mp4);
+                } catch (ToolException | IOException e) {
+                    LOG.log(System.Logger.Level.WARNING, "Could not check the video path for " + encoding.id()
+                            + " with " + clip.what() + ": " + e.getMessage());
+                    continue;
+                }
+                if (!Arrays.equals(reference, avcC)) {
+                    String problem = clip.what() + " is encoded with a different SPS than the " + encoding.id()
+                            + " reference card: " + AvcCFields.differences(reference, avcC);
+                    logSpliceProblem(problem);
+                    return problem;
+                }
+            } finally {
+                Files.deleteIfExists(mp4);
+            }
+        }
+        return null;
+    }
+
+    /** The error logged once when {@link #checkVideoPath} finds a mismatch. */
+    static String spliceProblemMessage(String problem) {
+        return "This ffmpeg produces encodes that can't be spliced: " + problem
+                + ". Video ingest is refused until ffmpeg is changed (see the deployment notes for tested versions).";
+    }
+
+    private static void logSpliceProblem(String problem) {
+        if (LOGGED_SPLICE_PROBLEM.compareAndSet(false, true)) {
+            LOG.log(System.Logger.Level.ERROR, spliceProblemMessage(problem));
         }
     }
 
@@ -249,6 +352,24 @@ public final class ReferenceCard {
     /** Whether this call created the reference (first start for this encoding). */
     public boolean created() {
         return created;
+    }
+
+    /**
+     * Why video encodes with this ffmpeg wouldn't match the reference avcC (from the startup
+     * self-check, {@link #checkVideoPath}), or null if they do.
+     */
+    public String spliceProblem() {
+        return spliceProblem;
+    }
+
+    /**
+     * Fails a job that would encode video when {@link #spliceProblem()} is set, before any work is
+     * done, with "This ffmpeg produces encodes that can't be spliced: …".
+     */
+    public void requireSpliceableVideo() throws IngestFailure {
+        if (spliceProblem != null) {
+            throw new IngestFailure("This ffmpeg produces encodes that can't be spliced: " + spliceProblem);
+        }
     }
 
     /**

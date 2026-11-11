@@ -491,6 +491,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
         MediaProbe probe = MediaProbe.probe(tools, source, log);
         checkProbe(probe, !reencode);
         boolean video = probe.isVideo();
+        if (video) {
+            // an ffmpeg whose video encodes don't match the reference (startup self-check) fails here, not after the encode
+            reference.requireSpliceableVideo();
+        }
         log.append("[ingest] " + (video ? "video" : "audio") + " item: audio stream " + probe.audio().index() + " ("
                 + probe.audio().codec() + ")" + (video ? ", video stream " + probe.video().index() + " ("
                 + probe.video().codec() + ")" : "") + (probe.cover() != null ? ", cover stream " + probe.cover().index() : "")
@@ -733,6 +737,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         if (!probe.isVideo()) {
             throw new IngestFailure("The original has no video to trim");
         }
+        reference.requireSpliceableVideo();
         long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
         long[] r = trimRange(target, probe, sourceAudioEndUs);
         long startMs = r[0] / 1000;

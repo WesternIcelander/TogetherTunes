@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -93,6 +94,8 @@ class ReferenceCardTest {
         assertTrue(Files.size(ref.card()) > 0);
         assertTrue(ref.created());
         assertFalse(ref.encoderChanged());
+        assertNull(ref.spliceProblem(), "the video path matches the reference");
+        assertDoesNotThrow(ref::requireSpliceableVideo);
         assertArrayEquals(ref.avcC(), Files.readAllBytes(profileDir.resolve("reference.avcC")));
         assertEquals(List.of(), tempFiles(profileDir), "temporary files are cleaned up");
         assertTrue(log.tail().contains("libx264"), "ffmpeg command is logged");
@@ -226,6 +229,53 @@ class ReferenceCardTest {
         assertEquals(2, fallback.checkConfigured().size());
         assertEquals(X264Preset.REFERENCE, fallback.quick());
         assertEquals(X264Preset.REFERENCE, fallback.quality());
+    }
+
+    /**
+     * The reference avcC of each profile as ffmpeg 6.1.1 wrote it before the colour description
+     * was pinned in x264 and the filter chain (2026-11-11): the pins must not change a byte of it,
+     * so existing servers keep their references and libraries. Every ffmpeg in the tested matrix
+     * (5.1 to master) writes exactly these bytes now; before the pins, 7.x and later wrote
+     * "unspecified" primaries/transfer ({@code d40808…}) for the card's untagged image.
+     */
+    static final String AVCC_720P = "01640028ffe1001d67640028acb280a00b7602d40404050000030001000003003c0f1832580100"
+            + "0568e9332c8bfdf8f800";
+    static final String AVCC_1080P = "01640029ffe1001d67640029acb280f0044fcb80b501010140000003004000000f03c60c960100"
+            + "0568e9332c8bfdf8f800";
+
+    @ParameterizedTest
+    @EnumSource(OutputProfile.class)
+    @Timeout(120)
+    void theReferenceAvcCIsUnchanged(OutputProfile p) throws Exception {
+        OutputEncoding encoding = OutputEncoding.defaultFor(p);
+        ReferenceCard ref = ReferenceCard.ensure(tools(), dir.resolve("cards-" + p), encoding, null);
+        assertEquals(p == OutputProfile.P720_30 ? AVCC_720P : AVCC_1080P, HexFormat.of().formatHex(ref.avcC()));
+        assertNull(ref.spliceProblem());
+    }
+
+    /**
+     * The video path self-check against a reference it doesn't match (the one ffmpeg 7.x wrote
+     * before the pins: unspecified primaries and transfer): names the first test clip and the
+     * differing SPS fields; ingest's up-front refusal carries that text.
+     */
+    @Test
+    @Timeout(120)
+    void videoPathCheckNamesTheDifferingFields() throws Exception {
+        OutputEncoding encoding = OutputEncoding.DEFAULT;
+        Path cards = Files.createDirectories(dir.resolve("check"));
+        byte[] unpinned = HexFormat.of().parseHex(AVCC_720P.replace("d40404", "d40808"));
+        String problem = ReferenceCard.checkVideoPath(tools(), cards, encoding, unpinned, null);
+        assertEquals("a BT.709-tagged video is encoded with a different SPS than the 720p30-3000k-v3 reference card:"
+                + " colour_primaries 1 (BT.709) instead of 2 (unspecified),"
+                + " transfer_characteristics 1 (BT.709) instead of 2 (unspecified)", problem);
+        assertEquals(List.of(), tempFiles(cards), "temporary files are cleaned up");
+        assertNull(ReferenceCard.checkVideoPath(tools(), cards, encoding, HexFormat.of().parseHex(AVCC_720P), null));
+
+        ReferenceCard ref = ReferenceCard.forTest(encoding, cards.resolve("x.mp4"), unpinned, problem);
+        IngestFailure e = assertThrows(IngestFailure.class, ref::requireSpliceableVideo);
+        assertEquals("This ffmpeg produces encodes that can't be spliced: " + problem, e.getMessage());
+        assertTrue(ReferenceCard.spliceProblemMessage(problem).startsWith(
+                "This ffmpeg produces encodes that can't be spliced: a BT.709-tagged video"));
     }
 
     @Test

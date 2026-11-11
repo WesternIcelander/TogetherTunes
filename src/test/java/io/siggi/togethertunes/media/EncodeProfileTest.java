@@ -63,7 +63,8 @@ class EncodeProfileTest {
         assertEquals("60", option(args, "-keyint_min"));
         assertEquals("0", option(args, "-sc_threshold"));
         assertEquals("expr:gte(t,n_forced*2)", option(args, "-force_key_frames"));
-        assertEquals("open-gop=0:ref=4:chroma-qp-offset=-2", option(args, "-x264-params"));
+        assertEquals("open-gop=0:ref=4:chroma-qp-offset=-2"
+                + ":colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv:chromaloc=0", option(args, "-x264-params"));
         assertFalse(args.contains("-crf"), "a capped bitrate, no CRF");
         assertFalse(args.contains("-minrate"), "no minimum: nothing on disk is padded");
         assertEquals(EncodeProfile.GOP_FRAMES, profile.fps() * EncodeProfile.GOP_MS / 1000);
@@ -84,7 +85,8 @@ class EncodeProfileTest {
             List<String> args = EncodeProfile.videoArgs(encoding, preset);
             assertEquals(preset.id(), option(args, "-preset"));
             String offset = preset == X264Preset.VERYFAST || preset == X264Preset.FASTER ? "-2" : "0";
-            assertEquals("open-gop=0:ref=4:chroma-qp-offset=" + offset, option(args, "-x264-params"));
+            assertEquals("open-gop=0:ref=4:chroma-qp-offset=" + offset
+                    + ":colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv:chromaloc=0", option(args, "-x264-params"));
             assertEquals(reference.size(), args.size());
             for (int i = 0; i < args.size(); i++) {
                 if (!reference.get(i).equals(args.get(i))) {
@@ -120,12 +122,41 @@ class EncodeProfileTest {
     void scaleFilter() {
         assertEquals("scale=1280:720:force_original_aspect_ratio=decrease:force_divisible_by=2"
                         + ":out_color_matrix=bt709:out_range=tv,"
-                        + "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+                        + "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,"
+                        + "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
                 EncodeProfile.scaleFilter(OutputProfile.P720_30));
         assertEquals("scale=1920:1080:force_original_aspect_ratio=decrease:force_divisible_by=2"
                         + ":out_color_matrix=bt709:out_range=tv,"
-                        + "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
+                        + "pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,"
+                        + "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
                 EncodeProfile.scaleFilter(OutputProfile.P1080_30));
+    }
+
+    /**
+     * The colour description is pinned three ways (newer ffmpeg lets the frames' own tags win over
+     * the output options): the filter chain ends by setting the frames' properties, x264's own VUI
+     * options, and the output options. The short-first-GOP lists keep the same pins.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void colourDescriptionIsPinned() {
+        for (OutputProfile p : OutputProfile.values()) {
+            assertTrue(EncodeProfile.scaleFilter(p).endsWith("," + EncodeProfile.COLOUR_FILTER), p.toString());
+        }
+        assertEquals("setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+                EncodeProfile.COLOUR_FILTER);
+        for (X264Preset preset : X264Preset.values()) {
+            for (int first : new int[] {1, 37, 60}) {
+                List<String> args = EncodeProfile.videoArgs(OutputEncoding.DEFAULT, preset, first);
+                assertTrue(option(args, "-x264-params")
+                        .endsWith(":colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv:chromaloc=0"), preset + "");
+                assertEquals("bt709", option(args, "-color_primaries"));
+                assertEquals("bt709", option(args, "-color_trc"));
+                assertEquals("bt709", option(args, "-colorspace"));
+                assertEquals("tv", option(args, "-color_range"));
+                assertEquals("left", option(args, "-chroma_sample_location"));
+            }
+        }
     }
 
     // --- against the real ffmpeg (skipped when it isn't installed) ---
@@ -180,7 +211,8 @@ class EncodeProfileTest {
         tools.ffmpeg("-f", "lavfi", "-i", "color=c=0x336699:size=" + profile.width() + "x" + profile.height(),
                 "-frames:v", "1", png.toString()).run();
         Path out = dir.resolve("card-" + profile + ".mp4");
-        List<String> args = new ArrayList<>(List.of("-loop", "1", "-framerate", "30", "-i", png.toString(), "-t", "2"));
+        List<String> args = new ArrayList<>(List.of("-loop", "1", "-framerate", "30", "-i", png.toString(), "-t", "2",
+                "-vf", EncodeProfile.scaleFilter(profile)));
         args.addAll(EncodeProfile.videoArgs(profile));
         args.addAll(List.of("-an", out.toString()));
         tools.ffmpeg(args).run();
@@ -315,7 +347,8 @@ class EncodeProfileTest {
         List<List<String>> sources = List.of(
                 List.of("-c:v", "libx264", "-preset", "ultrafast", "-color_primaries", "bt709", "-color_trc", "bt709",
                         "-colorspace", "bt709"),
-                List.of("-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-top", "1", "-color_primaries", "smpte170m",
+                // top field first through setfield: ffmpeg master no longer has the -top option
+                List.of("-vf", "setfield=tff", "-c:v", "mpeg2video", "-flags", "+ildct+ilme", "-color_primaries", "smpte170m",
                         "-color_trc", "smpte170m", "-colorspace", "smpte170m"),
                 List.of("-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuvj420p", "-color_range", "pc"),
                 List.of("-c:v", "mjpeg"),

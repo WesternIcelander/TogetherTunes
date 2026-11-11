@@ -495,6 +495,32 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertNoLeftovers();
     }
 
+    /**
+     * When the startup self-check found that this ffmpeg's video encodes don't match the reference
+     * (ReferenceCard#spliceProblem), video jobs fail up front with a clear error and keep the
+     * upload; audio items (cards only, which match by construction) still work.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void unspliceableVideoEncodesAreRefusedUpFront() throws Exception {
+        ReferenceCard bad = ReferenceCard.forTest(reference.encoding(), reference.card(), reference.avcC(),
+                "a BT.709-tagged video is encoded with a different SPS than the 720p30-3000k-v3 reference card:"
+                        + " colour_primaries 1 (BT.709) instead of 2 (unspecified)");
+        IngestQueue q = queue(tools, bad, 1800);
+        String video = fixtures.item("pending");
+        stageVideo(video);
+        assertEquals(State.FAILED, run(q, Kind.UPLOAD, video).state());
+        assertEquals("This ffmpeg produces encodes that can't be spliced: a BT.709-tagged video is encoded with a"
+                + " different SPS than the 720p30-3000k-v3 reference card: colour_primaries 1 (BT.709) instead of 2"
+                + " (unspecified)", fixtures.itemStatus(video)[1]);
+        assertTrue(Files.exists(stage(video, "source.mp4")), "the upload stays for a retry");
+
+        String audio = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=r=48000", "-t", "1", stage(audio, "source.wav").toString());
+        assertEquals(State.DONE, run(q, Kind.UPLOAD, audio).state());
+        assertNoLeftovers();
+    }
+
     @Test
     @Execution(ExecutionMode.CONCURRENT)
     void withoutAReferenceCardJobsFail() throws Exception {

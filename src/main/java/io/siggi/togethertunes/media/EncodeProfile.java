@@ -34,6 +34,13 @@ import java.util.List;
  * VUI, so without this a BT.709-tagged video (any YouTube download), a full-range or BT.601 source
  * or Motion JPEG (centre-sited chroma) would each get a different avcC. The scale filter converts
  * the pixels to match ({@code out_color_matrix=bt709:out_range=tv}). HDR sources are not tone-mapped.
+ * The output options alone are not enough on every ffmpeg: since 7.x the frames' own colour
+ * properties win over {@code -color_primaries}/{@code -color_trc}, so an untagged card image got
+ * "unspecified" primaries/transfer while a BT.709-tagged video got BT.709. So the description is
+ * pinned three times: the frames' properties at the end of the filter chain ({@link #COLOUR_FILTER}),
+ * x264's own VUI options in {@code -x264-params} ({@link #X264_COLOUR}, which win over whatever
+ * ffmpeg passes on), and the output options. Every ffmpeg tested (5.1 to master) then writes the
+ * same VUI for every source; {@code ReferenceCard} checks this at startup.
  * See {@code docs/library-and-ingest.md#the-mezzanine-profile}.
  */
 public final class EncodeProfile {
@@ -75,6 +82,22 @@ public final class EncodeProfile {
 
     private EncodeProfile() {
     }
+
+    /**
+     * The filter that ends every chain feeding x264 ({@link #scaleFilter(OutputProfile)}, and the
+     * overlay re-encode's chain): sets the frames' colour properties to limited-range BT.709
+     * (metadata only; the scale filter has converted the pixels already). Without it, newer ffmpeg
+     * versions hand the source's tags (or "unspecified") to x264.
+     */
+    public static final String COLOUR_FILTER =
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709";
+
+    /**
+     * x264's own colour description options, part of {@code -x264-params}: BT.709 primaries,
+     * transfer and matrix, limited range, left-sited chroma ({@code chromaloc=0}). x264 applies
+     * them after ffmpeg's, so they win on every ffmpeg version.
+     */
+    static final String X264_COLOUR = "colorprim=bt709:transfer=bt709:colormatrix=bt709:range=tv:chromaloc=0";
 
     /** Reference frames, pinned for every preset (they change the SPS); fits level 4.1's DPB at 1080p. */
     public static final int REF_FRAMES = 4;
@@ -138,7 +161,7 @@ public final class EncodeProfile {
                 "-sc_threshold", "0",
                 "-force_key_frames", keyframes,
                 "-x264-params", "open-gop=0:ref=" + REF_FRAMES
-                        + ":chroma-qp-offset=" + preset.chromaQpOffset(),
+                        + ":chroma-qp-offset=" + preset.chromaQpOffset() + ":" + X264_COLOUR,
                 "-b:v", rate,
                 "-maxrate", rate,
                 "-bufsize", bufsize);
@@ -152,7 +175,8 @@ public final class EncodeProfile {
     /**
      * The {@code -vf} chain that brings any source video or card image to {@code profile}: scale to fit, pad to
      * the exact size with black (centred), square pixels, constant frame rate, pixels converted to
-     * limited-range BT.709 (matching the colour description in the video args). The scaled
+     * limited-range BT.709 and tagged as such ({@link #COLOUR_FILTER}, matching the colour
+     * description in the video args). The scaled
      * picture keeps even dimensions so the 4:2:0 padding stays centred on whole chroma samples.
      */
     public static String scaleFilter(OutputProfile profile) {
@@ -162,6 +186,7 @@ public final class EncodeProfile {
                 + ":out_color_matrix=bt709:out_range=tv,"
                 + "pad=" + w + ":" + h + ":(ow-iw)/2:(oh-ih)/2,"
                 + "setsar=1,"
-                + "fps=" + profile.fps();
+                + "fps=" + profile.fps() + ","
+                + COLOUR_FILTER;
     }
 }

@@ -293,6 +293,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.IngestItems$Item", "item columns an ingest job reads, server-side only"),
             Map.entry("io.siggi.togethertunes.media.SkipFrames$Sps", "SPS fields the skip-frame writer needs; never serialised"),
             Map.entry("io.siggi.togethertunes.media.SkipFrames$Pps", "PPS fields the skip-frame writer needs; never serialised"),
+            Map.entry("io.siggi.togethertunes.ingest.ReferenceCard$TestClip", "a lavfi test clip of the startup video path check; server-side only"),
             Map.entry("io.siggi.togethertunes.media.StillGopMp4$AvcConfig", "SPS/PPS of a card's avcC; server-side only"),
             Map.entry("io.siggi.togethertunes.media.StillGopMp4$Box", "MP4 box position while writing a card; server-side only"),
             Map.entry("io.siggi.togethertunes.media.StillGopMp4$OneFrame", "a one-frame card MP4's avcC and sample; server-side only"),
