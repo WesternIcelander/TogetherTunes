@@ -846,6 +846,7 @@ Web client:
 A first release isn't planned yet. These steps wait on upstream releases; if the release isn't out yet, leave the step unchecked with a note and return ok=false.
 
 - [ ] The M6 *(manual)* real-provider login check (OIDC + plain OAuth) is `[x]`. If it is still `[?]`, leave this unchecked with a note and return ok=false.
+  - **Not done (2026-11-11):** the M6 step "Login works with at least one real OIDC provider and one plain-OAuth provider" is still `[?]` (agent part done at main `581dc74`; the hand-check instructions are under that step). Waiting for Siggi to log in with a real OIDC provider and a real plain-OAuth provider and flip it to `[x]`. No build or tests run (nothing changed).
 - [ ] Switch from `io.siggi:SimpleWebsocket:1.1-SNAPSHOT` to the released 1.1 (snapshots only resolve on this machine, so CI and the Docker image need releases).
 - [ ] Switch from `io.siggi:SiggiHTTP:1.11-SNAPSHOT` to the released 1.11 (also check whether trusted proxy ranges must now be listed explicitly).
 
