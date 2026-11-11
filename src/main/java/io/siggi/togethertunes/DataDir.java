@@ -14,7 +14,7 @@ import java.util.List;
  * &lt;data&gt;/
  *   db/      SQLite file (when using SQLite)
  *   media/   one directory per item
- *   cards/   server-wide filler cards
+ *   cards/   server-wide filler cards (custom/: the custom card images)
  *   rooms/   one directory per room
  *   tmp/     in-progress uploads and ingest scratch
  *   fonts/   downloaded and uploaded card fonts (made by the font library when it starts)
@@ -71,6 +71,14 @@ public record DataDir(Path root, Path db, Path media, Path cards, Path rooms, Pa
     /** {@code <data>/fonts}: downloaded script fonts and their licences, uploads in {@code uploads/}. */
     public Path fonts() {
         return root.resolve("fonts");
+    }
+
+    /**
+     * {@code <data>/cards/custom}: the server-wide custom card images as uploaded
+     * ({@code docs/media-types.md#custom-card-images}; made on the first upload).
+     */
+    public Path customCards() {
+        return cards.resolve("custom");
     }
 
     /** {@link #root} followed by the subdirectories. */

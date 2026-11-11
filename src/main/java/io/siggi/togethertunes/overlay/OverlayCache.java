@@ -519,10 +519,17 @@ public final class OverlayCache {
         }
     }
 
-    /** Lock held. */
+    /**
+     * Lock held. A custom card without the overlay ({@link OverlayCards#customCard}, {@code -plain-}
+     * in the overlay hash's place) never depends on the overlay: never stale, only evicted by size.
+     */
     private boolean isStale(Entry e) {
         String hash = roomHashes.get(e.roomId);
-        return hash != null && !e.path.getFileName().toString().contains("-" + hash + "-");
+        String name = e.path.getFileName().toString();
+        if (name.startsWith(OverlayCards.CUSTOM_PREFIX) && name.contains("-" + OverlayCards.PLAIN + "-")) {
+            return false;
+        }
+        return hash != null && !name.contains("-" + hash + "-");
     }
 
     // ------------------------------------------------------------------ files

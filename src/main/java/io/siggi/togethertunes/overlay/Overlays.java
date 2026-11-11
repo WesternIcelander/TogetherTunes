@@ -143,10 +143,20 @@ public final class Overlays {
      * overlay in both {@code always} and {@code idleOnly}).
      */
     public BufferedImage preview(String slug, String roomName, RoomSettings settings) throws IOException {
+        return preview(slug, roomName, settings, null);
+    }
+
+    /**
+     * {@link #preview(String, String, RoomSettings)} on the room's custom queue-empty image
+     * ({@code idle}, null: the built-in card), fitted as the stream shows it ({@link CustomCards#render}).
+     */
+    public BufferedImage preview(String slug, String roomName, RoomSettings settings, CustomCards.Image idle)
+            throws IOException {
         OverlayRenderer.Spec spec = spec(slug, settings);
         OverlayRenderer.Rendered rendered = renderer.render(spec);
-        CardRenderer cards = new CardRenderer(profile.get());
-        BufferedImage card = cards.renderMessage(CardRenderer.Filler.QUEUE_EMPTY, roomName);
+        OutputProfile p = profile.get();
+        BufferedImage card = idle != null ? CustomCards.render(idle, p.width(), p.height())
+                : new CardRenderer(p).renderMessage(CardRenderer.Filler.QUEUE_EMPTY, roomName);
         return OverlayCards.composite(card, rendered);
     }
 

@@ -22,6 +22,7 @@ export interface AuditFilter { action: string; actor: string }
 /** Actions the server writes, offered as suggestions for the action filter (any text is accepted). */
 export const AUDIT_ACTIONS: readonly string[] = [
   "account.register", "account.setup",
+  "admin.card_removed", "admin.card_uploaded",
   "admin.font_download", "admin.font_removed", "admin.font_uploaded",
   "admin.provider_created", "admin.provider_deleted", "admin.provider_updated",
   "admin.role_created", "admin.role_deleted", "admin.role_permissions_set", "admin.role_updated",
@@ -35,7 +36,7 @@ export const AUDIT_ACTIONS: readonly string[] = [
   "item.deleted", "item.ingest_retried", "item.media_undone", "item.pinned", "item.purged", "item.trimmed", "item.unpinned",
   "item.updated",
   "job.cancelled", "job.retried",
-  "room.created", "room.deleted", "room.guest_banned", "room.guest_unbanned", "room.member_removed",
+  "room.card_removed", "room.card_uploaded", "room.created", "room.deleted", "room.guest_banned", "room.guest_unbanned", "room.member_removed",
   "room.member_role", "room.output_created", "room.output_deleted", "room.output_token_rotated",
   "room.output_updated", "room.owner_transferred", "room.updated",
 ];

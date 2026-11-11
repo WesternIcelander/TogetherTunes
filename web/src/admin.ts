@@ -8,6 +8,8 @@ import { AUDIT_ACTIONS, auditPath, detailsText, formatTime, type AuditEntry, typ
   type AuditPage } from "./audit.js";
 import { busy, CJK_VARIANTS, cardFontChoices, cardFontSetting, downloadAllText, formatSize, statusText,
   type FontsInfo } from "./fonts.js";
+import { serverCardsPath } from "./customcards.js";
+import { mountCustomCards } from "./customcardsui.js";
 import { mountJobs, type JobsView } from "./jobs.js";
 import { pageSignal } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
@@ -128,7 +130,7 @@ function formValue(form: HTMLFormElement, name: string): string {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["users", "roles", "providers", "settings", "fonts", "jobs", "audit"] as const;
+const TABS = ["users", "roles", "providers", "settings", "fonts", "cards", "jobs", "audit"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -160,6 +162,8 @@ async function showTab(): Promise<void> {
       await loadJobs();
     } else if (tab === "fonts") {
       await loadFonts();
+    } else if (tab === "cards") {
+      await mountCustomCards(element("cards-root"), serverCardsPath(), false);
     } else if (tab === "audit") {
       await loadAudit(true);
     } else {

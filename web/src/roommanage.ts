@@ -1,12 +1,15 @@
 // The room's management view (/rooms/{idOrSlug}/manage; docs/rooms.md).
 //
-// Three tabs: settings (name, link name, visibility, control mode and every room setting; options
+// Four tabs: settings (name, link name, visibility, control mode and every room setting; options
 // the server has turned off are greyed out with "disabled by the server admin"; only the owner
 // saves, moderators see them read-only; the owner or rooms.moderateAny may delete the room),
 // members (roles as the viewer may give them, ownership transfer for the owner, adding by
 // username) and guest bans (list, unban; a guest is banned from the room page's history, with the
-// IP-mode warning first). The request history is gone: the room page's history replaces it.
+// IP-mode warning first) and card images (the room's custom card images, customcardsui.ts). The
+// request history is gone: the room page's history replaces it.
 import { api, ApiError } from "./api.js";
+import { roomCardsPath } from "./customcards.js";
+import { mountCustomCards } from "./customcardsui.js";
 import type { GuestBan } from "./guestban.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import { navigate, pageSignal, reloadPage } from "./nav.js";
@@ -68,7 +71,7 @@ function setStatus(text: string): void {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["settings", "members", "bans"] as const;
+const TABS = ["settings", "members", "bans", "cards"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -89,6 +92,7 @@ async function showTab(): Promise<void> {
   loaded.add(tab);
   if (tab === "settings") renderSettings();
   else if (tab === "members") await loadMembers(true);
+  else if (tab === "cards") await mountCustomCards(element("cards-root"), roomCardsPath(room.id), true);
   else await loadBans(true);
 }
 

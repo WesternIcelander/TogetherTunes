@@ -48,6 +48,10 @@ import java.util.regex.Pattern;
  *       {@code filler-<id>-<overlayHash>-<encoding>-c<cardVersion>.mp4}, made when the room's
  *       overlay mode puts the overlay on them ({@link #overlaidFillers}: every one for {@code always},
  *       the idle card for {@code idleOnly}) and an output of the room needs them.</li>
+ *   <li><b>Custom cards</b> ({@code docs/media-types.md#custom-card-images}): a filler screen with a
+ *       custom image ({@link CustomCards#effective}: the room's, else the server's) gets
+ *       {@link #customCard}, the image fitted into the frame, with the overlay when the room's mode
+ *       puts it on that screen. Without an image the screen keeps the built-in card.</li>
  *   <li><b>Item cards</b> (audio items, video items played as audio), for an entry that is current
  *       or next and whose decision gives it the overlay ({@link OverlayDecisions}: mode
  *       {@code always}, never a movie or show): {@code item-<itemId>-v<mediaVersion>-<overlayHash>-<encoding>-c<cardVersion>.mp4},
@@ -68,6 +72,10 @@ public final class OverlayCards {
     private static final System.Logger LOG = System.getLogger(OverlayCards.class.getName());
     static final String CARDS_DIR = "cards";
     static final String KEY_SUFFIX = ".key";
+    /** File name prefix of the cards made from custom images. */
+    static final String CUSTOM_PREFIX = "custom-";
+    /** Stands in for the overlay hash in the name of a custom card without the overlay. */
+    static final String PLAIN = "plain";
     private static final Pattern SAFE = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]*");
 
     /** Makes a card file from an image (tests replace the encode). */
@@ -160,6 +168,33 @@ public final class OverlayCards {
             g.dispose();
         }
         return out;
+    }
+
+    /**
+     * The room's card for a filler from a custom image ({@code docs/media-types.md#custom-card-images}):
+     * the image fitted into the frame ({@link CustomCards#fit}), with the overlay drawn on it unless
+     * {@code overlay} is null, encoded first if needed. Named
+     * {@code custom-<id>-<imageHash>-<overlayHash>-<encoding>-c<cardVersion>.mp4}, or {@code -plain-}
+     * in the overlay's place for a card without it (the overlay cache never counts those as stale).
+     */
+    public ProgramMedia.CardFile customCard(String roomId, OverlayRenderer.Rendered overlay, CardRenderer.Filler filler,
+            CustomCards.Image image, ReferenceCard reference) throws IOException, InterruptedException {
+        Path file = cardsDir(roomId).resolve(CUSTOM_PREFIX + filler.id() + "-" + safe(image.hash(), "image hash") + "-"
+                + (overlay == null ? PLAIN : safe(overlay.hash(), "overlay hash")) + "-"
+                + safe(reference.encoding().id(), "encoding") + "-c" + CardEncoder.CARD_VERSION + ".mp4");
+        String known = verified.get(file);
+        if (known != null && Files.isRegularFile(file)) {
+            used(file, false);
+            return new ProgramMedia.CardFile(file, known);
+        }
+        var profile = reference.encoding().profile();
+        BufferedImage picture = CustomCards.render(image, profile.width(), profile.height());
+        if (overlay != null) {
+            picture = composite(picture, overlay);
+        }
+        String key = ensure(file, picture, reference);
+        verified.put(file, key);
+        return new ProgramMedia.CardFile(file, key);
     }
 
     /** The room's overlaid filler card, encoded first if needed. */
@@ -297,6 +332,14 @@ public final class OverlayCards {
 
         /** The item's card content, or null if there is no such item. */
         ItemInfo item(String itemId) throws SQLException, IOException;
+
+        /**
+         * The custom card images that replace the room's filler cards now
+         * ({@link CustomCards#effective}); none by default.
+         */
+        default Map<Filler, CustomCards.Image> customCards(String roomId) throws SQLException, IOException {
+            return Map.of();
+        }
     }
 
     /**
@@ -372,25 +415,33 @@ public final class OverlayCards {
             @Override
             public Map<Filler, ProgramMedia.CardFile> fillers() throws IOException, InterruptedException {
                 RoomInfo room;
+                boolean serverEnabled;
+                Map<Filler, CustomCards.Image> custom;
                 try {
-                    if (!lookups.serverEnabled()) {
+                    room = lookups.room(roomId);
+                    if (room == null) {
                         return null;
                     }
-                    room = lookups.room(roomId);
+                    serverEnabled = lookups.serverEnabled();
+                    custom = lookups.customCards(roomId);
                 } catch (SQLException e) {
                     throw new IOException("can't read the overlay settings of room " + roomId + ": " + e.getMessage(), e);
                 }
-                if (room == null) {
+                Set<Filler> overlaid = serverEnabled ? overlaidFillers(room.settings().overlayMode()) : Set.of();
+                if (overlaid.isEmpty() && custom.isEmpty()) {
                     return null;
                 }
-                Set<Filler> overlaid = overlaidFillers(room.settings().overlayMode());
-                if (overlaid.isEmpty()) {
-                    return null;
-                }
-                OverlayRenderer.Rendered overlay = overlays.current(roomId, room.slug(), room.settings());
+                OverlayRenderer.Rendered overlay = overlaid.isEmpty() ? null
+                        : overlays.current(roomId, room.slug(), room.settings());
                 Map<Filler, ProgramMedia.CardFile> cards = new EnumMap<>(Filler.class);
-                for (Filler f : overlaid) {
-                    cards.put(f, fillerCard(roomId, overlay, f.serverCard(), reference));
+                for (Filler f : Filler.values()) {
+                    CustomCards.Image image = custom.get(f);
+                    boolean qr = overlaid.contains(f);
+                    if (image != null) {
+                        cards.put(f, customCard(roomId, qr ? overlay : null, f.serverCard(), image, reference));
+                    } else if (qr) {
+                        cards.put(f, fillerCard(roomId, overlay, f.serverCard(), reference));
+                    }
                 }
                 return cards;
             }
@@ -438,6 +489,15 @@ public final class OverlayCards {
 
     /** {@link Lookups} from the database, the server settings and the media store. */
     public static Lookups lookupsFrom(Database db, DataDir dataDir, Settings settings, OverlayDecisions decisions) {
+        return lookupsFrom(db, dataDir, settings, decisions, null);
+    }
+
+    /**
+     * {@link #lookupsFrom(Database, DataDir, Settings, OverlayDecisions)} with the custom card images
+     * ({@code customCards}; null: none).
+     */
+    public static Lookups lookupsFrom(Database db, DataDir dataDir, Settings settings, OverlayDecisions decisions,
+            CustomCards customCards) {
         Objects.requireNonNull(db);
         Objects.requireNonNull(dataDir);
         Objects.requireNonNull(settings);
@@ -463,6 +523,11 @@ public final class OverlayCards {
             @Override
             public OverlayDecisions.Decision decide(String entryId) throws SQLException {
                 return decisions.decide(entryId);
+            }
+
+            @Override
+            public Map<Filler, CustomCards.Image> customCards(String roomId) throws SQLException, IOException {
+                return customCards == null ? Map.of() : customCards.effective(roomId);
             }
 
             @Override

@@ -25,7 +25,8 @@ import javax.imageio.ImageIO;
  *       always uses the saved link name. Values are validated like the room settings:
  *       {@code 400 invalid_setting}. Users only ({@code 401 not_authenticated}); the owner and
  *       moderators ({@code rooms.moderateAny} too), else {@code 403 forbidden}; {@code 404
- *       room_not_found}. It renders whatever the room's {@code overlay.mode} (nothing is stored), so
+ *       room_not_found}. The card is the room's custom queue-empty image when it has one
+ *       ({@code docs/media-types.md#custom-card-images}). It renders whatever the room's {@code overlay.mode} (nothing is stored), so
  *       the owner can place the overlay before turning it on; the queue-empty card it shows is the
  *       one card that carries the overlay in both {@code always} and {@code idleOnly}
  *       ({@code docs/media-types.md#qr-overlay-modes}). {@code no-store}.</li>
@@ -35,9 +36,17 @@ public final class OverlayPreviewApi {
     private final Rooms rooms;
     private final Overlays overlays;
 
+    private final CustomCards customCards;
+
     public OverlayPreviewApi(Rooms rooms, Overlays overlays) {
+        this(rooms, overlays, null);
+    }
+
+    /** @param customCards the custom card images (the preview shows the room's queue-empty image); null: none */
+    public OverlayPreviewApi(Rooms rooms, Overlays overlays, CustomCards customCards) {
         this.rooms = Objects.requireNonNull(rooms);
         this.overlays = Objects.requireNonNull(overlays);
+        this.customCards = customCards;
     }
 
     public void register(Router router) {
@@ -71,7 +80,9 @@ public final class OverlayPreviewApi {
         JsonObject change = new JsonObject();
         change.add("overlay", overlay);
         RoomSettings settings = access.room().settings().patch(change);
-        BufferedImage image = overlays.preview(access.room().slug(), access.room().name(), settings);
+        CustomCards.Image idle = customCards == null ? null
+                : customCards.effective(access.room().id()).get(io.siggi.togethertunes.output.FillerSource.Filler.IDLE);
+        BufferedImage image = overlays.preview(access.room().slug(), access.room().name(), settings, idle);
         ByteArrayOutputStream png = new ByteArrayOutputStream();
         if (!ImageIO.write(image, "png", png)) {
             throw new IllegalStateException("no PNG writer");

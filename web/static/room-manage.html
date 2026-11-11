@@ -21,6 +21,7 @@
       <a href="#settings" data-tab="settings">Settings</a>
       <a href="#members" data-tab="members">Members</a>
       <a href="#bans" data-tab="bans">Guest bans</a>
+      <a href="#cards" data-tab="cards">Card images</a>
     </nav>
 
     <section id="tab-settings" hidden>
@@ -61,6 +62,14 @@
         <button type="button" id="room-delete-button" class="danger">Delete room</button>
         <p id="room-delete-error" class="error" role="alert"></p>
       </div>
+    </section>
+
+    <section id="tab-cards" hidden>
+      <h2>Card images</h2>
+      <p class="muted small">The room's own images for the stream's paused, queue-empty, loading and gap screens.
+        They replace the server's; delete one to go back. The QR code is drawn on top as the room's overlay
+        setting says.</p>
+      <div id="cards-root"></div>
     </section>
 
     <section id="tab-members" hidden>

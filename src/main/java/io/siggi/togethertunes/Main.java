@@ -54,6 +54,8 @@ import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.overlay.OverlayVideoJobs;
+import io.siggi.togethertunes.overlay.CustomCards;
+import io.siggi.togethertunes.overlay.CustomCardsApi;
 import io.siggi.togethertunes.overlay.OverlayPreviewApi;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
@@ -332,8 +334,12 @@ public final class Main {
                 () -> outputAssets.encoding().profile());
         // Overlaid filler and item cards for the program outputs (docs/overlay.md#cards-cheap-path),
         // with the overlay decided once per queue entry (docs/overlay.md#permissions).
+        // Custom card images (docs/media-types.md#custom-card-images): the server's, and a room's own
+        // while its owner holds rooms.customCards; they replace the filler cards of the room's output.
+        CustomCards customCards = new CustomCards(dataDir.customCards(), dataDir.rooms(),
+                CustomCards.ownerHolds(database, permissions));
         OverlayCards.Lookups overlayLookups = OverlayCards.lookupsFrom(database, dataDir, settings,
-                new OverlayDecisions(database, settings, permissions));
+                new OverlayDecisions(database, settings, permissions), customCards);
         OverlayCards overlayCards = new OverlayCards(dataDir.rooms(), Tools.from(config));
         // Music-video overlay re-encodes run in their own pool (overlay.workers), never behind ingest;
         // its jobs live in memory only (docs/architecture.md#threading).
@@ -523,7 +529,10 @@ public final class Main {
         new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC())
                 .register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
-        new OverlayPreviewApi(rooms, overlays).register(appRouter);
+        new OverlayPreviewApi(rooms, overlays, customCards).register(appRouter);
+        // Custom card images: /api/admin/cards... (admin.settings) and /api/rooms/{room}/cards...
+        new CustomCardsApi(customCards, rooms, permissions, database, () -> outputAssets.encoding().profile(),
+                dataDir.tmp(), Clock.systemUTC()).register(appRouter);
         // Queue entries whose item isn't ready show what its ingest is doing (the rooms' ingest messages).
         roomSocket.ingestProgress(IngestProgress.from(jobList), 1000);
         // How many items a new output encoding would re-encode (the admin page asks before saving).

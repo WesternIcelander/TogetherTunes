@@ -68,6 +68,12 @@ class OverlayCardsTest {
         volatile OverlayDecisions.Decision decision = OverlayDecisions.Decision.CARDS;
         volatile OverlayCards.ItemInfo item = new OverlayCards.ItemInfo(1,
                 new CardRenderer.ItemCard("Song", "Artist", "Album", null));
+        volatile Map<Filler, CustomCards.Image> custom = Map.of();
+
+        @Override
+        public Map<Filler, CustomCards.Image> customCards(String roomId) {
+            return custom;
+        }
 
         @Override
         public boolean serverEnabled() {
@@ -223,6 +229,116 @@ class OverlayCardsTest {
         assertFalse(Files.exists(idle) || Files.exists(idle.resolveSibling(idle.getFileName() + ".key")));
         assertEquals(renamed, room.fillers(), "an evicted card is made again when asked for");
         assertTrue(Files.exists(idle));
+    }
+
+    /** Whether a frame's pixel is close to {@code rgb} (after the encode). */
+    private static boolean near(BufferedImage frame, int x, int y, int rgb) {
+        int p = frame.getRGB(x, y);
+        for (int shift = 0; shift <= 16; shift += 8) {
+            if (Math.abs(((p >> shift) & 0xFF) - ((rgb >> shift) & 0xFF)) > 24) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasQr(BufferedImage frame, OverlayRenderer.Rendered overlay) {
+        try {
+            return (BASE + "/r/chill").equals(qr(frame, overlay));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Test
+    @Timeout(180)
+    void customImagesReplaceTheFillersWithTheOverlayByMode() throws Exception {
+        Tools tools = tools();
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        ReferenceCard reference = ReferenceCard.ensure(tools, data.resolve("cards"), encoding, null);
+        Path roomsDir = data.resolve("rooms");
+        Overlays overlays = new Overlays(roomsDir, BASE, encoding::profile);
+        OverlayCards cards = new OverlayCards(roomsDir, tools);
+        OverlayCache cache = new OverlayCache(roomsDir, () -> Long.MAX_VALUE, Runnable::run);
+        cache.evictors(OverlayCache::deleteTree, cards::evict);
+        cards.cache(cache);
+        overlays.hashListener(cache::roomOverlay);
+        CustomCards custom = new CustomCards(data.resolve("cards/custom"), roomsDir, id -> true);
+        int red = 0xE02020;
+        int blue = 0x2020E0;
+        CustomCards.Image paused = custom.put(null, CustomCards.Screen.PAUSED, CustomCardsTest.write(data.resolve("up"),
+                "p.png", CustomCardsTest.solid(800, 600, new java.awt.Color(red)), "png"));
+        CustomCards.Image idle = custom.put(ROOM, CustomCards.Screen.IDLE, CustomCardsTest.write(data.resolve("up"),
+                "i.jpg", CustomCardsTest.solid(1920, 1080, new java.awt.Color(blue)), "jpeg"));
+        FakeLookups lookups = new FakeLookups();
+        lookups.custom = custom.effective(ROOM);
+        ProgramMedia.OverlayCards room = cards.forRoom(ROOM, reference, overlays, lookups);
+
+        // The server's overlay switch off: the two screens with an image get it, without the overlay.
+        lookups.server = false;
+        Map<Filler, ProgramMedia.CardFile> plain = room.fillers();
+        assertEquals(java.util.Set.of(Filler.PAUSED, Filler.IDLE), plain.keySet());
+        assertEquals(2, cards.encodes());
+        Path pausedFile = plain.get(Filler.PAUSED).file();
+        assertEquals("custom-paused-" + paused.hash() + "-plain-" + encoding.id() + "-c"
+                + io.siggi.togethertunes.ingest.CardEncoder.CARD_VERSION + ".mp4", pausedFile.getFileName().toString());
+        assertTrue(reference.matches(Mp4Boxes.readAvcC(pausedFile)), "invariant 1");
+        assertTrue(CardGop.load(tools, encoding, pausedFile, null).size() < 200_000, "a skip-frame card");
+        OverlayRenderer.Rendered overlay = overlays.current(ROOM, "chill", lookups.room.settings());
+        BufferedImage frame = firstFrame(tools, pausedFile, data);
+        assertTrue(near(frame, 640, 360, red), "the image");
+        assertTrue(near(frame, 20, 360, 0) && near(frame, 1260, 360, 0), "4:3 drawn with black bars");
+        assertTrue(near(frame, 200, 20, red), "scaled to the full height");
+        assertFalse(hasQr(frame, overlay));
+        BufferedImage idleFrame = firstFrame(tools, plain.get(Filler.IDLE).file(), data);
+        assertTrue(near(idleFrame, 10, 10, blue) && near(idleFrame, 1270, 710, blue), "16:9 fills the frame");
+        assertFalse(hasQr(idleFrame, overlay));
+
+        // Switched on, mode idleOnly: the idle image gets the QR code; the paused card is reused.
+        lookups.server = true;
+        lookups.room = new OverlayCards.RoomInfo("chill", RoomSettings.DEFAULTS.patch(com.google.gson.JsonParser
+                .parseString("{\"overlay\":{\"mode\":\"idleOnly\",\"corner\":\"br\",\"heightPct\":22,"
+                        + "\"margin\":3}}").getAsJsonObject()));
+        overlay = overlays.current(ROOM, "chill", lookups.room.settings());
+        Map<Filler, ProgramMedia.CardFile> idleOnly = room.fillers();
+        assertEquals(java.util.Set.of(Filler.PAUSED, Filler.IDLE), idleOnly.keySet());
+        assertEquals(plain.get(Filler.PAUSED), idleOnly.get(Filler.PAUSED));
+        assertEquals(3, cards.encodes());
+        Path idleQr = idleOnly.get(Filler.IDLE).file();
+        assertEquals("custom-idle-" + idle.hash() + "-" + overlay.hash() + "-" + encoding.id() + "-c"
+                + io.siggi.togethertunes.ingest.CardEncoder.CARD_VERSION + ".mp4", idleQr.getFileName().toString());
+        BufferedImage withQr = firstFrame(tools, idleQr, data);
+        assertTrue(hasQr(withQr, overlay));
+        assertTrue(near(withQr, 100, 100, blue));
+
+        // always: every screen has the QR code; those without an image are the built-in overlaid cards.
+        lookups.room = new OverlayCards.RoomInfo("chill", OverlayRendererTest.settings("br", 22, 3));
+        Map<Filler, ProgramMedia.CardFile> always = room.fillers();
+        assertEquals(Filler.values().length, always.size());
+        assertEquals(idleOnly.get(Filler.IDLE), always.get(Filler.IDLE));
+        assertTrue(always.get(Filler.PAUSED).file().getFileName().toString().startsWith("custom-paused-"
+                + paused.hash() + "-" + overlay.hash() + "-"));
+        assertTrue(always.get(Filler.LOADING).file().getFileName().toString().startsWith("filler-loading-"));
+        BufferedImage pausedQr = firstFrame(tools, always.get(Filler.PAUSED).file(), data);
+        assertTrue(hasQr(pausedQr, overlay));
+        assertTrue(near(pausedQr, 640, 360, red));
+
+        // A new image: a new card; the plain cards are never stale in the overlay cache.
+        CustomCards.Image paused2 = custom.put(null, CustomCards.Screen.PAUSED, CustomCardsTest.write(
+                data.resolve("up"), "p2.png", CustomCardsTest.solid(1280, 720, java.awt.Color.GREEN), "png"));
+        lookups.custom = custom.effective(ROOM);
+        Path replaced = room.fillers().get(Filler.PAUSED).file();
+        assertTrue(replaced.getFileName().toString().startsWith("custom-paused-" + paused2.hash() + "-"));
+        assertTrue(Files.exists(pausedFile), "plain: kept until evicted by size");
+        cache.roomOverlay(ROOM, "0000000000000000");
+        cache.trim();
+        assertTrue(Files.exists(pausedFile), "a plain custom card doesn't depend on the overlay");
+        assertFalse(Files.exists(idleQr), "an overlaid one does");
+
+        // No images and the overlay off: nothing, as before.
+        lookups.custom = Map.of();
+        lookups.room = new OverlayCards.RoomInfo("chill", RoomSettings.DEFAULTS);
+        assertNull(room.fillers());
     }
 
     @Test

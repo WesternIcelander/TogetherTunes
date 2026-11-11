@@ -143,6 +143,10 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Library$ItemView",
             "io.siggi.togethertunes.library.Library$Page",
             "io.siggi.togethertunes.library.MediaType$Show",
+            "io.siggi.togethertunes.library.Episodes$Season",
+            "io.siggi.togethertunes.library.Episodes$Show",
+            "io.siggi.togethertunes.library.LibraryApi$Shows",
+            "io.siggi.togethertunes.overlay.CustomCards$Warning",
             "io.siggi.togethertunes.library.Playlists$Entry",
             "io.siggi.togethertunes.library.Playlists$Page",
             "io.siggi.togethertunes.library.Playlists$Playlist",
@@ -171,6 +175,9 @@ class DtoIpLeakTest {
 
     /** Records that never reach a client, and why. */
     private static final Map<String, String> INTERNAL = Map.ofEntries(
+            Map.entry("io.siggi.togethertunes.library.Episodes$Place", "a (season, episode) sort key"),
+            Map.entry("io.siggi.togethertunes.overlay.CustomCards$Image", "a stored custom card image with its"
+                    + " file path; the API sends only its size, format, upload time and an image URL"),
             Map.entry("io.siggi.togethertunes.library.Classify$Classification", "a media type parsed from a"
                     + " request body; written to the item, never sent"),
             Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Kept", "what the database says about an"
@@ -721,6 +728,15 @@ class DtoIpLeakTest {
                 new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
         produced.add(new Items.StillImageView(1_700_000_000_000L)); // the item page's still-image warning
         produced.add(new Items.PinView(1_700_000_000_000L)); // the item page's pin (not who pinned it)
+        // GET /api/library/shows: the library's entries grouped by show and season
+        var showsCtor = Class.forName("io.siggi.togethertunes.library.LibraryApi$Shows").getDeclaredConstructors()[0];
+        showsCtor.setAccessible(true);
+        produced.add(showsCtor.newInstance(List.of(new io.siggi.togethertunes.library.Episodes.Show<>("Some Show",
+                List.of(new io.siggi.togethertunes.library.Episodes.Season<>(1,
+                        library.list(aliceId, null, null, null, Library.LIST_MAX).items()))))));
+        // the custom card images' spec warnings
+        produced.add(io.siggi.togethertunes.overlay.CustomCards.warnings(800, 600,
+                io.siggi.togethertunes.config.OutputProfile.P720_30));
         produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
         for (Library.Entry e : library.list(aliceId, null, null, null, Library.LIST_MAX).items()) {
             Actor.User alice = new Actor.User(aliceId, "s", Actor.Via.BEARER);
@@ -918,7 +934,7 @@ class DtoIpLeakTest {
                 "/api/admin/providers", "/api/admin/providers/" + f.providerId(), "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
-                "/api/library?q=video&kind=video", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
+                "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",

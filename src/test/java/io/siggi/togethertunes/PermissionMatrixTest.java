@@ -249,6 +249,7 @@ class PermissionMatrixTest {
 
             // The caller's own library: users only (guests have no library).
             row("GET /api/library", c -> Call.get("/api/library?q=song&kind=audio"), 401, 401, 200, 200),
+            row("GET /api/library/shows", c -> Call.get("/api/library/shows"), 401, 401, 200, 200),
             row("PUT /api/library/{itemId}", c -> Call.put("/api/library/" + c.itemId(), null), 401, 401, 201, 201),
             row("DELETE /api/library/{itemId}", c -> Call.delete("/api/library/" + c.libraryItemId()),
                     401, 401, 204, 204),
