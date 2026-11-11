@@ -125,6 +125,18 @@ public final class RoomsApi {
         this.editListener = Objects.requireNonNull(listener);
     }
 
+    private volatile java.util.function.Consumer<String> deleteListener = roomId -> {
+    };
+
+    /**
+     * Told (with the room's id) after a room was deleted through {@code DELETE /api/rooms/{room}},
+     * after its program outputs were closed, e.g. to delete its overlay files. Runs on the request's
+     * thread before the response; hand slow work off.
+     */
+    public void deleteListener(java.util.function.Consumer<String> listener) {
+        this.deleteListener = Objects.requireNonNull(listener);
+    }
+
     public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
                     RequestSearch search, RoomHistory history) {
         this.rooms = Objects.requireNonNull(rooms);
@@ -348,11 +360,17 @@ public final class RoomsApi {
     private void delete(Request request, Response response) throws Exception {
         Actor.User user = user(request);
         String id = roomId(request);
-        registry.call(id, tx -> {
-            rooms.delete(user, id, request.clientIp());
+        String deleted = registry.call(id, tx -> {
+            String roomId = rooms.delete(user, id, request.clientIp());
             tx.closeRoom();
-            return null;
+            return roomId;
         });
+        try {
+            deleteListener.accept(deleted);
+        } catch (RuntimeException e) {
+            System.getLogger(RoomsApi.class.getName()).log(System.Logger.Level.WARNING,
+                    "After deleting room " + deleted + ": " + e, e);
+        }
         response.empty(204);
     }
 

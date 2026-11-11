@@ -87,6 +87,7 @@ public final class OverlayCards {
     /** Card files known to be current, with their fingerprints (filler cards only: their names say it all). */
     private final Map<Path, String> verified = new ConcurrentHashMap<>();
     private final Map<Path, Object> locks = new ConcurrentHashMap<>();
+    private volatile OverlayCache cache;
     private int encodes;
 
     /**
@@ -100,9 +101,28 @@ public final class OverlayCards {
     }
 
     OverlayCards(Path roomsDir, Encoder encoder, AvcCReader avcC) {
-        this.roomsDir = Objects.requireNonNull(roomsDir, "roomsDir");
+        this.roomsDir = Objects.requireNonNull(roomsDir, "roomsDir").toAbsolutePath().normalize();
         this.encoder = Objects.requireNonNull(encoder, "encoder");
         this.avcC = Objects.requireNonNull(avcC, "avcC");
+    }
+
+    /** Counts made and used cards in the overlay cache (null: none). */
+    public void cache(OverlayCache cache) {
+        this.cache = cache;
+    }
+
+    /**
+     * Deletes a card and its fingerprint (the overlay cache evicting it, or a purge), waiting for an
+     * encode of it that is running. Always succeeds: the outputs hold loaded cards in memory, and a
+     * card asked for again is simply made again.
+     */
+    public boolean evict(Path card) throws IOException {
+        Path file = card.toAbsolutePath().normalize();
+        synchronized (locks.computeIfAbsent(file, f -> new Object())) {
+            verified.remove(file);
+            OverlayCache.deleteCardFiles(file);
+        }
+        return true;
     }
 
     /** {@code rooms/<roomId>/cards}. */
@@ -147,6 +167,7 @@ public final class OverlayCards {
                 + safe(reference.encoding().id(), "encoding") + "-c" + CardEncoder.CARD_VERSION + ".mp4");
         String known = verified.get(file);
         if (known != null && Files.isRegularFile(file)) {
+            used(file, false);
             return new ProgramMedia.CardFile(file, known);
         }
         BufferedImage image = composite(new CardRenderer(reference.encoding().profile()).renderFiller(filler), overlay);
@@ -174,32 +195,54 @@ public final class OverlayCards {
             throws IOException, InterruptedException {
         String key = FillerCards.fingerprint(image, reference);
         Path keyFile = file.resolveSibling(file.getFileName() + KEY_SUFFIX);
+        boolean made;
         synchronized (locks.computeIfAbsent(file, f -> new Object())) {
-            if (current(file, keyFile, key, reference)) {
-                return key;
+            made = !current(file, keyFile, key, reference);
+            if (made) {
+                encodeCard(file, keyFile, image, key, reference);
             }
-            Files.createDirectories(file.getParent());
-            Files.deleteIfExists(keyFile);
-            try {
-                encoder.encode(image, file, reference);
-            } catch (ToolException e) {
-                throw new IOException("can't encode " + file.getFileName() + ": " + e.getMessage(), e);
-            } catch (ReferenceCard.AvcCMismatchException e) {
-                throw new IOException(file.getFileName() + ": " + e.getMessage(), e);
-            }
-            Path tmp = Files.createTempFile(file.getParent(), "." + file.getFileName() + "-", KEY_SUFFIX);
-            try {
-                Files.writeString(tmp, key + "\n", StandardCharsets.UTF_8);
-                move(tmp, keyFile);
-            } finally {
-                Files.deleteIfExists(tmp);
-            }
-            synchronized (this) {
-                encodes++;
-            }
-            LOG.log(System.Logger.Level.DEBUG, "Encoded overlay card " + file);
-            return key;
         }
+        used(file, made);
+        return key;
+    }
+
+    /** The card was handed out: counted in the cache (made: new or changed files). */
+    private void used(Path file, boolean made) {
+        OverlayCache c = cache;
+        if (c == null) {
+            return;
+        }
+        if (made || !c.contains(file)) {
+            if (Files.isRegularFile(file)) {
+                c.added(file);
+            }
+        } else {
+            c.used(file);
+        }
+    }
+
+    private void encodeCard(Path file, Path keyFile, BufferedImage image, String key, ReferenceCard reference)
+            throws IOException, InterruptedException {
+        Files.createDirectories(file.getParent());
+        Files.deleteIfExists(keyFile);
+        try {
+            encoder.encode(image, file, reference);
+        } catch (ToolException e) {
+            throw new IOException("can't encode " + file.getFileName() + ": " + e.getMessage(), e);
+        } catch (ReferenceCard.AvcCMismatchException e) {
+            throw new IOException(file.getFileName() + ": " + e.getMessage(), e);
+        }
+        Path tmp = Files.createTempFile(file.getParent(), "." + file.getFileName() + "-", KEY_SUFFIX);
+        try {
+            Files.writeString(tmp, key + "\n", StandardCharsets.UTF_8);
+            move(tmp, keyFile);
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
+        synchronized (this) {
+            encodes++;
+        }
+        LOG.log(System.Logger.Level.DEBUG, "Encoded overlay card " + file);
     }
 
     private boolean current(Path card, Path keyFile, String key, ReferenceCard reference) {

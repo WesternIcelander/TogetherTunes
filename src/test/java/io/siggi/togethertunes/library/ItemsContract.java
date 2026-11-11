@@ -383,8 +383,11 @@ abstract class ItemsContract {
         Path itemDir = files(id);
         Path other = files(aliceItem("audio"));
         clock.advance(5000);
+        List<String> told = new java.util.ArrayList<>();
+        items.purgeListener(told::add);
         Items.Purged purged = items.purge(id, items.auditedBy(bob.userId(), "2001:db8::1"));
         assertEquals(new Items.Purged("ready", 0), purged);
+        assertEquals(List.of(id), told, "the purge listener (the overlay cache) is told");
         assertFalse(Files.exists(itemDir), "every version and the original are gone");
         assertTrue(Files.exists(other.resolve("audio.m4a")), "other items are untouched");
         assertNoLeftovers();

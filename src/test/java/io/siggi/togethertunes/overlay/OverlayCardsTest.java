@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.overlay;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -131,6 +132,10 @@ class OverlayCardsTest {
         Path roomsDir = data.resolve("rooms");
         Overlays overlays = new Overlays(roomsDir, BASE, encoding::profile);
         OverlayCards cards = new OverlayCards(roomsDir, tools);
+        OverlayCache cache = new OverlayCache(roomsDir, () -> Long.MAX_VALUE, Runnable::run);
+        cache.evictors(OverlayCache::deleteTree, cards::evict);
+        cards.cache(cache);
+        overlays.hashListener(cache::roomOverlay);
         FakeLookups lookups = new FakeLookups();
         ProgramMedia.OverlayCards room = cards.forRoom(ROOM, reference, overlays, lookups);
 
@@ -190,6 +195,21 @@ class OverlayCardsTest {
         assertNotEquals(overlay.hash(), overlay2.hash());
         assertTrue(renamed.get(Filler.IDLE).file().getFileName().toString().contains(overlay2.hash()));
         assertEquals(BASE + "/r/renamed", qr(firstFrame(tools, renamed.get(Filler.IDLE).file(), data), overlay2));
+
+        // the overlay cache counts the cards, and the old overlayHash's went when the hash changed
+        for (ProgramMedia.CardFile f : renamed.values()) {
+            assertTrue(cache.contains(f.file()), f.file().toString());
+        }
+        for (ProgramMedia.CardFile f : fillers.values()) {
+            assertFalse(Files.exists(f.file()), "stale: " + f.file());
+            assertFalse(cache.contains(f.file()));
+        }
+        assertFalse(Files.exists(item.file()));
+        Path idle = renamed.get(Filler.IDLE).file();
+        assertTrue(cards.evict(idle));
+        assertFalse(Files.exists(idle) || Files.exists(idle.resolveSibling(idle.getFileName() + ".key")));
+        assertEquals(renamed, room.fillers(), "an evicted card is made again when asked for");
+        assertTrue(Files.exists(idle));
     }
 
     @Test

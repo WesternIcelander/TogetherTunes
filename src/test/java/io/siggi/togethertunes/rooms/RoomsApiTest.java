@@ -58,6 +58,7 @@ class RoomsApiTest {
     private String noCreate; // a user whose roles lack rooms.create
     private String root; // admin: ip.view, rooms.moderateAny
     private Settings settings;
+    private final java.util.List<String> deleted = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -72,9 +73,10 @@ class RoomsApiTest {
         registry = new RoomRegistry(db, clock, PackagerHook.NONE);
         Rooms rooms = new Rooms(db, permissions, clock);
         RoomGuests guests = new RoomGuests(db, settings, permissions, rooms, registry);
-        new RoomsApi(rooms, registry, permissions, guests, new RequestSearch(db, rooms, guests),
-                new RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock))
-                .register(router);
+        RoomsApi api = new RoomsApi(rooms, registry, permissions, guests, new RequestSearch(db, rooms, guests),
+                new RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
+        api.deleteListener(deleted::add);
+        api.register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         String rootId = accounts.createLocal("root", null, "root-password", false, null, "account.register").id(); // admin
@@ -177,8 +179,10 @@ class RoomsApiTest {
         expectError(404, "member_not_found", call(bob, "DELETE", "/api/rooms/film/members/" + aliceId, null));
         expectError(409, "owner_cannot_leave", call(bob, "DELETE", "/api/rooms/film/members/" + bobId, null));
 
-        assertEquals(204, call(bob, "DELETE", "/api/rooms/" + id, null).statusCode());
+        assertEquals(java.util.List.of(), deleted);
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/film", null).statusCode());
         expectError(404, "room_not_found", call(bob, "GET", "/api/rooms/" + id, null));
+        assertEquals(java.util.List.of(id), deleted, "the delete listener gets the room id (the overlay files go)");
     }
 
     @Test

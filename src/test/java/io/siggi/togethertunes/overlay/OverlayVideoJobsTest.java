@@ -91,6 +91,36 @@ class OverlayVideoJobsTest {
             gops.markComplete(g);
         }
 
+        /** Writes {@code gops.idx} for the frames written so far, as the real encoder does. */
+        void writeIndex() throws IOException {
+            java.io.ByteArrayOutputStream b = new java.io.ByteArrayOutputStream();
+            java.io.DataOutputStream out = new java.io.DataOutputStream(b);
+            out.writeInt(OverlayGops.MAGIC);
+            out.writeInt(OverlayGops.VERSION);
+            out.writeInt(gops.frameCount());
+            for (int g = 0; g < gops.gopCount(); g++) {
+                if (!gops.isComplete(g)) {
+                    continue;
+                }
+                for (int f = gops.gopStart(g); f < gops.gopEnd(g); f++) {
+                    out.writeInt(f);
+                    out.writeLong(gops.offset(f));
+                    out.writeInt(gops.size(f));
+                    out.writeByte(VIDEO.isKeyframe(f) ? OverlayGops.FLAG_IDR : 0);
+                }
+            }
+            Files.write(gops.indexFile(), b.toByteArray());
+        }
+
+        /** Every GOP from {@code g0} on, the index, and the end. */
+        void completeAll() throws IOException {
+            for (int g = request.g0(); g < gops.gopCount(); g++) {
+                completeGop(g);
+            }
+            writeIndex();
+            finish();
+        }
+
         void finish() {
             outcome.complete(null);
         }
@@ -349,6 +379,127 @@ class OverlayVideoJobsTest {
         s.next(E3, itemDir("item1"), INDEX);
         Thread.sleep(50);
         assertEquals(2, jobs.submitted(), "a mismatch isn't tried again");
+        assertTrue(encoder.runs.isEmpty());
+    }
+
+    OverlayCache cache(long maxBytes) {
+        return new OverlayCache(tmp.resolve("rooms"), () -> maxBytes, Runnable::run, now::get);
+    }
+
+    @Test
+    void finishedEncodesAreCachedAndEvictedOnlyWhenNothingUsesThem() throws Exception {
+        OverlayVideoJobs jobs = jobs(1, true);
+        OverlayCache cache = cache(0);
+        cache.evictors(jobs::evict, OverlayCache::deleteCardFiles);
+        jobs.cache(cache);
+        OverlayVideoJobs.Session s = session(jobs);
+        s.next(E1, itemDir("item1"), INDEX);
+        Run run = encoder.next();
+        Path dir = run.gops.dir();
+        assertFalse(jobs.evict(dir), "running");
+        run.completeAll();
+        eventually(() -> pool.running() == 0);
+        assertTrue(Files.isRegularFile(dir.resolve(OverlayCache.DONE_FILE)), "marked finished");
+        assertTrue(cache.contains(dir));
+        assertFalse(jobs.evict(dir), "the next entry's");
+        now.addAndGet(OverlayCache.GRACE_MS);
+        assertEquals(0, cache.trim(), "in use, even with a limit of 0");
+        assertTrue(Files.exists(dir));
+
+        VideoOverlay play = s.play(E1, itemDir("item1"), INDEX);
+        assertEquals(100, tag(play.gop(0)));
+        s.wanted(Set.of()); // nobody wants it: the trim that follows evicts it (limit 0, grace over)
+        assertTrue(Files.exists(dir), "just used: within the grace period");
+        now.addAndGet(OverlayCache.GRACE_MS);
+        assertEquals(1, cache.trim());
+        assertFalse(Files.exists(dir));
+        assertFalse(cache.contains(dir));
+        assertNull(play.gop(60), "evicted: the original plays");
+
+        // the song again: encoded again
+        s.next(E3, itemDir("item1"), INDEX);
+        encoder.next().finish();
+        assertEquals(2, jobs.submitted());
+    }
+
+    @Test
+    void aCancelledOrFailedEncodesDirectoryIsDeleted() throws Exception {
+        OverlayVideoJobs jobs = jobs(1, true);
+        OverlayVideoJobs.Session s = session(jobs);
+        s.next(E1, itemDir("item1"), INDEX);
+        Run run = encoder.next();
+        run.completeGop(0);
+        Path dir = run.gops.dir();
+        assertTrue(Files.exists(dir));
+        s.wanted(Set.of());
+        eventually(() -> pool.running() == 0);
+        eventually(() -> !Files.exists(dir));
+        assertFalse(Files.exists(dir.getParent()), "and the empty item directory");
+
+        s.next(E2, itemDir("item2"), INDEX);
+        Run failing = encoder.next();
+        failing.completeGop(0);
+        failing.fail(new IOException("ffmpeg crashed"));
+        eventually(() -> pool.running() == 0);
+        eventually(() -> !Files.exists(failing.gops.dir()));
+    }
+
+    @Test
+    void aFinishedEncodeIsReusedAfterARestart() throws Exception {
+        OverlayVideoJobs first = jobs(1, true);
+        session(first).next(E1, itemDir("item1"), INDEX);
+        Run run = encoder.next();
+        run.completeAll();
+        eventually(() -> pool.running() == 0);
+        Path dir = run.gops.dir();
+        // an encode the server was killed in the middle of
+        Path partial = dir.resolveSibling(dir.getFileName().toString().replace("-g0", "-g2"));
+        Files.createDirectories(partial);
+        Files.write(partial.resolve(OverlayGops.H264_FILE), new byte[100]);
+        pool.close();
+
+        OverlayCache cache = cache(Long.MAX_VALUE);
+        assertEquals(1, cache.start(Set.of("room1")));
+        assertFalse(Files.exists(partial));
+        assertTrue(cache.contains(dir));
+        OverlayVideoJobs restarted = jobs(1, true);
+        cache.evictors(restarted::evict, OverlayCache::deleteCardFiles);
+        restarted.cache(cache);
+        VideoOverlay play = session(restarted).play(E3, itemDir("item1"), INDEX);
+        assertEquals(100, tag(play.gop(0)), "read back from disk");
+        assertEquals(104, tag(play.gop(240)));
+        assertEquals(0, restarted.submitted());
+        assertFalse(restarted.evict(dir), "in use by the play");
+
+        // one that can't be read back (another media version's frame count) is deleted and redone
+        Files.write(dir.resolve(OverlayGops.INDEX_FILE), new byte[] {1, 2, 3});
+        OverlayVideoJobs again = jobs(1, true);
+        VideoOverlay play2 = session(again).play(E3, itemDir("item1"), INDEX);
+        assertNull(play2.gop(0));
+        Run redo = encoder.next();
+        assertEquals(dir, redo.gops.dir());
+        redo.finish();
+    }
+
+    @Test
+    void aPurgeOrRoomDeleteStopsTheJobs() throws Exception {
+        OverlayVideoJobs jobs = jobs(2, true);
+        OverlayVideoJobs.Session s = session(jobs);
+        s.next(E1, itemDir("item1"), INDEX);
+        Run r1 = encoder.next();
+        r1.completeGop(0);
+        jobs.stopItem("item1");
+        assertTrue(r1.interrupted, "stopped before stopItem returns");
+        VideoOverlay play = s.play(E1, itemDir("item1"), INDEX);
+        assertNull(play.gop(0), "the purged item's encode is forgotten");
+
+        s.next(E2, itemDir("item2"), INDEX);
+        Run r2 = encoder.next();
+        jobs.stopRoom("room1");
+        assertTrue(r2.interrupted);
+        s.next(new Entry("e9", "item9", true, false, 10_000), itemDir("item9"), INDEX);
+        Thread.sleep(50);
+        assertEquals(2, jobs.submitted(), "no new jobs for a deleted room");
         assertTrue(encoder.runs.isEmpty());
     }
 }

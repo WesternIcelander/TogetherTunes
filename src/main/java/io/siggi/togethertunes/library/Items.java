@@ -622,6 +622,18 @@ public final class Items {
         });
     }
 
+    private volatile java.util.function.Consumer<String> purgeListener = itemId -> {
+    };
+
+    /**
+     * Sets who is told (with the item id) after {@link #purge} deleted an item's files, on the
+     * purging thread: the overlay cache, which deletes the item's overlay re-encodes and cards.
+     */
+    public void purgeListener(java.util.function.Consumer<String> listener) {
+        this.purgeListener = listener == null ? id -> {
+        } : listener;
+    }
+
     /** Sets who is told (after the commit) when {@link #purge} marks an item {@code purged}: the rooms. */
     public void statusListener(ItemStatusListener listener) {
         this.statusListener = listener == null ? ItemStatusListener.NONE : listener;
@@ -713,7 +725,6 @@ public final class Items {
             }
             throw e;
         }
-        // TODO(M5): also delete the item's overlay caches.
         for (Path[] m : moved) {
             try {
                 IngestPipeline.deleteTree(m[0]);
@@ -722,6 +733,13 @@ public final class Items {
                 LOG.log(System.Logger.Level.WARNING, "Could not delete " + m[0] + " of purged item " + itemId
                         + ": " + e.getMessage());
             }
+        }
+        // The item's overlay re-encodes and cards (docs/overlay.md#scheduling-and-caching).
+        try {
+            purgeListener.accept(itemId);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not delete the overlay files of purged item " + itemId
+                    + ": " + e, e);
         }
         return purged;
     }

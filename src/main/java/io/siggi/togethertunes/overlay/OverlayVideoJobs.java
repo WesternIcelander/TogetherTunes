@@ -21,7 +21,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.DoubleConsumer;
 import java.util.function.LongSupplier;
 import java.util.regex.Pattern;
@@ -57,9 +60,11 @@ import javax.imageio.ImageIO;
  *
  * <p>Each job writes to its own directory,
  * {@code rooms/<roomId>/ov/<itemId>/<version>-<overlayHash>-<encoding>-g<g0>/} ({@value OverlayGops#H264_FILE},
- * {@value OverlayGops#INDEX_FILE} and the {@code overlay.png} it was made with). Finished encodes
- * are kept in memory (the last {@link #KEEP_DONE}) so a song that repeats reuses them; keeping them
- * on disk across restarts and evicting them is the overlay cache's job.
+ * {@value OverlayGops#INDEX_FILE} and the {@code overlay.png} it was made with), plus the
+ * {@value OverlayCache#DONE_FILE} marker once it finished. Finished encodes are kept in memory (the
+ * last {@link #KEEP_DONE}) and on disk ({@link OverlayCache}: least recently used evicted), so a
+ * song that repeats reuses them, also after a restart (read back when the entry is planned). A
+ * cancelled or failed encode's directory is deleted when the job ends.
  *
  * <p>Thread-safe. Nothing here blocks the caller: overlay lookups (decision, room, image) run on
  * the executor, encodes on the pool.
@@ -108,6 +113,9 @@ public final class OverlayVideoJobs {
         Plan resolve(ProgramCue.Entry entry) throws Exception;
     }
 
+    /** How long {@link #stopRoom}/{@link #stopItem} wait for cancelled jobs to end. */
+    static final long STOP_WAIT_MS = 10_000;
+
     private final Path roomsDir;
     private final OverlayPool pool;
     private final Encoder encoder;
@@ -124,7 +132,10 @@ public final class OverlayVideoJobs {
     private final Map<String, Long> failedAt = new HashMap<>();
     /** The sessions with wants. */
     private final Set<Session> sessions = new LinkedHashSet<>();
+    /** Rooms deleted in this run: no new jobs. */
+    private final Set<String> deletedRooms = new HashSet<>();
     private int submitted;
+    private volatile OverlayCache cache;
 
     /**
      * @param roomsDir {@code <data>/rooms}
@@ -140,7 +151,7 @@ public final class OverlayVideoJobs {
 
     OverlayVideoJobs(Path roomsDir, OverlayPool pool, Encoder encoder, Presets presets, Executor executor,
             LongSupplier nowMs) {
-        this.roomsDir = Objects.requireNonNull(roomsDir);
+        this.roomsDir = Objects.requireNonNull(roomsDir).toAbsolutePath().normalize();
         this.pool = Objects.requireNonNull(pool);
         this.encoder = Objects.requireNonNull(encoder);
         this.presets = Objects.requireNonNull(presets);
@@ -158,6 +169,11 @@ public final class OverlayVideoJobs {
     public Session session(String roomId, OutputEncoding encoding, byte[] avcC, Resolver resolver) {
         safe(roomId, "room id");
         return new Session(roomId, Objects.requireNonNull(encoding), avcC.clone(), Objects.requireNonNull(resolver));
+    }
+
+    /** Counts finished encodes in the overlay cache and marks their use (null: none). */
+    public void cache(OverlayCache cache) {
+        this.cache = cache;
     }
 
     /** Jobs submitted to the pool so far (tests). */
@@ -273,17 +289,23 @@ public final class OverlayVideoJobs {
          * the others give up their jobs. Doesn't block.
          */
         public void wanted(Set<String> entryIds) {
+            boolean released = false;
             synchronized (lock) {
                 for (Iterator<Want> it = wants.values().iterator(); it.hasNext(); ) {
                     Want w = it.next();
                     if (!entryIds.contains(w.entry.entryId())) {
                         it.remove();
+                        released |= w.encode != null;
                         release(w);
                     }
                 }
                 if (wants.isEmpty()) {
                     sessions.remove(this);
                 }
+            }
+            OverlayCache c = cache;
+            if (released && c != null) {
+                c.trimSoon(); // encodes nobody uses any more may now be evicted
             }
         }
 
@@ -364,9 +386,15 @@ public final class OverlayVideoJobs {
             if (use == null) {
                 return null;
             }
+            byte[][] frames;
             synchronized (use) {
-                return use.removed ? null : use.gops.gop(keyframe);
+                frames = use.removed ? null : use.gops.gop(keyframe);
             }
+            OverlayCache c = cache;
+            if (frames != null && c != null) {
+                c.used(use.gops.dir());
+            }
+            return frames;
         }
     }
 
@@ -382,7 +410,7 @@ public final class OverlayVideoJobs {
 
     /** Makes sure the want has a job (or knows why not). Lock held; never blocks. */
     private void ensure(Want w) {
-        if (w.released) {
+        if (w.released || deletedRooms.contains(w.session.roomId)) {
             return;
         }
         long now = nowMs.getAsLong();
@@ -528,13 +556,90 @@ public final class OverlayVideoJobs {
             }
             return;
         }
+        List<Encode> stored = baseKey == null ? List.of() : loadStored(w, baseKey);
+        List<Path> reused = new ArrayList<>();
         synchronized (lock) {
+            if (!stored.isEmpty() && !w.released && !deletedRooms.contains(w.session.roomId)) {
+                List<Encode> list = encodes.computeIfAbsent(baseKey, k -> new ArrayList<>());
+                for (Encode e : stored) {
+                    if (list.stream().noneMatch(o -> o.poolKey.equals(e.poolKey))) {
+                        e.finished = true;
+                        list.add(e);
+                        done.add(e);
+                        reused.add(e.gops.dir());
+                    }
+                }
+                trimDone();
+            }
             w.resolving = false;
             w.resolved = true;
             w.plan = plan;
             w.baseKey = baseKey;
             ensure(w);
         }
+        OverlayCache c = cache;
+        if (c != null) {
+            for (Path dir : reused) {
+                c.used(dir);
+            }
+        }
+    }
+
+    /**
+     * The finished encodes of {@code baseKey} on disk (an earlier run's, kept by the overlay cache)
+     * that aren't in memory. One that can't be read back completely is deleted.
+     */
+    private List<Encode> loadStored(Want w, String baseKey) {
+        String dirPrefix = baseKey.substring(baseKey.lastIndexOf('/') + 1) + "-g";
+        Path itemOv = roomsDir.resolve(w.session.roomId).resolve(OV_DIR).resolve(w.entry.itemId());
+        if (!Files.isDirectory(itemOv)) {
+            return List.of();
+        }
+        Set<String> known = new HashSet<>();
+        synchronized (lock) {
+            for (Encode e : encodes.getOrDefault(baseKey, List.of())) {
+                known.add(e.poolKey);
+            }
+        }
+        List<Encode> out = new ArrayList<>();
+        int gopCount = OverlayGops.gopStarts(w.video).length;
+        try (java.nio.file.DirectoryStream<Path> dirs = Files.newDirectoryStream(itemOv, dirPrefix + "*")) {
+            for (Path dir : dirs) {
+                String name = dir.getFileName().toString();
+                String poolKey = w.session.roomId + "/" + w.entry.itemId() + "/" + name;
+                int g0;
+                try {
+                    g0 = Integer.parseInt(name.substring(dirPrefix.length()));
+                } catch (NumberFormatException e) {
+                    continue;
+                }
+                if (known.contains(poolKey) || !Files.isRegularFile(dir.resolve(OverlayCache.DONE_FILE))
+                        || pool.job(poolKey).isPresent()) {
+                    continue;
+                }
+                try {
+                    if (g0 < 0 || g0 >= gopCount) {
+                        throw new IOException("starts at GOP " + g0 + " of " + gopCount);
+                    }
+                    OverlayGops gops = OverlayGops.load(dir.toAbsolutePath().normalize(), w.video);
+                    if (!gops.completeFrom(g0)) {
+                        throw new IOException("incomplete");
+                    }
+                    out.add(new Encode(baseKey, poolKey, g0, gops));
+                } catch (IOException e) {
+                    LOG.log(System.Logger.Level.WARNING, "Overlay re-encode " + dir + " can't be reused, deleting it: "
+                            + e.getMessage());
+                    try {
+                        evict(dir);
+                    } catch (IOException ignored) {
+                        // the cache deletes it later
+                    }
+                }
+            }
+        } catch (IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Can't list " + itemOv + ": " + e);
+        }
+        return out;
     }
 
     /** Runs on a pool worker. */
@@ -542,6 +647,7 @@ public final class OverlayVideoJobs {
             byte[] avcC, int g0) throws Exception {
         Path dir = e.gops.dir();
         Files.createDirectories(dir);
+        Files.deleteIfExists(dir.resolve(OverlayCache.DONE_FILE));
         Path png = dir.resolve(PNG);
         if (!ImageIO.write(plan.panel(), "png", png.toFile())) {
             throw new IOException("no PNG writer");
@@ -550,6 +656,14 @@ public final class OverlayVideoJobs {
         OverlayVideoEncoder.Request request = new OverlayVideoEncoder.Request(mezz, video, png, plan.x(), plan.y(),
                 encoding, preset, avcC, g0);
         encoder.encode(request, e.gops, job::progress);
+        if (!e.gops.completeFrom(g0)) {
+            return; // can't happen with the real encoder (it fails instead); kept in memory only
+        }
+        Files.write(dir.resolve(OverlayCache.DONE_FILE), new byte[0]);
+        OverlayCache c = cache;
+        if (c != null) {
+            c.added(dir);
+        }
     }
 
     /** A job ended (any thread). */
@@ -557,6 +671,11 @@ public final class OverlayVideoJobs {
         synchronized (lock) {
             OverlayPool.Job job = e.job;
             e.job = null;
+            if (e.removed) {
+                // stopped for a purge or room delete (whose clean-up deletes the files), or replaced
+                retryAll();
+                return;
+            }
             if (state == OverlayPool.State.DONE) {
                 e.finished = true;
                 failedAt.remove(e.baseKey);
@@ -574,9 +693,120 @@ public final class OverlayVideoJobs {
                     }
                 }
                 drop(e);
+                deletePartial(e);
             }
             retryAll();
         }
+    }
+
+    /**
+     * Deletes the directory of an encode that didn't finish (lock held), unless a new job for it
+     * was already set up.
+     */
+    private void deletePartial(Encode e) {
+        for (Encode other : encodes.getOrDefault(e.baseKey, List.of())) {
+            if (other.poolKey.equals(e.poolKey)) {
+                return;
+            }
+        }
+        try {
+            OverlayCache.deleteTree(e.gops.dir());
+            Files.deleteIfExists(e.gops.dir().getParent()); // the item's ov directory, if now empty
+        } catch (IOException ignored) {
+            // a non-empty item directory, or deleted at the next start
+        }
+    }
+
+    // ------------------------------------------------------------------ cache, purge, room delete
+
+    /**
+     * Deletes an encode's directory for the overlay cache, unless it is in use (running, or
+     * assigned to an entry that is current, next or playing).
+     *
+     * @return true if it is gone
+     */
+    public boolean evict(Path dir) throws IOException {
+        Path d = dir.toAbsolutePath().normalize();
+        synchronized (lock) {
+            Encode found = null;
+            for (List<Encode> list : encodes.values()) {
+                for (Encode e : list) {
+                    if (e.gops.dir().toAbsolutePath().normalize().equals(d)) {
+                        found = e;
+                    }
+                }
+            }
+            if (found != null) {
+                if (found.job != null || found.users > 0) {
+                    return false;
+                }
+                drop(found); // waits for a read in progress
+            } else if (d.startsWith(roomsDir) && d.getNameCount() == roomsDir.getNameCount() + 4) {
+                Path rel = roomsDir.relativize(d);
+                if (pool.job(rel.getName(0) + "/" + rel.getName(2) + "/" + rel.getName(3)).isPresent()) {
+                    return false;
+                }
+            }
+            OverlayCache.deleteTree(d);
+            return true;
+        }
+    }
+
+    /**
+     * The room was deleted: its jobs are cancelled (waiting up to {@link #STOP_WAIT_MS} for them to
+     * end), its encodes forgotten, and no new ones start. Blocks.
+     */
+    public void stopRoom(String roomId) {
+        stop(e -> e.poolKey.startsWith(roomId + "/"), w -> w.session.roomId.equals(roomId), roomId);
+    }
+
+    /** The item was purged: its jobs are cancelled (waiting for them to end) and encodes forgotten. Blocks. */
+    public void stopItem(String itemId) {
+        stop(e -> e.poolKey.split("/", 3)[1].equals(itemId), w -> w.entry.itemId().equals(itemId), null);
+    }
+
+    private void stop(java.util.function.Predicate<Encode> encodeMatches, java.util.function.Predicate<Want> wantMatches,
+            String deletedRoom) {
+        List<CompletableFuture<OverlayPool.State>> ends = new ArrayList<>();
+        synchronized (lock) {
+            if (deletedRoom != null) {
+                deletedRooms.add(deletedRoom);
+            }
+            for (Session s : sessions) {
+                for (Want w : s.wants.values()) {
+                    if (wantMatches.test(w)) {
+                        release(w); // its play reads nothing more, and it plans no new job
+                    }
+                }
+            }
+            for (List<Encode> list : new ArrayList<>(encodes.values())) {
+                for (Encode e : new ArrayList<>(list)) {
+                    if (!encodeMatches.test(e)) {
+                        continue;
+                    }
+                    if (e.job != null) {
+                        ends.add(e.job.end());
+                        pool.cancel(e.poolKey);
+                    }
+                    drop(e);
+                }
+            }
+        }
+        for (CompletableFuture<OverlayPool.State> end : ends) {
+            try {
+                end.get(STOP_WAIT_MS, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (TimeoutException | java.util.concurrent.ExecutionException e) {
+                LOG.log(System.Logger.Level.WARNING, "An overlay re-encode didn't stop in time: " + e);
+            }
+        }
+    }
+
+    /** Whether {@code s} is usable as a file name in the overlay directories. */
+    static boolean isSafeName(String s) {
+        return s != null && SAFE.matcher(s).matches() && !s.contains("..");
     }
 
     /** Forgets an encode (lock held); its users plan again. */

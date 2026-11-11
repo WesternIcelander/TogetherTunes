@@ -772,12 +772,13 @@ public final class Rooms {
      * {@code rooms.moderateAny}. Every item queued, suggested or playing in it gets
      * {@code last_referenced_at} = now (an unreference event).
      *
+     * @return the deleted room's id
      * @throws HttpError {@code 404 room_not_found} / {@code 403 banned_from_room}, {@code 403
      *                   forbidden}
      */
-    public void delete(Actor actor, String idOrSlug, String ip) throws SQLException {
+    public String delete(Actor actor, String idOrSlug, String ip) throws SQLException {
         boolean moderateAny = moderatesAny(actor);
-        db.write(c -> {
+        return db.write(c -> {
             Access a = access(c, actor, idOrSlug, true, moderateAny);
             if (a.role() != Role.OWNER && !moderateAny) {
                 throw HttpError.forbidden("Only the room's owner can delete it");
@@ -798,7 +799,7 @@ public final class Rooms {
             details.put("name", a.room().name());
             details.put("ownerId", a.room().ownerId());
             AuditLog.write(c, now, userId(actor), null, ip, AUDIT_DELETED, roomId, details);
-            return null;
+            return roomId;
         });
     }
 

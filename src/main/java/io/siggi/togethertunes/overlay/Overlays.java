@@ -45,6 +45,8 @@ public final class Overlays {
     private final Supplier<OutputProfile> profile;
     private final OverlayRenderer renderer = new OverlayRenderer();
     private final Map<String, OverlayRenderer.Rendered> cache = new ConcurrentHashMap<>();
+    private volatile java.util.function.BiConsumer<String, String> hashListener = (roomId, hash) -> {
+    };
 
     /**
      * @param roomsDir      {@code <data>/rooms}
@@ -55,6 +57,15 @@ public final class Overlays {
         this.roomsDir = Objects.requireNonNull(roomsDir);
         this.publicBaseUrl = Objects.requireNonNull(publicBaseUrl);
         this.profile = Objects.requireNonNull(profile);
+    }
+
+    /**
+     * Told {@code (roomId, overlayHash)} when a room's current overlay becomes known in this run or
+     * changes (the overlay cache then drops what was made with another one). Called on the thread
+     * that asked {@link #current}, outside any lock here.
+     */
+    public void hashListener(java.util.function.BiConsumer<String, String> listener) {
+        this.hashListener = Objects.requireNonNull(listener);
     }
 
     /** {@code rooms/<roomId>/overlay.png}. */
@@ -86,12 +97,13 @@ public final class Overlays {
         if (known != null && known.spec().equals(spec)) {
             return known;
         }
+        OverlayRenderer.Rendered stored;
         synchronized (this) {
             known = cache.get(roomId);
             if (known != null && known.spec().equals(spec)) {
                 return known;
             }
-            OverlayRenderer.Rendered stored = load(roomId, spec);
+            stored = load(roomId, spec);
             if (stored == null) {
                 stored = renderer.render(spec);
                 store(roomId, stored);
@@ -99,8 +111,15 @@ public final class Overlays {
                         + stored.hash() + ")");
             }
             cache.put(roomId, stored);
-            return stored;
         }
+        if (known == null || !known.hash().equals(stored.hash())) {
+            try {
+                hashListener.accept(roomId, stored.hash());
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Overlay of room " + roomId + ": " + e, e);
+            }
+        }
+        return stored;
     }
 
     /**

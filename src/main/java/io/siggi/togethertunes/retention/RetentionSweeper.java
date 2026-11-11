@@ -32,8 +32,8 @@ import java.util.concurrent.TimeUnit;
  * through {@link Items#purge}, whose check re-runs the same predicate for that item inside the
  * purge transaction, after the item row is locked ({@code FOR UPDATE} on PostgreSQL; SQLite
  * serialises writers). An item that gained a reference, or was touched, in between is left
- * alone. The purge deletes {@code media/<itemId>} (and later the item's overlay caches, which
- * {@code Items.purge} owns), marks the row {@code purged} with {@code purged_at}, and writes an
+ * alone. The purge deletes {@code media/<itemId>} (and the item's overlay caches, through
+ * {@code Items.purge}'s purge listener), marks the row {@code purged} with {@code purged_at}, and writes an
  * {@code item.purged} audit row without an actor ({@code reason: "retention"}).
  *
  * <p>Remaining race (both dialects, accepted): an add that read the item as {@code ready} just

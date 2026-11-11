@@ -105,4 +105,24 @@ class OverlaysTest {
         assertEquals(hash, overlays("https://a.example.com").current(ROOM, "chill", s).hash());
         assertThrows(IllegalArgumentException.class, () -> overlays("https://a.example.com").png("../x"));
     }
+
+    @Test
+    void theHashListenerHearsTheFirstAndEveryNewHash() throws Exception {
+        RoomSettings s = OverlayRendererTest.settings("br", 22, 3);
+        Overlays o = overlays("https://a.example.com");
+        java.util.List<String> heard = new java.util.ArrayList<>();
+        o.hashListener((room, hash) -> heard.add(room + "/" + hash));
+        String h0 = o.current(ROOM, "chill", s).hash();
+        o.current(ROOM, "chill", s);
+        assertEquals(java.util.List.of(ROOM + "/" + h0), heard, "once, not on reuse");
+        String h1 = o.current(ROOM, "chill-2", s).hash();
+        assertEquals(java.util.List.of(ROOM + "/" + h0, ROOM + "/" + h1), heard);
+
+        // after a restart, the stored overlay is told once too (the cache drops other hashes then)
+        Overlays restarted = overlays("https://a.example.com");
+        heard.clear();
+        restarted.hashListener((room, hash) -> heard.add(room + "/" + hash));
+        restarted.current(ROOM, "chill-2", s);
+        assertEquals(java.util.List.of(ROOM + "/" + h1), heard);
+    }
 }

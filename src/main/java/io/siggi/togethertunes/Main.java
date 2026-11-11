@@ -42,6 +42,7 @@ import io.siggi.togethertunes.fonts.TextRenderingCheck;
 import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.settings.CjkVariant;
+import io.siggi.togethertunes.overlay.OverlayCache;
 import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.OverlayPool;
@@ -315,6 +316,21 @@ public final class Main {
         // a busy pool means the item plays without the overlay (docs/overlay.md#scheduling-and-caching).
         OverlayVideoJobs overlayVideoJobs = new OverlayVideoJobs(dataDir.rooms(), overlayPool, Tools.from(config),
                 overlayPresets(settings, presets, System.err), r -> Thread.ofVirtual().start(r));
+        // The overlay cache (docs/overlay.md#scheduling-and-caching): re-encodes and room cards, least
+        // recently used evicted beyond overlay.cacheMaxBytes, stale ones (another overlayHash) dropped;
+        // partial encodes and orphaned room directories are discarded now.
+        OverlayCache overlayCache = new OverlayCache(dataDir.rooms(),
+                () -> setting(settings::overlayCacheMaxBytes, config.overlayCacheMaxBytes()),
+                r -> Thread.ofVirtual().start(r));
+        overlayCache.evictors(overlayVideoJobs::evict, overlayCards::evict);
+        overlayCards.cache(overlayCache);
+        overlayVideoJobs.cache(overlayCache);
+        overlays.hashListener(overlayCache::roomOverlay);
+        try {
+            overlayCache.start(roomIds(database));
+        } catch (IOException e) {
+            System.err.println("WARNING: could not scan the overlay cache: " + e.getMessage());
+        }
         ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings,
                 (roomId, reference) -> overlayCards.forRoom(roomId, reference, overlays, overlayLookups,
                         overlayVideoJobs));
@@ -348,6 +364,11 @@ public final class Main {
         Items items = new Items(database, dataDir, Clock.systemUTC());
         items.jobSteps(ingest::liveStep);
         items.mediaVersions(mediaVersions);
+        // A purge also deletes the item's overlay re-encodes (stopping running ones) and cards.
+        items.purgeListener(itemId -> {
+            overlayVideoJobs.stopItem(itemId);
+            overlayCache.itemPurged(itemId);
+        });
         items.trimJobs(ingest.jobs());
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
@@ -444,6 +465,12 @@ public final class Main {
         // A new slug or visibility changes the stream URLs at once (docs/program-output.md#stream-urls):
         // a room that becomes private gets fresh tokens; connections on URLs that stopped working end.
         // A room edit re-renders its overlay image at once (the cards follow on their next use).
+        // A deleted room's overlay files go (its re-encodes are stopped first).
+        roomsApi.deleteListener(roomId -> Thread.ofVirtual().start(() -> {
+            overlayVideoJobs.stopRoom(roomId);
+            overlays.forget(roomId);
+            overlayCache.roomDeleted(roomId);
+        }));
         roomsApi.editListener((before, after) -> {
             try {
                 overlays.roomEdited(after.id(), after.slug(), after.settings(), settings.overlayEnabled());
@@ -490,6 +517,8 @@ public final class Main {
             // without a restart.
             Thread.ofVirtual().start(() -> applyRuntimeSettings(settings, ingest, overlayPool, outputAssets,
                     System.err));
+            // overlay.cacheMaxBytes: a smaller cache evicts at once
+            overlayCache.trimSoon();
         });
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.
         OutputStatusFeed outputStatus = new OutputStatusFeed(streamOutputs, outputControl, roomSocket::outputStatus);
@@ -802,6 +831,25 @@ public final class Main {
      * Reads a setting; if the database can't be read, logs it and returns {@code fallback} (the
      * config file's value).
      */
+    /** The ids of all rooms, or null if they can't be read (the overlay cache then keeps every room's files). */
+    static java.util.Set<String> roomIds(Database database) {
+        try {
+            return database.read(c -> {
+                java.util.Set<String> ids = new java.util.HashSet<>();
+                try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT id FROM rooms");
+                     java.sql.ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        ids.add(rs.getString(1));
+                    }
+                }
+                return ids;
+            });
+        } catch (SQLException e) {
+            System.err.println("WARNING: could not read the room ids: " + e.getMessage());
+            return null;
+        }
+    }
+
     static <T> T setting(Callable<T> read, T fallback) {
         try {
             return read.call();
