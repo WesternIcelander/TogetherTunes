@@ -876,4 +876,136 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertEquals("purged", itemRow(upload)[0]);
         assertTrue(fixtures.lastReferencedAt(yt) >= clock.millis(), "the import counts as a reference");
     }
+
+    // ------------------------------------------------------------------ still images
+
+    /** A 4 s video of one still picture (testsrc2's first frame) with a tone, as an upload or download. */
+    private void stillVideo(Path out) throws Exception {
+        Path png = dir.resolve("still-" + out.getFileName() + ".png");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360", "-frames:v", "1", png.toString());
+        ffmpeg("-loop", "1", "-framerate", "30", "-i", png.toString(), "-f", "lavfi", "-i", "sine=f=330:r=48000",
+                "-t", "4", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                "-shortest", out.toString());
+    }
+
+    private String mediaType(String item) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT media_type FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    /**
+     * docs/media-types.md#still-image-detection: a still-image upload publishes as an audio item
+     * (audio.m4a, a card with the still frame as its cover, index.bin; the audio of the source as
+     * the original), with its video version kept for undo; the item page warns with the deletion
+     * time; choosing a video type brings the video back (an undo), and undoing that makes it audio
+     * again.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void stillImageUploadPublishesAsAudioWithItsVideoKeptForUndo() throws Exception {
+        long window = 48L * 60 * 60 * 1000;
+        MediaVersions versions = new MediaVersions(data, db);
+        versions.undoWindow(() -> window);
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800, () -> null);
+        pipeline.mediaVersions(versions);
+        IngestQueue q = new IngestQueue(jobs, 1, pipeline, java.time.Clock.systemUTC(), java.time.Duration.ofHours(1),
+                java.time.Duration.ZERO);
+        queues.add(q);
+        q.start();
+        String item = fixtures.item("pending");
+        stillVideo(stage(item, "source.mp4"));
+        long before = System.currentTimeMillis();
+
+        IngestJob job = run(q, Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("still-image check: the picture is still from 0.0 s"), job.log());
+        assertEquals("audio", itemRow(item)[1]);
+        assertEquals("audio", mediaType(item));
+        Path itemDir = IngestPipeline.itemDir(data, item);
+        assertEquals(itemDir.resolve("v2"), cur(item));
+        assertAudioLayout(cur(item));
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.audio.mka"), layout(item));
+        java.awt.image.BufferedImage cover = CardRenderer.readImage(cur(item).resolve("cover.jpg"));
+        assertEquals(640, cover.getWidth(), "the still frame is the cover");
+        assertTrue(job.log().contains("cover: the still frame at 2.000 s"), job.log());
+        assertKeptOnly(item, "original.audio.mka", "aac/matroska,webm", null);
+        assertEquals(List.of("audio"), streamTypes(itemDir.resolve("original.audio.mka")), "only the audio is kept");
+        assertTrue(Files.exists(itemDir.resolve("v1").resolve("mezz.mp4")), "the video version, kept for undo");
+        assertFalse(Files.exists(IngestPipeline.stagingDir(data, item)));
+        assertNoLeftovers();
+
+        String user = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT added_by_user_id FROM items WHERE id = ?")) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+        Actor.User actor = new Actor.User(user, "s", Actor.Via.BEARER);
+        Items.Rights rights = new Items.Rights(true, false);
+        Items items = new Items(db, data, java.time.Clock.systemUTC());
+        items.mediaVersions(versions);
+        Items.ItemPage page = items.get(actor, item, rights);
+        assertNotNull(page.stillImage(), "the warning");
+        long deletedAt = page.stillImage().videoDeletedAt();
+        assertTrue(deletedAt >= before + window && deletedAt <= System.currentTimeMillis() + window, "at " + deletedAt);
+        assertNotNull(page.undo(), "Undo brings the video back");
+        Items.ItemPage anonymous = items.get(Actor.ANONYMOUS, item, new Items.Rights(false, false));
+        assertNotNull(anonymous.stillImage(), "everyone who can see the item sees the warning");
+
+        // a video type within the window: the video comes back, with that type
+        Items.ItemPage video = items.update(actor, item, new Items.Edit(null, null, false, null, false,
+                io.siggi.togethertunes.library.MediaType.MUSIC_VIDEO, null), rights, null);
+        assertEquals("video", video.kind());
+        assertEquals("music_video", video.mediaType());
+        assertNull(video.stillImage());
+        assertEquals(itemDir.resolve("v3"), cur(item));
+        assertTrue(Files.exists(cur(item).resolve("mezz.mp4")));
+        assertEquals("video", itemRow(item)[1]);
+        // the original has no video, so the video can't be trimmed (and re-encodes use mezz.mp4)
+        assertNull(video.trim());
+
+        // undoing that makes it audio again, warning and all
+        Items.ItemPage audio = items.undo(actor, item, rights, null);
+        assertEquals("audio", audio.kind());
+        assertEquals("audio", audio.mediaType());
+        assertNotNull(audio.stillImage());
+        assertAudioLayout(cur(item));
+    }
+
+    /**
+     * Without an undo window the video of a still image isn't encoded at all: a YouTube download
+     * publishes one audio version, the audio of the download as its original.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void stillImageWithoutUndoIsEncodedAsAudioOnly() throws Exception {
+        String item = fixtures.item("pending");
+        makeYoutube(item);
+        Path fixture = dir.resolve("yt-still.mkv");
+        stillVideo(fixture);
+
+        IngestJob job = run(queue(fakeYtdlp(fixture, "yt-still"), reference, 1800), Kind.YOUTUBE, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("no video version is kept"), job.log());
+        assertFalse(job.log().contains("step: still image: audio version"), job.log());
+        assertEquals("audio", itemRow(item)[1]);
+        assertEquals("audio", mediaType(item));
+        Path itemDir = IngestPipeline.itemDir(data, item);
+        assertEquals(itemDir.resolve("v1"), cur(item));
+        assertAudioLayout(cur(item));
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "original.audio.mka"), layout(item));
+        assertEquals(List.of("audio"), streamTypes(itemDir.resolve("original.audio.mka")));
+        assertEquals(List.of("original.audio.mka", "v1"), files(itemDir));
+        assertNoLeftovers();
+    }
 }

@@ -14,6 +14,7 @@ import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.MediaVersions;
+import io.siggi.togethertunes.ingest.Originals;
 import io.siggi.togethertunes.ingest.ItemStatusListener;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -95,18 +96,30 @@ public final class Items {
      *                ({@code POST /api/items/{id}/trim}), else null
      * @param hasCover whether the current version has a {@code cover.jpg} (not every item has one;
      *                 the page asks for it only if so)
+     * @param stillImage while the video of an item detected as a still image is kept (for anyone
+     *                 who can see the item), else null
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio,
                            String mediaType, MediaType.Show show, long addedAt,
-                           String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover) {
+                           String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover,
+                           StillImageView stillImage) {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, String mediaType, MediaType.Show show,
                         long addedAt, String error, int mediaVersion, You you) {
             this(id, kind, title, artist, album, durationMs, source, youtubeId, status,
                     MediaType.presentAsAudio(kind, mediaType), mediaType, show, addedAt, error,
-                    mediaVersion, you, null, null, false);
+                    mediaVersion, you, null, null, false, null);
         }
+    }
+
+    /**
+     * An item detected as a still image at ingest ({@code docs/media-types.md#still-image-detection}):
+     * it plays as audio, and its video is kept until {@code videoDeletedAt} (epoch ms), until then
+     * Undo, or changing the media type to a video type, brings it back. The page warns about it
+     * (for an upload the video is gone for good after that).
+     */
+    public record StillImageView(long videoDeletedAt) {
     }
 
     /**
@@ -268,6 +281,13 @@ public final class Items {
                 undo = new UndoView(since.getAsLong());
             }
         }
+        StillImageView stillImage = null;
+        if (v != null && "audio".equals(r.kind())) {
+            java.util.OptionalLong until = v.keptVideoUntil(c, r.id());
+            if (until.isPresent()) {
+                stillImage = new StillImageView(until.getAsLong());
+            }
+        }
         TrimView trim = null;
         if (you.canEdit() && trimmable(c, r) == null) {
             String editJson = MediaVersions.editJson(c, r.id(), r.mediaVersion());
@@ -290,7 +310,7 @@ public final class Items {
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.mediaType(), r.show(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
-                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()));
+                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage);
     }
 
     /**
@@ -325,7 +345,9 @@ public final class Items {
         }
         if (original == null || original.isEmpty() || original.startsWith(".") || original.contains("/")
                 || original.contains("\\")
-                || !java.nio.file.Files.isRegularFile(IngestPipeline.itemDir(dataDir, r.id()).resolve(original))) {
+                || !java.nio.file.Files.isRegularFile(IngestPipeline.itemDir(dataDir, r.id()).resolve(original))
+                // a still image brought back as a video by Undo: its original is only the audio
+                || "video".equals(r.kind()) && Originals.audioOfVideo(original)) {
             return "no_original";
         }
         return null;
@@ -582,9 +604,10 @@ public final class Items {
      *                   details for another type)
      */
     public ItemPage update(Actor.User actor, String itemId, Edit edit, Rights rights, String clientIp)
-            throws SQLException {
+            throws SQLException, IOException {
         Objects.requireNonNull(edit);
         long now = EpochMs.now(clock);
+        bringBackStillVideo(actor, itemId, edit, rights, clientIp, now);
         return db.write(c -> {
             Row row = lockedRow(c, itemId);
             if (row == null) {
@@ -663,6 +686,56 @@ public final class Items {
                     row.mediaVersion());
             return page(c, after, you);
         });
+    }
+
+    /**
+     * A video type for an item detected as a still image, while its video is kept: brings the
+     * video back first ({@link MediaVersions#undo}, audited as {@value #AUDIT_MEDIA_UNDONE} with
+     * {@code "via": "mediaType"}), so the type can then be set as on any video
+     * ({@code docs/media-types.md#still-image-detection}). Checks the edit right and the show
+     * details first, so a refused edit changes nothing.
+     */
+    private void bringBackStillVideo(Actor.User actor, String itemId, Edit edit, Rights rights, String clientIp,
+                                     long now) throws SQLException, IOException {
+        MediaVersions v = versions;
+        if (v == null || edit.mediaType() == null || edit.mediaType() == MediaType.AUDIO) {
+            return;
+        }
+        boolean bringBack = db.read(c -> {
+            Row row = row(c, itemId, false);
+            if (row == null) {
+                throw notFound();
+            }
+            if (!you(c, actor, row, rights).canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can edit it");
+            }
+            if ("video".equals(row.kind()) || v.keptVideoUntil(c, itemId).isEmpty()) {
+                return false;
+            }
+            if (edit.mediaType() == MediaType.SHOW && edit.show() == null) {
+                throw new HttpError(400, "show_required", "A show episode needs a show name and an episode number");
+            }
+            if (edit.mediaType() != MediaType.SHOW && edit.show() != null) {
+                throw new HttpError(400, "not_a_show", "Show details are only for the media type show");
+            }
+            return true;
+        });
+        if (!bringBack) {
+            return;
+        }
+        try {
+            v.undo(itemId, (c, undone) -> {
+                Map<String, Object> details = new LinkedHashMap<>();
+                details.put("undoneVersion", undone.undoneVersion());
+                details.put("restoredVersion", undone.restoredVersion());
+                details.put("newVersion", undone.newVersion());
+                details.put("via", "mediaType");
+                AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_MEDIA_UNDONE, itemId, details);
+            });
+        } catch (MediaVersions.UndoRefused e) {
+            throw new HttpError(409, e.code(), e.getMessage());
+        }
     }
 
     private volatile java.util.function.Consumer<String> purgeListener = itemId -> {

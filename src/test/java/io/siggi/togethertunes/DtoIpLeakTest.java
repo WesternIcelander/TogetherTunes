@@ -135,6 +135,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Items$ItemPage",
             "io.siggi.togethertunes.library.Items$JobView",
             "io.siggi.togethertunes.library.Items$UndoView",
+            "io.siggi.togethertunes.library.Items$StillImageView",
             "io.siggi.togethertunes.library.Items$TrimView",
             "io.siggi.togethertunes.library.Items$You",
             "io.siggi.togethertunes.library.Library$Entry",
@@ -184,6 +185,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.DataDir", "server paths"),
             Map.entry("io.siggi.togethertunes.ingest.EditSettings", "an item's edit settings (trim times) as the"
                     + " server reads them; the item page sends them as Items.TrimView"),
+            Map.entry("io.siggi.togethertunes.ingest.StillImage$Result", "a still-image check's outcome in the"
+                    + " ingest job; the item page sends Items.StillImageView"),
             Map.entry("io.siggi.togethertunes.ingest.TrimPlan$Piece", "part of a trim job's plan; server-side only"),
             Map.entry("io.siggi.togethertunes.ingest.TrimPlan$Plan", "a trim job's plan; server-side only"),
             Map.entry("io.siggi.togethertunes.library.Items$Trim", "a trim request's parsed body; never sent"),
@@ -714,6 +717,7 @@ class DtoIpLeakTest {
         produced.add(new AuditEntries(database).list(null, null, null, 200));
         produced.add(new io.siggi.togethertunes.library.Classify.Suggestion("show",
                 new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
+        produced.add(new Items.StillImageView(1_700_000_000_000L)); // the item page's still-image warning
         produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
         for (Library.Entry e : library.list(aliceId, null, null, null, Library.LIST_MAX).items()) {
             Actor.User alice = new Actor.User(aliceId, "s", Actor.Via.BEARER);

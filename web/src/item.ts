@@ -4,7 +4,7 @@
 // the metadata, purge.
 import { withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
-import { allowedTypes, mediaTypeBody, mediaTypeLabel } from "./mediatypes.js";
+import { allowedTypes, mediaTypeBody, mediaTypeLabel, stillImageWarning } from "./mediatypes.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
   ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, watchItem, type ItemPage, type JobView,
@@ -112,11 +112,11 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
     h("label", {}, "Title", h("input", { name: "title", required: true, maxlength: "300", value: item.title })),
     h("label", {}, "Artist", h("input", { name: "artist", maxlength: "300", value: item.artist ?? "" })),
     h("label", {}, "Album", h("input", { name: "album", maxlength: "300", value: item.album ?? "" })),
-    item.kind === "video"
+    item.kind === "video" || item.stillImage !== undefined
       ? h("label", {}, "Media type", h("select", { name: "mediaType" },
-        ...allowedTypes(item.kind).map((t) => h("option", { value: t, text: mediaTypeLabel(t), selected: t === item.mediaType }))))
+        ...allowedTypes(item.kind, item.stillImage !== undefined).map((t) => h("option", { value: t, text: mediaTypeLabel(t), selected: t === item.mediaType }))))
       : null,
-    item.kind === "video"
+    item.kind === "video" || item.stillImage !== undefined
       ? h("fieldset", {}, h("legend", { text: "Show episode (media type Show episode only)" },),
         h("label", {}, "Show name", h("input", { name: "showName", maxlength: "300", value: item.show?.name ?? "" })),
         h("label", {}, "Season", h("input", { name: "season", inputmode: "numeric", value: item.show?.season !== undefined ? String(item.show.season) : "" })),
@@ -133,7 +133,7 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       artist: String(data.get("artist") ?? ""),
       album: String(data.get("album") ?? ""),
     };
-    if (item.kind === "video") {
+    if (item.kind === "video" || item.stillImage !== undefined) {
       const typed = mediaTypeBody(String(data.get("mediaType") ?? ""), String(data.get("showName") ?? ""),
         String(data.get("season") ?? ""), String(data.get("episode") ?? ""));
       if ("error" in typed) {
@@ -444,6 +444,9 @@ function render(item: ItemPage, job: JobView | undefined): void {
           field("Source", source),
           field("Added", formatTime(item.addedAt))))),
     item.status === "failed" && item.error !== undefined ? h("p", { class: "error", text: "Ingest failed: " + item.error }) : null,
+    item.stillImage !== undefined
+      ? h("p", { class: "error", text: stillImageWarning(item.source, formatTime(item.stillImage.videoDeletedAt)) })
+      : null,
     item.status === "failed" && item.source !== "youtube"
       ? h("p", { class: "muted", text: "A failed upload's file isn't kept, so it can't be retried: upload the file again." })
       : null,

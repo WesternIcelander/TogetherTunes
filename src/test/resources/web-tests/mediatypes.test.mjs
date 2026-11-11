@@ -26,3 +26,15 @@ test("an edit body: show details only for a show, validated", () => {
   assert.ok("error" in M.mediaTypeBody("show", "S", "1", "1.5"));
   assert.ok("error" in M.mediaTypeBody("song", "", "", ""));
 });
+
+test("a still image's kept video: video types allowed, a warning with the deletion time", () => {
+  assert.deepEqual(M.allowedTypes("audio", false), ["audio"]);
+  assert.equal(M.allowedTypes("audio", true).length, 5);
+  const upload = M.stillImageWarning("upload", "Nov 13 14:32");
+  assert.match(upload, /still image/);
+  assert.match(upload, /Nov 13 14:32/);
+  assert.match(upload, /can't be brought back/);
+  const youtube = M.stillImageWarning("youtube", "Nov 13 14:32");
+  assert.match(youtube, /Nov 13 14:32/);
+  assert.doesNotMatch(youtube, /can't be brought back/);
+});

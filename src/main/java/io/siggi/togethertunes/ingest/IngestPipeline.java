@@ -309,6 +309,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
             if (original == null || !isPlainName(original) || !Files.isRegularFile(itemDir(dataDir, item.id()).resolve(original))) {
                 throw new IngestFailure("The item has no original file to trim from");
             }
+            if (videoWithoutVideoOriginal(item)) {
+                throw new IngestFailure("The item's original has no video (it was detected as a still image),"
+                        + " so it can't be trimmed");
+            }
         }
         Path scratch = scratchDir(dataDir, job.id());
         Path work = dataDir.media().resolve(WORK_PREFIX + job.id());
@@ -367,7 +371,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
             case YOUTUBE, REFETCH -> SourceKind.DOWNLOAD;
             case REENCODE, QUALITY, TRIM -> {
                 String original = item.originalFile();
-                if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))) {
+                if (original != null && isPlainName(original) && Files.isRegularFile(itemDir.resolve(original))
+                        && !videoWithoutVideoOriginal(item)) {
                     yield SourceKind.ORIGINAL;
                 }
                 if (item.fromYoutube() && item.youtubeId() != null) {
@@ -376,6 +381,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 yield SourceKind.PREVIOUS;
             }
         };
+    }
+
+    /**
+     * A video item (a still image brought back by Undo) whose original is only the audio
+     * ({@link Originals#AUDIO_OF_VIDEO}): it re-encodes as if it had no original, and can't be trimmed.
+     */
+    static boolean videoWithoutVideoOriginal(IngestItems.Item item) {
+        return "video".equals(item.kind()) && Originals.audioOfVideo(item.originalFile());
     }
 
     private static boolean isPlainName(String name) {
@@ -490,19 +503,37 @@ public final class IngestPipeline implements IngestQueue.Handler {
         step(log, "probe");
         MediaProbe probe = MediaProbe.probe(tools, source, log);
         checkProbe(probe, !reencode);
-        boolean video = probe.isVideo();
-        if (video) {
+        boolean sourceVideo = probe.isVideo();
+        if (sourceVideo) {
             // an ffmpeg whose video encodes don't match the reference (startup self-check) fails here, not after the encode
             reference.requireSpliceableVideo();
         }
-        log.append("[ingest] " + (video ? "video" : "audio") + " item: audio stream " + probe.audio().index() + " ("
-                + probe.audio().codec() + ")" + (video ? ", video stream " + probe.video().index() + " ("
+        log.append("[ingest] " + (sourceVideo ? "video" : "audio") + " item: audio stream " + probe.audio().index() + " ("
+                + probe.audio().codec() + ")" + (sourceVideo ? ", video stream " + probe.video().index() + " ("
                 + probe.video().codec() + ")" : "") + (probe.cover() != null ? ", cover stream " + probe.cover().index() : "")
                 + ", duration " + seconds(probe.durationUs()));
         long expectedUs = probe.durationUs() > 0 ? probe.durationUs() : probe.audioEndUs();
         long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
         // the video trim, on the original's timeline (not for a previous encode: it already has it)
         EditSettings edit = EditSettings.parse(editJson);
+        // a picture that is still all along publishes as audio (docs/media-types.md#still-image-detection)
+        StillImage.Result still = null;
+        if (sourceVideo && !fromPrevious && checksStillImage(job.kind(), edit)) {
+            step(log, "still-image check");
+            StillImage.Result r = StillImage.detect(tools, source, probe, log);
+            log.append("[ingest] still-image check: " + r.reason());
+            if (r.still()) {
+                still = r;
+            }
+        }
+        MediaVersions undoVersions = versions;
+        // the video is encoded only to be kept for undo; without undo it isn't made at all
+        boolean keepVideo = still != null && undoVersions != null && undoVersions.undoWindowMs() > 0;
+        boolean video = sourceVideo && (still == null || keepVideo);
+        if (still != null) {
+            log.append("[ingest] still image: the item becomes an audio item" + (keepVideo
+                    ? "; its video version is kept for the undo window" : " (no undo window, so no video version is kept)"));
+        }
         List<String> range = List.of();
         // a full encode has the normal 60-frame first GOP, whatever the version it replaces had
         String publishJson = EditSettings.withFirstGop(editJson, EncodeProfile.GOP_FRAMES);
@@ -573,6 +604,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
         step(log, "card");
         Path cover = work.resolve(COVER);
         BufferedImage artwork = cover(source, probe, stagedCover, cover, log);
+        if (artwork == null && still != null && !video) {
+            artwork = stillCover(source, probe, still, cover, log);
+        }
         CardRenderer renderer = new CardRenderer(profile.profile());
         BufferedImage card = renderer.renderItem(
                 new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
@@ -614,7 +648,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // original: every source except a previous encode is kept; only an audio upload's may be played
         Originals.Original original = null;
-        if (sourceKind != SourceKind.PREVIOUS && (video || !"upload".equals(item.source()))) {
+        if (still != null) {
+            // only the audio is kept: the video goes with the kept video version
+            original = audioOriginal(source, probe, work, log);
+        } else if (sourceKind != SourceKind.PREVIOUS && (video || !"upload".equals(item.source()))) {
             original = Originals.keptOnly(probe, source.getFileName().toString());
             if (sourceKind == SourceKind.DOWNLOAD) {
                 Files.move(source, work.resolve(original.file())); // the scratch copy isn't needed any more
@@ -665,10 +702,123 @@ public final class IngestPipeline implements IngestQueue.Handler {
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, original, durationUs / 1000);
+        if (keepVideo) {
+            publishStillAudio(ctx, item, itemDir, version, source, probe, still, reference, preset, lufs, kept,
+                    publishJson, sourceAudioEndUs, decodedUs[0]);
+        }
         if (!reencode) {
             deleteQuietly(staging);
         }
         ctx.progress(1);
+    }
+
+    // ------------------------------------------------------------------ still images
+
+    /**
+     * Whether a job checks its video source for a still image: every job that fetches an item's
+     * media (upload, YouTube, refetch), whatever type it was classified as when it was added
+     * (a still image classified as a music video still becomes audio; undo restores the video
+     * with that type), unless the item is trimmed (a refetch of a trimmed video). Re-encodes and
+     * trims keep what the item is.
+     */
+    static boolean checksStillImage(Kind kind, EditSettings edit) {
+        return (kind == Kind.UPLOAD || kind == Kind.YOUTUBE || kind == Kind.REFETCH)
+                && !edit.videoTrimmed() && !edit.audioTrimmed();
+    }
+
+    /** The ffmpeg arguments that copy the source's audio into an {@link Originals#AUDIO_OF_VIDEO} original. */
+    static List<String> audioOriginalArgs(Path source, MediaProbe probe, Path out) {
+        return List.of("-y", "-i", source.toString(), "-map", probe.audio().map(), "-vn", "-sn", "-dn",
+                "-c", "copy", "-f", "matroska", out.toString());
+    }
+
+    /** Keeps only the audio of a still image's source as its original ({@link Originals#AUDIO_OF_VIDEO}). */
+    private Originals.Original audioOriginal(Path source, MediaProbe probe, Path work, JobLog log)
+            throws ToolException, InterruptedException, IOException {
+        Originals.Original original = Originals.audioOfVideo(probe);
+        Path out = work.resolve(original.file());
+        tools.ffmpeg(audioOriginalArgs(source, probe, out)).log(log).run();
+        log.append("[ingest] kept the audio of the original as " + original.file() + " (" + original.codec() + ", "
+                + Files.size(out) + " bytes); the video of a still image isn't kept beyond the undo window");
+        return original;
+    }
+
+    /** The still frame as the cover ({@link StillImage.Result#coverAtUs}); null if it can't be had. */
+    private BufferedImage stillCover(Path source, MediaProbe probe, StillImage.Result still, Path out, JobLog log)
+            throws InterruptedException {
+        List<String> args = new ArrayList<>(List.of("-ss", secondsArg(still.coverAtUs())));
+        args.addAll(coverArgs(source, probe.video().map(), out));
+        try {
+            tools.ffmpeg(args).log(log).run();
+            BufferedImage image = CardRenderer.readImage(out);
+            if (image != null) {
+                log.append("[ingest] cover: the still frame at " + seconds(still.coverAtUs()));
+                return image;
+            }
+        } catch (ToolException | IOException e) {
+            log.append("[ingest] no cover from the still frame: " + e.getMessage());
+        }
+        try {
+            Files.deleteIfExists(out);
+        } catch (IOException e) {
+            // left in the work dir; deleted with it
+        }
+        return null;
+    }
+
+    /**
+     * After a still image's video version {@code videoVersion} was published: publishes the audio
+     * version on top of it (its {@code audio.m4a}, a card with the cover or else the still frame,
+     * the card's index), keeping the video version for undo as a person's change would be, so
+     * Undo (or changing the type to a video type) brings the video back within the window.
+     */
+    private void publishStillAudio(IngestQueue.Context ctx, IngestItems.Item item, Path itemDir, int videoVersion,
+                                   Path source, MediaProbe probe, StillImage.Result still, ReferenceCard reference,
+                                   X264Preset preset, Double lufs, Originals.Original original, String publishJson,
+                                   long sourceAudioEndUs, long decodedUs) throws Exception {
+        JobLog log = ctx.log();
+        step(log, "still image: audio version");
+        OutputEncoding profile = reference.encoding();
+        Path videoDir = MediaVersions.versionDir(itemDir, videoVersion);
+        Path work = dataDir.media().resolve(WORK_PREFIX + ctx.job().id() + "-audio");
+        deleteTree(work);
+        Files.createDirectories(work);
+        try {
+            Path audio = work.resolve(AUDIO);
+            linkOrCopy(videoDir.resolve(AUDIO), audio);
+            Path cover = work.resolve(COVER);
+            BufferedImage artwork = null;
+            if (Files.isRegularFile(videoDir.resolve(COVER))) {
+                linkOrCopy(videoDir.resolve(COVER), cover);
+                artwork = CardRenderer.readImage(cover);
+            }
+            if (artwork == null) {
+                Files.deleteIfExists(cover);
+                artwork = stillCover(source, probe, still, cover, log);
+            }
+            CardRenderer renderer = new CardRenderer(profile.profile());
+            BufferedImage card = renderer.renderItem(
+                    new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
+            String cardFonts = CardRenderer.fontKey(renderer.fonts(), item.title(), item.artist(), item.album());
+            Path cardFile = work.resolve(CARD);
+            CardEncoder.encode(tools, card, cardFile, reference, log);
+            SampleIndex index = IndexBuilder.build(tools, profile, cardFile, audio, work.resolve(SampleIndex.FILE_NAME), log);
+            IngestVerifier.verify(index, reference, sourceAudioEndUs, decodedUs, CARD);
+            long durationUs = IngestVerifier.audioDurationUs(index);
+            IngestItems.VersionChange change = new IngestItems.VersionChange(videoVersion, true, publishJson,
+                    System.currentTimeMillis());
+            int version = publish(work, itemDir, videoVersion, null, v -> items.published(item.id(), false,
+                    durationUs / 1000, profile, preset, true, lufs, original, v, change, null,
+                    CardEncoder.CARD_VERSION, cardFonts));
+            MediaVersions v = versions;
+            if (v != null) {
+                v.retired(item.id(), videoVersion, durationUs / 1000);
+            }
+            log.append("[ingest] published the audio version as version " + version + "; the video (version "
+                    + videoVersion + ") is kept for the undo window");
+        } finally {
+            deleteQuietly(work);
+        }
     }
 
     // ------------------------------------------------------------------ trim

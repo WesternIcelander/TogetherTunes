@@ -33,6 +33,19 @@ public final class Originals {
     /** Base name of the kept original in the item directory. */
     public static final String BASE_NAME = "original";
 
+    /**
+     * The original of a video detected as a still image ({@link StillImage}): only its audio,
+     * copied out of the source into Matroska, so the video really is gone once the undo window
+     * is over ({@code docs/media-types.md#still-image-detection}). A video item (after an undo)
+     * never re-encodes or trims from such an original.
+     */
+    public static final String AUDIO_OF_VIDEO = BASE_NAME + ".audio.mka";
+
+    /** Whether {@code file} is an {@link #AUDIO_OF_VIDEO} original (no video to encode from). */
+    public static boolean audioOfVideo(String file) {
+        return AUDIO_OF_VIDEO.equals(file);
+    }
+
     /** Largest allowed difference between the original's and {@code audio.m4a}'s duration for {@code original_web}. */
     public static final long MAX_DURATION_DIFF_US = 50_000;
 
@@ -213,5 +226,10 @@ public final class Originals {
      */
     static Original keptOnly(MediaProbe probe, String sourceName) {
         return new Original(BASE_NAME + "." + extension(probe, sourceName), codec(probe), false, null);
+    }
+
+    /** What is recorded about an {@link #AUDIO_OF_VIDEO} original made from the probed source. */
+    static Original audioOfVideo(MediaProbe probe) {
+        return new Original(AUDIO_OF_VIDEO, probe.audio().codec().toLowerCase(Locale.ROOT) + "/matroska,webm", false, null);
     }
 }

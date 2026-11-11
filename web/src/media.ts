@@ -39,6 +39,8 @@ export interface ItemPage extends ItemSummary {
   you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
   /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */
   undo?: { changedAt: number };
+  /** Detected as a still image at ingest, while its video is kept (deleted at `videoDeletedAt`, epoch ms). */
+  stillImage?: { videoDeletedAt: number };
   /** The trims on the original's timeline, for those who may trim it (`POST /api/items/{id}/trim`). */
   trim?: {
     videoStartMs: number; videoEndMs?: number; originalMs: number;

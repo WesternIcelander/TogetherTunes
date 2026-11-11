@@ -21,9 +21,25 @@ export function mediaTypeLabel(type: string | undefined): string {
   return type !== undefined && Object.prototype.hasOwnProperty.call(LABELS, type) ? LABELS[type as MediaType] : "Video";
 }
 
-/** The types an item of `kind` can have: an audio item is always `audio`. */
-export function allowedTypes(kind: "audio" | "video"): readonly MediaType[] {
-  return kind === "audio" ? ["audio"] : MEDIA_TYPES;
+/**
+ * The types an item of `kind` can have: an audio item is always `audio`, except while the video of
+ * a still image is kept (`videoKept`, the item's `stillImage`): a video type then brings it back.
+ */
+export function allowedTypes(kind: "audio" | "video", videoKept = false): readonly MediaType[] {
+  return kind === "audio" && !videoKept ? ["audio"] : MEDIA_TYPES;
+}
+
+/**
+ * The item page's warning for an item detected as a still image while its video is kept
+ * (`stillImage.videoDeletedAt`, docs/media-types.md#still-image-detection), with the deletion
+ * time already formatted. An upload's video is gone for good after that; a YouTube item's can be
+ * fetched again.
+ */
+export function stillImageWarning(source: string, deletedAt: string): string {
+  return "This video was detected as a still image, so it plays as audio. Its video part will be deleted at "
+    + deletedAt + (source === "upload"
+      ? " unless you undo this (Undo, or choose a video media type); after that it can't be brought back."
+      : " unless you undo this (Undo, or choose a video media type).");
 }
 
 /** A whole number ≥ 0 from a form field, `null` for blank, `undefined` if invalid. */

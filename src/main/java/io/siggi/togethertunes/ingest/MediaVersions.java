@@ -141,6 +141,11 @@ public final class MediaVersions implements AutoCloseable {
         this.statusListener = listener == null ? ItemStatusListener.NONE : listener;
     }
 
+    /** The undo window now ({@code media.undoHours}) in ms; 0 = no undo. */
+    public long undoWindowMs() {
+        return window();
+    }
+
     private long window() {
         try {
             return Math.max(0, undoWindowMs.getAsLong());
@@ -808,6 +813,36 @@ public final class MediaVersions implements AutoCloseable {
         Kept k = kept(c, itemId);
         UndoRefused why = refusal(k, IngestPipeline.itemDir(dataDir, itemId), nowMs.getAsLong(), window());
         return why == null || "item_busy".equals(why.code()) ? OptionalLong.of(k.switchedAt()) : OptionalLong.empty();
+    }
+
+    /**
+     * When the kept video of a still image ({@code docs/media-types.md#still-image-detection}) is
+     * deleted (epoch ms: the switch to the audio version plus the undo window), while Undo can
+     * still bring it back: the item is an audio item now and its kept version a video one that
+     * Undo could restore (as {@link #undoableSince}). Empty otherwise.
+     */
+    public OptionalLong keptVideoUntil(Connection c, String itemId) throws SQLException {
+        if (db == null) {
+            return OptionalLong.empty();
+        }
+        Kept k = kept(c, itemId);
+        if (k == null) {
+            return OptionalLong.empty();
+        }
+        try (PreparedStatement ps = c.prepareStatement("SELECT i.kind, v.kind FROM items i JOIN media_versions v"
+                + " ON v.item_id = i.id AND v.version = ? WHERE i.id = ?")) {
+            ps.setInt(1, k.version());
+            ps.setString(2, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next() || !"audio".equals(rs.getString(1)) || !"video".equals(rs.getString(2))) {
+                    return OptionalLong.empty();
+                }
+            }
+        }
+        long window = window();
+        UndoRefused why = refusal(k, IngestPipeline.itemDir(dataDir, itemId), nowMs.getAsLong(), window);
+        return why == null || "item_busy".equals(why.code()) ? OptionalLong.of(k.switchedAt() + window)
+                : OptionalLong.empty();
     }
 
     /**
