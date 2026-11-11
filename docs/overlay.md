@@ -34,6 +34,16 @@ Test that the code scans from a phone pointed at the stream on a screen at a typ
 
 The image is regenerated when the slug, the overlay settings or `publicBaseUrl` change (also the output profile, or a new `OverlayRenderer.RENDER_VERSION` when the drawing code changes): whoever needs the overlay asks `Overlays.current(room)`, which compares the stored spec with the current one and re-renders on a mismatch (so a new `publicBaseUrl` after a restart takes effect on first use), and a room edit that changes the slug or overlay settings re-renders at once while the overlay is on. Its content hash (`overlayHash`: SHA-256 over the frame size, position and ARGB pixels, 16 hex digits) is part of every cache key below, so stale renders are never used; settings that produce the same pixels keep the same hash and caches.
 
+## Room UI
+
+As implemented (web `roommanage.ts` + `roomsettings.ts`, server `overlay/OverlayPreviewApi`): the overlay settings are in the management view's **Settings** tab, group "QR overlay" (greyed out while the server's `overlay.enabled` is off, like every server-gated setting, see the management view in [rooms.md](rooms.md#room-settings-settings_json)). While the server allows the overlay, the group also shows:
+
+- A note that the QR code leads to the room's request page and shows only in the stream outputs (RTMP, `.ts`, HLS), not to people listening on the room page.
+- Whether music videos get it: `GET /api/rooms/{id}/server-switches` returns `overlay: {enabled, videoOverlay}`, `videoOverlay` = the server switch is on and the **room owner** holds `output.overlayVideo` (the same check as `OverlayDecisions`). Otherwise the note says music videos play without it while cards still show it.
+- A **preview**: `GET /api/rooms/{id}/overlay/preview.png?corner=&heightPct=&margin=` (owner and moderators) renders the room's idle card (with its name) at the output size with the overlay drawn on it as the stream shows it (`Overlays.preview`, nothing stored or cached, so it works with the overlay off). Each parameter is optional and replaces the saved setting, so the page shows unsaved form values (refreshed 400 ms after corner, size or margin change; an invalid value is left out and the saved one used); the QR code uses the saved link name. Values are checked like the room settings (`400 invalid_setting`).
+
+The room `state` doesn't carry an `overlay` object (the [api.md](api.md) sketch had `overlay: {enabled, videoOverlay}`): nothing on the room page uses it, and a server switch or role change wouldn't be pushed to the sockets anyway; the management view reads it from `server-switches`.
+
 ## Cards (cheap path)
 
 Cards are still images, so adding the overlay just means compositing `overlay.png` onto the card image in Java2D, then encoding one 2 s GOP as usual. That takes about 0.1–0.3 s of CPU per card.
