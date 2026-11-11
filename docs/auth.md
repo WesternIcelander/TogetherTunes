@@ -27,7 +27,7 @@ A **user** can have any number of **identities**: one local password credential,
 
 Implement a minimal relying party; no framework.
 
-1. **Discovery:** fetch `{issuer}/.well-known/openid-configuration` and the JWKS, and cache both. Refetch the JWKS when a token has an unknown `kid`.
+1. **Discovery:** fetch `{issuer}/.well-known/openid-configuration` and the JWKS, and cache both. Refetch the JWKS when a token has an unknown `kid`. (`OidcDiscovery`: the document's `issuer` must match exactly and its endpoints follow the provider URL rules; only public signing keys are kept; discovery is cached 24 h and the JWKS 1 h, an unknown-`kid` refetch happens at most every 10 s per issuer, and a cached copy keeps being used while the provider is unreachable.)
 2. **Authorization request:** authorization code flow with **PKCE (S256)**, plus random `state` and `nonce`, stored server-side and keyed by `state`. Redirect URI: `{publicBaseUrl}/auth/oidc/{slug}/callback`.
 3. **Callback:** exchange the code, then validate the ID token:
    - signature against JWKS (RS256 and ES256; reject `none` and HS* unless explicitly configured),
