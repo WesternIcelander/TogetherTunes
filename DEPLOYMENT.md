@@ -131,6 +131,7 @@ WebSocket by itself: `music.example.com { reverse_proxy 127.0.0.1:8080 }`.
   the stream key doesn't travel in clear text.
 - Android/Quest clients need HTTPS (above).
 - More for viewers (remote mode, HLS delay): `docs/user-guide.md` on the `plan` branch.
+- Before a release, run the manual VRChat checks in [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md).
 
 ## Runtime requirements
 
