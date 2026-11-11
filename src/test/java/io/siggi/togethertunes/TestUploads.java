@@ -129,8 +129,14 @@ public final class TestUploads {
     /** The media files API with data in {@code <dir>/data}, rooms stubbed by {@code playing}. */
     public static MediaApi mediaApi(Database db, Path dir, Settings settings,
                                     io.siggi.togethertunes.rooms.PlayingItems playing) {
+        return mediaApi(db, dir, settings, playing, java.time.Clock.systemUTC());
+    }
+
+    /** {@link #mediaApi(Database, Path, Settings, io.siggi.togethertunes.rooms.PlayingItems)} on {@code clock} (views). */
+    public static MediaApi mediaApi(Database db, Path dir, Settings settings,
+                                    io.siggi.togethertunes.rooms.PlayingItems playing, java.time.Clock clock) {
         try {
-            return new MediaApi(db, DataDir.create(dir.resolve("data")), settings, playing);
+            return new MediaApi(db, DataDir.create(dir.resolve("data")), settings, playing, clock);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

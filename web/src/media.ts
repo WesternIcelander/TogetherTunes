@@ -35,8 +35,13 @@ export interface ItemPage extends ItemSummary {
   mediaVersion: number;
   /** The current version has a `cover.jpg` (not every item has one). */
   hasCover: boolean;
-  /** `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`). */
-  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean };
+  /**
+   * `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`); `canPin`: may
+   * pin and unpin it (`PUT`/`DELETE /api/items/{id}/pin`).
+   */
+  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean; canPin?: boolean };
+  /** While the item is pinned (its media is never deleted automatically). */
+  pinned?: { pinnedAt: number };
   /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */
   undo?: { changedAt: number };
   /** Detected as a still image at ingest, while its video is kept (deleted at `videoDeletedAt`, epoch ms). */

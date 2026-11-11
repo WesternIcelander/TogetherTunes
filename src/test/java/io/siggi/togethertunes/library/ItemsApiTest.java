@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.library;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -54,6 +55,7 @@ class ItemsApiTest {
     private String alice;
     private String admin;
     private String bob;
+    private String bobId;
     private Settings settings;
     private io.siggi.togethertunes.ingest.IngestJobs jobs;
     private io.siggi.togethertunes.DataDir data;
@@ -91,7 +93,7 @@ class ItemsApiTest {
         aliceId = accounts.createLocal("alice", null, "alice-password", false, null, "account.register").id();
         alice = sessions.create(aliceId, Actor.Via.BEARER, "test", null).token();
         admin = sessions.create(adminId, Actor.Via.BEARER, "test", null).token();
-        String bobId = accounts.createLocal("bob", null, "bob-password", false, null, "account.register").id();
+        bobId = accounts.createLocal("bob", null, "bob-password", false, null, "account.register").id();
         bob = sessions.create(bobId, Actor.Via.BEARER, "test", null).token();
     }
 
@@ -183,6 +185,84 @@ class ItemsApiTest {
         assertFalse(first.has("nextCursor"), first.toString());
     }
 
+    private Object[] pinRow(String itemId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT pinned_at, pinned_by_user_id FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    long at = rs.getLong(1);
+                    return new Object[] {rs.wasNull() ? null : at, rs.getString(2)};
+                }
+            }
+        });
+    }
+
+    private int audits(String action, String itemId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = ? AND target = ?")) {
+                ps.setString(1, action);
+                ps.setString(2, itemId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getInt(1);
+                }
+            }
+        });
+    }
+
+    /** Pin and unpin: admins always, others with library.pin; shown on the item; idempotent; audited. */
+    @Test
+    void pinRights() throws Exception {
+        String id = item("audio");
+        // alice added it and may edit it, but pinning needs library.pin (not in the default user role)
+        assertEquals(403, call("PUT", "/api/items/" + id + "/pin", alice, null).statusCode());
+        assertEquals(403, call("DELETE", "/api/items/" + id + "/pin", alice, null).statusCode());
+        HttpResponse<String> anon = call("PUT", "/api/items/" + id + "/pin", null, null);
+        assertEquals(401, anon.statusCode());
+        JsonObject page = json(call("GET", "/api/items/" + id, alice, null));
+        assertFalse(page.getAsJsonObject("you").get("canPin").getAsBoolean());
+        assertFalse(page.has("pinned"));
+        assertTrue(json(call("GET", "/api/items/" + id, admin, null)).getAsJsonObject("you").get("canPin").getAsBoolean());
+
+        // the admin pins it: shown on the item for everyone (not who pinned it)
+        clock.advance(5_000);
+        long at = clock.millis();
+        HttpResponse<String> pinned = call("PUT", "/api/items/" + id + "/pin", admin, null);
+        assertEquals(200, pinned.statusCode(), pinned.body());
+        assertEquals(at, json(pinned).getAsJsonObject("pinned").get("pinnedAt").getAsLong());
+        JsonObject seen = json(call("GET", "/api/items/" + id, null, null));
+        assertEquals(at, seen.getAsJsonObject("pinned").get("pinnedAt").getAsLong());
+        assertEquals(java.util.Set.of("pinnedAt"), seen.getAsJsonObject("pinned").keySet());
+        assertFalse(seen.getAsJsonObject("you").get("canPin").getAsBoolean());
+        assertEquals(1, audits(Items.AUDIT_PINNED, id));
+        // pinning again changes nothing (the first pin's time stays, no second audit row)
+        clock.advance(5_000);
+        assertEquals(at, json(call("PUT", "/api/items/" + id + "/pin", admin, null))
+                .getAsJsonObject("pinned").get("pinnedAt").getAsLong());
+        assertEquals(1, audits(Items.AUDIT_PINNED, id));
+
+        // a user given library.pin unpins and pins it
+        io.siggi.togethertunes.auth.Roles roles = new io.siggi.togethertunes.auth.Roles(db);
+        io.siggi.togethertunes.auth.Roles.Role pinner = roles.create("Pinner",
+                java.util.List.of(io.siggi.togethertunes.auth.Permission.LIBRARY_PIN), false);
+        roles.setUserRoles(bobId, java.util.List.of(pinner.id()));
+        HttpResponse<String> unpinned = call("DELETE", "/api/items/" + id + "/pin", bob, null);
+        assertEquals(200, unpinned.statusCode(), unpinned.body());
+        assertFalse(json(unpinned).has("pinned"));
+        assertTrue(json(unpinned).getAsJsonObject("you").get("canPin").getAsBoolean());
+        assertArrayEquals(new Object[] {null, null}, pinRow(id));
+        assertEquals(1, audits(Items.AUDIT_UNPINNED, id));
+        assertEquals(200, call("DELETE", "/api/items/" + id + "/pin", bob, null).statusCode());
+        assertEquals(1, audits(Items.AUDIT_UNPINNED, id));
+        assertEquals(200, call("PUT", "/api/items/" + id + "/pin", bob, null).statusCode());
+        assertArrayEquals(new Object[] {clock.millis(), bobId}, pinRow(id));
+
+        assertEquals("item_not_found", code(call("PUT", "/api/items/" + UuidV7.newId() + "/pin", admin, null)));
+        assertEquals("item_not_found", code(call("DELETE", "/api/items/not-an-id/pin", bob, null)));
+    }
+
     @Test
     void getShowsTheItemToAnyone() throws Exception {
         String id = item("video");
@@ -193,7 +273,7 @@ class ItemsApiTest {
         assertEquals(JsonParser.parseString("{\"id\":\"" + id + "\",\"kind\":\"video\",\"title\":\"Song\","
                 + "\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\",\"presentAsAudio\":false,"
                 + "\"mediaType\":\"uncategorized\",\"addedAt\":3,\"mediaVersion\":0,\"hasCover\":false,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
-                + "\"canRetry\":false}}"), page);
+                + "\"canRetry\":false,\"canPin\":false}}"), page);
         JsonObject mine = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you");
         assertTrue(mine.get("inLibrary").getAsBoolean() && mine.get("canEdit").getAsBoolean());
         assertFalse(mine.get("canPurge").getAsBoolean());

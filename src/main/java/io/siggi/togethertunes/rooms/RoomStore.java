@@ -341,7 +341,8 @@ final class RoomStore {
      * Sets an entry's state (and {@code played_at}, if not {@code null}), and touches its item's
      * {@code last_referenced_at} ({@link References#touchQueueEntry}): every way an entry stops
      * (played, skipped, removed, rejected) or starts again (previous) being a reference goes
-     * through here, so retention can't miss one.
+     * through here, so retention can't miss one. An entry becoming {@code playing} (current) is a
+     * view of its item ({@link io.siggi.togethertunes.library.Views#queueEntry}).
      */
     static void setEntryState(Connection c, String roomId, String entryId, QueueEntry.State state, Long playedAt,
                               long now) throws SQLException {
@@ -360,6 +361,10 @@ final class RoomStore {
             }
         }
         References.touchQueueEntry(c, entryId, now);
+        if (state == QueueEntry.State.PLAYING) {
+            // the entry became current: a view of its item (docs/media-types.md#views-auto-delete-and-pins)
+            io.siggi.togethertunes.library.Views.queueEntry(c, entryId, now);
+        }
     }
 
     /**

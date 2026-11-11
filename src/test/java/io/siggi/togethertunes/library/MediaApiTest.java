@@ -39,7 +39,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-/** {@code GET /media/{id}/{file}} over HTTP ({@link MediaApi}): access rules, Range, content types, 404s. */
+/**
+ * {@code GET /media/{id}/{file}} over HTTP ({@link MediaApi}): access rules, Range, content types,
+ * 404s; and views ({@code POST /api/items/{id}/view}).
+ */
 class MediaApiTest {
     @TempDir
     Path dir;
@@ -65,7 +68,7 @@ class MediaApiTest {
         BuiltinRoles.ensure(db);
         settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        api = TestUploads.mediaApi(db, dir, settings, playing::contains);
+        api = TestUploads.mediaApi(db, dir, settings, playing::contains, clock);
         api.register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         media = dir.resolve("data").resolve("media");
@@ -350,6 +353,112 @@ class MediaApiTest {
         assertArrayEquals(Files.readAllBytes(media.resolve(id).resolve("audio.m4a")),
                 get("/media/" + id + "/audio.m4a", alice).body(), "the file is untouched");
         assertEquals(100, Files.size(media.resolve(id).resolve("audio.m4a")));
+    }
+
+    private Long lastViewedAt(String itemId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT last_viewed_at FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    long v = rs.getLong(1);
+                    return rs.wasNull() ? null : v;
+                }
+            }
+        });
+    }
+
+    private void setStatus(String itemId, String status) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = ? WHERE id = ?")) {
+                ps.setString(1, status);
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Fetching a media file, whole, by Range or HEAD, is never a view. */
+    @Test
+    void fileGetsAreNeverViews() throws Exception {
+        String video = item("video", "ready", null);
+        write(video, "mezz.mp4", 5_000);
+        write(video, "audio.m4a", 2_000);
+        write(video, "audio-only.m4a", 2_000);
+        write(video, "cover.jpg", 100);
+        for (String file : new String[] {"mezz.mp4", "audio.m4a", "audio-only.m4a", "cover.jpg"}) {
+            assertEquals(200, get("/media/" + video + "/" + file, alice).statusCode(), file);
+            assertEquals(200, get(MediaApi.url(video, 0, file), alice).statusCode(), file);
+            assertEquals(206, call("GET", "/media/" + video + "/" + file, alice, "bytes=0-9").statusCode(), file);
+            assertEquals(200, call("HEAD", "/media/" + video + "/" + file, alice, null).statusCode(), file);
+        }
+        playing.add(video); // guests and anonymous visitors playing it in a room: not a view either
+        assertEquals(200, get("/media/" + video + "/mezz.mp4", null).statusCode());
+        String song = item("audio", "ready", "original.flac");
+        write(song, "audio.m4a", 1_000);
+        write(song, "original.flac", 1_000);
+        assertEquals(200, get("/media/" + song + "/audio.m4a", alice).statusCode());
+        assertEquals(200, get("/media/" + song + "/original", alice).statusCode());
+        assertEquals(null, lastViewedAt(video));
+        assertEquals(null, lastViewedAt(song));
+    }
+
+    /**
+     * A view reported by a client: by whoever may play the item, sets {@code last_viewed_at};
+     * one per actor and item a minute is recorded (later reports within it answer 204 and write nothing).
+     */
+    @Test
+    void reportedViews() throws Exception {
+        String id = item("audio", "ready", null);
+        write(id, "audio.m4a", 100);
+        long t0 = clock.millis();
+        HttpResponse<byte[]> r = call("POST", "/api/items/" + id + "/view", alice, null);
+        assertEquals(204, r.statusCode());
+        assertEquals(t0, lastViewedAt(id));
+
+        // within the minute: answered, not written
+        clock.advance(30_000);
+        assertEquals(204, call("POST", "/api/items/" + id + "/view", alice, null).statusCode());
+        assertEquals(t0, lastViewedAt(id));
+        // a minute after the recorded one: recorded
+        clock.advance(30_000);
+        assertEquals(204, call("POST", "/api/items/" + id + "/view", alice, null).statusCode());
+        assertEquals(t0 + 60_000, lastViewedAt(id));
+        // the limit is per item: another item is recorded at once
+        String other = item("video", "ready", null);
+        assertEquals(204, call("POST", "/api/items/" + other + "/view", alice, null).statusCode());
+        assertEquals(t0 + 60_000, lastViewedAt(other));
+
+        // guests and anonymous visitors: only what they may play (refused before the item is looked up)
+        clock.advance(1_000);
+        HttpResponse<byte[]> refused = call("POST", "/api/items/" + id + "/view", null, null);
+        assertEquals(403, refused.statusCode());
+        assertEquals("forbidden", code(refused));
+        assertEquals(403, call("POST", "/api/items/" + UuidV7.newId() + "/view", null, null).statusCode());
+        assertEquals(t0 + 60_000, lastViewedAt(id));
+        playing.add(id);
+        // the limit is per actor too: alice's recent view doesn't hold back an anonymous one
+        assertEquals(204, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
+        assertEquals(t0 + 61_000, lastViewedAt(id));
+        playing.clear();
+        settings.set(Settings.GUESTS_DOWNLOAD, true);
+        clock.advance(60_000);
+        assertEquals(204, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
+        assertEquals(t0 + 121_000, lastViewedAt(id));
+
+        // nothing to play: unknown, not ready, purged
+        assertEquals("item_not_found", code(call("POST", "/api/items/" + UuidV7.newId() + "/view", alice, null)));
+        assertEquals("item_not_found", code(call("POST", "/api/items/not-an-id/view", alice, null)));
+        String pending = item("video", "pending", null);
+        HttpResponse<byte[]> notReady = call("POST", "/api/items/" + pending + "/view", alice, null);
+        assertEquals(409, notReady.statusCode());
+        assertEquals("item_not_ready", code(notReady));
+        setStatus(other, "purged");
+        clock.advance(120_000);
+        assertEquals("item_not_ready", code(call("POST", "/api/items/" + other + "/view", alice, null)));
+        assertEquals(null, lastViewedAt(pending));
+        assertEquals(t0 + 60_000, lastViewedAt(other));
     }
 
     @Test

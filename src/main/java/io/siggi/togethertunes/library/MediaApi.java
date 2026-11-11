@@ -4,8 +4,11 @@ import io.siggi.togethertunes.DataDir;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.http.IpKeys;
+import io.siggi.togethertunes.http.RateLimiter;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
@@ -19,6 +22,7 @@ import java.nio.file.Path;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Clock;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -62,6 +66,17 @@ import java.util.regex.Pattern;
  *       {@code private, max-age=31536000, immutable}; the original under a versioned URL is
  *       revalidated like an unversioned one.</li>
  * </ul>
+ *
+ * <p><b>Views</b> ({@code docs/media-types.md#views-auto-delete-and-pins}, {@link Views}): a
+ * {@code GET} of a file is never a view. A client that starts playing an item outside a room
+ * reports it: {@code POST /api/items/{id}/view} (no body) → {@code 204}, setting
+ * {@code items.last_viewed_at}. Allowed for whoever may play the item (the access rule above, for
+ * its media files: {@code 403 forbidden} otherwise, decided before the item is looked up);
+ * {@code 404 item_not_found}, {@code 409 item_not_ready} (not ready or purged: nothing to play).
+ * Rate-limited per actor (user, guest, or an anonymous caller's IP key) and item: one view per
+ * {@value #VIEW_INTERVAL_MS} ms is recorded; a report within that answers {@code 204} too but
+ * writes nothing (the view a moment ago already counts, so a client pausing and resuming needn't
+ * care).
  */
 public final class MediaApi {
     /** A video's audio-only file (its audio trim), played only in audio-only rooms. */
@@ -94,6 +109,9 @@ public final class MediaApi {
 
     private static final String ORIGINAL = "original";
 
+    /** At most one recorded view per actor and item in this many ms. */
+    public static final long VIEW_INTERVAL_MS = 60_000;
+
     /** A version number in the URL: 0 or a positive number without leading zeros, at most 9 digits. */
     private static final Pattern VERSION = Pattern.compile("0|[1-9][0-9]{0,8}");
 
@@ -104,17 +122,74 @@ public final class MediaApi {
     private final Path mediaDir;
     private final Settings settings;
     private final PlayingItems playing;
+    private final Clock clock;
+    private final RateLimiter views;
 
     public MediaApi(Database db, DataDir dataDir, Settings settings, PlayingItems playing) {
+        this(db, dataDir, settings, playing, Clock.systemUTC());
+    }
+
+    public MediaApi(Database db, DataDir dataDir, Settings settings, PlayingItems playing, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.mediaDir = dataDir.media().toAbsolutePath().normalize();
         this.settings = Objects.requireNonNull(settings);
         this.playing = Objects.requireNonNull(playing);
+        this.clock = Objects.requireNonNull(clock);
+        this.views = new RateLimiter("views", 1, VIEW_INTERVAL_MS, clock);
     }
 
     public void register(Router router) {
         router.get("/media/{id}/{file}", this::handle);
         router.get("/media/{id}/v/{version}/{file}", this::handle);
+        router.post("/api/items/{id}/view", this::view);
+    }
+
+    /** {@code POST /api/items/{id}/view}: see the class comment. */
+    void view(Request request, Response response) throws IOException, SQLException {
+        Actor actor = ActorResolver.actor(request);
+        String itemId = request.pathParam("id");
+        if (!allowed(actor, itemId, "audio.m4a")) {
+            throw new HttpError(403, "forbidden", "Guests can only play what a room is playing");
+        }
+        if (!UuidV7.isValid(itemId)) {
+            throw itemNotFound();
+        }
+        String status = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT status FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+        if (status == null) {
+            throw itemNotFound();
+        }
+        if (!"ready".equals(status)) {
+            throw new HttpError(409, "item_not_ready", "The item can't be played now");
+        }
+        response.header("Cache-Control", "no-store");
+        if (views.tryAcquire(viewKey(actor, request.clientIp()) + "|" + itemId) == 0) {
+            long now = EpochMs.now(clock);
+            db.write(c -> {
+                Views.record(c, itemId, now);
+                return null;
+            });
+        }
+        response.empty(204);
+    }
+
+    /** Who reports a view, for the rate limit: the user, the guest, or an anonymous caller's IP key. */
+    private static String viewKey(Actor actor, String clientIp) {
+        return switch (actor) {
+            case Actor.User u -> "u:" + u.userId();
+            case Actor.Guest g -> "g:" + g.guestId();
+            case Actor.Anonymous a -> {
+                String ip = clientIp == null ? "" : clientIp;
+                String key = IpKeys.ipKey(ip);
+                yield "ip:" + (key == null ? ip : key);
+            }
+        };
     }
 
     /** The served URL of an item's file in one version (what clients are given). */

@@ -271,6 +271,12 @@ class PermissionMatrixTest {
             // (ItemsApiTest and TrimTest cover the trim itself).
             row("POST /api/items/{id}/trim", c -> Call.post("/api/items/" + c.itemId() + "/trim",
                     "{\"videoStartMs\":2000}"), 401, 401, 403, 409),
+            // Pins: library.pin (not in the default user role; admins hold every permission).
+            row("PUT /api/items/{id}/pin", c -> Call.put("/api/items/" + c.itemId() + "/pin", null), 401, 401, 403, 200),
+            row("DELETE /api/items/{id}/pin", c -> Call.delete("/api/items/" + c.itemId() + "/pin"), 401, 401, 403, 200),
+            // A view (playback outside a room): whoever may play the item, as for its media files.
+            row("POST /api/items/{id}/view", c -> Call.post("/api/items/" + c.itemId() + "/view", null),
+                    403, 403, 204, 204),
             // Media files: users always; guests only with guests.download (off) or a playing item (no rooms yet).
             row("GET /media/{id}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/audio.m4a"), 403, 403, 200, 200),
             row("GET /media/{id}/v/{version}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/v/0/audio.m4a"),

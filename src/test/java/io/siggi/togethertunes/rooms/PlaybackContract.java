@@ -449,6 +449,52 @@ abstract class PlaybackContract {
         assertEquals(List.of("playing", b[0], t.anchorServerMs(), 0L), roomRow().subList(0, 4));
     }
 
+    /** {@code items.last_viewed_at}, or null. */
+    private Long lastViewedAt(String itemId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT last_viewed_at FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    long v = rs.getLong(1);
+                    return rs.wasNull() ? null : v;
+                }
+            }
+        });
+    }
+
+    /**
+     * A view ({@code docs/media-types.md#views-auto-delete-and-pins}): an entry becoming current
+     * sets its item's {@code last_viewed_at}, whether it starts, follows a natural end or a skip;
+     * entries that are only queued, skipped over or paused aren't views.
+     */
+    @Test
+    void anEntryBecomingCurrentIsAView() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] notReady = entry("processing", null);
+        String[] b = entry("ready", 60_000L);
+        String[] c = entry("ready", 60_000L);
+        assertNull(lastViewedAt(a[1]));
+        registry.call(roomId, Playback::startIfIdle);
+        assertEquals(T0, lastViewedAt(a[1]));
+        assertNull(lastViewedAt(b[1]));
+
+        clock.advance(5_000);
+        registry.call(roomId, Playback::pause);
+        assertEquals(T0, lastViewedAt(a[1]), "a pause isn't a view");
+        registry.call(roomId, tx -> Playback.advance(tx, QueueEntry.State.SKIPPED));
+        assertEquals(T0 + 5_000, lastViewedAt(b[1]));
+        assertEquals(T0, lastViewedAt(a[1]));
+        assertNull(lastViewedAt(notReady[1]), "skipped over, never current");
+
+        registry.call(roomId, Playback::play);
+        tick(60_000); // B ends naturally: C becomes current
+        awaitTimeline(c[0]);
+        assertEquals(T0 + 65_000, lastViewedAt(c[1]));
+        assertEquals(T0 + 5_000, lastViewedAt(b[1]));
+        assertNull(lastViewedAt(notReady[1]));
+    }
+
     @Test
     void advancingBySkippingMarksTheEntrySkipped() throws Exception {
         String[] a = entry("ready", 60_000L);

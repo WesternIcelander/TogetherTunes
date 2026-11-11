@@ -30,7 +30,7 @@ import java.util.Set;
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
  *       "mediaType", "show"?: {"name", "season"?, "episode"},
- *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry"},
+ *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry", "canPin"}, "pinned"?: {"pinnedAt"},
  *       "undo"?: {"changedAt"}}}. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
@@ -65,6 +65,13 @@ import java.util.Set;
  *       trims as {@code trim: {"videoStartMs", "videoEndMs"?, "originalMs", "audioStartMs"?, "audioEndMs"?,
  *       "audioOnlyMs"?, "firstGopFrames"?}} for those who may trim it ({@code firstGopFrames}: a video's
  *       current encode's first GOP, 1..60).</li>
+ *   <li>{@code PUT} / {@code DELETE /api/items/{id}/pin} (no body) → the item page: pin or unpin
+ *       the item ({@code docs/media-types.md#views-auto-delete-and-pins}, {@link Items#pin}): a
+ *       pinned item is never deleted automatically. {@code library.pin} (admins hold every
+ *       permission; {@code 401 not_authenticated} for guests and anonymous callers, {@code 403
+ *       forbidden} for other users); idempotent; {@code 404 item_not_found}. The item page carries
+ *       {@code pinned: {"pinnedAt"}} while pinned (for every caller; not who pinned it) and
+ *       {@code you.canPin}. Views ({@code POST /api/items/{id}/view}) are {@link MediaApi}'s.</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
  *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",
@@ -107,6 +114,8 @@ public final class ItemsApi {
         router.get("/api/items/{id}/job", this::job);
         router.post("/api/items/{id}/undo", this::undo);
         router.post("/api/items/{id}/trim", this::trim);
+        router.put("/api/items/{id}/pin", this::pin, permissions.hook(Permission.LIBRARY_PIN));
+        router.delete("/api/items/{id}/pin", this::unpin, permissions.hook(Permission.LIBRARY_PIN));
         if (youtube != null) {
             router.post("/api/items/{id}/retry", this::retry);
         }
@@ -118,7 +127,23 @@ public final class ItemsApi {
         }
         return new Items.Rights(permissions.allowed(actor, Permission.LIBRARY_EDIT_ANY),
                 permissions.allowed(actor, Permission.LIBRARY_PURGE), permissions.allowed(actor, Permission.ADMIN_JOBS),
-                youtube != null && permissions.enabled(Feature.YOUTUBE));
+                youtube != null && permissions.enabled(Feature.YOUTUBE),
+                permissions.allowed(actor, Permission.LIBRARY_PIN));
+    }
+
+    private void pin(Request request, Response response) throws Exception {
+        setPinned(request, response, true);
+    }
+
+    private void unpin(Request request, Response response) throws Exception {
+        setPinned(request, response, false);
+    }
+
+    private void setPinned(Request request, Response response, boolean pinned) throws Exception {
+        Actor.User user = (Actor.User) ActorResolver.actor(request); // the permission hook let only users through
+        Items.ItemPage page = items.pin(user, request.pathParam("id"), pinned, rights(user), request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.json(page);
     }
 
     private void retry(Request request, Response response) throws Exception {

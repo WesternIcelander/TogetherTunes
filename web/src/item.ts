@@ -15,6 +15,7 @@ import {
   fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan, trimBody, type Range,
   type TrimEstimate, type TrimView,
 } from "./trim.js";
+import { pinPath, pinText, viewPath, viewReporter } from "./views.js";
 
 let me: Me;
 let itemId = "";
@@ -22,6 +23,8 @@ let stopWatching: (() => void) | undefined;
 /** The media element is kept across re-renders so playback isn't interrupted. */
 let player: HTMLMediaElement | undefined;
 let playerFor = "";
+/** Reports a view when local playback starts (at most once a minute per item; views.ts). */
+const reportView = viewReporter((id) => api("POST", viewPath(id)));
 /** Whether the job log is expanded (undefined: the default, open for a failed item). */
 let logOpen: boolean | undefined;
 
@@ -82,6 +85,9 @@ function renderPlayer(item: ItemPage): HTMLElement | null {
     player = video
       ? h("video", { controls: true, preload: "metadata", playsinline: true, src })
       : h("audio", { controls: true, preload: "none", src });
+    const id = item.id;
+    // Local playback outside a room is a view (docs/media-types.md#views-auto-delete-and-pins).
+    player.addEventListener("play", () => reportView(id));
     playerFor = src;
   }
   return h("div", { class: "player" }, player);
@@ -423,6 +429,13 @@ function render(item: ItemPage, job: JobView | undefined): void {
       await refresh();
     }, showError));
   }
+  if (item.you.canPin === true) {
+    actions.append(button(item.pinned !== undefined ? "Unpin" : "Pin", async () => {
+      await api(item.pinned !== undefined ? "DELETE" : "PUT", pinPath(item.id));
+      showNotice(item.pinned !== undefined ? "Unpinned." : "Pinned: its media is never deleted automatically.");
+      await refresh();
+    }, showError));
+  }
   if (item.you.canPurge && item.status !== "purged") {
     actions.append(button("Purge media", async () => {
       if (!confirm("Delete this item's media files from the server now? Its entry stays, as \"media expired\".")) return;
@@ -442,7 +455,8 @@ function render(item: ItemPage, job: JobView | undefined): void {
           field("Length", formatDuration(item.durationMs)),
           field("Kind", kindLabel(item)),
           field("Source", source),
-          field("Added", formatTime(item.addedAt))))),
+          field("Added", formatTime(item.addedAt)),
+          field("Pinned", pinText(item.pinned, formatTime))))),
     item.status === "failed" && item.error !== undefined ? h("p", { class: "error", text: "Ingest failed: " + item.error }) : null,
     item.stillImage !== undefined
       ? h("p", { class: "error", text: stillImageWarning(item.source, formatTime(item.stillImage.videoDeletedAt)) })

@@ -136,6 +136,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Items$JobView",
             "io.siggi.togethertunes.library.Items$UndoView",
             "io.siggi.togethertunes.library.Items$StillImageView",
+            "io.siggi.togethertunes.library.Items$PinView",
             "io.siggi.togethertunes.library.Items$TrimView",
             "io.siggi.togethertunes.library.Items$You",
             "io.siggi.togethertunes.library.Library$Entry",
@@ -718,6 +719,7 @@ class DtoIpLeakTest {
         produced.add(new io.siggi.togethertunes.library.Classify.Suggestion("show",
                 new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
         produced.add(new Items.StillImageView(1_700_000_000_000L)); // the item page's still-image warning
+        produced.add(new Items.PinView(1_700_000_000_000L)); // the item page's pin (not who pinned it)
         produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
         for (Library.Entry e : library.list(aliceId, null, null, null, Library.LIST_MAX).items()) {
             Actor.User alice = new Actor.User(aliceId, "s", Actor.Via.BEARER);
@@ -1131,6 +1133,11 @@ class DtoIpLeakTest {
         Files.createDirectories(itemDir);
         Files.write(itemDir.resolve("audio.m4a"), new byte[16]);
         expect(200, alice, "GET", "/media/" + itemId + "/audio.m4a", null);
+        expect(204, alice, "POST", "/api/items/" + itemId + "/view", null);
+        // pinned (the sweeps see the pin on the item page), unpinned and pinned again
+        expect(200, admin, "PUT", "/api/items/" + itemId + "/pin", null);
+        expect(200, admin, "DELETE", "/api/items/" + itemId + "/pin", null);
+        expect(200, admin, "PUT", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
         // undo of a media change: alice's own item, edited (version 2, version 1 kept for undo), undone

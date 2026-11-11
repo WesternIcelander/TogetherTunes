@@ -59,6 +59,10 @@ public final class Items {
     public static final String AUDIT_TRIMMED = "item.trimmed";
     /** {@code audit_log} action of a purge by a person ({@code library.purge}). */
     public static final String AUDIT_PURGED = "item.purged";
+    /** {@code audit_log} action of pinning an item ({@code PUT /api/items/{id}/pin}). */
+    public static final String AUDIT_PINNED = "item.pinned";
+    /** {@code audit_log} action of unpinning an item ({@code DELETE /api/items/{id}/pin}). */
+    public static final String AUDIT_UNPINNED = "item.unpinned";
 
     private static final System.Logger LOG = System.getLogger(Items.class.getName());
 
@@ -98,19 +102,30 @@ public final class Items {
      *                 the page asks for it only if so)
      * @param stillImage while the video of an item detected as a still image is kept (for anyone
      *                 who can see the item), else null
+     * @param pinned   while the item is pinned (never deleted automatically), for anyone who can
+     *                 see the item (not who pinned it), else null
      */
     public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio,
                            String mediaType, MediaType.Show show, long addedAt,
                            String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover,
-                           StillImageView stillImage) {
+                           StillImageView stillImage, PinView pinned) {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, String mediaType, MediaType.Show show,
                         long addedAt, String error, int mediaVersion, You you) {
             this(id, kind, title, artist, album, durationMs, source, youtubeId, status,
                     MediaType.presentAsAudio(kind, mediaType), mediaType, show, addedAt, error,
-                    mediaVersion, you, null, null, false, null);
+                    mediaVersion, you, null, null, false, null, null);
         }
+    }
+
+    /**
+     * A pinned item ({@code docs/media-types.md#views-auto-delete-and-pins}): its media is never
+     * deleted automatically.
+     *
+     * @param pinnedAt when it was pinned (epoch ms)
+     */
+    public record PinView(long pinnedAt) {
     }
 
     /**
@@ -161,10 +176,16 @@ public final class Items {
      * @param canRetry  whether the caller may retry the item's failed ingest now
      *                  ({@code POST /api/items/{id}/retry}): a failed YouTube item, YouTube imports
      *                  on, and the caller may edit the item or holds {@code admin.jobs}
+     * @param canPin    whether the caller may pin and unpin the item ({@code library.pin}; admins
+     *                  hold every permission)
      */
-    public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry) {
+    public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin) {
         public You(boolean inLibrary, boolean canEdit, boolean canPurge) {
-            this(inLibrary, canEdit, canPurge, false);
+            this(inLibrary, canEdit, canPurge, false, false);
+        }
+
+        public You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry) {
+            this(inLibrary, canEdit, canPurge, canRetry, false);
         }
     }
 
@@ -203,10 +224,15 @@ public final class Items {
      *
      * @param retryAny holds {@code admin.jobs}: may retry any failed YouTube item
      * @param youtube  YouTube imports are on ({@code ytdlp.enabled}); retries need it
+     * @param pin      holds {@code library.pin}: may pin and unpin any item
      */
-    public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube) {
+    public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin) {
         public Rights(boolean editAny, boolean purge) {
-            this(editAny, purge, false, false);
+            this(editAny, purge, false, false, false);
+        }
+
+        public Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube) {
+            this(editAny, purge, retryAny, youtube, false);
         }
     }
 
@@ -269,7 +295,7 @@ public final class Items {
         boolean canEdit = user && (rights.editAny() || adder && inLibrary);
         boolean retryable = "youtube".equals(row.source()) && "failed".equals(row.status());
         return new You(inLibrary, canEdit, user && rights.purge(),
-                retryable && rights.youtube() && (canEdit || user && rights.retryAny()));
+                retryable && rights.youtube() && (canEdit || user && rights.retryAny()), user && rights.pin());
     }
 
     private ItemPage page(Connection c, Row r, You you) throws SQLException {
@@ -286,6 +312,16 @@ public final class Items {
             java.util.OptionalLong until = v.keptVideoUntil(c, r.id());
             if (until.isPresent()) {
                 stillImage = new StillImageView(until.getAsLong());
+            }
+        }
+        PinView pinned = null;
+        try (PreparedStatement ps = c.prepareStatement("SELECT pinned_at FROM items WHERE id = ?")) {
+            ps.setString(1, r.id());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    long at = rs.getLong(1);
+                    pinned = rs.wasNull() ? null : new PinView(at);
+                }
             }
         }
         TrimView trim = null;
@@ -310,7 +346,7 @@ public final class Items {
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.mediaType(), r.show(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
-                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage);
+                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage, pinned);
     }
 
     /**
@@ -559,6 +595,43 @@ public final class Items {
                         + " admin.jobs, can retry it");
             }
             return null;
+        });
+    }
+
+    /**
+     * Pins ({@code pinned}) or unpins the item for a user holding {@code library.pin} (the route's
+     * check) and returns the item page ({@code docs/media-types.md#views-auto-delete-and-pins}): a
+     * pinned item is never deleted automatically. Pinning a pinned item, or unpinning one that isn't,
+     * changes nothing (the first pin's time and user stay). Audited ({@value #AUDIT_PINNED},
+     * {@value #AUDIT_UNPINNED}) when something changed. {@code 404 item_not_found}.
+     */
+    public ItemPage pin(Actor.User actor, String itemId, boolean pinned, Rights rights, String clientIp)
+            throws SQLException {
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            Row row = lockedRow(c, itemId);
+            if (row == null) {
+                throw notFound();
+            }
+            String sql = pinned
+                    ? "UPDATE items SET pinned_at = ?, pinned_by_user_id = ? WHERE id = ? AND pinned_at IS NULL"
+                    : "UPDATE items SET pinned_at = NULL, pinned_by_user_id = NULL WHERE id = ? AND pinned_at IS NOT NULL";
+            int changed;
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                if (pinned) {
+                    ps.setLong(1, now);
+                    ps.setString(2, actor.userId());
+                    ps.setString(3, itemId);
+                } else {
+                    ps.setString(1, itemId);
+                }
+                changed = ps.executeUpdate();
+            }
+            if (changed > 0) {
+                AuditLog.write(c, now, actor.userId(), null, clientIp, pinned ? AUDIT_PINNED : AUDIT_UNPINNED, itemId,
+                        Map.of("title", row.title()));
+            }
+            return page(c, row, you(c, actor, row, rights));
         });
     }
 
