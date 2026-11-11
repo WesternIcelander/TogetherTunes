@@ -773,6 +773,10 @@ Web client:
   - **Done 2026-11-11** at main `70b92a7`. No production change needed. New `output/NoVideoOverlayPermissionTest` (real gating on SQLite: server and room `overlay.enabled` on, the room owner holds only the default `user` role, checked not to include `output.overlayVideo`; `OverlayCards.lookupsFrom` + real `OverlayDecisions`, `OverlayCards.forRoom` with `OverlayVideoJobs` on a 1-worker pool, `ProgramMedia`, `OfflineHarness` into a `.ts`). Script: audio item `a0`, then music video `v0`, then the idle filler. Checks: both entries' recorded decision is `cards`; no re-encode started (nothing under `rooms/<room>/ov/`); ZXing finds the room's QR code on **every** frame of the audio item's card and of the filler card and on **no** frame of the music video; `assertDecodesClean`, `assertPackets`. Measured: a0 225/225 frames with the QR code, v0 0/309, filler 120/120.
   - Tests run: `mvn package -DskipTests`; `mvn test -Dtest='NoVideoOverlayPermissionTest'`.
 - [ ] **Gate M5:** check every step in M5. If all are `[x]`, run the full `mvn verify` (unit and integration tests); if it passes, tick this gate and return ok=true so the run continues with the next milestone, and if it fails, leave it unchecked, note the failing tests under it and return ok=false. If any step isn't `[x]`, list the ones that aren't (especially `[?]`) under it, leave it unchecked and return ok=false **without running the tests** (they'd be wasted: the run stops either way).
+  - **Not ticked (2026-11-11):** two M5 steps are still `[?]` (awaiting Siggi's manual check), so `mvn verify` was not run:
+    - `[?]` *(manual)* A QR code on an audio item scans from a phone pointed at a screen playing the stream, and the "Requests at …" text is readable.
+    - `[?]` *(manual)* Visual check of the mid-item overlay switch: no visible glitch.
+    - Every other M5 step is `[x]`. (Siggi's message at the start of this run, "1 through 3 all pass … I'd say 4 is also a pass", is about the M4 VRChat checks, which were already `[x]`; the skip report it mentions is covered by M4's "Delayed start after a skip" step.)
 
 ## M6 — OIDC and OAuth
 
