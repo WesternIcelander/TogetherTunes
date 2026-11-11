@@ -92,10 +92,15 @@ class YoutubeImportsApiTest {
     }
 
     private HttpRequest post(String accept) {
+        return post(accept, ",\"mediaType\":\"music_video\"");
+    }
+
+    private HttpRequest post(String accept, String extra) {
         return HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + "/api/imports/youtube"))
                 .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
                 .header("Accept", accept)
-                .POST(HttpRequest.BodyPublishers.ofString("{\"url\":\"https://youtu.be/" + ID + "\"}")).build();
+                .POST(HttpRequest.BodyPublishers.ofString("{\"url\":\"https://youtu.be/" + ID + "\"" + extra + "}"))
+                .build();
     }
 
     /** The lines of a streamed answer, each with the ms since the request was sent. */
@@ -146,6 +151,49 @@ class YoutubeImportsApiTest {
         HttpResponse<String> r = http.send(post("application/json"), HttpResponse.BodyHandlers.ofString());
         assertEquals(200, r.statusCode(), r.body());
         assertEquals("pending", JsonParser.parseString(r.body()).getAsJsonObject().get("status").getAsString());
+    }
+
+    /**
+     * Classify on library add: without a media type the import still happens, then the answer is
+     * 409 needs_classification with the item (in the stream: the error line carries it too).
+     */
+    @Test
+    void anUncategorizedVideoForTheLibraryNeedsAType() throws Exception {
+        HttpResponse<java.io.InputStream> r = http.send(post("application/x-ndjson", ""),
+                HttpResponse.BodyHandlers.ofInputStream());
+        List<Line> lines = stream(r, System.nanoTime());
+        JsonObject last = lines.get(lines.size() - 1).json();
+        assertEquals("error", last.get("type").getAsString(), lines.toString());
+        assertEquals(409, last.get("status").getAsInt());
+        JsonObject error = last.getAsJsonObject("error");
+        assertEquals("needs_classification", error.get("code").getAsString());
+        String itemId = error.get("itemId").getAsString();
+        assertFalse(error.has("suggested"), "nothing in the metadata suggests a type");
+
+        HttpResponse<String> plain = http.send(post("application/json", ""), HttpResponse.BodyHandlers.ofString());
+        assertEquals(409, plain.statusCode(), plain.body());
+        assertEquals(itemId, JsonParser.parseString(plain.body()).getAsJsonObject().getAsJsonObject("error")
+                .get("itemId").getAsString());
+        // not for the library: no question
+        HttpResponse<String> room = http.send(post("application/json", ",\"addToLibrary\":false"),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, room.statusCode(), room.body());
+        // a bad type is refused up front
+        HttpResponse<String> bad = http.send(post("application/json", ",\"mediaType\":\"uncategorized\""),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, bad.statusCode(), bad.body());
+        HttpResponse<String> ok = http.send(post("application/json", ",\"mediaType\":\"movie\""),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, ok.statusCode(), ok.body());
+        assertEquals("movie", db.read(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT media_type FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (java.sql.ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        }));
     }
 
     @Test

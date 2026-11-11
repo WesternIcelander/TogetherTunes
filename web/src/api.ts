@@ -2,7 +2,12 @@
 
 /** An error response: `{ "error": { "code", "message" } }`, or a network failure (status 0). */
 export class ApiError extends Error {
-  constructor(readonly status: number, readonly code: string, message: string) {
+  /**
+   * `details`: the whole error object, for errors that carry more than code and message (e.g.
+   * `409 needs_classification` with `itemId` and `suggested`).
+   */
+  constructor(readonly status: number, readonly code: string, message: string,
+    readonly details?: Record<string, unknown>) {
     super(message);
   }
 }
@@ -36,7 +41,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
   if (!response.ok) {
     const error = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
     throw new ApiError(response.status, error?.code ?? "http_" + response.status,
-      error?.message ?? response.statusText);
+      error?.message ?? response.statusText, error as Record<string, unknown> | undefined);
   }
   return json as T;
 }

@@ -838,3 +838,35 @@ table.rooms td {
   height: auto;
   border: 1px solid #888;
 }
+
+/* The classify prompt (classifyprompt.ts): a plain box over the page. */
+.classify-prompt {
+  position: fixed;
+  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.classify-prompt .form {
+  background: #fff;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  max-width: 28rem;
+  width: 100%;
+  max-height: 100%;
+  overflow: auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .classify-prompt .form {
+    background: #222;
+  }
+}

@@ -130,6 +130,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Users$RoleRef",
             "io.siggi.togethertunes.auth.Users$UserView",
             "io.siggi.togethertunes.http.EchoEndpoint$Closed",
+            "io.siggi.togethertunes.library.Classify$Suggestion",
+            "io.siggi.togethertunes.library.Classify$SuggestedShow",
             "io.siggi.togethertunes.library.Items$ItemPage",
             "io.siggi.togethertunes.library.Items$JobView",
             "io.siggi.togethertunes.library.Items$UndoView",
@@ -167,6 +169,8 @@ class DtoIpLeakTest {
 
     /** Records that never reach a client, and why. */
     private static final Map<String, String> INTERNAL = Map.ofEntries(
+            Map.entry("io.siggi.togethertunes.library.Classify$Classification", "a media type parsed from a"
+                    + " request body; written to the item, never sent"),
             Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Kept", "what the database says about an"
                     + " item's kept undo version, for the undo checks; never sent"),
             Map.entry("io.siggi.togethertunes.ingest.MediaVersions$Undone", "an undo's outcome; the API answers"
@@ -708,6 +712,8 @@ class DtoIpLeakTest {
             produced.add(guests.get(g.guest().id()));
         }
         produced.add(new AuditEntries(database).list(null, null, null, 200));
+        produced.add(new io.siggi.togethertunes.library.Classify.Suggestion("show",
+                new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
         produced.add(library.list(aliceId, null, null, null, Library.LIST_MAX));
         for (Library.Entry e : library.list(aliceId, null, null, null, Library.LIST_MAX).items()) {
             Actor.User alice = new Actor.User(aliceId, "s", Actor.Via.BEARER);
@@ -1082,8 +1088,11 @@ class DtoIpLeakTest {
 
         // a YouTube import by alice of a video that is already ready (cached, so no yt-dlp)
         insertYoutubeItem(adminId, "dQw4w9WgXcQ");
+        // uncategorized: first the classify question (409 needs_classification), then with a type
+        expect(409, alice, "POST", "/api/imports/youtube", "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\"}");
         assertTrue(json(expect(200, alice, "POST", "/api/imports/youtube",
-                "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\"}")).get("cached").getAsBoolean());
+                "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\",\"mediaType\":\"music_video\"}"))
+                .get("cached").getAsBoolean());
 
         // alice's library: listed, an item added by id and removed again, one shared by the admin
         String extra = insertItem(adminId);

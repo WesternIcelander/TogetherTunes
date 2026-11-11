@@ -32,9 +32,15 @@ import java.util.Set;
  * @param liveStatus   yt-dlp's {@code live_status}, or null
  * @param live         whether this is a live stream (or one that hasn't started or been processed)
  * @param uploader     the raw {@code uploader} (or {@code channel}), or null
+ * @param series       yt-dlp's {@code series} (a show's name), or null
+ * @param seasonNumber yt-dlp's {@code season_number} (≥ 0), or null
+ * @param episodeNumber yt-dlp's {@code episode_number} (≥ 0), or null
+ * @param track        yt-dlp's own {@code track} (YouTube's music metadata), or null
+ * @param musicArtist  yt-dlp's own {@code artist} / {@code artists} (not the uploader), or null
  */
 public record YoutubeMetadata(String id, String title, String artist, String album, double durationSec,
-                              String liveStatus, boolean live, String uploader) {
+                              String liveStatus, boolean live, String uploader, String series,
+                              Integer seasonNumber, Integer episodeNumber, String track, String musicArtist) {
     private static final Set<String> LIVE_STATUSES = Set.of("is_live", "is_upcoming", "post_live");
     private static final String TOPIC_SUFFIX = " - Topic";
 
@@ -64,7 +70,8 @@ public record YoutubeMetadata(String id, String title, String artist, String alb
             uploader = string(o, "channel");
         }
 
-        String title = UploadMetadata.clean(string(o, "track"));
+        String track = UploadMetadata.clean(string(o, "track"));
+        String title = track;
         if (title == null) {
             title = UploadMetadata.clean(string(o, "title"));
         }
@@ -75,6 +82,7 @@ public record YoutubeMetadata(String id, String title, String artist, String alb
         if (artist == null) {
             artist = UploadMetadata.clean(joined(o, "artists"));
         }
+        String musicArtist = artist;
         if (artist == null) {
             artist = UploadMetadata.clean(withoutTopic(uploader));
         }
@@ -93,7 +101,9 @@ public record YoutubeMetadata(String id, String title, String artist, String alb
         boolean live = (isLive != null && isLive.isJsonPrimitive() && isLive.getAsJsonPrimitive().isBoolean()
                 && isLive.getAsBoolean())
                 || (liveStatus != null && LIVE_STATUSES.contains(liveStatus.toLowerCase(Locale.ROOT)));
-        return new YoutubeMetadata(id, title, artist, album, duration, liveStatus, live, uploader);
+        return new YoutubeMetadata(id, title, artist, album, duration, liveStatus, live, uploader,
+                UploadMetadata.clean(string(o, "series")), number(o, "season_number"), number(o, "episode_number"),
+                track, musicArtist);
     }
 
     /** {@code "Name - Topic"} → {@code "Name"}; anything else unchanged. */
@@ -119,6 +129,22 @@ public record YoutubeMetadata(String id, String title, String artist, String alb
         if (durationSec >= 0) {
             yt.addProperty("durationSec", durationSec);
         }
+        // What the classify suggestion reads (docs/media-types.md#media-types).
+        if (series != null) {
+            yt.addProperty("series", series);
+        }
+        if (seasonNumber != null) {
+            yt.addProperty("seasonNumber", seasonNumber);
+        }
+        if (episodeNumber != null) {
+            yt.addProperty("episodeNumber", episodeNumber);
+        }
+        if (track != null) {
+            yt.addProperty("track", track);
+        }
+        if (musicArtist != null) {
+            yt.addProperty("artist", musicArtist);
+        }
         JsonObject out = new JsonObject();
         out.add("youtube", yt);
         return out;
@@ -131,6 +157,24 @@ public record YoutubeMetadata(String id, String title, String artist, String alb
         }
         String s = e.getAsString();
         return s.isBlank() ? null : s;
+    }
+
+    /** A whole number 0..{@link MediaType.Show#MAX_NUMBER} (as a number or a numeric string), or null. */
+    private static Integer number(JsonObject o, String key) {
+        JsonElement e = o.get(key);
+        if (e == null || !e.isJsonPrimitive()) {
+            return null;
+        }
+        double d;
+        try {
+            d = e.getAsDouble();
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+        if (!Double.isFinite(d) || d < 0 || d > MediaType.Show.MAX_NUMBER || d != Math.rint(d)) {
+            return null;
+        }
+        return (int) d;
     }
 
     private static String joined(JsonObject o, String key) {

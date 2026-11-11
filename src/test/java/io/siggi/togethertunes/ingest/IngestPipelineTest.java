@@ -839,7 +839,8 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         YoutubeImports imports = new YoutubeImports(db, ytTools, jobs, q::wake, OutputEncoding.defaultFor(OutputProfile.P720_30), 1800,
                 () -> null, clock);
         YoutubeImports.Imported again = imports.importUrl(new Actor.User(user, "s", Actor.Via.BEARER),
-                "https://youtu.be/dQw4w9WgXcQ?t=7", null, null);
+                "https://youtu.be/dQw4w9WgXcQ?t=7", null, null, new io.siggi.togethertunes.library.Classify.Classification(
+                        io.siggi.togethertunes.library.MediaType.MUSIC_VIDEO, null)); // a video going into the library
         assertEquals(new YoutubeImports.Imported(yt, false, "pending"), again);
         IngestJob refetch = jobs.latestForItem(yt).orElseThrow();
         assertEquals(Kind.REFETCH, refetch.kind());

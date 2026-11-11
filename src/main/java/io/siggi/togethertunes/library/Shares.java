@@ -128,6 +128,20 @@ public final class Shares {
      */
     public Share share(Actor.User from, String itemId, String toUsername, String message,
                        Library.YoutubeCheck mayFetchYoutube) throws SQLException, InterruptedException {
+        return share(from, itemId, toUsername, message, null, mayFetchYoutube);
+    }
+
+    /**
+     * {@link #share(Actor.User, String, String, String, Library.YoutubeCheck)} with the
+     * classification an {@code uncategorized} video needs to go into the recipient's library
+     * ({@link Classify}): the sender gives it.
+     *
+     * @throws Classify.NeedsClassification {@code 409 needs_classification} when it needs one and
+     *                                      none was given (nothing changes)
+     */
+    public Share share(Actor.User from, String itemId, String toUsername, String message,
+                       Classify.Classification classification, Library.YoutubeCheck mayFetchYoutube)
+            throws SQLException, InterruptedException {
         String fromId = from.userId();
         String cleanMessage = message(message);
         String toId = db.read(c -> recipient(c, toUsername));
@@ -147,6 +161,9 @@ public final class Shares {
         });
         if (item == null) {
             throw new HttpError(404, "item_not_found", "No such item");
+        }
+        if (classification == null && db.read(c -> Classify.needs(c, toId, itemId))) {
+            throw Classify.needsClassification(db, itemId);
         }
         boolean gone = item.status().equals("purged") || item.status().equals("failed");
         if (gone && item.youtubeId() == null) {
@@ -173,6 +190,9 @@ public final class Shares {
             checkRate(c, fromId, now);
             if (recipient(c, toUsername) == null) {
                 throw new HttpError(404, "user_not_found", "No such user"); // disabled or deleted meanwhile
+            }
+            if (!Classify.prepareAdd(c, toId, itemId, classification, fromId, now)) {
+                throw new Classify.NeedsClassification(itemId, Classify.suggest(c, itemId));
             }
             try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
                     List.of("user_id", "item_id", "added_at", "via", "shared_by_user_id"),

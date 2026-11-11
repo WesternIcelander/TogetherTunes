@@ -20,8 +20,13 @@ import java.util.Objects;
  *       1..{@value Library#LIST_MAX}, default {@value Library#LIST_DEFAULT}. {@code 400
  *       invalid_kind}, {@code invalid_query} (over {@value Library#QUERY_MAX_CHARS} chars),
  *       {@code invalid_cursor}, {@code invalid_limit}.</li>
- *   <li>{@code PUT /api/library/{itemId}} → {@code 201 entry} when added ({@code via: "manual"}),
- *       {@code 200 entry} when it already was there (unchanged). {@code 404 item_not_found};
+ *   <li>{@code PUT /api/library/{itemId}} (body optional: {@code {"mediaType", "show"?}}) →
+ *       {@code 201 entry} when added ({@code via: "manual"}),
+ *       {@code 200 entry} when it already was there (unchanged). An {@code uncategorized} video
+ *       needs {@code mediaType} (any but {@code uncategorized}; {@code show} details for
+ *       {@code show}), else {@code 409 needs_classification} with {@code itemId} and
+ *       {@code suggested} ({@link Classify}); {@code 400 invalid_media_type}, {@code invalid_show},
+ *       {@code show_required}, {@code not_a_show}, {@code unknown_field}. {@code 404 item_not_found};
  *       a purged/failed upload → {@code 409 media_expired} / {@code item_failed}; a purged or
  *       failed YouTube item is fetched again, which needs {@code library.youtube} (and
  *       {@code ytdlp.enabled}: {@code 403 feature_disabled}).</li>
@@ -74,7 +79,17 @@ public final class LibraryApi {
 
     private void add(Request request, Response response) throws Exception {
         Actor.User user = user(request);
-        Library.Added added = library.add(user, request.pathParam("itemId"),
+        Classify.Classification classification = null;
+        if (!noBody(request)) {
+            com.google.gson.JsonObject body = request.readJson(com.google.gson.JsonObject.class);
+            for (String key : body.keySet()) {
+                if (!key.equals("mediaType") && !key.equals("show")) {
+                    throw new HttpError(400, "unknown_field", "Unknown field: " + key);
+                }
+            }
+            classification = Classify.of(body);
+        }
+        Library.Added added = library.add(user, request.pathParam("itemId"), classification,
                 () -> policy.requireYoutube(user, null));
         response.header("Cache-Control", "no-store");
         response.json(added.created() ? 201 : 200, added.entry());
@@ -86,6 +101,11 @@ public final class LibraryApi {
             throw new HttpError(404, "not_in_library", "That item isn't in your library");
         }
         response.empty(204);
+    }
+
+    private static boolean noBody(Request request) {
+        return request.contentLength() == 0
+                || (request.contentLength() < 0 && request.header("Transfer-Encoding") == null);
     }
 
     private static String emptyToNull(String s) {

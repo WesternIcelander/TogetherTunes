@@ -49,6 +49,7 @@ import org.junit.jupiter.api.io.TempDir;
  */
 abstract class YoutubeImportsContract {
     static final String ID = "dQw4w9WgXcQ";
+    static final Classify.Classification MV = new Classify.Classification(MediaType.MUSIC_VIDEO, null);
     static final int MAX_SECONDS = 600;
 
     @TempDir
@@ -222,7 +223,7 @@ abstract class YoutubeImportsContract {
 
     @Test
     void aNewVideoBecomesAPendingItemWithAJob() throws Exception {
-        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID + "?t=42", null, null);
+        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID + "?t=42", null, null, MV);
         assertFalse(r.cached());
         assertEquals("pending", r.status());
         assertTrue(UuidV7.isValid(r.itemId()));
@@ -260,19 +261,19 @@ abstract class YoutubeImportsContract {
     /** The milestone check: other forms of the same link reuse the item without starting yt-dlp. */
     @Test
     void otherFormsOfTheSameLinkReuseTheItemWithoutYtdlp() throws Exception {
-        String itemId = imports.importUrl(alice, "https://www.youtube.com/watch?v=" + ID, null, null).itemId();
+        String itemId = imports.importUrl(alice, "https://www.youtube.com/watch?v=" + ID, null, null, MV).itemId();
         assertEquals(1, calls().size());
         // still pending: attaches to the queued job
         for (String link : List.of("https://youtu.be/" + ID, "https://www.youtube.com/shorts/" + ID,
                 "https://www.youtube.com/watch?v=" + ID + "&t=1m2s&list=PL123")) {
-            YoutubeImports.Imported r = imports.importUrl(bob, link, null, null);
+            YoutubeImports.Imported r = imports.importUrl(bob, link, null, null, MV);
             assertEquals(itemId, r.itemId(), link);
             assertFalse(r.cached());
             assertEquals("pending", r.status());
         }
         assertEquals(1, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId), "one job");
         jobs.claimNext();
-        YoutubeImports.Imported processing = imports.importUrl(bob, "m.youtube.com/watch?v=" + ID, null, null);
+        YoutubeImports.Imported processing = imports.importUrl(bob, "m.youtube.com/watch?v=" + ID, null, null, MV);
         assertEquals("processing", processing.status());
         assertFalse(processing.cached());
         jobs.complete(jobs.latestForItem(itemId).orElseThrow().id(), null);
@@ -286,7 +287,7 @@ abstract class YoutubeImportsContract {
                 "https://www.youtube.com/shorts/" + ID, "https://youtube.com/shorts/" + ID + "?feature=share",
                 "https://www.youtube.com/watch?v=" + ID + "&t=90s", "https://www.youtube.com/watch?t=5&v=" + ID)) {
             assertEquals(new YoutubeImports.Imported(itemId, true, "ready"),
-                    imports.importUrl(alice, link, null, null), link);
+                    imports.importUrl(alice, link, null, null, MV), link);
         }
         assertEquals(1, calls().size(), "yt-dlp ran only for the first import");
         assertEquals(1, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
@@ -304,7 +305,7 @@ abstract class YoutubeImportsContract {
         assertNull(libraryVia(alice, r.itemId()), "addToLibrary: false");
         // a guest's import: no library, the guest is the adder
         meta("{\"id\":\"abcdefghijk\",\"title\":\"Guest video\",\"uploader\":\"Somebody - Topic\"}");
-        YoutubeImports.Imported g = imports.importUrl(guest, "https://youtu.be/abcdefghijk", null, null);
+        YoutubeImports.Imported g = imports.importUrl(guest, "https://youtu.be/abcdefghijk", null, null, MV);
         Map<String, Object> item = item(g.itemId());
         assertEquals(guest.guestId(), item.get("added_by_guest_id"));
         assertNull(item.get("added_by_user_id"));
@@ -312,7 +313,7 @@ abstract class YoutubeImportsContract {
         assertNull(item.get("duration_ms"));
         assertEquals(0, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", g.itemId()));
         assertThrows(IllegalArgumentException.class,
-                () -> imports.importUrl(new Actor.Anonymous(), "https://youtu.be/" + ID, null, null));
+                () -> imports.importUrl(new Actor.Anonymous(), "https://youtu.be/" + ID, null, null, MV));
     }
 
     /**
@@ -324,7 +325,7 @@ abstract class YoutubeImportsContract {
     void importsAskForATierAndTellTheLibraryListener() throws Exception {
         List<String> added = new java.util.ArrayList<>();
         imports.libraryAddListener(added::add);
-        String library = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        String library = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId();
         assertEquals(IngestJob.Tier.QUALITY, jobs.latestForItem(library).orElseThrow().tier());
         assertEquals(List.of(library), added);
         meta("{\"id\":\"abcdefghijk\",\"title\":\"Room request\",\"uploader\":\"Somebody\"}");
@@ -334,7 +335,7 @@ abstract class YoutubeImportsContract {
         // adding the ready room item to a library later: the listener hears it
         finishJob(true);
         finishJob(true);
-        imports.addExisting(bob, "abcdefghijk", "library");
+        imports.addExisting(bob, "abcdefghijk", "library", MV);
         assertEquals(List.of(library, room), added);
         // a purged item fetched again for a room only: quick
         setStatus(room, "purged");
@@ -342,6 +343,83 @@ abstract class YoutubeImportsContract {
         IngestJob refetch = jobs.latestForItem(room).orElseThrow();
         assertEquals(IngestJob.Kind.REFETCH, refetch.kind());
         assertEquals(IngestJob.Tier.QUICK, refetch.tier());
+    }
+
+    /**
+     * Classify on library add (docs/media-types.md#media-types): an uncategorized video needs a
+     * type to go into a library. Without one the import still happens (no entry, quick tier) and
+     * NeedsClassification carries the item and the suggestion from yt-dlp's metadata (kept in
+     * metadata_json); requests that don't go into a library never ask.
+     */
+    @Test
+    void anUncategorizedVideoNeedsATypeForTheLibrary() throws Exception {
+        List<String> added = new java.util.ArrayList<>();
+        imports.libraryAddListener(added::add);
+        // track/artist → music_video
+        Classify.NeedsClassification e = assertThrows(Classify.NeedsClassification.class,
+                () -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        String itemId = e.itemId();
+        assertEquals(409, e.status());
+        assertEquals("needs_classification", e.code());
+        assertEquals(new Classify.Suggestion("music_video", null), e.suggested());
+        assertEquals("uncategorized", item(itemId).get("media_type"));
+        assertNull(libraryVia(alice, itemId));
+        assertTrue(added.isEmpty());
+        assertEquals(IngestJob.Tier.QUICK, jobs.latestForItem(itemId).orElseThrow().tier());
+        com.google.gson.JsonObject yt = com.google.gson.JsonParser.parseString((String) item(itemId).get("metadata_json"))
+                .getAsJsonObject().getAsJsonObject("youtube");
+        assertEquals("Never Gonna Give You Up", yt.get("track").getAsString());
+        assertEquals("Rick Astley", yt.get("artist").getAsString());
+        // asked again without a second lookup; with a type it goes in
+        assertThrows(Classify.NeedsClassification.class, () -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        assertEquals(1, calls().size());
+        imports.importUrl(alice, "https://youtu.be/" + ID, null, null,
+                new Classify.Classification(MediaType.SHOW, new MediaType.Show("Rick", 1, 2)));
+        assertEquals("show", item(itemId).get("media_type"));
+        assertEquals("youtube", libraryVia(alice, itemId));
+        assertEquals(List.of(itemId), added);
+        // classified now: bob's import doesn't ask, and his type is ignored
+        imports.importUrl(bob, "https://youtu.be/" + ID, null, null, new Classify.Classification(MediaType.MOVIE, null));
+        assertEquals("show", item(itemId).get("media_type"));
+        assertEquals("youtube", libraryVia(bob, itemId));
+
+        // series/season/episode → show, prefilled
+        meta("{\"id\":\"abcdefghijk\",\"title\":\"Episode 3\",\"uploader\":\"Channel\",\"series\":\"The Show\","
+                + "\"season_number\":2,\"episode_number\":3,\"duration\":100}");
+        e = assertThrows(Classify.NeedsClassification.class,
+                () -> imports.importUrl(alice, "https://youtu.be/abcdefghijk", null, null));
+        assertEquals(new Classify.Suggestion("show", new Classify.SuggestedShow("The Show", 2, 3)), e.suggested());
+        // the same item through addExisting (PUT /api/library) asks too, and nothing changes
+        String show = e.itemId();
+        assertThrows(Classify.NeedsClassification.class, () -> imports.addExisting(bob, "abcdefghijk", "manual"));
+        assertNull(libraryVia(bob, show));
+        imports.addExisting(bob, "abcdefghijk", "manual",
+                new Classify.Classification(MediaType.SHOW, new MediaType.Show("The Show", 2, 3)));
+        assertEquals("manual", libraryVia(bob, show));
+        assertEquals("The Show", db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT show_name FROM items WHERE id = ?")) {
+                ps.setString(1, show);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        }));
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'item.updated' AND target = ?", show),
+                "the classification is audited like an edit");
+
+        // nothing known → no suggestion; a room request (no library) and a guest never ask
+        meta("{\"id\":\"zzzzzzzzzzz\",\"title\":\"A clip\",\"uploader\":\"Somebody\",\"duration\":10}");
+        e = assertThrows(Classify.NeedsClassification.class,
+                () -> imports.importUrl(alice, "https://youtu.be/zzzzzzzzzzz", null, null));
+        assertNull(e.suggested());
+        imports.importUrl(bob, "https://youtu.be/zzzzzzzzzzz", null, false);
+        imports.importUrl(guest, "https://youtu.be/zzzzzzzzzzz", null, null);
+        assertEquals("uncategorized", item(e.itemId()).get("media_type"));
+        // presentAsAudio makes it audio: nothing to ask
+        meta("{\"id\":\"yyyyyyyyyyy\",\"title\":\"A song\",\"uploader\":\"Somebody\",\"duration\":10}");
+        String song = imports.importUrl(alice, "https://youtu.be/yyyyyyyyyyy", true, null).itemId();
+        assertEquals("youtube", libraryVia(alice, song));
     }
 
     @Test
@@ -357,7 +435,7 @@ abstract class YoutubeImportsContract {
             return null;
         });
         clock.advance(86_400_000);
-        YoutubeImports.Imported r = imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, true, null);
+        YoutubeImports.Imported r = imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, true, null, MV);
         assertEquals(new YoutubeImports.Imported(itemId, false, "pending"), r);
         assertEquals(1, calls().size(), "no new metadata request");
         IngestJob job = jobs.latestForItem(itemId).orElseThrow();
@@ -370,7 +448,7 @@ abstract class YoutubeImportsContract {
         assertEquals("youtube", libraryVia(bob, itemId));
         assertEquals(2, wakes.get());
         // a second request while the refetch is queued attaches to it
-        assertEquals(itemId, imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId());
+        assertEquals(itemId, imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId());
         assertEquals(2, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
     }
 
@@ -383,7 +461,7 @@ abstract class YoutubeImportsContract {
                 java.time.Duration.ZERO, System::nanoTime));
 
         // A new video: refused before yt-dlp runs, nothing written.
-        HttpError e = assertThrows(HttpError.class, () -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        HttpError e = assertThrows(HttpError.class, () -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(507, e.status());
         assertEquals("insufficient_storage", e.code());
         assertEquals(0, calls().size());
@@ -391,37 +469,37 @@ abstract class YoutubeImportsContract {
 
         // With space it goes through; a ready item is still handed out while low (nothing to download).
         free.set(10_000);
-        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId();
         finishJob(true);
         free.set(1_000);
         assertEquals(new YoutubeImports.Imported(itemId, true, "ready"),
-                imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, null, null));
-        assertEquals(itemId, imports.addExisting(bob, ID, "youtube").itemId());
+                imports.importUrl(bob, "https://www.youtube.com/watch?v=" + ID, null, null, MV));
+        assertEquals(itemId, imports.addExisting(bob, ID, "youtube", MV).itemId());
 
         // A purged item would be fetched again: refused while low, no job queued.
         setStatus(itemId, "purged");
         int jobsBefore = count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId);
         assertEquals(507, assertThrows(HttpError.class,
-                () -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null)).status());
+                () -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV)).status());
         assertEquals(507, assertThrows(HttpError.class, () -> imports.useExisting(ID)).status());
         assertEquals(jobsBefore, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
         assertEquals("purged", item(itemId).get("status"));
 
         // A minimum of 0 turns the check off.
         min.set(0);
-        assertEquals("pending", imports.importUrl(bob, "https://youtu.be/" + ID, null, null).status());
+        assertEquals("pending", imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV).status());
     }
 
     @Test
     void aFailedItemIsRetriedAfterTenMinutes() throws Exception {
-        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        String itemId = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId();
         jobs.claimNext();
         clock.advance(30_000);
         jobs.fail(jobs.latestForItem(itemId).orElseThrow().id(), "Video unavailable", null);
         assertEquals("failed", item(itemId).get("status"));
 
         clock.advance(4 * 60_000);
-        HttpError e = error(() -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null));
+        HttpError e = error(() -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(422, e.status());
         assertEquals("youtube_failed", e.code());
         assertEquals(6 * 60, e.retryAfterSeconds());
@@ -429,9 +507,9 @@ abstract class YoutubeImportsContract {
         assertEquals("failed", item(itemId).get("status"));
 
         clock.advance(6 * 60_000 - 1);
-        assertEquals("youtube_failed", error(() -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null)).code());
+        assertEquals("youtube_failed", error(() -> imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV)).code());
         clock.advance(1);
-        YoutubeImports.Imported r = imports.importUrl(bob, "https://youtu.be/" + ID, null, null);
+        YoutubeImports.Imported r = imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV);
         assertEquals(new YoutubeImports.Imported(itemId, false, "pending"), r);
         IngestJob retry = jobs.latestForItem(itemId).orElseThrow();
         assertEquals(IngestJob.Kind.YOUTUBE, retry.kind());
@@ -444,26 +522,26 @@ abstract class YoutubeImportsContract {
     void rejections() throws Exception {
         for (String bad : List.of("", "hello", "https://vimeo.com/123", "https://www.youtube.com/playlist?list=PL1",
                 "dQw4w9WgXcQ")) {
-            HttpError e = error(() -> imports.importUrl(alice, bad, null, null));
+            HttpError e = error(() -> imports.importUrl(alice, bad, null, null, MV));
             assertEquals(400, e.status(), bad);
             assertEquals("invalid_youtube_url", e.code(), bad);
         }
         assertEquals(0, calls().size(), "a bad link never reaches yt-dlp");
 
         meta("{\"id\":\"" + ID + "\",\"title\":\"Live now\",\"is_live\":true,\"live_status\":\"is_live\"}");
-        HttpError live = error(() -> imports.importUrl(alice, "https://www.youtube.com/live/" + ID, null, null));
+        HttpError live = error(() -> imports.importUrl(alice, "https://www.youtube.com/live/" + ID, null, null, MV));
         assertEquals(422, live.status());
         assertEquals("youtube_live", live.code());
         meta("{\"id\":\"" + ID + "\",\"title\":\"Soon\",\"live_status\":\"is_upcoming\"}");
-        assertEquals("youtube_live", error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null)).code());
+        assertEquals("youtube_live", error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV)).code());
 
         meta("{\"id\":\"" + ID + "\",\"title\":\"Long\",\"duration\":" + (MAX_SECONDS + 1) + "}");
-        HttpError tooLong = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        HttpError tooLong = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(422, tooLong.status());
         assertEquals("too_long", tooLong.code());
         assertTrue(tooLong.getMessage().contains("601 s"), tooLong.getMessage());
         meta("{\"id\":\"" + ID + "\",\"title\":\"Exactly the limit\",\"duration\":" + MAX_SECONDS + "}");
-        String ok = imports.importUrl(alice, "https://youtu.be/" + ID, null, null).itemId();
+        String ok = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV).itemId();
         assertEquals("Exactly the limit", item(ok).get("title"));
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("DELETE FROM library_entries WHERE item_id = ?")) {
@@ -482,20 +560,20 @@ abstract class YoutubeImportsContract {
         });
 
         Files.writeString(errorFile, "WARNING: something\nERROR: [youtube] " + ID + ": Video unavailable. This video is private\n");
-        HttpError unavailable = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        HttpError unavailable = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(422, unavailable.status());
         assertEquals("youtube_unavailable", unavailable.code());
         assertEquals("YouTube didn't return this video: Video unavailable. This video is private", unavailable.getMessage());
         Files.delete(errorFile);
 
         meta("this is not json");
-        assertEquals("youtube_bad_metadata", error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null)).code());
+        assertEquals("youtube_bad_metadata", error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV)).code());
 
         assertEquals(0, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID), "no item for a rejected import");
         assertEquals(0, wakes.get() - 1, "only the accepted import queued a job");
 
         YoutubeImports noTool = imports(new Tools("ffmpeg", "ffprobe", dir.resolve("no-such-yt-dlp").toString()));
-        HttpError missing = error(() -> noTool.importUrl(alice, "https://youtu.be/" + ID, null, null));
+        HttpError missing = error(() -> noTool.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(503, missing.status());
         assertEquals("ytdlp_unavailable", missing.code());
     }
@@ -514,14 +592,14 @@ abstract class YoutubeImportsContract {
     void theCookiesFileIsPassedWhenSet() throws Exception {
         Path file = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
         cookies = file.toString();
-        imports.importUrl(alice, "https://youtu.be/" + ID, null, null);
+        imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV);
         List<String> args = calls().get(0);
         assertEquals(file.toString(), args.get(args.indexOf("--cookies") + 1));
         assertEquals("https://www.youtube.com/watch?v=" + ID, args.get(args.size() - 1));
 
         cookies = dir.resolve("missing.txt").toString();
         meta("{\"id\":\"abcdefghijk\",\"title\":\"t\"}");
-        imports.importUrl(alice, "https://youtu.be/abcdefghijk", null, null);
+        imports.importUrl(alice, "https://youtu.be/abcdefghijk", null, null, MV);
         assertFalse(calls().get(1).contains("--cookies"), "an unreadable cookies file is skipped");
     }
 
@@ -536,7 +614,7 @@ abstract class YoutubeImportsContract {
             for (int i = 0; i < links.size(); i++) {
                 Actor actor = i % 2 == 0 ? alice : bob;
                 String link = links.get(i);
-                futures.add(pool.submit(() -> imports.importUrl(actor, link, null, null)));
+                futures.add(pool.submit(() -> imports.importUrl(actor, link, null, null, MV)));
             }
             String itemId = null;
             for (Future<YoutubeImports.Imported> f : futures) {
@@ -568,14 +646,14 @@ abstract class YoutubeImportsContract {
                 + "echo '[youtube] " + ID + ": Downloading m3u8 information'\n"
                 + "echo '[info] " + ID + ": Downloading 1 format(s): 18'\n");
         List<String> stages = new java.util.concurrent.CopyOnWriteArrayList<>();
-        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null,
+        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV,
                 s -> stages.add(s.wire()));
         assertEquals("pending", r.status());
         assertEquals(List.of("contacting", "page", "details", "formats"), stages);
 
         // known now: no lookup, no stages
         stages.clear();
-        imports.importUrl(bob, "https://youtu.be/" + ID, null, null, s -> stages.add(s.wire()));
+        imports.importUrl(bob, "https://youtu.be/" + ID, null, null, MV, s -> stages.add(s.wire()));
         assertEquals(List.of(), stages);
     }
 
@@ -583,7 +661,7 @@ abstract class YoutubeImportsContract {
     void unknownOutputAndAThrowingListenerNeverFailTheLookup() throws Exception {
         Files.writeString(stagesFile, "echo 'Totally new wording: fetching things'\n"
                 + "echo '[youtube] " + ID + ": Downloading webpage'\n");
-        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, s -> {
+        YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV, s -> {
             throw new IllegalStateException("the socket is gone");
         });
         assertEquals("pending", r.status());
@@ -597,7 +675,7 @@ abstract class YoutubeImportsContract {
             traceback.append("  File \"/x/yt_dlp/y.py\", line ").append(i).append(", in f\n");
         }
         Files.writeString(errorFile, traceback.toString());
-        HttpError e = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, s -> { }));
+        HttpError e = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV, s -> { }));
         assertEquals("youtube_unavailable", e.code());
         assertEquals("YouTube didn't return this video: Video unavailable", e.getMessage());
     }

@@ -50,6 +50,15 @@ public class HttpError extends RuntimeException {
         return retryAfterSeconds;
     }
 
+    /**
+     * More fields of the error object, after {@code code} and {@code message} (e.g.
+     * {@code 409 needs_classification}'s {@code itemId} and {@code suggested}); none by default.
+     * Serialised with Gson, so the same IP rules as for any response apply.
+     */
+    public java.util.Map<String, Object> extra() {
+        return java.util.Map.of();
+    }
+
     public static HttpError badRequest(String message) {
         return new HttpError(400, "bad_request", message);
     }

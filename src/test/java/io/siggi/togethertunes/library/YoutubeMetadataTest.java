@@ -98,4 +98,27 @@ class YoutubeMetadataTest {
         assertThrows(IllegalArgumentException.class, () -> parse("[1,2]"));
         assertThrows(IllegalArgumentException.class, () -> parse(""));
     }
+
+    /** What the classify suggestion reads is kept in metadata_json (docs/media-types.md#media-types). */
+    @Test
+    void showAndMusicFieldsAreKept() {
+        YoutubeMetadata m = parse("{\"id\":\"dQw4w9WgXcQ\",\"title\":\"Ep\",\"series\":\" The Show \","
+                + "\"season_number\":2,\"episode_number\":\"3\",\"track\":\"Song\",\"artists\":[\"A\",\"B\"]}");
+        assertEquals("The Show", m.series());
+        assertEquals(2, m.seasonNumber());
+        assertEquals(3, m.episodeNumber());
+        assertEquals("Song", m.track());
+        assertEquals("A, B", m.musicArtist());
+        com.google.gson.JsonObject yt = m.toItemMetadata().getAsJsonObject("youtube");
+        assertEquals("The Show", yt.get("series").getAsString());
+        assertEquals(2, yt.get("seasonNumber").getAsInt());
+        assertEquals(3, yt.get("episodeNumber").getAsInt());
+        assertEquals("Song", yt.get("track").getAsString());
+        assertEquals("A, B", yt.get("artist").getAsString());
+        YoutubeMetadata plain = parse("{\"id\":\"dQw4w9WgXcQ\",\"uploader\":\"U - Topic\",\"season_number\":-1,"
+                + "\"episode_number\":1.5}");
+        assertEquals(null, plain.musicArtist(), "the uploader isn't music metadata");
+        assertEquals(null, plain.seasonNumber());
+        assertEquals(null, plain.episodeNumber());
+    }
 }

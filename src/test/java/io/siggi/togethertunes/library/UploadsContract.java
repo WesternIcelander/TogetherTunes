@@ -620,7 +620,8 @@ abstract class UploadsContract {
         byte[] video = media("clip.mp4", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=1", "-f", "lavfi",
                 "-i", "sine=f=500:d=1", "-c:v", "libx264", "-c:a", "aac", "-shortest");
         String c = upload(alice, "clip", video, 1_000_000);
-        String itemC = expect(200, complete(alice, c, null)).json().get("itemId").getAsString();
+        String itemC = expect(200, complete(alice, c, "{\"mediaType\":\"music_video\"}")).json()
+                .get("itemId").getAsString();
         assertEquals("video", item(itemC).get("kind"));
         assertEquals("clip", item(itemC).get("title"));
         assertTrue(Files.exists(IngestPipeline.stagingDir(data, itemC).resolve("source")),
@@ -770,6 +771,95 @@ abstract class UploadsContract {
                 + contentId + "\"}"));
         // the usual checks still come first
         expect(401, startWithContentId(null, file.length, contentId, ""));
+    }
+
+    private String mediaType(String itemId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT media_type FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+    }
+
+    /**
+     * Classify on library add (docs/media-types.md#media-types): a new video upload going into the
+     * library needs a media type. Without one the upload still completes (no library entry, a
+     * quick-tier job) and the answer is 409 needs_classification with the item and a suggestion
+     * from the file name; a repeated complete answers 200 without adding it. With one, the item
+     * gets the type and the entry. An audio upload never asks, nor does one with addToLibrary false.
+     */
+    @Test
+    void videoUploadsAreClassifiedForTheLibrary() throws Exception {
+        needFfmpeg();
+        byte[] video = media("ep.mp4", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=1", "-f", "lavfi",
+                "-i", "sine=f=500:d=1", "-c:v", "libx264", "-c:a", "aac", "-shortest");
+        String a = upload(alice, "My.Great_Show.S02E05.1080p.mp4", video, 1_000_000);
+        Reply r = complete(alice, a, null);
+        assertEquals(409, r.status(), r.body());
+        assertEquals("needs_classification", r.error());
+        JsonObject error = r.json().getAsJsonObject("error");
+        String itemId = error.get("itemId").getAsString();
+        JsonObject suggested = error.getAsJsonObject("suggested");
+        assertEquals("show", suggested.get("mediaType").getAsString());
+        JsonObject show = suggested.getAsJsonObject("show");
+        assertEquals("My Great Show", show.get("name").getAsString());
+        assertEquals(2, show.get("season").getAsInt());
+        assertEquals(5, show.get("episode").getAsInt());
+        assertEquals("uncategorized", mediaType(itemId));
+        assertNull(libraryVia(aliceId, itemId), "no library entry without a type");
+        assertTrue(libraryAdds.isEmpty());
+        assertEquals("pending", item(itemId).get("status"), "the upload itself went through");
+        assertEquals(List.of("upload"), queuedJobs(itemId));
+        // a repeated complete answers with the item, still without adding it
+        assertEquals(itemId, expect(200, complete(alice, a, null)).json().get("itemId").getAsString());
+        assertNull(libraryVia(aliceId, itemId));
+
+        // bob uploads the same file with a type: deduplicated, classified, in his library
+        String b = upload(bob, "whatever.mp4", video, 1_000_000);
+        r = expect(200, complete(bob, b, "{\"mediaType\":\"show\",\"show\":{\"name\":\"My Great Show\","
+                + "\"season\":2,\"episode\":5}}"));
+        assertEquals(itemId, r.json().get("itemId").getAsString());
+        assertEquals("show", mediaType(itemId));
+        assertEquals("upload", libraryVia(bobId, itemId));
+        // now classified: alice's next upload of it doesn't ask, and a type sent along is ignored
+        String a2 = upload(alice, "again.mp4", video, 1_000_000);
+        expect(200, complete(alice, a2, "{\"mediaType\":\"movie\"}"));
+        assertEquals("show", mediaType(itemId));
+        assertEquals("upload", libraryVia(aliceId, itemId));
+
+        // bad classifications are refused before anything happens
+        byte[] other = media("other.mp4", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=1", "-f", "lavfi",
+                "-i", "sine=f=700:d=1", "-c:v", "libx264", "-c:a", "aac", "-shortest");
+        String c = upload(alice, "other.mp4", other, 1_000_000);
+        assertEquals("invalid_media_type", expect(400, complete(alice, c, "{\"mediaType\":\"uncategorized\"}")).error());
+        assertEquals("show_required", expect(400, complete(alice, c, "{\"mediaType\":\"show\"}")).error());
+        assertEquals("not_a_show", expect(400, complete(alice, c, "{\"mediaType\":\"movie\","
+                + "\"show\":{\"name\":\"X\",\"episode\":1}}")).error());
+        // a video kept out of the library doesn't ask
+        r = expect(200, complete(alice, c, "{\"addToLibrary\":false}"));
+        assertEquals("uncategorized", mediaType(r.json().get("itemId").getAsString()));
+
+        // the pre-check of an uncategorized video asks too (the upload is complete either way)
+        String contentId = contentIdOf(itemId);
+        sql("UPDATE items SET media_type = 'uncategorized', show_name = NULL, season_number = NULL,"
+                + " episode_number = NULL WHERE id = ?", itemId);
+        sql("DELETE FROM library_entries WHERE item_id = ?", itemId);
+        r = json(alice, "POST", "/api/uploads", "{\"filename\":\"x.mp4\",\"size\":" + video.length
+                + ",\"contentId\":\"" + contentId + "\"}");
+        assertEquals(409, r.status(), r.body());
+        assertEquals(itemId, r.json().getAsJsonObject("error").get("itemId").getAsString());
+        String precheckUpload = r.json().getAsJsonObject("error").get("uploadId").getAsString();
+        assertEquals(itemId, expect(200, json(alice, "GET", "/api/uploads/" + precheckUpload, null)).json()
+                .get("itemId").getAsString(), "the upload is complete; queue.add can take it");
+        assertNull(libraryVia(aliceId, itemId));
+        r = expect(200, json(alice, "POST", "/api/uploads", "{\"filename\":\"x.mp4\",\"size\":" + video.length
+                + ",\"contentId\":\"" + contentId + "\",\"mediaType\":\"movie\"}"));
+        assertEquals(itemId, r.json().get("itemId").getAsString());
+        assertEquals("movie", mediaType(itemId));
+        assertEquals("upload", libraryVia(aliceId, itemId));
     }
 
     private void sql(String sql, String... args) throws SQLException {

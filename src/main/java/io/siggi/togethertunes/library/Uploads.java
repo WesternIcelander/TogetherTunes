@@ -144,7 +144,11 @@ public final class Uploads {
     }
 
     /** What {@code complete} produced. */
-    public record Completed(String itemId, boolean deduplicated) {
+    public record Completed(String itemId, boolean deduplicated, boolean addedToLibrary) {
+        /** A completed upload as a repeated {@code complete} reports it (the library isn't touched again). */
+        public Completed(String itemId, boolean deduplicated) {
+            this(itemId, deduplicated, true);
+        }
     }
 
     /** A chunk's byte range, from {@code Content-Range: bytes start-end/total} (end inclusive). */
@@ -322,12 +326,24 @@ public final class Uploads {
      */
     public Started start(Actor owner, String filename, long size, String roomId, String clientIp, String contentId,
                          Boolean addToLibrary) throws SQLException, IOException {
+        return start(owner, filename, size, roomId, clientIp, contentId, addToLibrary, null);
+    }
+
+    /**
+     * {@link #start(Actor, String, long, String, String, String, Boolean)} with the classification
+     * an {@code uncategorized} video needs for the library add ({@link Classify}): when the
+     * pre-check finds such an item and none is given, the upload is still completed with it (as
+     * with {@code addToLibrary: false}) and {@link Classify.NeedsClassification} is thrown.
+     */
+    public Started start(Actor owner, String filename, long size, String roomId, String clientIp, String contentId,
+                         Boolean addToLibrary, Classify.Classification classification)
+            throws SQLException, IOException {
         String userId = userId(owner);
         String guestId = guestId(owner);
         String name = validate(filename, size);
         if (precheck && ContentId.isValid(contentId) && ContentId.sizeOf(contentId) == size) {
             Started hit = precheckHit(owner, name, size, roomId, clientIp, contentId,
-                    owner instanceof Actor.User && !Boolean.FALSE.equals(addToLibrary));
+                    owner instanceof Actor.User && !Boolean.FALSE.equals(addToLibrary), classification);
             if (hit != null) {
                 return hit;
             }
@@ -373,15 +389,17 @@ public final class Uploads {
 
     /** The pre-check: the completed upload if a reusable item has this content ID, else null. */
     private Started precheckHit(Actor owner, String name, long size, String roomId, String clientIp, String contentId,
-                                boolean library) throws SQLException {
+                                boolean library, Classify.Classification classification) throws SQLException {
         String userId = userId(owner);
         String guestId = guestId(owner);
         if (guestId != null) {
             guestQuota.lock().lock();
         }
         completeLock.lock();
+        String[] needs = new String[2]; // the item and the upload, when the library add needs a type
+        Started hit;
         try {
-            return db.write(c -> {
+            hit = db.write(c -> {
                 Existing existing = byContentId(c, contentId);
                 if (existing == null || !existing.reusable()) {
                     return null;
@@ -406,7 +424,10 @@ public final class Uploads {
                     ps.executeUpdate();
                 }
                 References.touch(c, existing.id(), now);
-                if (library) {
+                if (library && !Classify.prepareAdd(c, userId, existing.id(), classification, userId, now)) {
+                    needs[0] = existing.id();
+                    needs[1] = id;
+                } else if (library) {
                     addToLibrary(c, userId, existing.id(), now);
                 }
                 return new Started(new Upload(id, userId, guestId, name, size, now, now, existing.id(), true),
@@ -418,6 +439,11 @@ public final class Uploads {
                 guestQuota.lock().unlock();
             }
         }
+        if (needs[0] != null) {
+            // The upload is complete (queue.add takes its id); only the library add waits.
+            throw Classify.needsClassification(db, needs[0]).with("uploadId", needs[1]);
+        }
+        return hit;
     }
 
     private static Existing byContentId(Connection c, String contentId) throws SQLException {
@@ -663,6 +689,18 @@ public final class Uploads {
      */
     public Completed complete(Actor owner, String id, String title, String artist, Boolean addToLibrary)
             throws SQLException, IOException, InterruptedException {
+        return complete(owner, id, title, artist, addToLibrary, null);
+    }
+
+    /**
+     * {@link #complete(Actor, String, String, String, Boolean)} with the classification an
+     * {@code uncategorized} video needs for the library add ({@link Classify}): without one the
+     * upload is still completed (as with {@code addToLibrary: false}; a repeated complete answers
+     * with the item) and {@link Classify.NeedsClassification} is thrown.
+     */
+    public Completed complete(Actor owner, String id, String title, String artist, Boolean addToLibrary,
+                              Classify.Classification classification)
+            throws SQLException, IOException, InterruptedException {
         Upload upload = get(owner, id);
         if (upload.completed()) {
             return new Completed(upload.itemId(), upload.deduplicated());
@@ -694,22 +732,26 @@ public final class Uploads {
             }
             boolean library = owner instanceof Actor.User && !Boolean.FALSE.equals(addToLibrary);
 
-            Completed done = dedupe(upload, sha256, contentId, library);
-            if (done != null) {
-                return done;
-            }
-            MediaProbe probe = probe(upload, part);
-            completeLock.lock();
-            try {
-                Existing existing = db.read(c -> existing(c, sha256, contentId));
-                if (existing != null && existing.reusable()) {
-                    return reuse(upload, existing.id(), contentId, library);
+            Completed done = dedupe(upload, sha256, contentId, library, classification);
+            if (done == null) {
+                MediaProbe probe = probe(upload, part);
+                completeLock.lock();
+                try {
+                    Existing existing = db.read(c -> existing(c, sha256, contentId));
+                    if (existing != null && existing.reusable()) {
+                        done = reuse(upload, existing.id(), contentId, library, classification);
+                    } else {
+                        done = ingest(upload, part, probe, sha256, contentId, existing == null ? null : existing.id(),
+                                title, artist, library, classification);
+                    }
+                } finally {
+                    completeLock.unlock();
                 }
-                return ingest(upload, part, probe, sha256, contentId, existing == null ? null : existing.id(), title,
-                        artist, library);
-            } finally {
-                completeLock.unlock();
             }
+            if (library && !done.addedToLibrary()) {
+                throw Classify.needsClassification(db, done.itemId());
+            }
+            return done;
         } finally {
             session.lock.unlock();
             sessions.remove(upload.id(), session);
@@ -717,12 +759,13 @@ public final class Uploads {
     }
 
     /** The reusable item with this hash, recorded as the upload's result; null if there is none. */
-    private Completed dedupe(Upload upload, String sha256, String contentId, boolean library)
-            throws SQLException, IOException {
+    private Completed dedupe(Upload upload, String sha256, String contentId, boolean library,
+                             Classify.Classification classification) throws SQLException, IOException {
         completeLock.lock();
         try {
             Existing existing = db.read(c -> existing(c, sha256, contentId));
-            return existing != null && existing.reusable() ? reuse(upload, existing.id(), contentId, library) : null;
+            return existing != null && existing.reusable()
+                    ? reuse(upload, existing.id(), contentId, library, classification) : null;
         } finally {
             completeLock.unlock();
         }
@@ -758,20 +801,21 @@ public final class Uploads {
         }
     }
 
-    private Completed reuse(Upload upload, String itemId, String contentId, boolean library)
-            throws SQLException, IOException {
+    private Completed reuse(Upload upload, String itemId, String contentId, boolean library,
+                            Classify.Classification classification) throws SQLException, IOException {
         long now = EpochMs.now(clock);
-        db.write(c -> {
+        boolean added = db.write(c -> {
             References.touch(c, itemId, now);
             setContentIdIfMissing(c, itemId, contentId);
-            if (library) {
+            boolean add = library && Classify.prepareAdd(c, upload.userId(), itemId, classification, upload.userId(), now);
+            if (add) {
                 addToLibrary(c, upload.userId(), itemId, now);
             }
             finish(c, upload.id(), itemId, true, now);
-            return null;
+            return add;
         });
         Files.deleteIfExists(partFile(upload.id()));
-        return new Completed(itemId, true);
+        return new Completed(itemId, true, added);
     }
 
     /** ffprobe's view of the upload; a file that can't become an item is deleted and refused. */
@@ -815,8 +859,8 @@ public final class Uploads {
      * upload's result in one transaction. If the transaction fails, the file goes back.
      */
     private Completed ingest(Upload upload, Path part, MediaProbe probe, String sha256, String contentId,
-                             String reuseItemId, String title, String artist, boolean library)
-            throws SQLException, IOException {
+                             String reuseItemId, String title, String artist, boolean library,
+                             Classify.Classification classification) throws SQLException, IOException {
         String itemId = reuseItemId != null ? reuseItemId : UuidV7.newId();
         Path staging = IngestPipeline.stagingDir(dataDir, itemId);
         deleteTree(staging); // leftovers of a failed job
@@ -826,20 +870,23 @@ public final class Uploads {
         move(part, source);
         UploadMetadata meta = UploadMetadata.of(probe, upload.filename(), title, artist);
         long now = EpochMs.now(clock);
+        boolean added;
         try {
-            db.write(c -> {
+            added = db.write(c -> {
                 if (reuseItemId == null) {
                     insertItem(c, itemId, probe.isVideo() ? "video" : "audio", meta, sha256, contentId, upload, now);
                 } else {
                     References.touch(c, itemId, now);
                     setContentIdIfMissing(c, itemId, contentId);
                 }
-                jobs.enqueue(itemId, IngestJob.Kind.UPLOAD, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
-                if (library) {
+                boolean add = library
+                        && Classify.prepareAdd(c, upload.userId(), itemId, classification, upload.userId(), now);
+                jobs.enqueue(itemId, IngestJob.Kind.UPLOAD, add ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
+                if (add) {
                     addToLibrary(c, upload.userId(), itemId, now);
                 }
                 finish(c, upload.id(), itemId, reuseItemId != null, now);
-                return null;
+                return add;
             });
         } catch (SQLException | RuntimeException e) {
             try {
@@ -851,15 +898,15 @@ public final class Uploads {
             throw e;
         }
         wake.run();
-        return new Completed(itemId, reuseItemId != null);
+        return new Completed(itemId, reuseItemId != null, added);
     }
 
     private void insertItem(Connection c, String itemId, String kind, UploadMetadata meta, String sha256,
                             String contentId, Upload upload, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, source,"
                 + " content_sha256, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " last_referenced_at, content_id, media_type)"
-                + " VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")) {
+                + " last_referenced_at, content_id, media_type, metadata_json)"
+                + " VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)")) {
             ps.setString(1, itemId);
             ps.setString(2, kind);
             ps.setString(3, meta.title());
@@ -873,6 +920,12 @@ public final class Uploads {
             ps.setLong(11, now);
             ps.setString(12, contentId);
             ps.setString(13, MediaType.initial(kind, false).wire());
+            // The original file name, for the classify suggestion (docs/media-types.md#media-types).
+            com.google.gson.JsonObject file = new com.google.gson.JsonObject();
+            file.addProperty("filename", upload.filename());
+            com.google.gson.JsonObject metadata = new com.google.gson.JsonObject();
+            metadata.add("upload", file);
+            ps.setString(14, metadata.toString());
             ps.executeUpdate();
         }
     }

@@ -19,6 +19,7 @@
 // uses Web Audio only where the page can't set an element's volume (iOS; `volumeSettable`).
 // While the room plays in listen mode, the shell (shell.ts) shows the site's other pages in place,
 // so playback goes on; a mini player there links back to this view.
+import { classifyAndAdd, withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import {
@@ -712,7 +713,8 @@ function historyRow(r: HistoryRow, viewer: HistoryViewer, s: RoomState, withCove
     actions.append(h("span", { class: "badge", text: "In your library" }));
   } else if (lib === "add") {
     actions.append(button("Add to Library", async () => {
-      await api("PUT", "/api/library/" + encodeURIComponent(r.item.id));
+      if (await withClassification((c) => api("PUT", "/api/library/" + encodeURIComponent(r.item.id), c),
+        r.item.title ?? undefined) === null) return;
       markInLibrary(historyRows, r.item.id);
       historyStatus.textContent = (r.item.title ?? "") + ": added to your library.";
       historyKey = "";
@@ -897,9 +899,16 @@ function uploadPanel(): HTMLElement {
           queued = true;
           const uploadId = upload.uploadId;
           text.textContent = "Requesting…";
+          const classify = p.result?.classify;
           conn.request({ type: "queue.add", uploadId }).then((ack) => {
             text.textContent = addedMessage(ack) + (p.result?.deduplicated === true ? " (already on the server)" : "")
               + " It plays once it has been processed.";
+            // The request plays as it is; the library add waits for a media type.
+            if (classify !== undefined) {
+              classifyAndAdd(classify, file.name).then((added) => {
+                text.textContent += added ? " Added to your library." : " Not added to your library (no media type).";
+              }).catch((e: unknown) => { text.textContent += " " + message(e); });
+            }
           }).catch((e: unknown) => {
             text.className = "error small";
             text.textContent = e === CANCELLED ? "Cancelled" : message(e);

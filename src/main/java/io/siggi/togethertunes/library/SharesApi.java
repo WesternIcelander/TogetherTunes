@@ -22,8 +22,11 @@ import java.util.Set;
  * (users can't share with guests either). Responses are {@code Cache-Control: no-store}.
  *
  * <ul>
- *   <li>{@code POST /api/shares} {@code {"itemId", "toUsername", "message"?}} → {@code 201 share}
- *       (the sender's view); the item is in the recipient's library from now on. {@code 400
+ *   <li>{@code POST /api/shares} {@code {"itemId", "toUsername", "message"?, "mediaType"?, "show"?}}
+ *       → {@code 201 share} (the sender's view); the item is in the recipient's library from now
+ *       on. An {@code uncategorized} video needs {@code mediaType} (and {@code show}) from the
+ *       sender, else {@code 409 needs_classification} with {@code itemId} and {@code suggested}
+ *       ({@link Classify}; nothing is shared: send it again with the type). {@code 400
  *       invalid_item_id} / {@code invalid_username} / {@code invalid_message} /
  *       {@code message_too_long} (over {@value Shares#MESSAGE_MAX} characters) /
  *       {@code cannot_share_with_self} / {@code unknown_field}, {@code 404 user_not_found} /
@@ -45,7 +48,7 @@ import java.util.Set;
  * "message"?, "createdAt", "seen"?}}; {@code seen} only in the recipient's view.
  */
 public final class SharesApi {
-    private static final Set<String> SHARE_FIELDS = Set.of("itemId", "toUsername", "message");
+    private static final Set<String> SHARE_FIELDS = Set.of("itemId", "toUsername", "message", "mediaType", "show");
     private static final Set<String> SEEN_FIELDS = Set.of("ids", "all");
 
     private final Shares shares;
@@ -82,7 +85,7 @@ public final class SharesApi {
             throw new HttpError(400, "invalid_username", "toUsername is required");
         }
         String message = string(body.get("message"), "invalid_message");
-        Shares.Share share = shares.share(user, itemId, toUsername, message,
+        Shares.Share share = shares.share(user, itemId, toUsername, message, Classify.of(body),
                 () -> policy.requireYoutube(user, null));
         response.header("Cache-Control", "no-store");
         response.json(201, share);

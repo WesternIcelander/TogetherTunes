@@ -15,7 +15,7 @@ import java.util.Objects;
  * The upload endpoints ({@code docs/api.md#adding-media}); the work is in {@link Uploads}.
  *
  * <ul>
- *   <li>{@code POST /api/uploads} {@code {filename, size, roomId?, contentId?, addToLibrary?}} →
+ *   <li>{@code POST /api/uploads} {@code {filename, size, roomId?, contentId?, addToLibrary?, mediaType?, show?}} →
  *       {@code 201} {@code {uploadId, chunkSize, size}}; or, when the <b>pre-check</b> finds a
  *       ready, pending or processing upload item with that {@code contentId} ({@link ContentId};
  *       only on an {@code https} server, {@link Uploads#start}), {@code 200 {uploadId, chunkSize,
@@ -33,9 +33,17 @@ import java.util.Objects;
  *       ({@code 409 upload_offset_mismatch} otherwise).</li>
  *   <li>{@code GET /api/uploads/{id}} → {@code {receivedBytes, size, itemId?}} ({@code itemId}
  *       once completed), to resume after an interruption.</li>
- *   <li>{@code POST /api/uploads/{id}/complete} {@code {title?, artist?, addToLibrary?}} (body
- *       optional) → {@code 200 {itemId, deduplicated}}; repeating it returns the same.</li>
+ *   <li>{@code POST /api/uploads/{id}/complete} {@code {title?, artist?, addToLibrary?, mediaType?,
+ *       show?}} (body optional) → {@code 200 {itemId, deduplicated}}; repeating it returns the
+ *       same.</li>
  * </ul>
+ * <b>Classify on library add</b> ({@link Classify}): when the item is an {@code uncategorized}
+ * video and the caller's library is to get it, {@code mediaType} (and {@code show}) is needed
+ * (on {@code POST /api/uploads} for a pre-check hit, on {@code complete} otherwise). Without it
+ * the upload still completes as with {@code addToLibrary: false}, and the answer is {@code 409
+ * needs_classification} with {@code itemId} and {@code suggested}; the client then adds it with
+ * {@code PUT /api/library/{itemId}} (a repeated {@code complete} answers {@code 200} without
+ * adding it).
  *
  * <p>Uploads belong to whoever started them; anyone else gets {@code 404 upload_not_found}. Users
  * need {@code library.upload} on every route; guests need the server's guest upload rules
@@ -46,10 +54,12 @@ public final class UploadsApi {
     private final AddMediaPolicy policy;
     private final Guests guests;
 
-    record CreateRequest(String filename, Long size, String roomId, String contentId, Boolean addToLibrary) {
+    record CreateRequest(String filename, Long size, String roomId, String contentId, Boolean addToLibrary,
+                         com.google.gson.JsonElement mediaType, com.google.gson.JsonElement show) {
     }
 
-    record CompleteRequest(String title, String artist, Boolean addToLibrary) {
+    record CompleteRequest(String title, String artist, Boolean addToLibrary,
+                           com.google.gson.JsonElement mediaType, com.google.gson.JsonElement show) {
     }
 
     public UploadsApi(Uploads uploads, AddMediaPolicy policy, Guests guests) {
@@ -91,7 +101,7 @@ public final class UploadsApi {
             actor = guests.requireIdentity(request, response);
         }
         Uploads.Started started = uploads.start(actor, body.filename(), body.size(), roomId, request.clientIp(),
-                body.contentId(), body.addToLibrary());
+                body.contentId(), body.addToLibrary(), Classify.of(body.mediaType(), body.show()));
         Uploads.Upload upload = started.upload();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("uploadId", upload.id());
@@ -131,10 +141,10 @@ public final class UploadsApi {
     }
 
     private void complete(Request request, Response response) throws Exception {
-        CompleteRequest body = noBody(request) ? new CompleteRequest(null, null, null)
+        CompleteRequest body = noBody(request) ? new CompleteRequest(null, null, null, null, null)
                 : request.readJson(CompleteRequest.class);
         Uploads.Completed done = uploads.complete(ActorResolver.actor(request), request.pathParam("id"),
-                body.title(), body.artist(), body.addToLibrary());
+                body.title(), body.artist(), body.addToLibrary(), Classify.of(body.mediaType(), body.show()));
         response.header("Cache-Control", "no-store");
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("itemId", done.itemId());

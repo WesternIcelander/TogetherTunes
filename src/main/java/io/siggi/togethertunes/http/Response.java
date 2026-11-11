@@ -134,7 +134,13 @@ public final class Response {
         if (error.retryAfterSeconds() > 0) {
             header("Retry-After", Long.toString(error.retryAfterSeconds()));
         }
-        error(error.status(), error.code(), error.getMessage());
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", error.code());
+        body.put("message", error.getMessage() == null ? "" : error.getMessage());
+        for (Map.Entry<String, Object> e : error.extra().entrySet()) {
+            body.putIfAbsent(e.getKey(), e.getValue());
+        }
+        json(error.status(), Map.of("error", body));
     }
 
     /** Sends {@code { "error": { "code", "message" } }}. */

@@ -265,7 +265,20 @@ public final class Library {
      */
     public Added add(Actor.User user, String itemId, YoutubeCheck mayFetchYoutube)
             throws SQLException, InterruptedException {
-        return add(user, itemId, VIA_MANUAL, mayFetchYoutube);
+        return add(user, itemId, VIA_MANUAL, null, mayFetchYoutube);
+    }
+
+    /**
+     * {@link #add(Actor.User, String, YoutubeCheck)} with the classification an
+     * {@code uncategorized} video needs to go into a library ({@link Classify}; ignored for an item
+     * that doesn't need one).
+     *
+     * @throws Classify.NeedsClassification {@code 409 needs_classification} when the item needs a
+     *                                      classification and none was given (nothing changes)
+     */
+    public Added add(Actor.User user, String itemId, Classify.Classification classification,
+                     YoutubeCheck mayFetchYoutube) throws SQLException, InterruptedException {
+        return add(user, itemId, VIA_MANUAL, classification, mayFetchYoutube);
     }
 
     /**
@@ -274,6 +287,11 @@ public final class Library {
      */
     public Added add(Actor.User user, String itemId, String via, YoutubeCheck mayFetchYoutube)
             throws SQLException, InterruptedException {
+        return add(user, itemId, via, null, mayFetchYoutube);
+    }
+
+    private Added add(Actor.User user, String itemId, String via, Classify.Classification classification,
+                      YoutubeCheck mayFetchYoutube) throws SQLException, InterruptedException {
         if (!VIA_MANUAL.equals(via) && !VIA_REQUEST.equals(via)) {
             throw new IllegalArgumentException("via must be manual or request: " + via);
         }
@@ -293,12 +311,16 @@ public final class Library {
         if (before != null) {
             return new Added(before, false);
         }
+        if (classification == null && db.read(c -> Classify.needs(c, userId, itemId))) {
+            // Asked before anything happens (no refetch either); the client adds again with a type.
+            throw Classify.needsClassification(db, itemId);
+        }
         boolean gone = row.status().equals("purged") || row.status().equals("failed");
         if (row.youtubeId() != null) {
             if (gone) {
                 mayFetchYoutube.check();
             }
-            youtube.addExisting(user, row.youtubeId(), via);
+            youtube.addExisting(user, row.youtubeId(), via, classification);
         } else {
             if (row.status().equals("purged")) {
                 throw new HttpError(409, "media_expired",
@@ -309,6 +331,9 @@ public final class Library {
             }
             long now = EpochMs.now(clock);
             db.write(c -> {
+                if (!Classify.prepareAdd(c, userId, itemId, classification, userId, now)) {
+                    throw new Classify.NeedsClassification(itemId, Classify.suggest(c, itemId));
+                }
                 try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
                         List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
                     ps.setString(1, userId);

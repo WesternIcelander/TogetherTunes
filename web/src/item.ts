@@ -2,6 +2,7 @@
 // metadata, cover, a player once the item is ready, the ingest job's status (and log, for those
 // who may edit), and for users: add to / remove from the library, add to a playlist, share, edit
 // the metadata, purge.
+import { withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
 import { allowedTypes, mediaTypeBody, mediaTypeLabel } from "./mediatypes.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
@@ -347,8 +348,13 @@ function shareForm(item: ItemPage): HTMLElement {
     if (text !== "") body["message"] = text;
     const submit = form.querySelector("button");
     if (submit !== null) submit.disabled = true;
-    api("POST", "/api/shares", body)
-      .then(() => { showNotice("Shared with " + String(body["toUsername"]) + "."); form.reset(); })
+    // An uncategorized video goes into their library, so it needs a type first (classifyprompt.ts).
+    withClassification((c) => api("POST", "/api/shares", { ...body, ...c }), item.title)
+      .then((r) => {
+        if (r === null) return;
+        showNotice("Shared with " + String(body["toUsername"]) + ".");
+        form.reset();
+      })
       .catch((e: unknown) => { error.textContent = message(e); })
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
@@ -380,7 +386,8 @@ function render(item: ItemPage, job: JobView | undefined): void {
     } else if (item.status !== "failed" || item.source === "youtube") {
       actions.append(button(item.status === "purged" && item.source === "youtube" ? "Fetch again and add to my library"
         : "Add to my library", async () => {
-        await api("PUT", "/api/library/" + encodeURIComponent(item.id));
+        if (await withClassification((c) => api("PUT", "/api/library/" + encodeURIComponent(item.id), c),
+          item.title) === null) return;
         showNotice("Added to your library.");
         await refresh();
       }, showError));

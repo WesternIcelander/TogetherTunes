@@ -12,11 +12,16 @@
 // server already has the file, it answers 200 with `deduplicated: true` and the upload is complete
 // without sending any bytes.
 import { api, ApiError } from "./api.js";
+import { needsClassification, type ClassifyNeeded } from "./classify.js";
 import { contentId, precheckAvailable } from "./contentid.js";
 
 interface Created { uploadId: string; chunkSize: number; size: number; deduplicated?: boolean; itemId?: string }
 interface Status { receivedBytes: number; size: number; itemId?: string }
-export interface Completed { itemId: string; deduplicated: boolean }
+/**
+ * A finished upload. `classify`: the file is on the server, but the library add waits for a media
+ * type (`409 needs_classification`, docs/media-types.md#media-types); see classifyprompt.ts.
+ */
+export interface Completed { itemId: string; deduplicated: boolean; classify?: ClassifyNeeded }
 
 export type UploadState = "checking" | "starting" | "uploading" | "paused" | "retrying" | "processing" | "done" | "failed";
 
@@ -250,7 +255,18 @@ export class Upload {
       const body: Record<string, unknown> = { filename: this.file.name, size, addToLibrary: this.addToLibrary };
       if (this.roomId !== undefined) body["roomId"] = this.roomId;
       if (id !== null) body["contentId"] = id;
-      const created = await api<Created>("POST", "/api/uploads", body);
+      let created: Created;
+      try {
+        created = await api<Created>("POST", "/api/uploads", body);
+      } catch (e) {
+        // The pre-check found an uncategorized video: complete, but not in the library yet.
+        const needed = needsClassification(e);
+        const uploadId = e instanceof ApiError ? e.details?.["uploadId"] : undefined;
+        if (needed === undefined || typeof uploadId !== "string") throw e;
+        this.#uploadId = uploadId;
+        this.#sent = size;
+        return { itemId: needed.itemId, deduplicated: true, classify: needed };
+      }
       this.#uploadId = created.uploadId;
       if (created.deduplicated === true && created.itemId !== undefined) {
         // The server already has this file: nothing to send.
@@ -281,8 +297,14 @@ export class Upload {
       this.#check();
     }
     this.#report("processing");
-    return await api<Completed>("POST", "/api/uploads/" + encodeURIComponent(this.#uploadId) + "/complete",
-      { addToLibrary: this.addToLibrary });
+    try {
+      return await api<Completed>("POST", "/api/uploads/" + encodeURIComponent(this.#uploadId) + "/complete",
+        { addToLibrary: this.addToLibrary });
+    } catch (e) {
+      const needed = needsClassification(e);
+      if (needed === undefined) throw e;
+      return { itemId: needed.itemId, deduplicated: false, classify: needed };
+    }
   }
 
   /** The content ID for the pre-check, computed once; null where the pre-check isn't available. */

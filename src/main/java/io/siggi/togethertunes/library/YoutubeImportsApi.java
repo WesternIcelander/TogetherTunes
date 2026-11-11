@@ -14,9 +14,12 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * {@code POST /api/imports/youtube} {@code {url, presentAsAudio?, addToLibrary?}} →
+ * {@code POST /api/imports/youtube} {@code {url, presentAsAudio?, addToLibrary?, mediaType?, show?}} →
  * {@code 200 {itemId, cached, status}} ({@code docs/api.md#adding-media}); the work is in
- * {@link YoutubeImports}. {@code cached} is true when the item was already ready (nothing to
+ * {@link YoutubeImports}. Going into the caller's library, an {@code uncategorized} video needs
+ * {@code mediaType} (and {@code show}): without it the import still happens but the answer is
+ * {@code 409 needs_classification} with {@code itemId} and {@code suggested} ({@link Classify};
+ * the client then uses {@code PUT /api/library/{itemId}}). {@code cached} is true when the item was already ready (nothing to
  * download); {@code status} is the item's status ({@code ready}, {@code pending} or
  * {@code processing}). Needs {@code library.youtube}, which the {@code ytdlp.enabled} switch gates
  * ({@code 403 feature_disabled} when it is off; {@link AddMediaPolicy#requireYoutube}). Guests get
@@ -38,7 +41,8 @@ public final class YoutubeImportsApi {
     private final YoutubeImports imports;
     private final AddMediaPolicy policy;
 
-    record ImportRequest(String url, Boolean presentAsAudio, Boolean addToLibrary) {
+    record ImportRequest(String url, Boolean presentAsAudio, Boolean addToLibrary,
+                         com.google.gson.JsonElement mediaType, com.google.gson.JsonElement show) {
     }
 
     public YoutubeImportsApi(YoutubeImports imports, AddMediaPolicy policy) {
@@ -56,16 +60,17 @@ public final class YoutubeImportsApi {
         if (body == null || body.url() == null || body.url().isBlank()) {
             throw new HttpError(400, "invalid_youtube_url", "url is required");
         }
+        Classify.Classification classification = Classify.of(body.mediaType(), body.show());
         if (!wantsStages(request.header("Accept"))) {
             response.json(result(imports.importUrl(ActorResolver.actor(request), body.url(),
-                    body.presentAsAudio(), body.addToLibrary())));
+                    body.presentAsAudio(), body.addToLibrary(), classification)));
             return;
         }
         StageStream stages = new StageStream(response);
         YoutubeImports.Imported done;
         try {
             done = imports.importUrl(ActorResolver.actor(request), body.url(), body.presentAsAudio(),
-                    body.addToLibrary(), stages::stage);
+                    body.addToLibrary(), classification, stages::stage);
         } catch (HttpError e) {
             if (!stages.started()) {
                 throw e;
@@ -76,6 +81,9 @@ public final class YoutubeImportsApi {
             Map<String, Object> error = new LinkedHashMap<>();
             error.put("code", e.code());
             error.put("message", e.getMessage() == null ? "" : e.getMessage());
+            for (Map.Entry<String, Object> x : e.extra().entrySet()) {
+                error.putIfAbsent(x.getKey(), x.getValue());
+            }
             line.put("error", error);
             if (e.retryAfterSeconds() > 0) {
                 line.put("retryAfter", e.retryAfterSeconds());

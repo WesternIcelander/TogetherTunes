@@ -58,7 +58,10 @@ import java.util.function.Supplier;
  *     </ul></li>
  * </ol>
  * Every successful import makes the item referenced now ({@code last_referenced_at}) and, for a
- * user, adds it to their library ({@code via='youtube'}) unless {@code addToLibrary} is false.
+ * user, adds it to their library ({@code via='youtube'}) unless {@code addToLibrary} is false. An
+ * {@code uncategorized} video needs a classification for that ({@link Classify}): without one the
+ * import still happens (as with {@code addToLibrary: false}) and then
+ * {@link Classify.NeedsClassification} ({@code 409 needs_classification}) is thrown.
  * {@code presentAsAudio} is applied when the import creates the item or brings a purged or failed
  * one back; for an item that already exists it is ignored (changing it is a metadata edit, with
  * its own permission rules). Imports of the same ID are serialised, so concurrent requests for a
@@ -172,7 +175,18 @@ public final class YoutubeImports {
      */
     public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary)
             throws SQLException, InterruptedException {
-        return importUrl(actor, url, presentAsAudio, addToLibrary, YoutubeLookupStage.Listener.NONE);
+        return importUrl(actor, url, presentAsAudio, addToLibrary, null, YoutubeLookupStage.Listener.NONE);
+    }
+
+    /**
+     * {@link #importUrl(Actor, String, Boolean, Boolean)} with the classification for the library
+     * add ({@link Classify}): an {@code uncategorized} video goes into the user's library only with
+     * one. Without it the import still happens (as with {@code addToLibrary: false}) and
+     * {@link Classify.NeedsClassification} is thrown afterwards.
+     */
+    public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary,
+                              Classify.Classification classification) throws SQLException, InterruptedException {
+        return importUrl(actor, url, presentAsAudio, addToLibrary, classification, YoutubeLookupStage.Listener.NONE);
     }
 
     /**
@@ -182,6 +196,13 @@ public final class YoutubeImports {
      */
     public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary,
                               YoutubeLookupStage.Listener progress) throws SQLException, InterruptedException {
+        return importUrl(actor, url, presentAsAudio, addToLibrary, null, progress);
+    }
+
+    /** Both of the above: the classification for the library add and the lookup's stages. */
+    public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary,
+                              Classify.Classification classification, YoutubeLookupStage.Listener progress)
+            throws SQLException, InterruptedException {
         Objects.requireNonNull(progress);
         String userId = actor instanceof Actor.User u ? u.userId() : null;
         String guestId = actor instanceof Actor.Guest g ? g.guestId() : null;
@@ -196,21 +217,25 @@ public final class YoutubeImports {
         try {
             Existing existing = db.read(c -> find(c, videoId));
             if (existing != null) {
-                return existing(existing, userId, presentAsAudio, library, VIA_IMPORT);
+                return existing(existing, userId, presentAsAudio, library, VIA_IMPORT, classification);
             }
             diskSpace.requireRoomFor(0);
             YoutubeMetadata meta = fetchMetadata(videoId, progress);
             String itemId = UuidV7.newId();
             long now = EpochMs.now(clock);
-            db.write(c -> {
+            boolean added = db.write(c -> {
                 insertItem(c, itemId, videoId, meta, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
-                jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
-                if (library) {
+                boolean add = library && Classify.prepareAdd(c, userId, itemId, classification, userId, now);
+                jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE, add ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
+                if (add) {
                     addToLibrary(c, userId, itemId, now, VIA_IMPORT);
                 }
-                return null;
+                return add;
             });
             wake.run();
+            if (library && !added) {
+                throw Classify.needsClassification(db, itemId);
+            }
             return new Imported(itemId, false, "pending");
         } finally {
             lock.unlock();
@@ -229,6 +254,17 @@ public final class YoutubeImports {
      */
     public Imported addExisting(Actor.User user, String videoId, String via)
             throws SQLException, InterruptedException {
+        return addExisting(user, videoId, via, null);
+    }
+
+    /**
+     * {@link #addExisting(Actor.User, String, String)} with the classification an
+     * {@code uncategorized} video needs for the library add ({@link Classify}); without it the
+     * item is still made ready (as {@link #useExisting} does) and
+     * {@link Classify.NeedsClassification} is thrown.
+     */
+    public Imported addExisting(Actor.User user, String videoId, String via, Classify.Classification classification)
+            throws SQLException, InterruptedException {
         ReentrantLock lock = locks[Math.floorMod(videoId.hashCode(), locks.length)];
         lock.lockInterruptibly();
         try {
@@ -236,7 +272,7 @@ public final class YoutubeImports {
             if (existing == null) {
                 throw new HttpError(404, "item_not_found", "No such item");
             }
-            return existing(existing, user.userId(), null, true, via);
+            return existing(existing, user.userId(), null, true, via, classification);
         } finally {
             lock.unlock();
         }
@@ -258,25 +294,29 @@ public final class YoutubeImports {
             if (existing == null) {
                 throw new HttpError(404, "item_not_found", "No such item");
             }
-            return existing(existing, null, null, false, null);
+            return existing(existing, null, null, false, null, null);
         } finally {
             lock.unlock();
         }
     }
 
     private Imported existing(Existing existing, String userId, Boolean presentAsAudio, boolean library,
-                              String via) throws SQLException {
+                              String via, Classify.Classification classification) throws SQLException {
         String itemId = existing.id();
         long now = EpochMs.now(clock);
         switch (existing.status()) {
             case "ready", "pending", "processing" -> {
-                db.write(c -> {
+                boolean added = db.write(c -> {
                     References.touch(c, itemId, now);
-                    if (library) {
+                    boolean add = library && Classify.prepareAdd(c, userId, itemId, classification, userId, now);
+                    if (add) {
                         addToLibrary(c, userId, itemId, now, via);
                     }
-                    return null;
+                    return add;
                 });
+                if (library && !added) {
+                    throw Classify.needsClassification(db, itemId);
+                }
                 return new Imported(itemId, existing.status().equals("ready"), existing.status());
             }
             case "purged", "failed" -> {
@@ -295,18 +335,22 @@ public final class YoutubeImports {
                     }
                 }
                 diskSpace.requireRoomFor(0);
-                db.write(c -> {
+                boolean added = db.write(c -> {
                     if (presentAsAudio != null) {
                         setPresentAsAudio(c, itemId, presentAsAudio);
                     }
                     References.touch(c, itemId, now);
-                    jobs.enqueue(itemId, kind, library ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
-                    if (library) {
+                    boolean add = library && Classify.prepareAdd(c, userId, itemId, classification, userId, now);
+                    jobs.enqueue(itemId, kind, add ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
+                    if (add) {
                         addToLibrary(c, userId, itemId, now, via);
                     }
-                    return null;
+                    return add;
                 });
                 wake.run();
+                if (library && !added) {
+                    throw Classify.needsClassification(db, itemId);
+                }
                 return new Imported(itemId, false, "pending");
             }
             default -> throw new IllegalStateException("Unknown item status " + existing.status());

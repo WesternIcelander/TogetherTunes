@@ -1,6 +1,8 @@
 // The "Add media" panel of the library page: file uploads (chunked, resumable; see uploads.ts)
 // and YouTube imports, each followed by its ingest job's status until the item is ready.
 import { ApiError } from "./api.js";
+import { needsClassification, type ClassifyNeeded } from "./classify.js";
+import { classifyAndAdd } from "./classifyprompt.js";
 import { button, formatBytes, h } from "./dom.js";
 import { ingestText, jobIngestStatus, JsonLines, lookupText } from "./jobtext.js";
 import { inProgress, itemPath, statusBadge, watchItem, type ItemStatus } from "./media.js";
@@ -41,6 +43,27 @@ function trackItem(list: HTMLElement, row: HTMLElement, label: string, itemId: s
     if (wasInProgress && !now) onChanged();
     wasInProgress = now;
   }, (e) => { status.textContent = message(e); });
+}
+
+/**
+ * The item is on the server but its library add waits for a media type: asks (a button brings
+ * the question back if it was cancelled) and adds it.
+ */
+function classifyRow(row: HTMLElement, needed: ClassifyNeeded, label: string, onChanged: () => void): void {
+  const note = h("p", { class: "muted small" });
+  const ask = (): void => {
+    classifyAndAdd(needed, label).then((added) => {
+      if (added) {
+        note.remove();
+        onChanged();
+      } else {
+        note.replaceChildren("Not in your library yet: it needs a media type. ",
+          button("Choose type", ask, (e) => { note.textContent = message(e); }, "small"));
+      }
+    }).catch((e: unknown) => { note.textContent = message(e); });
+  };
+  row.append(note);
+  ask();
 }
 
 function progressBar(): HTMLProgressElement {
@@ -94,6 +117,7 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
           const label = file.name + (p.result.deduplicated ? " (already on the server)" : "");
           trackItem(activity, row, label, p.result.itemId, options.onItemChanged);
           options.onItemChanged();
+          if (p.result.classify !== undefined) classifyRow(row, p.result.classify, file.name, options.onItemChanged);
         }
       };
       const onError = (e: unknown): void => { text.textContent = message(e); };
@@ -162,7 +186,18 @@ export function renderAddMedia(container: HTMLElement, options: AddMediaOptions)
           trackItem(activity, row, r.cached ? url + " (already on the server)" : url, r.itemId, options.onItemChanged);
           options.onItemChanged();
         })
-        .catch((e: unknown) => { error.textContent = message(e); })
+        .catch((e: unknown) => {
+          // Imported, but the library add waits for a media type.
+          const needed = needsClassification(e);
+          if (needed === undefined) {
+            error.textContent = message(e);
+            return;
+          }
+          form.reset();
+          const row = h("li", { class: "activity-row" });
+          trackItem(activity, row, url, needed.itemId, options.onItemChanged);
+          classifyRow(row, needed, url, options.onItemChanged);
+        })
         .finally(() => {
           window.clearInterval(ticker);
           lookup.hidden = true;
@@ -207,7 +242,8 @@ async function importWithStages(body: { url: string; presentAsAudio: boolean },
     }
     if (!response.ok) {
       const error = (json as { error?: { code?: string; message?: string } } | undefined)?.error;
-      throw new ApiError(response.status, error?.code ?? "http_" + response.status, error?.message ?? response.statusText);
+      throw new ApiError(response.status, error?.code ?? "http_" + response.status, error?.message ?? response.statusText,
+        error as Record<string, unknown> | undefined);
     }
     return json as YoutubeResult;
   }
@@ -220,7 +256,8 @@ async function importWithStages(body: { url: string; presentAsAudio: boolean },
       if (line.type === "progress" && typeof line.text === "string") onStage(line.text);
       else if (line.type === "result") result = v as YoutubeResult;
       else if (line.type === "error") {
-        failure = new ApiError(Number(line.status ?? 0), line.error?.code ?? "error", line.error?.message ?? "Import failed");
+        failure = new ApiError(Number(line.status ?? 0), line.error?.code ?? "error", line.error?.message ?? "Import failed",
+          line.error as Record<string, unknown> | undefined);
       }
     }
   };

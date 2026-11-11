@@ -91,8 +91,8 @@ abstract class SharesContract {
         String id = UuidV7.newId();
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, duration_ms,"
-                    + " source, youtube_id, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
-                    + " VALUES (?, ?, ?, 'Artist', 1000, ?, ?, ?, 1, ?, '720p30', 1)")) {
+                    + " source, youtube_id, added_by_user_id, added_at, status, output_profile, last_referenced_at,"
+                    + " media_type) VALUES (?, ?, ?, 'Artist', 1000, ?, ?, ?, 1, ?, '720p30', 1, ?)")) {
                 ps.setString(1, id);
                 ps.setString(2, youtubeId != null ? "video" : "audio");
                 ps.setString(3, title);
@@ -100,6 +100,7 @@ abstract class SharesContract {
                 ps.setString(5, youtubeId);
                 ps.setString(6, alice.userId());
                 ps.setString(7, status);
+                ps.setString(8, youtubeId != null ? "music_video" : "audio"); // classified: shares don't ask
                 ps.executeUpdate();
             }
             return null;
@@ -260,6 +261,32 @@ abstract class SharesContract {
         assertEquals(1_800_000_300_000L, lastReferenced(purged));
         assertEquals("share", library.get(bob.userId(), purged).via());
         assertEquals(3, count("SELECT COUNT(*) FROM shares WHERE to_user_id = ?", bob.userId()));
+    }
+
+    /**
+     * Classify on library add: sharing an uncategorized video puts it into the recipient's library,
+     * so the sender gives the type; without it 409 needs_classification and nothing is shared.
+     */
+    @Test
+    void anUncategorizedVideoNeedsATypeToBeShared() throws Exception {
+        String video = item("Clip", "ready", "aaaaaaaaaaa");
+        sql("UPDATE items SET media_type = 'uncategorized' WHERE id = ?", video);
+        Classify.NeedsClassification e = assertThrows(Classify.NeedsClassification.class,
+                () -> share(alice, video, "bob.b", null));
+        assertEquals(video, e.itemId());
+        assertNull(e.suggested(), "nothing known about it");
+        assertEquals(0, count("SELECT COUNT(*) FROM shares WHERE item_id = ?", video));
+        assertEquals(0, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", video));
+        Shares.Share s = shares.share(alice, video, "bob.b", null,
+                new Classify.Classification(MediaType.MOVIE, null), NO_CHECK);
+        assertEquals("movie", s.item().mediaType());
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", video));
+        // classified now: no question
+        String other = item("Other", "ready", "bbbbbbbbbbb");
+        sql("UPDATE items SET media_type = 'uncategorized' WHERE id = ?", other);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES ('" + bob.userId()
+                + "', ?, 1, 'manual')", other);
+        share(alice, other, "bob.b", null); // already in bob's library: nothing to ask
     }
 
     @Test

@@ -3,6 +3,7 @@
 // "Add media" panel (uploads and YouTube imports). "Search the whole server" switches the list to
 // every item on the server (`GET /api/items/search`): item metadata only, never whose libraries
 // hold an item, with Add to Library on the ones not in the caller's library.
+import { withClassification } from "./classifyprompt.js";
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { renderAddMedia } from "./addmedia.js";
@@ -95,7 +96,8 @@ function serverRow(hit: ServerHit): HTMLTableRowElement {
     inLibrary();
   } else {
     action.append(button("Add to Library", async () => {
-      await api("PUT", "/api/library/" + encodeURIComponent(item.id));
+      if (await withClassification((c) => api("PUT", "/api/library/" + encodeURIComponent(item.id), c),
+        item.title) === null) return;
       inLibrary();
     }, showError));
   }

@@ -180,6 +180,65 @@ class LibraryApiTest {
         assertEquals("invalid_query", code(call("GET", "/api/library?q=" + "x".repeat(201), true)));
     }
 
+    private HttpResponse<String> put(String path, String json) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
+                .PUT(HttpRequest.BodyPublishers.ofString(json)).build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    /**
+     * Classify on library add: an uncategorized video needs {@code mediaType} in the PUT body;
+     * without it 409 needs_classification with the item and the suggestion (an upload's file name
+     * with SxxEyy → show), and nothing changes.
+     */
+    @Test
+    void anUncategorizedVideoNeedsATypeToBeAdded() throws Exception {
+        String id = item("Clip", "ready", null);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video',"
+                    + " media_type = 'uncategorized', metadata_json = ? WHERE id = ?")) {
+                ps.setString(1, "{\"upload\":{\"filename\":\"Some_Show - s1e12 [720p].mkv\"}}");
+                ps.setString(2, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        HttpResponse<String> r = call("PUT", "/api/library/" + id, true);
+        assertEquals(409, r.statusCode(), r.body());
+        JsonObject error = json(r).getAsJsonObject("error");
+        assertEquals("needs_classification", error.get("code").getAsString());
+        assertEquals(id, error.get("itemId").getAsString());
+        JsonObject suggested = error.getAsJsonObject("suggested");
+        assertEquals("show", suggested.get("mediaType").getAsString());
+        assertEquals("Some Show", suggested.getAsJsonObject("show").get("name").getAsString());
+        assertEquals(1, suggested.getAsJsonObject("show").get("season").getAsInt());
+        assertEquals(12, suggested.getAsJsonObject("show").get("episode").getAsInt());
+        assertEquals(0, json(call("GET", "/api/library", true)).getAsJsonArray("items").size());
+
+        assertEquals("invalid_media_type", code(put("/api/library/" + id, "{\"mediaType\":\"uncategorized\"}")));
+        assertEquals("invalid_media_type", code(put("/api/library/" + id, "{\"mediaType\":\"podcast\"}")));
+        assertEquals("show_required", code(put("/api/library/" + id, "{\"mediaType\":\"show\"}")));
+        assertEquals("invalid_show", code(put("/api/library/" + id, "{\"mediaType\":\"show\",\"show\":{\"episode\":1}}")));
+        assertEquals("not_a_show", code(put("/api/library/" + id,
+                "{\"mediaType\":\"movie\",\"show\":{\"name\":\"X\",\"episode\":1}}")));
+        assertEquals("unknown_field", code(put("/api/library/" + id, "{\"title\":\"x\"}")));
+        assertEquals(0, json(call("GET", "/api/library", true)).getAsJsonArray("items").size());
+
+        HttpResponse<String> ok = put("/api/library/" + id,
+                "{\"mediaType\":\"show\",\"show\":{\"name\":\"Some Show\",\"season\":1,\"episode\":12}}");
+        assertEquals(201, ok.statusCode(), ok.body());
+        JsonObject itemJson = json(ok).getAsJsonObject("item");
+        assertEquals("show", itemJson.get("mediaType").getAsString());
+        assertEquals("Some Show", itemJson.getAsJsonObject("show").get("name").getAsString());
+        assertEquals(12, itemJson.getAsJsonObject("show").get("episode").getAsInt());
+        // already in the library: no question, and a type sent along changes nothing
+        assertEquals(200, put("/api/library/" + id, "{\"mediaType\":\"movie\"}").statusCode());
+        assertEquals("show", json(call("GET", "/api/library", true)).getAsJsonArray("items").get(0).getAsJsonObject()
+                .getAsJsonObject("item").get("mediaType").getAsString());
+        // an audio item never asks
+        assertEquals(201, call("PUT", "/api/library/" + item("Song", "ready", null), true).statusCode());
+    }
+
     @Test
     void errorsAndCallers() throws Exception {
         String id = item("Song", "ready", null);

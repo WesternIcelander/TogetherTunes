@@ -89,12 +89,13 @@ abstract class UserLibrariesContract {
         String id = UuidV7.newId();
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, duration_ms,"
-                    + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at)"
-                    + " VALUES (?, ?, ?, 'Artist', 1000, 'upload', ?, 1, 'ready', '720p30', 1)")) {
+                    + " source, added_by_user_id, added_at, status, output_profile, last_referenced_at, media_type)"
+                    + " VALUES (?, ?, ?, 'Artist', 1000, 'upload', ?, 1, 'ready', '720p30', 1, ?)")) {
                 ps.setString(1, id);
                 ps.setString(2, kind);
                 ps.setString(3, title);
                 ps.setString(4, alice.userId());
+                ps.setString(5, kind.equals("video") ? "music_video" : "audio"); // classified: adds don't ask
                 ps.executeUpdate();
             }
             return null;

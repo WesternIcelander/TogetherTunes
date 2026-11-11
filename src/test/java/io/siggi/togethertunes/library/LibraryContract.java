@@ -330,11 +330,51 @@ abstract class LibraryContract {
         }).created());
     }
 
+    /**
+     * Classify on library add: an uncategorized video isn't added without a type
+     * (NeedsClassification, before anything happens: a purged one isn't fetched again); with one
+     * it gets the type. Audio items and classified videos never ask.
+     */
+    @Test
+    void anUncategorizedVideoNeedsAType() throws Exception {
+        String upload = item("video", "Movie.Night.mkv", null, null, "ready", null);
+        String purged = item("video", "Old video", null, null, "purged", "bbbbbbbbbbb");
+        AtomicInteger checks = new AtomicInteger();
+        Classify.NeedsClassification e = assertThrows(Classify.NeedsClassification.class,
+                () -> library.add(alice, upload, checks::incrementAndGet));
+        assertEquals(upload, e.itemId());
+        assertNull(e.suggested());
+        assertNull(library.get(alice.userId(), upload));
+        e = assertThrows(Classify.NeedsClassification.class, () -> library.add(alice, purged, checks::incrementAndGet));
+        assertEquals(0, checks.get());
+        assertTrue(jobs.latestForItem(purged).isEmpty(), "asked before fetching it again");
+
+        Library.Added added = library.add(alice, upload, new Classify.Classification(MediaType.MOVIE, null),
+                checks::incrementAndGet);
+        assertTrue(added.created());
+        assertEquals("movie", added.entry().item().mediaType());
+        Library.Added back = library.add(alice, purged, new Classify.Classification(MediaType.AUDIO, null),
+                checks::incrementAndGet);
+        assertEquals("audio", back.entry().item().mediaType());
+        assertTrue(back.entry().item().presentAsAudio());
+        assertEquals(IngestJob.Kind.REFETCH, jobs.latestForItem(purged).orElseThrow().kind());
+        // bob: classified now, no question
+        assertTrue(library.add(bob, upload, checks::incrementAndGet).created());
+        assertTrue(library.add(bob, song("Song", null, null), checks::incrementAndGet).created());
+    }
+
     @Test
     void aPurgedYoutubeItemIsFetchedAgainWhenAdded() throws Exception {
         String ready = item("video", "Ready video", null, null, "ready", "aaaaaaaaaaa");
         String purged = item("video", "Old video", null, null, "purged", "bbbbbbbbbbb");
         String failed = item("video", "Failed video", null, null, "failed", "ccccccccccc");
+        // classified, so the adds don't ask (anUncategorizedVideoNeedsAType covers that)
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = 'music_video'")) {
+                ps.executeUpdate();
+            }
+            return null;
+        });
 
         AtomicInteger checks = new AtomicInteger();
         Library.Added r = library.add(alice, ready, checks::incrementAndGet);
@@ -373,7 +413,8 @@ abstract class LibraryContract {
                 ps.setString(2, recent);
                 ps.executeUpdate();
             }
-            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'failed' WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE items SET status = 'failed', media_type = 'music_video' WHERE id = ?")) {
                 ps.setString(1, recent);
                 ps.executeUpdate();
             }
