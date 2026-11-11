@@ -3,6 +3,7 @@ package io.siggi.togethertunes.library;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -344,6 +345,47 @@ abstract class ItemsContract {
         assertTrue(audits.contains(alice.userId() + " " + video
                 + " {\"mediaType\":\"show\",\"show\":{\"name\":\"Series\",\"season\":2,\"episode\":5}} null"),
                 audits.toString());
+    }
+
+    /**
+     * A type change into or out of movie/show queues the system audio re-encode that makes the
+     * loudness normalisation follow the type (docs/library-and-ingest.md#loudness-and-media-types).
+     */
+    @Test
+    void aTypeChangeIntoOrOutOfMovieOrShowQueuesAnAudioReencode() throws Exception {
+        items.trimJobs(jobs);
+        String video = aliceItem("video");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET original_file = 'original.mp4' WHERE id = ?")) {
+                ps.setString(1, video);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        items.update(alice, video, type(MediaType.MUSIC_VIDEO, null), NONE, null);
+        assertTrue(jobs.latestForItem(video).isEmpty(), "music videos are normalised, like the files");
+        items.update(alice, video, type(MediaType.MOVIE, null), NONE, null);
+        IngestJob job = jobs.latestForItem(video).orElseThrow();
+        assertEquals(IngestJob.Kind.REENCODE, job.kind());
+        // another change while it is queued: the same job (it reads the type when it runs)
+        items.update(alice, video, type(MediaType.SHOW, new MediaType.Show("S", null, 1)), NONE, null);
+        assertEquals(job.id(), jobs.latestForItem(video).orElseThrow().id());
+        assertEquals(job.id(), jobs.claimNext().id());
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET loudness_normalized = 0 WHERE id = ?")) {
+                ps.setString(1, video);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertTrue(jobs.complete(job.id(), "log"));
+        assertEquals(job.id(), jobs.latestForItem(video).orElseThrow().id(), "the show's files follow it now");
+        items.update(alice, video, type(MediaType.MOVIE, null), NONE, null);
+        assertEquals(job.id(), jobs.latestForItem(video).orElseThrow().id(), "movie to show needs nothing");
+        items.update(alice, video, type(MediaType.AUDIO, null), NONE, null);
+        IngestJob back = jobs.latestForItem(video).orElseThrow();
+        assertNotEquals(job.id(), back.id());
+        assertEquals(IngestJob.Kind.REENCODE, back.kind());
     }
 
     @Test

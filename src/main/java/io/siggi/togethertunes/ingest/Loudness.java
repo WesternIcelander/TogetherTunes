@@ -31,6 +31,15 @@ public final class Loudness {
     }
 
     /**
+     * Whether items of {@code mediaType} get the music loudness normalisation
+     * ({@code docs/media-types.md#loudness}): everything but {@code movie} and {@code show}, whose
+     * quiet dialogue it would flatten against loud scenes. A null type (unknown) is normalised.
+     */
+    public static boolean normalizes(String mediaType) {
+        return !"movie".equals(mediaType) && !"show".equals(mediaType);
+    }
+
+    /**
      * The result of pass 1.
      *
      * @param inputI      integrated loudness, LUFS ({@code -Infinity} for silence)

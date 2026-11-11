@@ -313,6 +313,33 @@ abstract class MigrationContract {
         }));
     }
 
+    /**
+     * 0024 records whether an item's files (and each media version's) were encoded with the loudness
+     * normalisation (docs/media-types.md#loudness): every existing encode was.
+     */
+    @Test
+    void loudnessNormalizedDefaultsToOne() throws SQLException {
+        new MigrationRunner(db, MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect())).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u', 'U', 1)");
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ('v', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        exec("INSERT INTO media_versions (item_id, version, published_at, kind, output_profile)"
+                + " VALUES ('v', 1, 1, 'video', '720p30')");
+        db.read(c -> {
+            try (Statement st = c.createStatement()) {
+                for (String sql : List.of("SELECT loudness_normalized FROM items",
+                        "SELECT loudness_normalized FROM media_versions")) {
+                    try (ResultSet rs = st.executeQuery(sql)) {
+                        assertTrue(rs.next());
+                        assertEquals(1, rs.getInt(1), sql);
+                    }
+                }
+            }
+            return null;
+        });
+    }
+
     /** Runs {@code sql} on the write connection. */
     protected void exec(String sql) throws SQLException {
         db.write((Connection c) -> {

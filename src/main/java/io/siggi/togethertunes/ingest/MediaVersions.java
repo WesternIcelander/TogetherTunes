@@ -536,7 +536,7 @@ public final class MediaVersions implements AutoCloseable {
 
     /** The columns an undo restores as they are. */
     private static final String RESTORED_COLUMNS = "kind, duration_ms, output_profile, loudness_lufs, encode_preset,"
-            + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version, card_fonts";
+            + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version, card_fonts, loudness_normalized";
     /** What a version was made with: {@link #RESTORED_COLUMNS} and the media type. */
     private static final String VERSION_COLUMNS = RESTORED_COLUMNS + ", media_type";
 

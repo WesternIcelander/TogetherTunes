@@ -372,7 +372,10 @@ public final class Items {
         return end;
     }
 
-    /** Where trim jobs are queued ({@code POST /api/items/{id}/trim}); no trims until set. */
+    /**
+     * Where trim jobs are queued ({@code POST /api/items/{id}/trim}), and the audio re-encodes after a
+     * type change into or out of movie/show; neither until set.
+     */
     public void trimJobs(IngestJobs jobs) {
         this.trimJobs = jobs;
     }
@@ -522,7 +525,21 @@ public final class Items {
         } catch (MediaVersions.UndoRefused e) {
             throw new HttpError(409, e.code(), e.getMessage());
         }
+        // the restored files may not follow the item's type's loudness rule (the type changed since)
+        loudnessFollowsType(itemId);
         return get(actor, itemId, rights);
+    }
+
+    /**
+     * Queues the system audio re-encode that makes the item's loudness normalisation follow its
+     * media type, if it doesn't ({@link IngestJobs#enqueueLoudnessIfNeeded}). Joins the caller's
+     * transaction; nothing without the ingest queue (tests).
+     */
+    private void loudnessFollowsType(String itemId) throws SQLException {
+        IngestJobs jobs = trimJobs;
+        if (jobs != null) {
+            jobs.enqueueLoudnessIfNeeded(itemId);
+        }
     }
 
     /**
@@ -679,6 +696,9 @@ public final class Items {
                 // The current version was made as this type from now on, so an undo of a later
                 // change comes back to it (docs/library-and-ingest.md#undo).
                 MediaVersions.typeChanged(c, itemId, row.mediaVersion(), mediaType);
+                // into or out of movie/show: the audio is re-encoded with or without the loudness
+                // normalisation (docs/library-and-ingest.md#loudness-and-media-types)
+                loudnessFollowsType(itemId);
             }
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_UPDATED, itemId, changed);
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),

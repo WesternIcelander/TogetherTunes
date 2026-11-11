@@ -646,6 +646,108 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertNoLeftovers();
     }
 
+    /**
+     * Movies and shows skip the loudness normalisation (docs/media-types.md#loudness): a movie is
+     * encoded without it; changing its type to a music video queues a system re-encode of only the
+     * audio (normalised now, the video frames unchanged, no Undo), and changing it back one without.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void moviesSkipLoudnessAndATypeChangeReencodesTheAudio() throws Exception {
+        String item = fixtures.item("pending");
+        setType(item, "movie");
+        // quiet audio: about -36 LUFS, far from the -14 the normalisation aims for
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=30", "-f", "lavfi", "-i", "sine=f=220:r=44100", "-t", "3",
+                "-af", "volume=-30dB", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+                stage(item, "source.mp4").toString());
+        IngestJob first = run(Kind.UPLOAD, item);
+        assertEquals(State.DONE, first.state(), first.log());
+        assertTrue(first.log().contains("movie: encoding without the loudness normalisation"), first.log());
+        assertFalse(normalized(item));
+        double quiet = audioLufs(item);
+        assertTrue(quiet < -25, "not normalised: " + quiet);
+        Double sourceLufs = (Double) itemRow(item)[4];
+        assertNotNull(sourceLufs, "the source's loudness is still measured");
+        assertFalse(jobs.enqueueLoudnessIfNeeded(item), "the encode follows the type");
+        for (IngestQueue q : queues) {
+            q.close();
+        }
+        Path before = cur(item);
+        SampleIndex.Track video = SampleIndex.read(before.resolve("index.bin")).track(SampleIndex.Kind.VIDEO);
+
+        setType(item, "music_video");
+        assertTrue(jobs.enqueueLoudnessIfNeeded(item));
+        IngestJob job = run(Kind.REENCODE, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("its audio is encoded again with the loudness normalisation"), job.log());
+        assertFalse(job.log().contains("full re-encode"), job.log());
+        assertTrue(normalized(item));
+        double loud = audioLufs(item);
+        assertTrue(Math.abs(loud - Loudness.TARGET_I) < 2, "normalised: " + loud);
+        assertFalse(cur(item).equals(before), "a new version");
+        assertSameVideo(video, item);
+        assertSameAvcC("audio re-encode", item, true);
+        assertEquals("720p30-3000k-v3", itemRow(item)[3]);
+        assertEquals(0, undoable(item), "a system re-encode has no Undo");
+        assertFalse(jobs.enqueueLoudnessIfNeeded(item));
+
+        // and back: a show again without it
+        setType(item, "show");
+        assertTrue(jobs.enqueueLoudnessIfNeeded(item));
+        IngestJob back = run(Kind.REENCODE, item);
+        assertEquals(State.DONE, back.state(), back.log());
+        assertTrue(back.log().contains("its audio is encoded again without the loudness normalisation"), back.log());
+        assertFalse(normalized(item));
+        assertEquals(quiet, audioLufs(item), 1.0);
+        assertSameVideo(video, item);
+        // nothing left to do: a re-encode job now ends at once
+        IngestJob again = run(Kind.REENCODE, item);
+        assertTrue(again.log().contains("already encoded for"), again.log());
+        assertNoLeftovers();
+    }
+
+    private void setType(String item, String type) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = ?,"
+                    + " show_name = CASE WHEN ? = 'show' THEN 'Show' ELSE NULL END,"
+                    + " episode_number = CASE WHEN ? = 'show' THEN 1 ELSE NULL END WHERE id = ?")) {
+                ps.setString(1, type);
+                ps.setString(2, type);
+                ps.setString(3, type);
+                ps.setString(4, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    private boolean normalized(String item) throws Exception {
+        return new IngestItems(db).get(item).orElseThrow().loudnessNormalized();
+    }
+
+    private int undoable(String item) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT undoable FROM media_undo WHERE item_id = ?")) {
+                ps.setString(1, item);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getInt(1) : 0;
+                }
+            }
+        });
+    }
+
+    private double audioLufs(String item) throws Exception {
+        return Loudness.measure(tools, cur(item).resolve("audio.m4a").toString(), "0:a:0", null, null).inputI();
+    }
+
+    private void assertSameVideo(SampleIndex.Track expected, String item) throws Exception {
+        SampleIndex.Track v = SampleIndex.read(cur(item).resolve("index.bin")).track(SampleIndex.Kind.VIDEO);
+        assertEquals(expected.sampleCount(), v.sampleCount());
+        for (int i = 0; i < v.sampleCount(); i++) {
+            assertEquals(expected.size(i), v.size(i), "frame " + i);
+        }
+    }
+
     /** With equal quick and quality presets, a quick encode is the quality encode: no second job. */
     @Test
     @Execution(ExecutionMode.CONCURRENT)

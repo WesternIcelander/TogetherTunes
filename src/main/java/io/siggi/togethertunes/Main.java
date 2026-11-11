@@ -305,7 +305,14 @@ public final class Main {
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
         Uploads uploads = uploads(config, dataDir, database, ingest, settings, outputAssets);
         // Adding a quick-encoded item to a library queues its quality re-encode.
-        LibraryAddListener qualityOnLibraryAdd = itemId -> ingest.jobs().enqueueQualityIfNeeded(itemId);
+        // Adding an item to a library may also classify it as a movie or show (or the other way):
+        // its audio is then re-encoded with or without the loudness normalisation, unless the
+        // quality re-encode does that anyway.
+        LibraryAddListener qualityOnLibraryAdd = itemId -> {
+            if (!ingest.jobs().enqueueQualityIfNeeded(itemId)) {
+                ingest.jobs().enqueueLoudnessIfNeeded(itemId);
+            }
+        };
         uploads.libraryAddListener(qualityOnLibraryAdd);
         uploads.diskSpace(diskSpace);
         uploads.precheck(uploadPrecheck(config));
@@ -666,6 +673,15 @@ public final class Main {
                 }
             } catch (SQLException e) {
                 err.println("WARNING: could not queue quality re-encode jobs: " + e.getMessage());
+            }
+            try {
+                int loudness = jobs.enqueueLoudnessReencodes();
+                if (loudness > 0) {
+                    err.println("Queued " + loudness + " audio re-encode jobs (loudness normalisation doesn't match"
+                            + " the media type)");
+                }
+            } catch (SQLException e) {
+                err.println("WARNING: could not queue audio re-encode jobs: " + e.getMessage());
             }
         }
         try {

@@ -257,17 +257,22 @@ public final class IngestPipeline implements IngestQueue.Handler {
         IngestItems.Item item = items.get(job.itemId())
                 .orElseThrow(() -> new IngestFailure("The item no longer exists"));
         boolean cardOnly = false;
+        boolean loudnessOnly = false;
         if (job.kind() == Kind.REENCODE) {
             if (!"ready".equals(item.status())) {
                 log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
                 return;
             }
             if (reference.encoding().id().equals(item.outputProfile())) {
-                if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION && cardFontsCurrent(item)) {
+                if (loudnessStale(item)) {
+                    // the media type changed into or out of movie/show (docs/library-and-ingest.md#loudness-and-media-types)
+                    loudnessOnly = true;
+                } else if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION && cardFontsCurrent(item)) {
                     log.append("[ingest] the item is already encoded for " + reference.encoding().id());
                     return;
+                } else {
+                    cardOnly = true;
                 }
-                cardOnly = true;
             }
         }
         if (job.kind() == Kind.QUALITY) {
@@ -339,6 +344,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     }
                 }
                 run(ctx, item, scratch, work, reference, targetJson, true);
+            } else if (loudnessOnly) {
+                if (!loudnessReencode(ctx, item, scratch, work, reference, currentJson)) {
+                    run(ctx, item, scratch, work, reference, currentJson, false);
+                }
             } else if (!cardOnly || !remakeCard(ctx, item, work, reference)) {
                 run(ctx, item, scratch, work, reference, currentJson, false);
             }
@@ -551,16 +560,27 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     + " of the original (" + seconds(r[2]) + ")");
         }
         long lengthUs = expectedUs;
+        // the music loudness normalisation, unless the item is a movie or show (a still image
+        // becomes audio, which has it); a previous encode can't lose a normalisation it has
+        boolean normalize = still != null || item.wantsNormalization();
+        boolean normalizePrevious = fromPrevious && normalize && !item.loudnessNormalized();
+        boolean normalized = fromPrevious ? item.loudnessNormalized() || normalize : normalize;
+        if (fromPrevious && !normalize && item.loudnessNormalized()) {
+            log.append("[ingest] the item is a " + item.mediaType() + ", but its previous encode is normalised and"
+                    + " there is no original to encode without the normalisation; it stays normalised");
+        }
 
-        // loudnorm pass 1 (not for a previous encode: its audio was normalised when first ingested)
+        // loudnorm pass 1 (not for a previous encode: its audio was normalised when first ingested,
+        // unless it is a movie's or show's, which isn't)
         double measureFrom = base;
         double measureTo = base + rest * MEASURE_SHARE;
         DoubleConsumer measureProgress = range(ctx, measureFrom, measureTo);
         long[] decodedUs = {-1};
         Loudness.Measurement loudness;
-        if (fromPrevious) {
+        if (fromPrevious && !normalizePrevious) {
             loudness = NOT_MEASURED;
-            log.append("[ingest] the previous encode is already normalised; encoding without loudnorm");
+            log.append("[ingest] " + (item.loudnessNormalized() ? "the previous encode is already normalised"
+                    : "the previous encode isn't normalised (" + item.mediaType() + ")") + "; encoding without loudnorm");
         } else {
             step(log, "loudnorm pass 1");
             loudness = Loudness.measure(tools, range, source.toString(), probe.audio().map(), log, p -> {
@@ -570,14 +590,17 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 measureProgress.accept(p.fraction(lengthUs));
             });
         }
-        if (fromPrevious) {
+        if (fromPrevious && !normalizePrevious) {
             // nothing measured
         } else if (loudness.usable()) {
             log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
-                    loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
+                    loudness.inputI(), loudness.inputTp(), loudness.inputLra())
+                    + (normalize ? "" : "; " + item.mediaType() + ": encoding without the loudness normalisation"));
         } else {
             log.append("[ingest] the loudness could not be measured (silence?); encoding without normalisation");
         }
+        // what the encode applies: the measurement, or nothing for a movie or show
+        Loudness.Measurement applied = normalize ? loudness : NOT_MEASURED;
 
         // encode
         step(log, "encode");
@@ -586,8 +609,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path mezz = work.resolve(MEZZ);
         Path audio = work.resolve(AUDIO);
         List<String> encode = video
-                ? videoEncodeArgs(range, source, probe, loudness, profile, preset, mezz)
-                : audioEncodeArgs(range, source, probe, loudness, audio);
+                ? videoEncodeArgs(range, source, probe, applied, profile, preset, mezz)
+                : audioEncodeArgs(range, source, probe, applied, audio);
         tools.ffmpeg(encode).log(log).ffmpegProgress(p -> encodeProgress.accept(p.fraction(lengthUs))).run();
         double after = encodeTo;
         double stepShare = (1 - encodeTo) / 5;
@@ -639,7 +662,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         + " audio.m4a now");
                 publishJson = EditSettings.withAudioTrim(publishJson, null, null);
             } else {
-                audioOnlyMs = audioOnlyVariant(log, source, probe, originalAudioEndUs, edit, work, reference);
+                audioOnlyMs = audioOnlyVariant(log, source, probe, originalAudioEndUs, edit, work, reference, normalize);
                 publishJson = EditSettings.withOriginalMs(publishJson,
                         Math.max(probe.durationUs(), originalAudioEndUs) / 1000);
             }
@@ -670,14 +693,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
             long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
             // the original is played at the loudness audio.m4a actually has (loudnorm may have compressed it)
             Loudness.Measurement output = null;
-            if (loudness.usable()) {
+            if (applied.usable()) {
                 output = Loudness.measure(tools, audio.toString(), "0:a:0", null, null);
                 log.append(String.format(Locale.ROOT, "[ingest] audio.m4a measures %.2f LUFS, %.2f dBTP",
                         output.inputI(), output.inputTp()));
             }
-            original = Originals.describe(probe, source.getFileName().toString(), loudness, output, originalUs, durationUs);
+            original = Originals.describe(probe, source.getFileName().toString(), applied, output, originalUs, durationUs);
             linkOrCopy(source, work.resolve(original.file()));
-            String mismatch = Originals.loudnessMismatch(loudness, output);
+            String mismatch = Originals.loudnessMismatch(applied, output);
             log.append("[ingest] kept the original as " + original.file() + " (" + original.codec() + ", "
                     + (original.web() ? "web-playable" : "not web-playable") + ", duration " + seconds(originalUs)
                     + (original.gainDb() == null ? "" : String.format(Locale.ROOT, ", gain %.2f dB", original.gainDb()))
@@ -686,7 +709,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // publish: a new version, then the switch in the database; never waits for a play to end
         step(log, "publish");
-        Double lufs = fromPrevious ? item.loudnessLufs() : loudness.usable() ? round2(loudness.inputI()) : null;
+        Double lufs = fromPrevious && !normalizePrevious ? item.loudnessLufs()
+                : loudness.usable() ? round2(loudness.inputI()) : null;
         Originals.Original kept = original;
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         // A re-encode made by the system keeps the previous version for the undo window too, but
@@ -698,7 +722,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
-                        lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION, cardFonts));
+                        lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION, cardFonts, normalized));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, original, durationUs / 1000);
@@ -932,6 +956,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path original = null;
         int[] expectedSizes;
         Loudness.Measurement loudness;
+        boolean normalize = item.wantsNormalization();
         long[] decodedUs = {-1};
         Originals.Original kept;
         Long audioOnlyMs = null;
@@ -948,13 +973,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
             });
             if (loudness.usable()) {
                 log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
-                        loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
+                        loudness.inputI(), loudness.inputTp(), loudness.inputLra())
+                        + (normalize ? "" : "; " + item.mediaType() + ": encoding without the loudness normalisation"));
             }
             step(log, "encode audio");
             Path trimmedAudio = scratch.resolve("trim-audio.m4a");
             List<String> audioArgs = new ArrayList<>(range);
             audioArgs.addAll(List.of("-i", source.toString(), "-map", probe.audio().map(), "-vn", "-sn", "-dn",
-                    "-map_metadata", "-1", "-map_chapters", "-1", "-af", loudness.filter()));
+                    "-map_metadata", "-1", "-map_chapters", "-1", "-af", (normalize ? loudness : NOT_MEASURED).filter()));
             audioArgs.addAll(EncodeProfile.AUDIO_ARGS);
             audioArgs.addAll(List.of("-movflags", "+faststart", "-f", "mp4", trimmedAudio.toString()));
             tools.ffmpeg(prepend("-y", audioArgs)).log(log).run();
@@ -1067,7 +1093,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     + profile.id() + " reference, " + video.sampleCount() + " frames with an IDR every 2 s"
                     + (plan.firstGop() < TrimPlan.GOP ? " after a first GOP of " + plan.firstGop() + " frames" : ""));
             if (target.audioTrimmed()) {
-                audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference);
+                audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference, normalize);
             }
         } catch (Exception e) {
             if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()) {
@@ -1095,7 +1121,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), kept.file(),
                 v -> items.published(item.id(), true, durationMs, profile, usedPreset, item.encodeQuality(), lufs,
-                        keptOriginal, v, change, variantMs));
+                        keptOriginal, v, change, variantMs, null, null, normalize));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept for undo" : ""));
         retire(item, itemDir, hadOld, kept, durationMs);
@@ -1145,7 +1171,9 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         Long audioOnlyMs = null;
         if (target.audioTrimmed()) {
-            audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference);
+            // normalised like the audio.m4a it keeps; a type change meanwhile gets its own re-encode
+            audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, target, work, reference,
+                    item.loudnessNormalized());
         } else {
             log.append("[ingest] no audio trim: the audio-only file is audio.m4a again");
         }
@@ -1166,6 +1194,191 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         item.loudnessLufs(), kept, v, change, variantMs));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept for undo" : ""));
+        retire(item, itemDir, hadOld, kept, durationMs);
+        ctx.progress(1);
+        return true;
+    }
+
+    /**
+     * Whether the item's current audio doesn't follow its media type's loudness rule
+     * ({@code docs/media-types.md#loudness}): a movie or show encoded with the music loudness
+     * normalisation, or another type encoded without it. Only video items can be either.
+     */
+    static boolean loudnessStale(IngestItems.Item item) {
+        return "video".equals(item.kind()) && item.loudnessNormalized() != item.wantsNormalization();
+    }
+
+    /**
+     * A {@code reencode} job of an item whose media type changed into or out of {@code movie} /
+     * {@code show} ({@code docs/library-and-ingest.md#loudness-and-media-types}): the audio track is
+     * encoded again from the original, for the current video trim, with or without the loudness
+     * normalisation as the type wants; the video frames of the current version are copied
+     * unchanged (checked frame by frame), {@code audio.m4a} is extracted again, the card and cover
+     * are kept, a video's audio-only file is made again from its audio trim. Published as a system
+     * re-encode (the previous version is kept for the undo window without Undo), with the current
+     * edit settings. Returns false (nothing done) when a full re-encode is needed instead: a YouTube
+     * item without an original (downloaded again), or the current version can't be reused (another
+     * encoding, files missing), or the splice fails.
+     *
+     * @throws IngestFailure if the item has nothing to re-encode its audio from (no original, not
+     *                       from YouTube), or its original is only the audio of a still image and the
+     *                       current version can't be reused; a full re-encode couldn't change the audio either
+     */
+    private boolean loudnessReencode(IngestQueue.Context ctx, IngestItems.Item item, Path scratch, Path work,
+                                     ReferenceCard reference, String currentJson) throws Exception {
+        JobLog log = ctx.log();
+        OutputEncoding profile = reference.encoding();
+        boolean normalize = item.wantsNormalization();
+        Path itemDir = itemDir(dataDir, item.id());
+        Path currentDir = MediaVersions.versionDir(itemDir, item.mediaVersion());
+        log.append("[ingest] the item is " + (item.mediaType() == null ? "of unknown type" : "a " + item.mediaType())
+                + ": its audio is encoded again " + (normalize ? "with" : "without")
+                + " the loudness normalisation; the video is kept");
+        String originalName = item.originalFile();
+        if (originalName == null || !isPlainName(originalName) || !Files.isRegularFile(itemDir.resolve(originalName))) {
+            if (item.fromYoutube() && item.youtubeId() != null) {
+                log.append("[ingest] the item has no original: full re-encode from a new download");
+                return false;
+            }
+            throw new IngestFailure("The item has no original to encode its audio from");
+        }
+        String why = null;
+        SampleIndex currentIndex = null;
+        if (!profile.id().equals(item.outputProfile())) {
+            why = "the current version was made for another output encoding";
+        } else {
+            for (String f : List.of(MEZZ, CARD, SampleIndex.FILE_NAME)) {
+                if (!Files.isRegularFile(currentDir.resolve(f))) {
+                    why = "the current version's " + f + " is missing";
+                    break;
+                }
+            }
+        }
+        if (why == null) {
+            try {
+                currentIndex = SampleIndex.read(currentDir.resolve(SampleIndex.FILE_NAME));
+                if (!profile.equals(currentIndex.encoding()) || currentIndex.track(SampleIndex.Kind.VIDEO) == null) {
+                    why = "the current version's index is for another encoding";
+                }
+            } catch (IOException e) {
+                why = "the current version's index can't be read (" + e.getMessage() + ")";
+            }
+        }
+        if (why != null) {
+            if (videoWithoutVideoOriginal(item)) {
+                throw new IngestFailure("The item's audio can't be encoded again: " + why
+                        + ", and its original has no video");
+            }
+            log.append("[ingest] full re-encode from the original: " + why);
+            return false;
+        }
+        Path source = itemDir.resolve(originalName);
+        EditSettings edit = EditSettings.parse(currentJson);
+        SampleIndex.Track currentVideo = currentIndex.track(SampleIndex.Kind.VIDEO);
+        long durationMs;
+        Loudness.Measurement loudness;
+        Originals.Original kept;
+        Long audioOnlyMs = null;
+        try {
+            ctx.stage(STEP_ENCODE, 0, 0.8);
+            step(log, "probe");
+            MediaProbe probe = MediaProbe.probe(tools, source, log);
+            checkProbe(probe, false);
+            long sourceAudioEndUs = probe.audioEndUs() > 0 ? probe.audioEndUs() : probe.readAudioEndUs(tools, source, log);
+            List<String> range = List.of();
+            long expectedAudioUs = sourceAudioEndUs;
+            long lengthUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
+            if (edit.videoTrimmed()) {
+                long[] r = trimRange(edit, probe, sourceAudioEndUs);
+                range = rangeArgs(r[0], r[1]);
+                expectedAudioUs = Math.min(sourceAudioEndUs, r[1]) - r[0];
+                lengthUs = r[1] - r[0];
+                log.append("[ingest] video trim: " + seconds(r[0]) + " to " + seconds(r[1]) + " of the original");
+            }
+            long measuredUs = lengthUs;
+            step(log, "loudnorm pass 1");
+            long[] decodedUs = {-1};
+            loudness = Loudness.measure(tools, range, source.toString(), probe.audio().map(), log, p -> {
+                if (p.outTimeUs() > decodedUs[0]) {
+                    decodedUs[0] = p.outTimeUs();
+                }
+                ctx.progress(0.4 * Math.max(0, Math.min(1, p.fraction(measuredUs))));
+            });
+            if (loudness.usable()) {
+                log.append(String.format(Locale.ROOT, "[ingest] measured %.2f LUFS, %.2f dBTP, LRA %.2f LU",
+                        loudness.inputI(), loudness.inputTp(), loudness.inputLra()));
+            }
+            step(log, "encode audio");
+            Path newAudio = scratch.resolve("loudness-audio.m4a");
+            tools.ffmpeg(audioEncodeArgs(range, source, probe, normalize ? loudness : NOT_MEASURED, newAudio)).log(log)
+                    .ffmpegProgress(p -> ctx.progress(0.4 + 0.4 * Math.max(0, Math.min(1, p.fraction(measuredUs)))))
+                    .run();
+            ctx.stage(STEP_FINISH, 0.8, 1);
+
+            step(log, "splice");
+            Path mezz = work.resolve(MEZZ);
+            Path audio = work.resolve(AUDIO);
+            tools.ffmpeg(List.of("-y", "-i", currentDir.resolve(MEZZ).toString(), "-i", newAudio.toString(),
+                    "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-map_metadata", "-1", "-map_chapters", "-1",
+                    "-movflags", "+faststart", "-f", "mp4", mezz.toString())).log(log).run();
+            tools.ffmpeg(extractAudioArgs(mezz, audio)).log(log).run();
+            linkOrCopy(currentDir.resolve(CARD), work.resolve(CARD));
+            if (Files.isRegularFile(currentDir.resolve(COVER))) {
+                linkOrCopy(currentDir.resolve(COVER), work.resolve(COVER));
+            }
+            ctx.progress(0.85);
+
+            step(log, "index");
+            SampleIndex index = IndexBuilder.build(tools, profile, mezz, audio, work.resolve(SampleIndex.FILE_NAME), log);
+            step(log, "verify");
+            IngestVerifier.verify(index, reference, expectedAudioUs, decodedUs[0], MEZZ, firstGop(currentVideo));
+            SampleIndex.Track video = index.track(SampleIndex.Kind.VIDEO);
+            if (video.sampleCount() != currentVideo.sampleCount()) {
+                throw new IngestFailure("the spliced video has " + video.sampleCount() + " frames instead of "
+                        + currentVideo.sampleCount());
+            }
+            for (int k = 0; k < video.sampleCount(); k++) {
+                if (video.size(k) != currentVideo.size(k)) {
+                    throw new IngestFailure("the spliced video's frame " + k + " isn't the current version's");
+                }
+            }
+            durationMs = IngestVerifier.audioDurationUs(index) / 1000;
+            log.append("[ingest] verified: audio " + seconds(durationMs * 1000) + ", the video's " + video.sampleCount()
+                    + " frames unchanged");
+            if (edit.audioTrimmed()) {
+                audioOnlyMs = audioOnlyVariant(log, source, probe, sourceAudioEndUs, edit, work, reference, normalize);
+            }
+            kept = Originals.audioOfVideo(originalName) ? Originals.audioOfVideo(probe)
+                    : Originals.keptOnly(probe, source.getFileName().toString());
+            linkOrCopy(source, work.resolve(kept.file()));
+        } catch (Exception e) {
+            if (e instanceof InterruptedException || Thread.currentThread().isInterrupted()
+                    || videoWithoutVideoOriginal(item)) {
+                throw e;
+            }
+            log.append("[ingest] the audio re-encode failed (" + e.getMessage() + "); full re-encode from the original"
+                    + " instead");
+            emptyDirectory(work);
+            emptyDirectory(scratch);
+            return false;
+        }
+
+        step(log, "publish");
+        Double lufs = loudness.usable() ? round2(loudness.inputI()) : null;
+        boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
+        // made by the system: the previous version is kept for the undo window, without Undo
+        IngestItems.VersionChange change = new IngestItems.VersionChange(hadOld ? item.mediaVersion() : null, false,
+                currentJson, System.currentTimeMillis());
+        X264Preset preset = item.encodePreset() == null ? X264Preset.REFERENCE : X264Preset.byId(item.encodePreset());
+        X264Preset usedPreset = preset == null ? X264Preset.REFERENCE : preset;
+        Originals.Original keptOriginal = kept;
+        Long variantMs = audioOnlyMs;
+        long publishedMs = durationMs;
+        int version = publish(work, itemDir, item.mediaVersion(), kept.file(),
+                v -> items.published(item.id(), true, publishedMs, profile, usedPreset, item.encodeQuality(), lufs,
+                        keptOriginal, v, change, variantMs, null, null, normalize));
+        log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
+                + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         retire(item, itemDir, hadOld, kept, durationMs);
         ctx.progress(1);
         return true;
@@ -1284,10 +1497,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
      * ({@link #AUDIO_ONLY_INDEX}, with {@code work}'s {@link #CARD} as the video, which must be
      * there), verified like an audio item's files.
      *
+     * @param normalize whether the music loudness normalisation is applied (not for a movie or show)
      * @return its length in ms
      */
     private long audioOnlyVariant(JobLog log, Path source, MediaProbe probe, long sourceAudioEndUs, EditSettings edit,
-                                  Path work, ReferenceCard reference) throws Exception {
+                                  Path work, ReferenceCard reference, boolean normalize) throws Exception {
         long[] r = trimRange(edit.audioStartMs(), edit.audioEndMs(), probe, sourceAudioEndUs);
         log.append("[ingest] audio trim (audio-only rooms): " + seconds(r[0]) + " to " + seconds(r[1])
                 + " of the original (" + seconds(r[2]) + ")");
@@ -1305,7 +1519,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         step(log, "audio-only file: encode");
         Path out = work.resolve(AUDIO_ONLY);
-        tools.ffmpeg(audioEncodeArgs(range, source, probe, loudness, out)).log(log).run();
+        tools.ffmpeg(audioEncodeArgs(range, source, probe, normalize ? loudness : NOT_MEASURED, out)).log(log).run();
         step(log, "audio-only file: index");
         OutputEncoding profile = reference.encoding();
         SampleIndex index = IndexBuilder.build(tools, profile, work.resolve(CARD), out, work.resolve(AUDIO_ONLY_INDEX), log);

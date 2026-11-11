@@ -71,7 +71,7 @@ abstract class IngestJobsContract {
             return null;
         });
         assertEquals(new IngestItems.Item(item, "audio", "Song", "Artist", null, "youtube", "dQw4w9WgXcQ", "purged",
-                "720p30", null, -9.0, null, false),
+                "720p30", null, -9.0, null, false, 0, "uncategorized", true),
                 items.get(item).orElseThrow());
         assertTrue(items.get("nope").isEmpty());
 
@@ -714,6 +714,104 @@ abstract class IngestJobsContract {
         assertEquals(Kind.REENCODE, reencode.kind());
         assertEquals(State.QUEUED, reencode.state());
         assertEquals(State.DONE, jobs.latestForItem(fresh).orElseThrow().state(), "already the current encoding");
+    }
+
+    /**
+     * Movies and shows skip the loudness normalisation (docs/library-and-ingest.md#loudness-and-media-types):
+     * a ready video whose {@code loudness_normalized} doesn't match its type gets a {@code reencode}
+     * job after a type change (with an original or from YouTube), when a job for it finishes (with
+     * an original only, so a re-encode that can't fix it doesn't loop), and at startup.
+     */
+    @Test
+    void aLoudnessThatDoesNotMatchTheTypeQueuesAReencode() throws SQLException {
+        String movie = fixtures.item("ready");      // normalised, now a movie: stale
+        String music = fixtures.item("ready");      // not normalised, now a music video: stale
+        String show = fixtures.item("ready");       // not normalised show: fine
+        String youtube = fixtures.item("ready");    // normalised movie without an original, from YouTube
+        String bare = fixtures.item("ready");       // normalised movie with neither
+        String audio = fixtures.item("ready");      // an audio item is always normalised
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET kind = 'video', original_file = 'original.mp4',"
+                    + " media_type = ?, loudness_normalized = ?, show_name = ?, episode_number = ? WHERE id = ?")) {
+                Object[][] rows = {{movie, "movie", 1}, {music, "music_video", 0}, {show, "show", 0},
+                        {youtube, "movie", 1}, {bare, "movie", 1}};
+                for (Object[] r : rows) {
+                    ps.setString(1, (String) r[1]);
+                    ps.setInt(2, (Integer) r[2]);
+                    ps.setString(3, "show".equals(r[1]) ? "Show" : null);
+                    if ("show".equals(r[1])) {
+                        ps.setInt(4, 1);
+                    } else {
+                        ps.setNull(4, java.sql.Types.INTEGER);
+                    }
+                    ps.setString(5, (String) r[0]);
+                    ps.executeUpdate();
+                }
+            }
+            try (var ps = c.prepareStatement("UPDATE items SET original_file = NULL, source = 'youtube',"
+                    + " youtube_id = 'dQw4w9WgXcQ' WHERE id = ?")) {
+                ps.setString(1, youtube);
+                ps.executeUpdate();
+            }
+            try (var ps = c.prepareStatement("UPDATE items SET original_file = NULL WHERE id = ?")) {
+                ps.setString(1, bare);
+                ps.executeUpdate();
+            }
+            try (var ps = c.prepareStatement("UPDATE items SET loudness_normalized = 0 WHERE id = ?")) {
+                ps.setString(1, audio);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        IngestItems items = new IngestItems(db);
+        assertTrue(IngestPipeline.loudnessStale(items.get(movie).orElseThrow()));
+        assertFalse(IngestPipeline.loudnessStale(items.get(show).orElseThrow()));
+        assertFalse(IngestPipeline.loudnessStale(items.get(audio).orElseThrow()));
+
+        // after a type change
+        assertTrue(jobs.enqueueLoudnessIfNeeded(youtube), "re-downloaded");
+        assertFalse(jobs.enqueueLoudnessIfNeeded(bare), "nothing to re-encode the audio from");
+        assertFalse(jobs.enqueueLoudnessIfNeeded(show));
+        assertFalse(jobs.enqueueLoudnessIfNeeded(audio));
+        assertEquals(Kind.REENCODE, jobs.latestForItem(youtube).orElseThrow().kind());
+        // an unfinished job checks again when it finishes
+        IngestJob running = jobs.enqueue(movie, Kind.QUALITY);
+        assertFalse(jobs.enqueueLoudnessIfNeeded(movie));
+        // at startup: only items with an original (the youtube one has its job already)
+        assertEquals(1, jobs.enqueueLoudnessReencodes(), "music");
+        assertEquals(Kind.REENCODE, jobs.latestForItem(music).orElseThrow().kind());
+        assertEquals(0, jobs.enqueueLoudnessReencodes());
+
+        // as the re-encodes would (a job that leaves its item stale is queued again)
+        setNormalized(music, 1);
+        IngestJob claimed;
+        while ((claimed = jobs.claimNext()) != null && !claimed.id().equals(running.id())) {
+            assertTrue(jobs.complete(claimed.id(), "log"));
+        }
+        assertNotNull(claimed);
+        assertTrue(jobs.complete(running.id(), "log"));
+        IngestJob reencode = jobs.latestForItem(movie).orElseThrow();
+        assertEquals(Kind.REENCODE, reencode.kind());
+        assertEquals(State.QUEUED, reencode.state());
+        setNormalized(movie, 0);
+        // a finished job of an item without an original doesn't loop
+        IngestJob bareJob = jobs.enqueue(bare, Kind.REENCODE);
+        while ((claimed = jobs.claimNext()) != null && !claimed.id().equals(bareJob.id())) {
+            assertTrue(jobs.complete(claimed.id(), "log"));
+        }
+        assertTrue(jobs.complete(bareJob.id(), "log"));
+        assertEquals(bareJob.id(), jobs.latestForItem(bare).orElseThrow().id());
+    }
+
+    private void setNormalized(String item, int normalized) throws SQLException {
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET loudness_normalized = ? WHERE id = ?")) {
+                ps.setInt(1, normalized);
+                ps.setString(2, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
     }
 
     @Test

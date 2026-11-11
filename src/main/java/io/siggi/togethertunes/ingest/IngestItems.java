@@ -34,10 +34,22 @@ public final class IngestItems {
      * @param encodePreset  the x264 preset its files were made with ({@code encode_preset}), or null
      * @param encodeQuality whether its files are the quality encode ({@code encode_quality})
      * @param mediaVersion  the current version of its files ({@code media_version}, {@link MediaVersions})
+     * @param mediaType     its media type ({@code media_type}), or null if unknown
+     * @param loudnessNormalized whether its current files were encoded with the music loudness
+     *                      normalisation ({@code loudness_normalized}, {@link Loudness#normalizes})
      */
     public record Item(String id, String kind, String title, String artist, String album, String source,
                        String youtubeId, String status, String outputProfile, String originalFile,
-                       Double loudnessLufs, String encodePreset, boolean encodeQuality, int mediaVersion) {
+                       Double loudnessLufs, String encodePreset, boolean encodeQuality, int mediaVersion,
+                       String mediaType, boolean loudnessNormalized) {
+        /** Without a media type (unknown: normalised, like every item before media types). */
+        public Item(String id, String kind, String title, String artist, String album, String source,
+                    String youtubeId, String status, String outputProfile, String originalFile,
+                    Double loudnessLufs, String encodePreset, boolean encodeQuality, int mediaVersion) {
+            this(id, kind, title, artist, album, source, youtubeId, status, outputProfile, originalFile,
+                    loudnessLufs, encodePreset, encodeQuality, mediaVersion, null, true);
+        }
+
         /** Without a media version (version 0, the flat layout). */
         public Item(String id, String kind, String title, String artist, String album, String source,
                     String youtubeId, String status, String outputProfile, String originalFile,
@@ -49,13 +61,18 @@ public final class IngestItems {
         public boolean fromYoutube() {
             return "youtube".equals(source);
         }
+
+        /** Whether its media type wants the loudness normalisation ({@link Loudness#normalizes}). */
+        public boolean wantsNormalization() {
+            return Loudness.normalizes(mediaType);
+        }
     }
 
     public Optional<Item> get(String id) throws SQLException {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, album, source, youtube_id,"
                     + " status, output_profile, original_file, loudness_lufs, encode_preset, encode_quality,"
-                    + " media_version FROM items WHERE id = ?")) {
+                    + " media_version, media_type, loudness_normalized FROM items WHERE id = ?")) {
                 ps.setString(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
@@ -65,7 +82,8 @@ public final class IngestItems {
                     Double loudness = rs.wasNull() ? null : lufs;
                     return Optional.of(new Item(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                             rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8), rs.getString(9),
-                            rs.getString(10), loudness, rs.getString(12), rs.getInt(13) != 0, rs.getInt(14)));
+                            rs.getString(10), loudness, rs.getString(12), rs.getInt(13) != 0, rs.getInt(14),
+                            rs.getString(15), rs.getInt(16) != 0));
                 }
             }
         });
@@ -207,6 +225,20 @@ public final class IngestItems {
                           boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
                           VersionChange change, Long audioOnlyMs, Integer cardVersion, String cardFonts)
             throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, mediaVersion, change,
+                audioOnlyMs, cardVersion, cardFonts, null);
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, X264Preset, boolean, Double, Originals.Original, int, VersionChange, Long, Integer, String)};
+     * also records whether the new files' audio was encoded with the music loudness normalisation
+     * ({@code loudness_normalized}, {@code docs/media-types.md#loudness}); null keeps the stored value
+     * (the audio was taken over from the previous version).
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
+                          VersionChange change, Long audioOnlyMs, Integer cardVersion, String cardFonts,
+                          Boolean normalized) throws SQLException {
         db.write(c -> {
             if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
                 MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
@@ -218,6 +250,7 @@ public final class IngestItems {
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?, audio_only_ms = ?,"
                     + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")
                     + (cardVersion != null ? " card_version = " + cardVersion.intValue() + ", card_fonts = ?," : "")
+                    + (normalized != null ? " loudness_normalized = " + (normalized ? 1 : 0) + "," : "")
                     + " purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
                 ps.setLong(2, durationMs);

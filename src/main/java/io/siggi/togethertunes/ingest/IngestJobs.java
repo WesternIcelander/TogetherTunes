@@ -328,6 +328,36 @@ public final class IngestJobs {
     }
 
     /**
+     * Queues a {@code reencode} job for every {@code ready} item whose loudness normalisation doesn't
+     * match its media type ({@link #LOUDNESS_STALE}) and that has an original, unless it already has
+     * an unfinished job: a type change whose audio re-encode failed, or was lost. Run at startup,
+     * after the other re-encodes (a full re-encode follows the type anyway).
+     *
+     * @return the number of jobs queued
+     */
+    public int enqueueLoudnessReencodes() throws SQLException {
+        return db.write(c -> {
+            List<String> stale = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE status = 'ready' AND "
+                    + LOUDNESS_STALE + " AND original_file IS NOT NULL"
+                    + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
+                    + " ORDER BY added_at, id")) {
+                ps.setString(1, State.QUEUED.wire());
+                ps.setString(2, State.RUNNING.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        stale.add(rs.getString(1));
+                    }
+                }
+            }
+            for (String itemId : stale) {
+                enqueue(itemId, Kind.REENCODE);
+            }
+            return stale.size();
+        });
+    }
+
+    /**
      * Queues a {@code reencode} job for every {@code ready} item encoded for {@code encoding} whose
      * card is in an older card format ({@code card_version} below {@link CardEncoder#CARD_VERSION}),
      * unless the item already has an unfinished job. Such a job makes only the card again (and the
@@ -385,18 +415,22 @@ public final class IngestJobs {
 
     /**
      * With {@link #currentEncoding} set: queues a {@code reencode} job for {@code itemId} if it is
-     * {@code ready} but encoded for another output encoding, and has no unfinished job.
+     * {@code ready} but encoded for another output encoding, and has no unfinished job. Also
+     * (whether or not the encoding is known) if its loudness normalisation doesn't match its media
+     * type and it has an original to re-encode the audio from ({@link #LOUDNESS_STALE}, e.g. it was
+     * classified as a movie while its first encode ran). Only with an original: a re-encode without
+     * one may not be able to fix it (a YouTube download that fails falls back to the old files), and
+     * this check runs again when that re-encode finishes.
      */
     private boolean enqueueReencodeIfStale(Connection c, String itemId) throws SQLException {
         Supplier<OutputEncoding> encoding = currentEncoding;
-        if (encoding == null) {
-            return false;
-        }
-        String id = encoding.get().id();
         try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items WHERE id = ? AND status = 'ready'"
-                + " AND output_profile <> ?")) {
+                + " AND (" + (encoding == null ? "" : "output_profile <> ? OR ")
+                + "(" + LOUDNESS_STALE + " AND original_file IS NOT NULL))")) {
             ps.setString(1, itemId);
-            ps.setString(2, id);
+            if (encoding != null) {
+                ps.setString(2, encoding.get().id());
+            }
             try (ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
                     return false;
@@ -408,6 +442,46 @@ public final class IngestJobs {
         }
         enqueue(itemId, Kind.REENCODE);
         return true;
+    }
+
+    /**
+     * The items whose current audio doesn't follow their media type's loudness rule
+     * ({@code docs/library-and-ingest.md#loudness-and-media-types}): a {@code movie} or {@code show}
+     * encoded with the music loudness normalisation, or any other type encoded without it. Only video
+     * items can be either ({@link Loudness#normalizes}).
+     */
+    static final String LOUDNESS_STALE = "kind = 'video' AND loudness_normalized"
+            + " <> CASE WHEN media_type IN ('movie', 'show') THEN 0 ELSE 1 END";
+
+    /**
+     * Queues a {@code reencode} job for {@code itemId} if its media type changed into or out of
+     * {@code movie}/{@code show} and its files don't follow that ({@link #LOUDNESS_STALE}): the item
+     * is {@code ready}, has no unfinished job (an unfinished one checks again when it finishes), and
+     * has an original or comes from YouTube (to re-encode the audio from). The job re-encodes only
+     * the audio and is a system re-encode (no Undo). Called after a type change (an edit, a
+     * classification on library add, an undo). Joins the caller's transaction.
+     *
+     * @return whether a job was queued
+     */
+    public boolean enqueueLoudnessIfNeeded(String itemId) throws SQLException {
+        Objects.requireNonNull(itemId);
+        return db.write(c -> {
+            if (activeForItem(c, itemId) != null) {
+                return false;
+            }
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items WHERE id = ? AND status = 'ready'"
+                    + " AND " + LOUDNESS_STALE + " AND (original_file IS NOT NULL"
+                    + " OR (source = 'youtube' AND youtube_id IS NOT NULL))")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return false;
+                    }
+                }
+            }
+            enqueue(itemId, Kind.REENCODE);
+            return true;
+        });
     }
 
     /**
