@@ -292,6 +292,29 @@ public final class OverlayPool implements AutoCloseable {
         }
     }
 
+    /**
+     * Moves the job queued under {@code key} up to {@code priority} if that is higher (like a
+     * resubmit, but never creates a job).
+     *
+     * @return whether a queued job was raised
+     */
+    public boolean raise(String key, Priority priority) {
+        Objects.requireNonNull(priority);
+        lock.lock();
+        try {
+            Job existing = jobs.get(key);
+            if (existing == null || existing.state != State.QUEUED || priority.compareTo(existing.priority) >= 0) {
+                return false;
+            }
+            queueOf(existing.priority).remove(existing);
+            existing.priority = priority;
+            queueOf(priority).addLast(existing);
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** The job queued or running under {@code key}; ended jobs aren't kept. */
     public Optional<Job> job(String key) {
         lock.lock();

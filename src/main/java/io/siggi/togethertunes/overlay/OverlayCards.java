@@ -11,9 +11,11 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.media.Mp4Boxes;
+import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.output.FillerSource.Filler;
 import io.siggi.togethertunes.output.ProgramCue;
 import io.siggi.togethertunes.output.ProgramMedia;
+import io.siggi.togethertunes.output.VideoOverlay;
 import io.siggi.togethertunes.rooms.RoomSettings;
 import io.siggi.togethertunes.settings.Settings;
 import java.awt.Graphics2D;
@@ -30,7 +32,9 @@ import java.sql.SQLException;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -266,12 +270,60 @@ public final class OverlayCards {
      */
     public ProgramMedia.OverlayCards forRoom(String roomId, ReferenceCard reference, Overlays overlays,
             Lookups lookups) {
+        return forRoom(roomId, reference, overlays, lookups, null);
+    }
+
+    /**
+     * {@link #forRoom(String, ReferenceCard, Overlays, Lookups)} plus the music-video re-encodes
+     * ({@code docs/overlay.md#scheduling-and-caching}): entries played as video whose recorded
+     * decision is {@code video} get the room's overlay re-encode, scheduled on {@code videoJobs}
+     * (null: none).
+     */
+    public ProgramMedia.OverlayCards forRoom(String roomId, ReferenceCard reference, Overlays overlays,
+            Lookups lookups, OverlayVideoJobs videoJobs) {
         Objects.requireNonNull(roomId, "roomId");
         Objects.requireNonNull(reference, "reference");
         Objects.requireNonNull(overlays, "overlays");
         Objects.requireNonNull(lookups, "lookups");
         cardsDir(roomId); // validates the id
+        OverlayVideoJobs.Session video = videoJobs == null ? null : videoJobs.session(roomId,
+                reference.encoding(), reference.avcC(), entry -> {
+                    OverlayDecisions.Decision d = lookups.decide(entry.entryId());
+                    if (d == null || !d.video()) {
+                        return null;
+                    }
+                    RoomInfo room = lookups.room(roomId);
+                    if (room == null) {
+                        return null;
+                    }
+                    OverlayRenderer.Rendered overlay = overlays.current(roomId, room.slug(), room.settings());
+                    return new OverlayVideoJobs.Plan(overlay.hash(), overlay.image(), overlay.x(), overlay.y());
+                });
         return new ProgramMedia.OverlayCards() {
+            @Override
+            public Supplier<VideoOverlay> video(
+                    ProgramCue.Entry entry, Path itemDir, SampleIndex index) {
+                if (video == null) {
+                    return null;
+                }
+                VideoOverlay play = video.play(entry, itemDir, index);
+                return () -> play;
+            }
+
+            @Override
+            public void videoNext(ProgramCue.Entry entry, Path itemDir, SampleIndex index) {
+                if (video != null) {
+                    video.next(entry, itemDir, index);
+                }
+            }
+
+            @Override
+            public void videoWanted(Set<String> entryIds) {
+                if (video != null) {
+                    video.wanted(entryIds);
+                }
+            }
+
             @Override
             public Map<Filler, ProgramMedia.CardFile> fillers() throws IOException, InterruptedException {
                 RoomInfo room;

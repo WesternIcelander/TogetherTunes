@@ -389,6 +389,21 @@ class ProgramMediaTest {
             return () -> videos.get(entry.entryId());
         }
 
+        /** {@code videoNext} calls ("entryId dirName frameCount") and {@code videoWanted} sets, in order. */
+        final List<String> nextAsked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<Set<String>> wantedSent = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public void videoNext(Entry entry, Path itemDir, SampleIndex index) {
+            nextAsked.add(entry.entryId() + " " + itemDir.getFileName() + " "
+                    + index.track(SampleIndex.Kind.VIDEO).sampleCount());
+        }
+
+        @Override
+        public void videoWanted(Set<String> entryIds) {
+            wantedSent.add(entryIds);
+        }
+
         static ProgramMedia.CardFile card(int tag) {
             return new ProgramMedia.CardFile(Path.of("ov-" + tag + ".mp4"), "k" + tag);
         }
@@ -532,6 +547,42 @@ class ProgramMediaTest {
             assertInstanceOf(AudioItemSource.class, a);
             assertEquals(1, overlay.videosAsked.size(), "not for an entry played as audio");
         }
+    }
+
+    @Test
+    void theNextVideoIsHandedOverOnceLoadedAndUnwantedEntriesAreReported() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        write("audio1", SourcesTest.audioItem());
+        Entry video2 = new Entry("e5", "video1", true, false, 10_000);
+        try (ProgramMedia pm = overlayMedia()) {
+            pm.prepare(cue(AUDIO, VIDEO));
+            assertEquals(List.of(Set.of("e2", "e1")), overlay.wantedSent);
+            assertEquals(List.of(), overlay.nextAsked, "not loaded yet");
+            runLoads();
+            assertEquals(List.of("e1 video1 300"), overlay.nextAsked, "once its files are loaded");
+            pm.prepare(cue(AUDIO, VIDEO));
+            assertEquals(1, overlay.wantedSent.size(), "sent only when it changes");
+            assertEquals(2, overlay.nextAsked.size(), "handed over again at every cue (the scheduler dedups)");
+
+            // the output plays audio1; the next entry changes (vote): e1 is no longer wanted
+            assertInstanceOf(AudioItemSource.class, pm.item(AUDIO, 0));
+            pm.prepare(cue(AUDIO, AS_AUDIO));
+            assertEquals(Set.of("e2", "e4"), overlay.wantedSent.get(overlay.wantedSent.size() - 1));
+            runLoads();
+            assertEquals(2, overlay.nextAsked.size(), "not for a video played as audio");
+
+            // the room moves on while the output still plays e2: it stays wanted until the switch
+            pm.prepare(cue(video2, null));
+            assertEquals(Set.of("e2", "e5"), overlay.wantedSent.get(overlay.wantedSent.size() - 1));
+            runLoads();
+            assertInstanceOf(VideoItemSource.class, pm.item(video2, 0));
+            assertEquals(Set.of("e5"), overlay.wantedSent.get(overlay.wantedSent.size() - 1));
+            pm.filler(Filler.IDLE);
+            pm.prepare(ProgramCue.IDLE);
+            assertEquals(Set.of(), overlay.wantedSent.get(overlay.wantedSent.size() - 1));
+            pm.prepare(cue(VIDEO, null));
+        }
+        assertEquals(Set.of(), overlay.wantedSent.get(overlay.wantedSent.size() - 1), "closing gives everything up");
     }
 
     @Test

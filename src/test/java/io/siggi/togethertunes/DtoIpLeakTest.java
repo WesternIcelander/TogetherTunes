@@ -246,6 +246,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.overlay.OverlayRenderer$Rendered", "a rendered overlay image, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayRenderer$Spec", "what an overlay image is rendered from, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayVideoEncoder$Request", "a music-video overlay re-encode job's inputs, server-side only"),
+            Map.entry("io.siggi.togethertunes.overlay.OverlayVideoJobs$Plan", "the overlay panel and hash an entry's re-encode is made with, server-side only"),
             Map.entry("io.siggi.togethertunes.media.AccessUnitGrouper$AccessUnit", "one H.264 access unit's NAL units while splitting an encode, internal"),
             Map.entry("io.siggi.togethertunes.output.Unit", "a 2 s program-output unit before muxing, server-side only"),
             Map.entry("io.siggi.togethertunes.output.Unit$Audio", "an audio frame in a program-output unit, server-side only"),

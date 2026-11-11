@@ -96,6 +96,7 @@ abstract class SettingsContract {
         assertEquals(Math.max(1, Runtime.getRuntime().availableProcessors() / 2), settings.ingestWorkers());
         assertEquals(1, settings.overlayWorkers());
         assertEquals(20L * 1024 * 1024 * 1024, settings.overlayCacheMaxBytes());
+        assertFalse(settings.overlayAllowQualityPreset());
         // card fonts (docs/library-and-ingest.md#card-fonts): the bundled font, auto-download on, Japanese
         assertEquals(null, settings.cardsFont());
         assertTrue(settings.fontsAutoDownload());
@@ -106,7 +107,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(38, all.size());
+        assertEquals(39, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -236,7 +237,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(38, settings.all().size());
+        assertEquals(39, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

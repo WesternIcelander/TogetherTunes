@@ -181,4 +181,21 @@ class MainEncodingTest {
         assertFalse(text.contains("WARNING"), text);
         outputs.close();
     }
+
+    @Test
+    void overlayReencodesUseTheQuickPresetUnlessTheNextOnesMayUseQuality() throws Exception {
+        db = Database.open("jdbc:sqlite:" + dir.resolve("presets.db"));
+        MigrationRunner.migrate(db);
+        Settings settings = new Settings(db);
+        EncodePresets presets = EncodePresets.fixed(X264Preset.FASTER, X264Preset.SLOWER);
+        ByteArrayOutputStream log = new ByteArrayOutputStream();
+        io.siggi.togethertunes.overlay.OverlayVideoJobs.Presets choice = Main.overlayPresets(settings, presets,
+                new PrintStream(log, true, StandardCharsets.UTF_8));
+        assertEquals(X264Preset.FASTER, choice.preset(OverlayPool.Priority.HIGH));
+        assertEquals(X264Preset.FASTER, choice.preset(OverlayPool.Priority.NORMAL), "off by default");
+        settings.setJson("overlay.allowQualityPreset", "true");
+        assertEquals(X264Preset.FASTER, choice.preset(OverlayPool.Priority.HIGH), "the playing entry: always quick");
+        assertEquals(X264Preset.SLOWER, choice.preset(OverlayPool.Priority.NORMAL), "the next entry, made ahead");
+        assertEquals("", log.toString(StandardCharsets.UTF_8));
+    }
 }

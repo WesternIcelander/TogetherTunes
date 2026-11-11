@@ -45,6 +45,7 @@ import io.siggi.togethertunes.settings.CjkVariant;
 import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.OverlayPool;
+import io.siggi.togethertunes.overlay.OverlayVideoJobs;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
@@ -215,7 +216,6 @@ public final class Main {
         FontLibrary fonts = startFonts(dataDir, settings, System.err);
         // The output encoding (output.profile, output.videoBitrateKbps) with its reference and filler
         // cards; an admin can change it at runtime (OutputAssets.follow, from the settings listener below).
-        // TODO(overlay, M5): the overlay encoder verifies its encodes against the reference card too.
         OutputAssets outputAssets = outputAssets(config, dataDir,
                 setting(settings::outputEncoding, config.outputEncoding()), System.out, System.err);
         ReferenceCard referenceCard = outputAssets.reference();
@@ -311,8 +311,13 @@ public final class Main {
         // its jobs live in memory only (docs/architecture.md#threading).
         OverlayPool overlayPool = new OverlayPool(setting(settings::overlayWorkers, config.overlayWorkers()));
         overlayPool.start();
+        // The next entry's re-encode starts ahead (normal priority), the playing one's catches up (high);
+        // a busy pool means the item plays without the overlay (docs/overlay.md#scheduling-and-caching).
+        OverlayVideoJobs overlayVideoJobs = new OverlayVideoJobs(dataDir.rooms(), overlayPool, Tools.from(config),
+                overlayPresets(settings, presets, System.err), r -> Thread.ofVirtual().start(r));
         ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings,
-                (roomId, reference) -> overlayCards.forRoom(roomId, reference, overlays, overlayLookups));
+                (roomId, reference) -> overlayCards.forRoom(roomId, reference, overlays, overlayLookups,
+                        overlayVideoJobs));
         // A new output encoding: presets are checked against its reference card, every item re-encodes
         // and running program outputs restart on it (docs/library-and-ingest.md#changing-the-encoding-at-runtime).
         outputAssets.addListener(encodingChanged(presets, ingest, programOutputs, System.out, System.err));
@@ -947,6 +952,27 @@ public final class Main {
     static ProgramOutputs programOutputs(Config config, DataDir dataDir, Database database, OutputAssets assets,
             SilenceFrame silence, Settings settings) {
         return programOutputs(config, dataDir, database, assets, silence, settings, null);
+    }
+
+    /**
+     * The x264 preset of an overlay re-encode ({@code docs/overlay.md}): the quick preset, except
+     * that the next entry's (normal priority, made ahead) uses the quality preset when
+     * {@code overlay.allowQualityPreset} is on. Read when the job starts.
+     */
+    static OverlayVideoJobs.Presets overlayPresets(Settings settings, EncodePresets presets, PrintStream err) {
+        return priority -> {
+            if (priority == OverlayPool.Priority.NORMAL) {
+                try {
+                    if (settings.overlayAllowQualityPreset()) {
+                        return presets.quality();
+                    }
+                } catch (SQLException e) {
+                    err.println("WARNING: could not read overlay.allowQualityPreset, using the quick preset: "
+                            + e.getMessage());
+                }
+            }
+            return presets.quick();
+        };
     }
 
     /** A room's overlaid cards for an output on the encoding of {@code reference}. */

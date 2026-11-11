@@ -120,6 +120,23 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         default Supplier<VideoOverlay> video(ProgramCue.Entry entry, Path itemDir, SampleIndex index) {
             return null;
         }
+
+        /**
+         * The cue's next entry, played as video, with the files the output loaded for it: its
+         * overlay re-encode can start ahead ({@code docs/overlay.md#scheduling-and-caching}).
+         * Called on the room's thread or the loading executor with the output's lock held: must
+         * not block. Default: nothing.
+         */
+        default void videoNext(ProgramCue.Entry entry, Path itemDir, SampleIndex index) {
+        }
+
+        /**
+         * The entries the output still wants (the cue's current and next, and the one playing);
+         * every other entry's re-encode is given up (cancelled unless more than half done). Empty
+         * when the output closes. Must not block. Default: nothing.
+         */
+        default void videoWanted(Set<String> entryIds) {
+        }
     }
 
     /** Loads a card file that has no index (a video item's {@code card.mp4}, a filler card). */
@@ -234,6 +251,10 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     private String playingEntry;
     /** The entry ids of the latest cue's current and next entries. */
     private Set<String> wantedEntries = Set.of();
+    /** The latest cue's next entry, or null. */
+    private ProgramCue.Entry nextEntry;
+    /** The entry ids last given to {@link OverlayCards#videoWanted}. */
+    private Set<String> videoWantedSent = Set.of();
     /** The room's overlaid filler cards, or null (overlay off, or not loaded yet). */
     private volatile Map<Filler, CardGop> roomFillers;
     private long fillersCheckedMs;
@@ -338,13 +359,16 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
                 }
             }
             wantedEntries = we;
+            nextEntry = cue == null ? null : cue.next();
             evictEntryCards();
+            sendVideoWanted();
             for (ProgramCue.Entry e : entries) {
                 if (e != null) {
                     ensure(e);
                     ensureEntryCard(e);
                 }
             }
+            planNextVideo();
             refreshFillers(FILLER_CUE_RECHECK_MS);
         }
     }
@@ -401,6 +425,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
         }
         playing = s.key;
         playingEntry = entry.entryId();
+        sendVideoWanted();
         return src;
     }
 
@@ -413,6 +438,9 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             playing = null;
             playingEntry = null;
+            if (!closed) {
+                sendVideoWanted();
+            }
         }
         if (overlay == null) {
             return new FillerSource(filler, fillers.get(filler), silence);
@@ -454,6 +482,49 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             ec.failedAtMs = nowMs.getAsLong();
         }
         return ec;
+    }
+
+    /**
+     * Tells the room's overlay which entries are still wanted (current, next, playing), when that
+     * changed (lock held), so the re-encodes of the others are given up.
+     */
+    private void sendVideoWanted() {
+        if (overlay == null) {
+            return;
+        }
+        Set<String> ids = new HashSet<>(wantedEntries);
+        if (playingEntry != null) {
+            ids.add(playingEntry);
+        }
+        if (ids.equals(videoWantedSent)) {
+            return;
+        }
+        videoWantedSent = Set.copyOf(ids);
+        try {
+            overlay.videoWanted(videoWantedSent);
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "Program output: overlay scheduling failed: " + e);
+        }
+    }
+
+    /**
+     * Hands the cue's next entry to the room's overlay once its files are loaded, if it plays as
+     * video, so its re-encode can start ahead (lock held).
+     */
+    private void planNextVideo() {
+        ProgramCue.Entry e = nextEntry;
+        if (overlay == null || closed || e == null || !e.videoItem() || e.playsAsAudio()) {
+            return;
+        }
+        Slot s = slots.get(key(e));
+        if (s == null || s.variant || s.data == null) {
+            return;
+        }
+        try {
+            overlay.videoNext(e, s.dir, s.index);
+        } catch (RuntimeException ex) {
+            LOG.log(System.Logger.Level.WARNING, "Program output: overlay scheduling failed: " + ex);
+        }
     }
 
     /** Drops the overlaid cards of entries that are neither wanted nor playing (lock held). */
@@ -681,6 +752,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
                 s.card = card;
                 s.failure = null;
                 s.loggedFailure = null;
+                planNextVideo();
             }
         } catch (InterruptedException e) {
             synchronized (this) {
@@ -744,6 +816,13 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     /** Closes every loaded item. Sources still open fail on their next read. */
     @Override
     public synchronized void close() {
+        if (overlay != null && !closed) {
+            try {
+                overlay.videoWanted(Set.of());
+            } catch (RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Program output: overlay scheduling failed: " + e);
+            }
+        }
         closed = true;
         entryCards.clear();
         overlayCardCache.clear();

@@ -312,4 +312,25 @@ class OverlayPoolTest {
             next.close();
         }
     }
+
+    @Test
+    void raiseMovesAQueuedJobUpButNeverCreatesOne() throws Exception {
+        pool = new OverlayPool(1);
+        Gate a = new Gate();
+        Gate b = new Gate();
+        Job normal = pool.submit("n", Priority.NORMAL, a);
+        Job other = pool.submit("o", Priority.NORMAL, b);
+        assertTrue(pool.raise("o", Priority.HIGH));
+        assertEquals(Priority.HIGH, other.priority());
+        assertFalse(pool.raise("o", Priority.NORMAL), "never lowered");
+        assertFalse(pool.raise("missing", Priority.HIGH));
+        assertTrue(pool.job("missing").isEmpty());
+        pool.start();
+        b.awaitStarted();
+        assertFalse(pool.raise("o", Priority.HIGH), "running");
+        b.release.countDown();
+        a.release.countDown();
+        assertEquals(State.DONE, end(other));
+        assertEquals(State.DONE, end(normal));
+    }
 }

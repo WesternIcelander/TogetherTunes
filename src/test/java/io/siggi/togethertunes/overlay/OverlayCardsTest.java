@@ -226,4 +226,47 @@ class OverlayCardsTest {
         assertThrows(IllegalArgumentException.class, () -> cards.forRoom("../x", reference,
                 new Overlays(roomsDir, BASE, encoding::profile), lookups));
     }
+
+    @Test
+    @Timeout(60)
+    void musicVideosGetTheRoomsReencodeOnlyWhenDecidedVideo() throws Exception {
+        Tools tools = tools();
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        ReferenceCard reference = ReferenceCard.ensure(tools, data.resolve("cards"), encoding, null);
+        Path roomsDir = data.resolve("rooms");
+        Overlays overlays = new Overlays(roomsDir, BASE, encoding::profile);
+        OverlayVideoJobsTest.FakeEncoder encoder = new OverlayVideoJobsTest.FakeEncoder();
+        try (OverlayPool pool = new OverlayPool(1)) {
+            pool.start();
+            OverlayVideoJobs jobs = new OverlayVideoJobs(roomsDir, pool, encoder,
+                    p -> io.siggi.togethertunes.config.X264Preset.VERYFAST, Runnable::run, System::currentTimeMillis);
+            FakeLookups lookups = new FakeLookups();
+            ProgramMedia.OverlayCards room = new OverlayCards(roomsDir, tools).forRoom(ROOM, reference, overlays,
+                    lookups, jobs);
+            ProgramCue.Entry video = new ProgramCue.Entry("e7", "item7", true, false, 10_000);
+            Path dir = data.resolve("media/item7/v2");
+
+            lookups.decision = OverlayDecisions.Decision.CARDS;
+            room.videoNext(video, dir, OverlayVideoJobsTest.INDEX);
+            assertNull(room.video(video, dir, OverlayVideoJobsTest.INDEX).get().gop(0));
+            assertEquals(0, jobs.submitted(), "cards only: no re-encode");
+
+            ProgramCue.Entry other = new ProgramCue.Entry("e8", "item7", true, false, 10_000);
+            lookups.decision = OverlayDecisions.Decision.VIDEO;
+            room.videoWanted(java.util.Set.of(other.entryId()));
+            room.videoNext(other, dir, OverlayVideoJobsTest.INDEX);
+            OverlayVideoJobsTest.Run run = encoder.next();
+            OverlayRenderer.Rendered overlay = overlays.current(ROOM, "chill", lookups.room.settings());
+            assertEquals(overlay.x(), run.request.x());
+            assertEquals(overlay.y(), run.request.y());
+            assertEquals(encoding, run.request.encoding());
+            assertTrue(java.util.Arrays.equals(reference.avcC(), run.request.referenceAvcC()));
+            assertEquals(roomsDir.resolve(ROOM).resolve("ov/item7/v2-" + overlay.hash() + "-" + encoding.id() + "-g0"),
+                    run.gops.dir());
+            BufferedImage png = ImageIO.read(run.request.overlayPng().toFile());
+            assertEquals(overlay.width(), png.getWidth());
+            assertEquals(overlay.height(), png.getHeight());
+            run.finish();
+        }
+    }
 }

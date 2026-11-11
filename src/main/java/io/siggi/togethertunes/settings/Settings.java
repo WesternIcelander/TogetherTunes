@@ -171,6 +171,12 @@ public final class Settings {
     /** Size limit of the overlay re-encode cache in bytes (M5); 0 keeps nothing. Default from the config file. */
     public static final SettingKey<Long> OVERLAY_CACHE_MAX_BYTES = SettingKey.bytes(
             "overlay.cacheMaxBytes", 20 * GIB, 0, MAX_BYTES);
+    /**
+     * Whether the next entry's overlay re-encode (made ahead) may use {@code ingest.qualityPreset};
+     * off: every overlay re-encode uses {@code ingest.quickPreset} ({@code docs/overlay.md}).
+     */
+    public static final SettingKey<Boolean> OVERLAY_ALLOW_QUALITY_PRESET = SettingKey.bool(
+            "overlay.allowQualityPreset", false);
 
     // Card fonts (docs/library-and-ingest.md#card-fonts)
     /**
@@ -211,7 +217,7 @@ public final class Settings {
                 OUTPUTS_FORCE_AUTO_OFF, OUTPUTS_MAX_AUTO_OFF_MINUTES,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OUTPUTS_MP3_ENABLED, OUTPUTS_MP3_BITRATE_KBPS,
-                OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES,
+                OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, OVERLAY_ALLOW_QUALITY_PRESET,
                 CARDS_FONT, FONTS_AUTO_DOWNLOAD, FONTS_CJK_VARIANT)) {
             if (keys.put(k.name(), k) != null) {
                 throw new ExceptionInInitializerError("duplicate setting " + k.name());
@@ -528,6 +534,10 @@ public final class Settings {
 
     public long overlayCacheMaxBytes() throws SQLException {
         return get(OVERLAY_CACHE_MAX_BYTES);
+    }
+
+    public boolean overlayAllowQualityPreset() throws SQLException {
+        return get(OVERLAY_ALLOW_QUALITY_PRESET);
     }
 
     /** The minimum free space on the data volume in bytes; 0 means no minimum. */
