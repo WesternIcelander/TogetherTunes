@@ -102,7 +102,7 @@ Added 2026-11-10 (Siggi: "If a YouTube yt-dlp item fails to ingest, there should
 Operational notes:
 
 - YouTube often blocks datacenter IPs. Support an optional cookies file: the `ytdlp.cookiesFile` setting (a Netscape-format cookies file on the server), passed as `--cookies` to every `-J` and download. It is read for each call, so a change applies to the next import. A path that isn't a readable file is logged and ignored. yt-dlp writes refreshed cookies back to the file, so the server should be able to write it.
-- Keep yt-dlp up to date: an admin button runs `yt-dlp -U`.
+- Keep yt-dlp up to date: an admin button (Settings tab) runs `yt-dlp -U` in the background and shows the installed version, the outcome and yt-dlp's output ([api.md](api.md#admin), `/api/admin/ytdlp`).
 - Surface yt-dlp's stderr in the job log.
 
 ## The mezzanine profile
