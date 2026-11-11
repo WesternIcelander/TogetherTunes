@@ -91,6 +91,12 @@ For each GOP of a video item, the packager uses the overlay GOP if it's complete
 - Job started when the entry became **next**: usually the whole item is ready before it plays.
 - Job started **mid-item** (a skip, a seek, or the next entry changed late): the first GOP or two play without the overlay, then the overlay appears and stays, because the encoder outruns playback.
 
+As implemented (`output/VideoItemSource`, `output/VideoOverlay`, `overlay/OverlayGops.gop`):
+
+- The source asks for the room's re-encode at **every keyframe** of the mezzanine and plays that whole GOP from it if the GOP is complete (`OverlayGops.gop(keyframe)` returns its frames, else null), the original GOP otherwise. Switching never happens inside a GOP. PTS come from the mezzanine's index either way; audio is always the item's.
+- An overlay GOP is read whole at its start (one GOP of `gops.h264`), so a read failure falls back to the original GOP cleanly. Each overlay GOP is checked: the re-encode's frame count must be the mezzanine's, the GOP must have as many frames as the mezzanine's GOP, with an IDR first and nowhere else. Any failure (or a read error) drops the overlay for the rest of that play (logged once) and the original plays.
+- `ProgramMedia` gets the re-encode from the room's `OverlayCards.video(entry, itemDir, index)` when an entry played as video starts playing (on the packager thread, so it must not block): a supplier that gives the job's `OverlayGops` once there is one. The version directory and index are those the play reads, so the job is keyed on the media version.
+
 ### Scheduling and caching
 
 - Queue a job when an entry becomes **current** (high priority) or **next** (normal priority), if the conditions above hold. In `vote` mode, "next" can change; cancel the job for an entry that stops being next, unless it's more than 50% done.
