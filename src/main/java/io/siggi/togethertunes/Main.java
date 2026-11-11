@@ -47,6 +47,7 @@ import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.overlay.OverlayVideoJobs;
+import io.siggi.togethertunes.overlay.OverlayPreviewApi;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
@@ -490,6 +491,8 @@ public final class Main {
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
         jobList.steps(ingest::liveStep);
         new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
+        // The management view's overlay preview (docs/overlay.md#room-ui).
+        new OverlayPreviewApi(rooms, overlays).register(appRouter);
         // Queue entries whose item isn't ready show what its ingest is doing (the rooms' ingest messages).
         roomSocket.ingestProgress(IngestProgress.from(jobList), 1000);
         // How many items a new output encoding would re-encode (the admin page asks before saving).

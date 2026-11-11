@@ -213,3 +213,34 @@ test("the notice for settings the server adjusted", () => {
     "Uploads need library requests: turned \"Allow uploads as requests\" off too.");
   assert.ok(S.SETTINGS.some((d) => d.key === "uploadRequests" && d.default === true && d.group === "requests"));
 });
+
+test("overlay preview URL follows the form's valid overlay values", () => {
+  assert.equal(S.overlayPreviewUrl("r 1", {}), "/api/rooms/r%201/overlay/preview.png");
+  assert.equal(S.overlayPreviewUrl("abc", { "overlay.corner": "tl", "overlay.heightPct": " 30 ", "overlay.margin": "0" }),
+    "/api/rooms/abc/overlay/preview.png?corner=tl&heightPct=30&margin=0");
+  // invalid or out-of-range values are left out (the saved ones apply)
+  assert.equal(S.overlayPreviewUrl("abc", { "overlay.corner": "middle", "overlay.heightPct": "4", "overlay.margin": "x" }),
+    "/api/rooms/abc/overlay/preview.png");
+  assert.equal(S.overlayPreviewUrl("abc", { "overlay.heightPct": "50", "overlay.margin": "21" }),
+    "/api/rooms/abc/overlay/preview.png?heightPct=50");
+  assert.deepEqual([...S.OVERLAY_PREVIEW_KEYS], ["overlay.corner", "overlay.heightPct", "overlay.margin"]);
+});
+
+test("overlay notes: none while the server has it off; music videos per the owner's permission", () => {
+  assert.deepEqual(S.overlayNotes(undefined), []);
+  const off = clone(ALL_ON);
+  off.overlay.enabled = false;
+  assert.deepEqual(S.overlayNotes(off), []);
+  const video = clone(ALL_ON);
+  video.overlay.videoOverlay = true;
+  const v = S.overlayNotes(video);
+  assert.equal(v.length, 2);
+  assert.match(v[0], /only in the stream outputs/);
+  assert.match(v[1], /Music videos show it too/);
+  const cards = clone(ALL_ON);
+  cards.overlay.videoOverlay = false;
+  const c = S.overlayNotes(cards);
+  assert.match(c[1], /Music videos play without the overlay/);
+  assert.match(c[1], /Cards .* still show it/);
+  assert.equal(S.overlayNotes(ALL_ON).length, 1); // an older server without videoOverlay
+});

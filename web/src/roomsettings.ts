@@ -127,7 +127,8 @@ function settingLabel(key: string): string {
 /** `GET /api/rooms/{id}/server-switches`. */
 export interface ServerSwitches {
   guests: { enabled: boolean; canVote: boolean; canRequestLibrary: boolean; canUpload: boolean; canYoutube: boolean };
-  overlay: { enabled: boolean };
+  /** `videoOverlay`: the overlay is on and the room's owner may re-encode music videos with it. */
+  overlay: { enabled: boolean; videoOverlay?: boolean };
   outputs: {
     forceAutoOff?: boolean; maxAutoOffMinutes?: number;
     rtmp: { enabled: boolean }; ts: { enabled: boolean }; hls: { enabled: boolean };
@@ -145,6 +146,49 @@ export function serverCapNote(key: string, value: unknown, sw: ServerSwitches | 
   if (typeof max !== "number") return null;
   const note = "This server turns unused outputs off after at most " + max + (max === 1 ? " minute" : " minutes");
   return typeof value === "number" && value > max ? note + ", so " + max + " applies." : note + ".";
+}
+
+/** The overlay settings the preview follows, as the form holds them. */
+export const OVERLAY_PREVIEW_KEYS = ["overlay.corner", "overlay.heightPct", "overlay.margin"] as const;
+
+/**
+ * `GET /api/rooms/{id}/overlay/preview.png` for the form's overlay values (dotted names to raw
+ * input). A value that isn't valid for its setting is left out, so the preview keeps the saved
+ * one instead of failing.
+ */
+export function overlayPreviewUrl(roomId: string, raw: Record<string, string | undefined>): string {
+  const params: string[] = [];
+  for (const key of OVERLAY_PREVIEW_KEYS) {
+    const def = SETTINGS.find((d) => d.key === key);
+    const value = raw[key];
+    if (def === undefined || value === undefined) continue;
+    let parsed: boolean | number | string;
+    try {
+      parsed = parseInput(def, value);
+    } catch {
+      continue;
+    }
+    params.push(encodeURIComponent(key.substring("overlay.".length)) + "=" + encodeURIComponent(String(parsed)));
+  }
+  return "/api/rooms/" + encodeURIComponent(roomId) + "/overlay/preview.png"
+    + (params.length > 0 ? "?" + params.join("&") : "");
+}
+
+/**
+ * The notes under the overlay settings: where the overlay shows, and whether music videos get it
+ * (the owner's permission to re-encode them). Empty while the server has the overlay off.
+ */
+export function overlayNotes(sw: ServerSwitches | undefined): string[] {
+  if (sw === undefined || !sw.overlay.enabled) return [];
+  const notes = ["The QR code leads to this room's request page. It is shown only in the stream outputs"
+    + " (RTMP, .ts and HLS); people listening on the room page don't see it."];
+  if (sw.overlay.videoOverlay === true) {
+    notes.push("Music videos show it too (they are re-encoded with the overlay while the room plays them).");
+  } else if (sw.overlay.videoOverlay === false) {
+    notes.push("Music videos play without the overlay: the room owner's account may not re-encode videos."
+      + " Cards (audio items, pauses, an empty queue) still show it.");
+  }
+  return notes;
 }
 
 export const SERVER_DISABLED = "disabled by the server admin";

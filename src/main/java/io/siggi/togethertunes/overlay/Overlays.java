@@ -3,6 +3,7 @@ package io.siggi.togethertunes.overlay;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.rooms.RoomSettings;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
@@ -132,6 +133,20 @@ public final class Overlays {
         if (serverEnabled && settings.overlayEnabled()) {
             current(roomId, slug, settings); // a no-op when the spec is unchanged
         }
+    }
+
+    /**
+     * A preview for the management view ({@code GET /api/rooms/{room}/overlay/preview.png}): the
+     * room's idle card (with its name) at the output size, with the overlay for {@code settings}
+     * drawn on it as the stream would show it. Nothing is stored or cached, so unsaved settings can
+     * be previewed; it renders whether or not the overlay is on.
+     */
+    public BufferedImage preview(String slug, String roomName, RoomSettings settings) throws IOException {
+        OverlayRenderer.Spec spec = spec(slug, settings);
+        OverlayRenderer.Rendered rendered = renderer.render(spec);
+        CardRenderer cards = new CardRenderer(profile.get());
+        BufferedImage card = cards.renderMessage(CardRenderer.Filler.QUEUE_EMPTY, roomName);
+        return OverlayCards.composite(card, rendered);
     }
 
     /** Forgets the room's overlay in memory (e.g. after the room was deleted). */

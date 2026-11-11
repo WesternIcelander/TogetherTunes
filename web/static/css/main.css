@@ -829,3 +829,12 @@ table.rooms td {
   background: #e33;
   pointer-events: none;
 }
+
+/* Room management: the QR overlay preview (the output frame, scaled to the column). */
+.overlay-preview {
+  display: block;
+  width: 100%;
+  max-width: 640px;
+  height: auto;
+  border: 1px solid #888;
+}

@@ -228,7 +228,7 @@ class RoomsApiTest {
         assertEquals(200, r.statusCode(), r.body());
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
         assertEquals(JsonParser.parseString("{\"guests\":{\"enabled\":true,\"canVote\":true,\"canRequestLibrary\":true,"
-                + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false},\"outputs\":{"
+                + "\"canUpload\":false,\"canYoutube\":false},\"overlay\":{\"enabled\":false,\"videoOverlay\":false},\"outputs\":{"
                 + "\"forceAutoOff\":false,\"maxAutoOffMinutes\":60,\"rtmp\":"
                 + "{\"enabled\":true},\"ts\":{\"enabled\":true},\"hls\":{\"enabled\":true},"
                 + "\"mp3\":{\"enabled\":true}}}"),
@@ -248,6 +248,15 @@ class RoomsApiTest {
         assertTrue(sw.getAsJsonObject("guests").get("canUpload").getAsBoolean());
         assertFalse(sw.getAsJsonObject("guests").get("canYoutube").getAsBoolean());
         assertTrue(sw.getAsJsonObject("overlay").get("enabled").getAsBoolean());
+        // Music videos get the overlay only if the owner holds output.overlayVideo (alice doesn't yet).
+        assertFalse(sw.getAsJsonObject("overlay").get("videoOverlay").getAsBoolean());
+        // The owner's permission counts, not the viewer's: the admin (who holds it) sees the same.
+        assertFalse(json(call(root, "GET", path, null)).getAsJsonObject("overlay").get("videoOverlay").getAsBoolean());
+        Roles roles = new Roles(db);
+        roles.setUserRoles(aliceId, List.of(roles.create("overlayers", List.of(Permission.ROOMS_CREATE,
+                Permission.OUTPUT_OVERLAY_VIDEO), false).id()));
+        assertTrue(json(call(alice, "GET", path, null)).getAsJsonObject("overlay").get("videoOverlay").getAsBoolean());
+        assertTrue(json(call(root, "GET", path, null)).getAsJsonObject("overlay").get("videoOverlay").getAsBoolean());
         assertFalse(sw.getAsJsonObject("outputs").getAsJsonObject("ts").get("enabled").getAsBoolean());
         assertTrue(sw.getAsJsonObject("outputs").getAsJsonObject("hls").get("enabled").getAsBoolean());
         // Owner and moderators (an admin through rooms.moderateAny); not members, guests or anonymous.

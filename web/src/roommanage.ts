@@ -13,8 +13,8 @@ import { navigate, pageSignal, reloadPage } from "./nav.js";
 import { button, formatTime, h } from "./dom.js";
 import { type Page } from "./media.js";
 import {
-  adjustedNotice, assignableRoles, buildPatch, canManageMember, coupledChange, describeDefault, getPath, GROUPS, parseInput, serverCapNote,
-  serverDisabledReason,
+  adjustedNotice, assignableRoles, buildPatch, canManageMember, coupledChange, describeDefault, getPath, GROUPS,
+  OVERLAY_PREVIEW_KEYS, overlayNotes, overlayPreviewUrl, parseInput, serverCapNote, serverDisabledReason,
   SETTINGS, thresholdToPercent, type ServerSwitches, type SettingDef,
 } from "./roomsettings.js";
 import {
@@ -174,10 +174,49 @@ function renderSettings(): void {
       if (reason !== null) row.title = reason;
       fieldset.append(row);
     }
+    if (group === "overlay") appendOverlayPreview(fieldset);
     groups.append(fieldset);
   }
   element("room-delete").hidden = !room.you.canDelete;
   form.hidden = false;
+}
+
+/** The pending preview refresh (debounced while typing). */
+let previewTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Under the overlay settings (when the server allows the overlay): notes on where it shows and
+ * whether music videos get it, and a preview image of the room's idle card with the overlay as
+ * the form has it (unsaved values too), refreshed when corner, size or margin change.
+ */
+function appendOverlayPreview(fieldset: HTMLElement): void {
+  const notes = overlayNotes(switches);
+  if (notes.length === 0) return;
+  for (const note of notes) fieldset.append(h("p", { class: "muted small", text: note }));
+  const img = h("img", { class: "overlay-preview", alt: "Preview of the QR overlay on the stream" });
+  const status = h("p", { class: "muted small", text: "Preview (the QR code uses the saved link name):" });
+  img.addEventListener("error", () => { status.textContent = "The preview could not be loaded."; });
+  img.addEventListener("load", () => {
+    status.textContent = "Preview (the QR code uses the saved link name):";
+  });
+  const refresh = (): void => {
+    const raw: Record<string, string | undefined> = {};
+    for (const key of OVERLAY_PREVIEW_KEYS) raw[key] = inputs.get(key)?.value;
+    const url = overlayPreviewUrl(room.id, raw);
+    if (img.getAttribute("src") !== url) img.src = url;
+  };
+  for (const key of OVERLAY_PREVIEW_KEYS) {
+    const input = inputs.get(key);
+    if (input === undefined) continue;
+    const later = (): void => {
+      if (previewTimer !== undefined) clearTimeout(previewTimer);
+      previewTimer = setTimeout(refresh, 400);
+    };
+    input.addEventListener("input", later);
+    input.addEventListener("change", later);
+  }
+  fieldset.append(status, img);
+  refresh();
 }
 
 /**

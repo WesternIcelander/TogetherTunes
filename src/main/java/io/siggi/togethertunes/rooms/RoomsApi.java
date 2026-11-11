@@ -79,13 +79,15 @@ import java.util.Set;
  *       then). {@code limit} 1..{@value RoomHistory#LIST_MAX}, default {@value RoomHistory#LIST_DEFAULT};
  *       {@code 400 invalid_cursor} / {@code invalid_limit}.</li>
  *   <li>{@code GET /api/rooms/{room}/server-switches} → {@code {"guests": {"enabled", "canVote",
- *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled"}, "outputs":
+ *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled", "videoOverlay"}, "outputs":
  *       {"forceAutoOff", "maxAutoOffMinutes", "rtmp": {"enabled"}, "ts": {"enabled"}, "hls":
  *       {"enabled"}, "mp3": {"enabled"}}}}: the server switches behind the room settings, so the
  *       management view can grey out what the server turned off or forces, and show the server's
  *       cap on {@code outputs.autoOffMinutes} (the guest
  *       capabilities are each the server's setting alone; {@code guests.enabled} off turns them
- *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}). Owner and moderators.</li>
+ *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}; {@code overlay.videoOverlay}: the
+ *       overlay is on and the room's owner holds {@code output.overlayVideo}, so music videos get
+ *       it too). Owner and moderators.</li>
  * </ul>
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
@@ -452,7 +454,11 @@ public final class RoomsApi {
         outputs.put("mp3", Map.of("enabled", sw.mp3Enabled()));
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("guests", g);
-        body.put("overlay", Map.of("enabled", sw.overlayEnabled()));
+        // Whether music videos get the overlay too: the owner holds output.overlayVideo (a disabled
+        // owner holds nothing), as OverlayDecisions decides it per entry.
+        boolean videoOverlay = sw.overlayEnabled()
+                && permissions.held(access.room().ownerId()).contains(Permission.OUTPUT_OVERLAY_VIDEO);
+        body.put("overlay", Map.of("enabled", sw.overlayEnabled(), "videoOverlay", videoOverlay));
         body.put("outputs", outputs);
         response.header("Cache-Control", "no-store");
         response.json(body);
