@@ -101,7 +101,7 @@ class CardEncoderTest {
     }
 
     /**
-     * Checks that a card is a skip-frame card ({@link CardEncoder#CARD_VERSION} 2): every frame
+     * Checks that a card is a skip-frame card ({@link CardEncoder#CARD_VERSION} 2 and up): every frame
      * decodes to the IDR's picture, and the 59 P-frames are written skip frames of a few bytes.
      */
     static void checkSkipFrameCard(Tools tools, Path card, OutputEncoding encoding) throws Exception {
@@ -115,13 +115,13 @@ class CardEncoderTest {
     }
 
     @Test
-    void idrCommandEncodesOneFrameAsRawH264() {
+    void idrCommandEncodesOneFrameAsMp4() {
         OutputEncoding profile = OutputEncoding.defaultFor(OutputProfile.P720_30);
-        String joined = String.join(" ", CardEncoder.idrCommand(Path.of("card.png"), Path.of("idr.h264"), profile));
+        String joined = String.join(" ", CardEncoder.idrCommand(Path.of("card.png"), Path.of("idr.mp4"), profile));
         assertTrue(joined.startsWith("-y -loop 1 -framerate 30 -i card.png -frames:v 1 -vf "
                 + EncodeProfile.scaleFilter(profile) + " "), joined);
         assertTrue(joined.contains(String.join(" ", EncodeProfile.videoArgs(profile))), joined);
-        assertTrue(joined.endsWith(" -an -f h264 idr.h264"), joined);
+        assertTrue(joined.endsWith(" -an -video_track_timescale 15360 -f mp4 idr.mp4"), joined);
     }
 
     @Test

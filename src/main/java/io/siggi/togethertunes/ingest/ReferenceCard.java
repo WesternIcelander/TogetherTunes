@@ -11,6 +11,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HexFormat;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.imageio.ImageIO;
 
 /**
@@ -33,6 +34,8 @@ import javax.imageio.ImageIO;
  * check until the stored reference is replaced and the library re-encoded.
  */
 public final class ReferenceCard {
+    private static final System.Logger LOG = System.getLogger(ReferenceCard.class.getName());
+
     /** File name of the encoded reference card in the profile's cards directory. */
     public static final String CARD_FILE = "reference.mp4";
     /** File name of the reference avcC (raw bytes of the {@code avcC} box payload). */
@@ -83,7 +86,9 @@ public final class ReferenceCard {
         Path mp4 = Files.createTempFile(dir, ".reference-", ".mp4");
         try {
             writeBlackPng(png, encoding);
-            encodeCard(tools, png, mp4, encoding, log);
+            if (!encodeCard(tools, png, mp4, encoding, log)) {
+                warnNoSkipFrameCards(encoding);
+            }
             byte[] fresh = readAvcC(mp4);
 
             if (Files.exists(avcFile)) {
@@ -141,9 +146,28 @@ public final class ReferenceCard {
      * The card encode ({@link CardEncoder#encodeCard}: a skip-frame card, or the full x264 encode if
      * that fails); no avcC check, this card defines it.
      */
-    static void encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
+    static boolean encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
             throws ToolException, IOException, InterruptedException {
-        CardEncoder.encodeCard(tools, png, out, encoding, log);
+        return CardEncoder.encodeCard(tools, png, out, encoding, log);
+    }
+
+    /** Whether {@link #warnNoSkipFrameCards} has logged already (once per process is enough). */
+    private static final AtomicBoolean WARNED_NO_SKIP_FRAMES = new AtomicBoolean();
+
+    /** The message logged once when the reference card couldn't be made as a skip-frame card. */
+    static String noSkipFrameCardsMessage(OutputEncoding encoding) {
+        return "This ffmpeg can't make skip-frame cards (the reference card for " + encoding.id()
+                + " fell back to a full x264 encode; the reason is in the warning above). Every card will be"
+                + " encoded as a whole x264 GOP instead, which costs about as much as video: audio-only rooms'"
+                + " cards then run over output.audioOnlyBitrateKbps, so their streams aren't constant-rate."
+                + " Use a supported ffmpeg (see the deployment notes) to fix this.";
+    }
+
+    /** Logs {@link #noSkipFrameCardsMessage} once per process. */
+    static void warnNoSkipFrameCards(OutputEncoding encoding) {
+        if (WARNED_NO_SKIP_FRAMES.compareAndSet(false, true)) {
+            LOG.log(System.Logger.Level.WARNING, noSkipFrameCardsMessage(encoding));
+        }
     }
 
     /**

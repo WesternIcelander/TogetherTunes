@@ -2,6 +2,7 @@ package io.siggi.togethertunes.ingest;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -9,6 +10,7 @@ import io.siggi.togethertunes.config.OutputEncoding;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.config.X264Preset;
 import io.siggi.togethertunes.media.EncodeProfile;
+import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SkipFrames;
 import java.awt.image.BufferedImage;
@@ -54,24 +56,24 @@ class SkipFrameCardTest {
     /** Encodes one frame of {@code png} with the profile arguments, then {@code extra} replacing or adding options. */
     private Path idrStream(Tools tools, Path png, OutputEncoding encoding, X264Preset preset, List<String> extra)
             throws Exception {
-        Path out = Files.createTempFile(dir, "idr-", ".h264");
+        Path out = Files.createTempFile(dir, "idr-", ".mp4");
         List<String> args = new ArrayList<>(List.of("-v", "error", "-y", "-loop", "1", "-framerate", "30",
                 "-i", png.toString(), "-frames:v", "1", "-vf", EncodeProfile.scaleFilter(encoding)));
         args.addAll(EncodeProfile.videoArgs(encoding, preset));
         args.addAll(extra);
-        args.addAll(List.of("-an", "-f", "h264", out.toString()));
+        args.addAll(List.of("-an", "-video_track_timescale", "15360", "-f", "mp4", out.toString()));
         tools.ffmpeg(args).run();
         return out;
     }
 
-    /** Builds, remuxes and checks a skip-frame card; returns its packets. */
+    /** Builds and checks a skip-frame card; returns its packets. */
     private SampleIndex.Track card(Tools tools, Path idr, OutputEncoding encoding, boolean profileStream)
             throws Exception {
-        Path gop = Files.createTempFile(dir, "gop-", ".h264");
-        Files.write(gop, CardEncoder.skipFrameGop(Files.readAllBytes(idr)));
         Path mp4 = Files.createTempFile(dir, "card-", ".mp4");
-        tools.ffmpeg(CardEncoder.remuxCommand(gop, mp4, encoding)).run();
+        Files.write(mp4, CardEncoder.skipFrameCard(Files.readAllBytes(idr)));
         CardEncoder.check(tools, mp4, encoding, null); // 60 identical frames, one IDR, n/30 s
+        // ffmpeg's sample description, so its avcC, is kept byte for byte
+        assertArrayEquals(Mp4Boxes.readAvcC(idr), Mp4Boxes.readAvcC(mp4));
         if (profileStream) {
             CardEncoderTest.checkCard(tools, mp4, encoding);
         }
@@ -134,7 +136,7 @@ class SkipFrameCardTest {
         Path idr = idrStream(tools, png, encoding, X264Preset.REFERENCE,
                 List.of("-x264-params", "open-gop=0:ref=4:interlaced=1"));
         assertThrows(SkipFrames.UnsupportedStreamException.class,
-                () -> CardEncoder.skipFrameGop(Files.readAllBytes(idr)));
+                () -> CardEncoder.skipFrameCard(Files.readAllBytes(idr)));
     }
 
     @ParameterizedTest
@@ -179,10 +181,10 @@ class SkipFrameCardTest {
         Path png = detailedPng(tools, dir, 640, 360);
         Path out = dir.resolve("fallback.mp4");
         JobLog log = new JobLog();
-        CardEncoder.encodeCard(tools, png, out, encoding, log, (t, in, o, e, l) -> {
+        assertFalse(CardEncoder.encodeCard(tools, png, out, encoding, log, (t, in, o, e, l) -> {
             Files.write(o, new byte[] {1, 2, 3}); // a half-written card is replaced
             throw new java.io.IOException("simulated");
-        });
+        }), "reports the fallback");
         assertTrue(log.tail().contains("skip-frame card failed (simulated)"), log.tail());
         CardEncoderTest.checkCard(tools, out, encoding);
         SampleIndex.Track track = IndexBuilder.probeTrack(tools, out, SampleIndex.Kind.VIDEO, 0, null);
@@ -193,5 +195,58 @@ class SkipFrameCardTest {
         }
         assertTrue(pBytes > (EncodeProfile.GOP_FRAMES - 1) * MAX_SKIP_FRAME_BYTES,
                 "x264 encoded the P-frames: " + pBytes + " bytes");
+    }
+
+    @Test
+    @Timeout(120)
+    void skipFrameCardIsReportedAsSuch() throws Exception {
+        Tools tools = CardEncoderTest.tools();
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        Path png = detailedPng(tools, dir, 640, 360);
+        Path out = dir.resolve("skip.mp4");
+        assertTrue(CardEncoder.encodeCard(tools, png, out, encoding, null));
+        CardEncoder.check(tools, out, encoding, null);
+    }
+
+    /**
+     * What a newer ffmpeg made of the old {@code setts} remux (2026-11-10): every frame one tick of
+     * the MP4 time base apart. The check catches it whatever the decoder's frame-rate handling
+     * ({@code -fps_mode passthrough} counts all 60 decoded frames; the packet times are wrong).
+     */
+    @Test
+    @Timeout(120)
+    void checkRejectsFramesThatAreTooCloseTogether() throws Exception {
+        Tools tools = CardEncoderTest.tools();
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        Path png = detailedPng(tools, dir, 640, 360);
+        Path good = dir.resolve("good.mp4");
+        Files.write(good, CardEncoder.skipFrameCard(Files.readAllBytes(
+                idrStream(tools, png, encoding, X264Preset.REFERENCE, List.of()))));
+        Path mp4 = dir.resolve("close.mp4");
+        tools.ffmpeg("-v", "error", "-y", "-i", good.toString(), "-c:v", "copy",
+                "-bsf:v", "setts=pts=N:dts=N:duration=1", "-video_track_timescale", "15360",
+                "-an", "-f", "mp4", mp4.toString()).run();
+        java.io.IOException e = assertThrows(java.io.IOException.class, () -> CardEncoder.check(tools, mp4, encoding, null));
+        assertTrue(e.getMessage().contains("card frame 1 is at"), e.getMessage());
+    }
+
+    @Test
+    @Timeout(120)
+    void anMp4OfMoreThanOneFrameIsRefused() throws Exception {
+        Tools tools = CardEncoderTest.tools();
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        Path png = detailedPng(tools, dir, 640, 360);
+        Path two = idrStream(tools, png, encoding, X264Preset.REFERENCE, List.of("-frames:v", "2"));
+        java.io.IOException e = assertThrows(java.io.IOException.class,
+                () -> CardEncoder.skipFrameCard(Files.readAllBytes(two)));
+        assertTrue(e.getMessage().contains("one sample"), e.getMessage());
+    }
+
+    @Test
+    void noSkipFrameCardsMessageSaysWhatItCosts() {
+        String m = ReferenceCard.noSkipFrameCardsMessage(OutputEncoding.DEFAULT);
+        assertTrue(m.contains("can't make skip-frame cards"), m);
+        assertTrue(m.contains("audio-only"), m);
+        assertTrue(m.contains(OutputEncoding.DEFAULT.id()), m);
     }
 }

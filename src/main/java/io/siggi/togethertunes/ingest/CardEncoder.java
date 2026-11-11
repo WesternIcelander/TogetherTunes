@@ -7,8 +7,8 @@ import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.media.SkipFrames;
+import io.siggi.togethertunes.media.StillGopMp4;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
@@ -24,13 +24,16 @@ import java.util.Objects;
  * Encodes a card: a still image as one closed 2 s GOP (one IDR, 59 P-frames) with the profile
  * constant, so the packager can splice it anywhere ({@code docs/library-and-ingest.md#cards}).
  *
- * <p><b>Skip-frame cards</b> ({@link #CARD_VERSION} 2). x264 encodes only the IDR:
+ * <p><b>Skip-frame cards</b> ({@link #CARD_VERSION} 2 and up). x264 encodes only the IDR:
  * {@code ffmpeg -loop 1 -framerate 30 -i card.png -frames:v 1 -vf <scaleFilter> <profile args> -an
- * -f h264 idr.h264}, the same shared arguments as every encode, so the SPS and PPS are the
- * reference's (invariant 1). The other 59 frames are written by {@link SkipFrames}: P slices in
- * which every macroblock is skipped, a few bytes each, which decode to exactly the IDR's picture.
- * The elementary stream is then remuxed (not re-encoded) into {@code card.mp4} with frame
- * {@code n} at {@code n/30 s}. Before it is used, the card is decoded with ffmpeg and checked: 60
+ * -video_track_timescale 15360 -f mp4 idr.mp4}, the same shared arguments as every encode, so the
+ * SPS and PPS are the reference's (invariant 1). The other 59 frames are written by
+ * {@link SkipFrames}: P slices in which every macroblock is skipped, a few bytes each, which decode
+ * to exactly the IDR's picture. {@link StillGopMp4} appends them to ffmpeg's one-frame MP4 (frame
+ * {@code n} at {@code n/30 s}), keeping ffmpeg's sample description and avcC byte for byte; no
+ * ffmpeg remux is involved, because its timestamp options changed meaning between versions (an
+ * {@code -bsf:v setts=…:time_base=1/30} remux put the frames at the wrong times on ffmpeg 5.1 and
+ * on 2026 builds, found 2026-11-10). Before it is used, the card is decoded with ffmpeg and checked: 60
  * frames, all pixel-identical to the IDR (frame checksums), one IDR first, 30 fps. A full x264
  * encode of the still refines the picture for the whole GOP and costs about as much as video
  * (800+ kb/s for a detailed cover); a skip-frame card costs the IDR alone.
@@ -49,11 +52,14 @@ public final class CardEncoder {
 
     /**
      * Version of the card format. 1: the whole GOP encoded by x264. 2: skip-frame cards (an x264
-     * IDR plus 59 written P_Skip frames), 2026-11-10. Filler cards include it in their fingerprint
+     * IDR plus 59 written P_Skip frames), 2026-11-10. 3: the same, with the MP4 written by
+     * {@link StillGopMp4} instead of an ffmpeg remux (2026-11-10; with current ffmpeg builds the
+     * remux failed the check and format-2 cards fell back to full x264 GOPs, which this rebuilds).
+     * Filler cards include it in their fingerprint
      * and items record it ({@code items.card_version}), so cards of an older format are made again
      * (without re-encoding videos) when it changes.
      */
-    public static final int CARD_VERSION = 2;
+    public static final int CARD_VERSION = 3;
 
     /** The time base the card MP4 is written with (as an x264 encode at 30 fps gets it). */
     static final int MP4_TIMESCALE = 15360;
@@ -138,11 +144,12 @@ public final class CardEncoder {
      * (the caller does that, or the card defines the reference).
      *
      * @param log job log for the ffmpeg output and the fallback note, or null
+     * @return true for a skip-frame card, false if it fell back to the full x264 encode
      * @throws ToolException if the full encode fails too
      */
-    static void encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
+    static boolean encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
             throws ToolException, IOException, InterruptedException {
-        encodeCard(tools, png, out, encoding, log, CardEncoder::encodeSkipFrames);
+        return encodeCard(tools, png, out, encoding, log, CardEncoder::encodeSkipFrames);
     }
 
     /** How a skip-frame card is made ({@link #encodeSkipFrames}; tests make it fail to try the fallback). */
@@ -152,11 +159,11 @@ public final class CardEncoder {
     }
 
     /** {@link #encodeCard(Tools, Path, Path, OutputEncoding, JobLog)} with the skip-frame step {@code skipFrames}. */
-    static void encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log, SkipFrameMaker skipFrames)
-            throws ToolException, IOException, InterruptedException {
+    static boolean encodeCard(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log,
+                              SkipFrameMaker skipFrames) throws ToolException, IOException, InterruptedException {
         try {
             skipFrames.make(tools, png, out, encoding, log);
-            return;
+            return true;
         } catch (InterruptedException e) {
             throw e;
         } catch (Exception e) {
@@ -168,129 +175,101 @@ public final class CardEncoder {
             }
         }
         encodePng(tools, png, out, encoding, log);
+        return false;
     }
 
-    /** The ffmpeg arguments that encode only the IDR of a card, as a raw H.264 stream. */
+    /**
+     * The ffmpeg arguments that encode only the IDR of a card, as a one-frame MP4 in the time base
+     * x264 encodes get ({@value #MP4_TIMESCALE}).
+     */
     static List<String> idrCommand(Path png, Path out, OutputEncoding encoding) {
         List<String> args = new ArrayList<>(List.of("-y", "-loop", "1", "-framerate", Integer.toString(encoding.fps()),
                 "-i", png.toString(), "-frames:v", "1", "-vf", EncodeProfile.scaleFilter(encoding)));
         args.addAll(EncodeProfile.videoArgs(encoding, X264Preset.REFERENCE));
-        args.addAll(List.of("-an", "-f", "h264", out.toString()));
+        args.addAll(List.of("-an", "-video_track_timescale", Integer.toString(MP4_TIMESCALE), "-f", "mp4",
+                out.toString()));
         return args;
-    }
-
-    /**
-     * The ffmpeg arguments that put a card's raw H.264 stream into MP4 without re-encoding: frame
-     * {@code n} at {@code n/fps}, in the time base x264 encodes get.
-     */
-    static List<String> remuxCommand(Path h264, Path out, OutputEncoding encoding) {
-        return List.of("-y", "-framerate", Integer.toString(encoding.fps()), "-f", "h264", "-i", h264.toString(),
-                "-c:v", "copy", "-bsf:v", "setts=pts=N:dts=N:duration=1:time_base=1/" + encoding.fps(),
-                "-video_track_timescale", Integer.toString(MP4_TIMESCALE), "-an", "-f", "mp4", out.toString());
     }
 
     /**
      * Makes a skip-frame card at {@code out} (see the class comment) and checks it by decoding.
      * Temporary files go next to {@code out} and are deleted.
      *
-     * @throws IOException                          if the IDR stream can't be used or the check fails
+     * @throws IOException                          if the IDR encode can't be used or the check fails
      * @throws SkipFrames.UnsupportedStreamException if the SPS/PPS need something the writer lacks
      */
     static void encodeSkipFrames(Tools tools, Path png, Path out, OutputEncoding encoding, JobLog log)
             throws ToolException, IOException, InterruptedException, SkipFrames.UnsupportedStreamException {
         Path dir = out.toAbsolutePath().getParent();
         String base = "." + out.getFileName();
-        Path idr = Files.createTempFile(dir, base + "-idr-", ".h264");
-        Path gop = Files.createTempFile(dir, base + "-gop-", ".h264");
+        Path idr = Files.createTempFile(dir, base + "-idr-", ".mp4");
         try {
             ToolCall call = tools.ffmpeg(idrCommand(png, idr, encoding)).timeout(ENCODE_TIMEOUT);
             if (log != null) {
                 call.log(log);
             }
             call.run();
-            byte[] stream = Files.readAllBytes(idr);
-            Files.write(gop, skipFrameGop(stream));
-            ToolCall remux = tools.ffmpeg(remuxCommand(gop, out, encoding)).timeout(ENCODE_TIMEOUT);
-            if (log != null) {
-                remux.log(log);
-            }
-            remux.run();
+            Files.write(out, skipFrameCard(Files.readAllBytes(idr)));
             check(tools, out, encoding, log);
         } finally {
             Files.deleteIfExists(idr);
-            Files.deleteIfExists(gop);
         }
     }
 
     /**
-     * A whole card GOP as an Annex B stream: x264's one-frame stream {@code idrStream} (SPS, PPS,
-     * SEI, the IDR slice) followed by {@value EncodeProfile#GOP_FRAMES}−1 skip frames made for its
-     * SPS and PPS.
+     * A whole card GOP as an MP4: ffmpeg's one-frame MP4 {@code idrMp4} (x264's IDR) with
+     * {@value EncodeProfile#GOP_FRAMES}−1 skip frames made for its SPS and PPS appended, frame
+     * {@code n} at {@code n} frame durations. The MP4 is written by {@link StillGopMp4}, which keeps
+     * ffmpeg's sample description (and so its avcC) byte for byte.
      *
-     * @throws IOException if the stream doesn't hold exactly one SPS, one PPS and an IDR (and nothing else
-     *                     but SEI and AUDs)
+     * @throws IOException if the MP4 isn't one frame holding an IDR slice (and nothing else but SEI,
+     *                     AUDs and parameter sets), or has a layout {@link StillGopMp4} refuses
      */
-    static byte[] skipFrameGop(byte[] idrStream) throws IOException, SkipFrames.UnsupportedStreamException {
-        byte[] sps = null;
-        byte[] pps = null;
+    static byte[] skipFrameCard(byte[] idrMp4) throws IOException, SkipFrames.UnsupportedStreamException {
+        StillGopMp4.OneFrame frame = StillGopMp4.read(idrMp4);
+        StillGopMp4.AvcConfig config = StillGopMp4.avcConfig(frame.avcC());
+        int lengthSize = config.nalLengthSize();
         boolean idr = false;
-        for (byte[] nal : nalUnits(idrStream)) {
-            int type = nal[0] & 0x1F;
+        byte[] sample = frame.sample();
+        for (int pos = 0; pos < sample.length; ) {
+            if (sample.length - pos < lengthSize) {
+                throw new IOException("the IDR sample is truncated");
+            }
+            int len = 0;
+            for (int k = 0; k < lengthSize; k++) {
+                len = len << 8 | sample[pos + k] & 0xFF;
+            }
+            pos += lengthSize;
+            if (len <= 0 || len > sample.length - pos) {
+                throw new IOException("the IDR sample has a bad NAL length " + len);
+            }
+            int type = sample[pos] & 0x1F;
             switch (type) {
-                case AnnexB.NAL_SPS -> {
-                    if (sps != null) {
-                        throw new IOException("the IDR stream has more than one SPS");
-                    }
-                    sps = nal;
-                }
-                case AnnexB.NAL_PPS -> {
-                    if (pps != null) {
-                        throw new IOException("the IDR stream has more than one PPS");
-                    }
-                    pps = nal;
-                }
                 case AnnexB.NAL_IDR -> idr = true;
-                case AnnexB.NAL_SEI, AnnexB.NAL_AUD -> {
+                case AnnexB.NAL_SEI, AnnexB.NAL_AUD, AnnexB.NAL_SPS, AnnexB.NAL_PPS -> {
                 }
-                default -> throw new IOException("the IDR stream has a NAL unit of type " + type);
+                default -> throw new IOException("the IDR sample has a NAL unit of type " + type);
             }
+            pos += len;
         }
-        if (sps == null || pps == null || !idr) {
-            throw new IOException("the IDR stream lacks its SPS, PPS or IDR slice");
+        if (!idr) {
+            throw new IOException("the IDR sample has no IDR slice");
         }
-        SkipFrames writer = new SkipFrames(sps, pps);
-        ByteArrayOutputStream out = new ByteArrayOutputStream(idrStream.length + 64 * EncodeProfile.GOP_FRAMES);
-        out.writeBytes(idrStream);
+        SkipFrames writer = new SkipFrames(config.sps(), config.pps());
+        List<byte[]> more = new ArrayList<>(EncodeProfile.GOP_FRAMES - 1);
         for (int i = 1; i < EncodeProfile.GOP_FRAMES; i++) {
-            out.writeBytes(new byte[] {0, 0, 0, 1});
-            out.writeBytes(writer.frame(i));
-        }
-        return out.toByteArray();
-    }
-
-    /** The NAL units of an Annex B stream (without start codes and trailing zero bytes). */
-    static List<byte[]> nalUnits(byte[] stream) {
-        List<Integer> starts = new ArrayList<>();
-        for (int i = 0; i + 2 < stream.length; i++) {
-            if (stream[i] == 0 && stream[i + 1] == 0 && stream[i + 2] == 1) {
-                starts.add(i + 3);
-                i += 2;
+            byte[] nal = writer.frame(i);
+            if (lengthSize < 4 && nal.length >= 1 << (8 * lengthSize)) {
+                throw new IOException("a skip frame doesn't fit the NAL length size " + lengthSize);
             }
-        }
-        List<byte[]> nals = new ArrayList<>(starts.size());
-        for (int k = 0; k < starts.size(); k++) {
-            int from = starts.get(k);
-            int to = k + 1 < starts.size() ? starts.get(k + 1) - 3 : stream.length;
-            while (to > from && stream[to - 1] == 0) {
-                to--;
+            byte[] s = new byte[lengthSize + nal.length];
+            for (int k = 0; k < lengthSize; k++) {
+                s[k] = (byte) (nal.length >>> (8 * (lengthSize - 1 - k)));
             }
-            if (to > from) {
-                byte[] nal = new byte[to - from];
-                System.arraycopy(stream, from, nal, 0, nal.length);
-                nals.add(nal);
-            }
+            System.arraycopy(nal, 0, s, lengthSize, nal.length);
+            more.add(s);
         }
-        return nals;
+        return StillGopMp4.extend(idrMp4, more);
     }
 
     /**
@@ -304,7 +283,7 @@ public final class CardEncoder {
             throws ToolException, IOException, InterruptedException {
         List<String> hashes = new ArrayList<>();
         ToolCall decode = tools.ffmpeg("-v", "error", "-xerror", "-err_detect", "+explode", "-i", card.toString(), "-map", "0:v:0",
-                "-f", "framemd5", "-").timeout(ENCODE_TIMEOUT).stdoutLines(line -> {
+                "-fps_mode", "passthrough", "-f", "framemd5", "-").timeout(ENCODE_TIMEOUT).stdoutLines(line -> {
                     if (!line.startsWith("#") && !line.isBlank()) {
                         String[] f = line.split(",");
                         hashes.add(f[f.length - 1].trim());
