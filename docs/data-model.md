@@ -66,7 +66,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
       audio_only_ms BIGINT NULL,            -- a video's audio-only file's length (audio-only.m4a from its audio trim, library-and-ingest.md#audio-trim); NULL: none, it is audio.m4a (duration_ms)
-      card_version INTEGER,                 -- card format of its card.mp4 (CardEncoder.CARD_VERSION: 1 x264 GOP, 2 skip-frame card; migration 0018); older ones get a card-only re-encode at startup (library-and-ingest.md#cards)
+      card_version INTEGER,                 -- card format of its card.mp4 (CardEncoder.CARD_VERSION: 1 x264 GOP, 2 skip-frame card, 3 skip-frame card with our own MP4 writer; migration 0018); older ones get a card-only re-encode at startup (library-and-ingest.md#cards)
       media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows (an undo links the old files into a new version), kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
