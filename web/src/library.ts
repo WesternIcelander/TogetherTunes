@@ -14,6 +14,7 @@ import {
 } from "./media.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
+import { episodeCode, filterShows, seasonLabel, type ShowGroup } from "./shows.js";
 
 interface Share {
   id: string;
@@ -119,10 +120,27 @@ async function load(reset: boolean): Promise<void> {
   }
   const params = new URLSearchParams({ limit: "50" });
   if (query !== "") params.set("q", query);
-  if (kind !== "") params.set("kind", kind);
+  if (kind !== "") params.set(kind === "shows" ? "type" : "kind", kind === "shows" ? "show" : kind);
   if (cursor !== undefined) params.set("cursor", cursor);
   let next: string | undefined;
-  if (wholeServer) {
+  if (kind === "shows" && !wholeServer) {
+    // The library's shows, grouped by show and season (GET /api/library/shows); no paging.
+    const res = await api<{ shows: ShowGroup<LibraryEntry>[] }>("GET", "/api/library/shows");
+    tbody.replaceChildren();
+    for (const show of filterShows(res.shows, query)) {
+      tbody.append(h("tr", { class: "group" }, h("th", { colspan: "6", text: show.name })));
+      for (const season of show.seasons) {
+        tbody.append(h("tr", { class: "group" }, h("td", { colspan: "6", class: "muted small",
+          text: seasonLabel(season.season) })));
+        for (const entry of season.episodes) {
+          const row = entryRow(entry);
+          const kindCell = row.cells.item(1);
+          if (entry.item.show !== undefined && kindCell !== null) kindCell.textContent = episodeCode(entry.item.show);
+          tbody.append(row);
+        }
+      }
+    }
+  } else if (wholeServer) {
     const page = await api<Page<ServerHit>>("GET", "/api/items/search?" + params.toString());
     if (reset) tbody.replaceChildren();
     for (const hit of page.items) tbody.append(serverRow(hit));

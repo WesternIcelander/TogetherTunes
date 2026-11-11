@@ -118,6 +118,11 @@ public final class ControlPolicy {
         requireModerator(a, "Only the owner and moderators can add a playlist");
     }
 
+    /** {@code queue.nextEpisode} ({@code docs/media-types.md#next-episode}): owner and moderators. */
+    public static void requireNextEpisode(RoomState s, RoomActor a) {
+        requireModerator(a, "Only the owner and moderators can queue the next episode");
+    }
+
     /**
      * {@code remove(entry)} of a queued or suggested entry: owner and moderators; the requester
      * while the entry is still queued (or suggested); in {@code open} mode anyone with request

@@ -379,6 +379,92 @@ public final class Library {
     }
 
 
+    /**
+     * The {@code show} items in the user's library, grouped by show name, season and episode
+     * ({@link Episodes#group}; {@code docs/media-types.md#media-types}).
+     *
+     * @param name only the show with this name ({@link Episodes#showKey}); {@code null} for all
+     */
+    public List<Episodes.Show<Entry>> shows(String userId, String name) throws SQLException {
+        Objects.requireNonNull(userId);
+        List<Entry> episodes = showEntries(db, userId, name);
+        return Episodes.group(episodes, e -> e.item().show().name(), Library::place, e -> e.item().id());
+    }
+
+    private static List<Entry> showEntries(Database db, String userId, String name) throws SQLException {
+        String key = name == null ? null : Episodes.showKey(name);
+        return db.read(c -> {
+            List<Entry> out = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(SELECT
+                    + " WHERE e.user_id = ? AND i.kind = 'video' AND i.media_type = 'show'")) {
+                ps.setString(1, userId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        Entry e = entry(rs);
+                        if (e.item().show() != null
+                                && (key == null || key.equals(Episodes.showKey(e.item().show().name())))) {
+                            out.add(e);
+                        }
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
+    private static Episodes.Place place(Entry e) {
+        MediaType.Show s = e.item().show();
+        return new Episodes.Place(s.season(), s.episode());
+    }
+
+    /**
+     * <b>Next episode</b> ({@code docs/media-types.md#next-episode}): the item in the user's library
+     * with the same show name as {@code itemId} that comes next by (season, episode)
+     * ({@link Episodes#next}). Uploads that can never play again (purged or failed) are passed
+     * over; a purged or failed YouTube episode counts (it is fetched again when queued).
+     *
+     * @throws HttpError {@code 404 item_not_found}, {@code 409 not_a_show} ({@code itemId} isn't a
+     *                   {@code show} item), {@code 404 no_next_episode}
+     */
+    public ItemView nextEpisode(String userId, String itemId) throws SQLException {
+        return nextEpisode(db, userId, itemId);
+    }
+
+    /** {@link #nextEpisode(String, String)} on {@code db}. */
+    public static ItemView nextEpisode(Database db, String userId, String itemId) throws SQLException {
+        Objects.requireNonNull(userId);
+        MediaType.Show show = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT " + ItemView.COLUMNS + " FROM items i WHERE i.id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        throw new HttpError(404, "item_not_found", "No such item");
+                    }
+                    ItemView item = ItemView.read(rs, 1);
+                    return MediaType.SHOW.wire().equals(item.mediaType()) ? item.show() : null;
+                }
+            }
+        });
+        if (show == null) {
+            throw new HttpError(409, "not_a_show", "That isn't a show episode");
+        }
+        List<Entry> candidates = new ArrayList<>();
+        for (Entry e : showEntries(db, userId, show.name())) {
+            ItemView i = e.item();
+            boolean gone = "purged".equals(i.status()) || "failed".equals(i.status());
+            if (!(gone && i.youtubeId() == null)) {
+                candidates.add(e);
+            }
+        }
+        Entry next = Episodes.next(candidates, new Episodes.Place(show.season(), show.episode()), Library::place,
+                e -> e.item().id());
+        if (next == null) {
+            throw new HttpError(404, "no_next_episode", "There's no next episode of " + show.name().strip()
+                    + " in the library");
+        }
+        return next.item();
+    }
+
     /** A permission check that throws an {@link HttpError} to refuse. */
     @FunctionalInterface
     public interface YoutubeCheck {

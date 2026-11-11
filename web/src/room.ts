@@ -53,6 +53,7 @@ import { Upload, type UploadProgress } from "./uploads.js";
 import { rememberPlaying } from "./nav.js";
 import { OutputsPanel } from "./outputspanel.js";
 import { Shell } from "./shell.js";
+import { offersNextEpisode } from "./shows.js";
 import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
@@ -416,6 +417,9 @@ function renderNowPlaying(s: RoomState): void {
     if (s.timeline.state === "playing") controls.append(actionButton("Pause", () => ({ type: "pause" })));
     else controls.append(actionButton("Play", () => ({ type: "play" })));
     controls.append(actionButton("Skip", () => ({ type: "next" })));
+  }
+  if (offersNextEpisode(you.canModerate, s.current?.item)) {
+    controls.append(actionButton("Next episode", () => ({ type: "queue.nextEpisode" })));
   }
   if (s.room.controlMode === "vote" && s.skipVotes !== undefined && s.current !== undefined && you.canVote) {
     const sv = s.skipVotes;

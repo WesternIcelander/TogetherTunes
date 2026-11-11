@@ -189,6 +189,40 @@ public final class RoomQueue {
         return registry.call(roomId, tx -> QueueOps.addPlaylist(tx, a, itemIds));
     }
 
+    /**
+     * {@code queue.nextEpisode} ({@code docs/media-types.md#next-episode}): the owner and
+     * moderators queue the episode after the current entry's item, or, with nothing current, after
+     * the item of the entry that started playing most recently. The next episode is looked up in
+     * the <b>room owner's</b> library ({@link Library#nextEpisode}) and added like a library
+     * request by its id ({@link QueueOps#add}, {@code via} {@code library}); a purged or failed
+     * YouTube episode is fetched again first.
+     *
+     * @throws HttpError as {@link ControlPolicy#requireNextEpisode}, {@code 409 nothing_playing}
+     *                   (nothing has played here), {@code 409 not_a_show}, {@code 404
+     *                   no_next_episode}, and {@link QueueOps#add}'s errors
+     */
+    public QueueOps.Added nextEpisode(String roomId, Actor actor, RoomActor a) throws Exception {
+        String[] basis = registry.call(roomId, tx -> {
+            RoomState s = tx.state();
+            ControlPolicy.requireNextEpisode(s, a);
+            QueueEntry current = s.current();
+            String itemId = current != null ? current.itemId() : tx.store().db().read(c -> {
+                List<String> recent = RoomStore.recentlyPlayedItems(c, s.id(), 1);
+                return recent.isEmpty() ? null : recent.get(0);
+            });
+            if (itemId == null) {
+                throw new HttpError(409, "nothing_playing", "Nothing has played here yet");
+            }
+            return new String[] {itemId, s.ownerId()};
+        });
+        if (basis[1] == null) {
+            throw new HttpError(404, "no_next_episode", "This room has no owner whose library to look in");
+        }
+        String nextId = Library.nextEpisode(db, basis[1], basis[0]).id();
+        refetchIfNeeded(roomId, actor, nextId);
+        return registry.call(roomId, tx -> QueueOps.add(tx, a, nextId, "library"));
+    }
+
     /** {@code queue.remove}: see {@link QueueOps#remove}. */
     public void remove(String roomId, RoomActor a, String entryId) throws Exception {
         registry.call(roomId, tx -> {

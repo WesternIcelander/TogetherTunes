@@ -355,6 +355,14 @@ public final class RoomSocket {
                 case "sync" -> handle(rid, this::sync);
                 case "queue.add" -> slow(rid, () -> add(ridFinal, msg));
                 case "queue.addPlaylist" -> slow(rid, () -> addPlaylist(msg));
+                case "queue.nextEpisode" -> slow(rid, () -> room((j, a) -> {
+                    QueueOps.Added added = queue.nextEpisode(j.roomId(), actor, a);
+                    JsonObject o = new JsonObject();
+                    o.addProperty("entryId", added.entryId());
+                    o.addProperty("itemId", added.itemId());
+                    o.addProperty("state", added.state().wire());
+                    return o;
+                }));
                 case "queue.remove" -> handle(rid, () -> room((j, a) -> {
                     queue.remove(j.roomId(), a, string(msg, "entryId"));
                     return null;

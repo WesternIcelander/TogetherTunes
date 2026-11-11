@@ -20,6 +20,10 @@ import java.util.Objects;
  *       1..{@value Library#LIST_MAX}, default {@value Library#LIST_DEFAULT}. {@code 400
  *       invalid_kind}, {@code invalid_query} (over {@value Library#QUERY_MAX_CHARS} chars),
  *       {@code invalid_cursor}, {@code invalid_limit}.</li>
+ *   <li>{@code GET /api/library/shows?name=} → {@code {"shows": [{"name", "seasons": [{"season"?,
+ *       "episodes": [entry]}]}]}}: the {@code show} items of the library grouped by show name
+ *       (case-insensitive), season (none first, then 0, 1, ...) and episode ({@link Episodes});
+ *       {@code name} limits it to one show. {@code 400 invalid_query} (name too long).</li>
  *   <li>{@code PUT /api/library/{itemId}} (body optional: {@code {"mediaType", "show"?}}) →
  *       {@code 201 entry} when added ({@code via: "manual"}),
  *       {@code 200 entry} when it already was there (unchanged). An {@code uncategorized} video
@@ -46,6 +50,7 @@ public final class LibraryApi {
 
     public void register(Router router) {
         router.get("/api/library", this::list);
+        router.get("/api/library/shows", this::shows);
         router.put("/api/library/{itemId}", this::add);
         router.delete("/api/library/{itemId}", this::remove);
     }
@@ -75,6 +80,19 @@ public final class LibraryApi {
                 emptyToNull(request.query("type")), emptyToNull(request.query("cursor")), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
+    }
+
+    private void shows(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        String name = emptyToNull(request.query("name"));
+        if (name != null && name.length() > Library.QUERY_MAX_CHARS) {
+            throw new HttpError(400, "invalid_query", "The show name is too long");
+        }
+        response.header("Cache-Control", "no-store");
+        response.json(new Shows(library.shows(user.userId(), name)));
+    }
+
+    private record Shows(java.util.List<Episodes.Show<Library.Entry>> shows) {
     }
 
     private void add(Request request, Response response) throws Exception {

@@ -108,6 +108,69 @@ class LibraryApiTest {
         return json(r).getAsJsonObject("error").get("code").getAsString();
     }
 
+    /** A ready show episode in alice's library. */
+    private String episode(String show, Integer season, int episode) throws Exception {
+        String id = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source,"
+                    + " added_by_user_id, added_at, status, output_profile, last_referenced_at, media_type, show_name,"
+                    + " season_number, episode_number) VALUES (?, 'video', ?, 'upload', ?, 1, 'ready', '720p30', 1,"
+                    + " 'show', ?, ?, ?)")) {
+                ps.setString(1, id);
+                ps.setString(2, show + " " + season + "x" + episode);
+                ps.setString(3, aliceId);
+                ps.setString(4, show);
+                ps.setObject(5, season);
+                ps.setInt(6, episode);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement(
+                    "INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')")) {
+                ps.setString(1, aliceId);
+                ps.setString(2, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    @Test
+    void showsAreGroupedByNameSeasonAndEpisode() throws Exception {
+        String b2 = episode("Beta", 2, 1);
+        String a2 = episode("Alpha", 1, 2);
+        String a1 = episode("alpha", 1, 1);
+        String bNone = episode("Beta", null, 4);
+        String b1 = episode("Beta", 1, 3);
+        item("Not a show", "ready", null);
+        assertEquals(401, call("GET", "/api/library/shows", false).statusCode());
+        HttpResponse<String> r = call("GET", "/api/library/shows", true);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        JsonArray shows = json(r).getAsJsonArray("shows");
+        assertEquals(2, shows.size(), r.body());
+        JsonObject alpha = shows.get(0).getAsJsonObject();
+        assertEquals("alpha", alpha.get("name").getAsString()); // as the first episode spells it
+        JsonArray alphaS1 = alpha.getAsJsonArray("seasons").get(0).getAsJsonObject().getAsJsonArray("episodes");
+        assertEquals(a1, alphaS1.get(0).getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
+        assertEquals(a2, alphaS1.get(1).getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
+        JsonArray beta = shows.get(1).getAsJsonObject().getAsJsonArray("seasons");
+        assertEquals(3, beta.size());
+        assertFalse(beta.get(0).getAsJsonObject().has("season"));
+        assertEquals(bNone, beta.get(0).getAsJsonObject().getAsJsonArray("episodes").get(0).getAsJsonObject()
+                .getAsJsonObject("item").get("id").getAsString());
+        assertEquals(1, beta.get(1).getAsJsonObject().get("season").getAsInt());
+        assertEquals(b1, beta.get(1).getAsJsonObject().getAsJsonArray("episodes").get(0).getAsJsonObject()
+                .getAsJsonObject("item").get("id").getAsString());
+        assertEquals(b2, beta.get(2).getAsJsonObject().getAsJsonArray("episodes").get(0).getAsJsonObject()
+                .getAsJsonObject("item").get("id").getAsString());
+
+        JsonArray one = json(call("GET", "/api/library/shows?name=%20BETA", true)).getAsJsonArray("shows");
+        assertEquals(1, one.size());
+        assertEquals("Beta", one.get(0).getAsJsonObject().get("name").getAsString());
+        assertEquals(0, json(call("GET", "/api/library/shows?name=Gamma", true)).getAsJsonArray("shows").size());
+    }
+
     @Test
     void addListRemove() throws Exception {
         String id = item("First", "ready", null);

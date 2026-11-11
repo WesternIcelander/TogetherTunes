@@ -786,6 +786,71 @@ class RoomSocketTest {
         owner.quiet("request.new");
     }
 
+    /** A show episode (a video item, not ready: it never plays here) in {@code userId}'s library. */
+    private String episode(String userId, String show, Integer season, int episode) throws Exception {
+        String id = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at, media_type, show_name, season_number, episode_number)"
+                + " VALUES (?, 'video', ?, 'upload', ?, 1, 'processing', '720p30', 1, 'show', ?, ?, ?)",
+                id, show + " " + season + "x" + episode, userId, show, season, episode);
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'upload')", userId, id);
+        return id;
+    }
+
+    /** An entry of {@code itemId} that played in the room at {@code playedAt}. */
+    private void played(String roomId, String itemId, long playedAt) throws Exception {
+        sql("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id, added_at, state, position, pinned,"
+                + " played_at) VALUES (?, ?, ?, ?, 1, 'played', 1, 0, ?)", UuidV7.newId(), roomId, itemId, aliceId,
+                playedAt);
+    }
+
+    /**
+     * {@code queue.nextEpisode} (docs/media-types.md#next-episode): owner and moderators only; the
+     * episode after the one that played last, from the owner's library; {@code no_next_episode}
+     * after the last one; {@code not_a_show} for anything else.
+     */
+    @Test
+    void nextEpisodeQueuesTheFollowingEpisodeFromTheOwnersLibrary() throws Exception {
+        String roomId = room("shows", "public", "owner");
+        String s1e2 = episode(aliceId, "The Show", 1, 2);
+        String s1e5 = episode(aliceId, "the show", 1, 5);
+        String s2e1 = episode(aliceId, "The Show", 2, 1);
+        episode(aliceId, "Other Show", 1, 3);
+        episode(bobId, "The Show", 1, 3); // bob's library doesn't count
+        played(roomId, s1e2, 1000);
+
+        Client member = connect(bob, null);
+        member.ok("{\"type\":\"join\",\"room\":\"shows\"}");
+        member.error("forbidden", "{\"type\":\"queue.nextEpisode\"}");
+
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"shows\"}");
+        JsonObject added = owner.ok("{\"type\":\"queue.nextEpisode\"}");
+        assertEquals(s1e5, added.get("itemId").getAsString());
+        assertEquals("queued", added.get("state").getAsString());
+
+        // a moderator may too; the basis is still the entry that played last
+        assertEquals(201, call(alice, "PUT", "/api/rooms/shows/members/" + bobId, "{\"role\":\"moderator\"}")
+                .statusCode());
+        member.await("state");
+        played(roomId, s1e5, 2000);
+        assertEquals(s2e1, member.ok("{\"type\":\"queue.nextEpisode\"}").get("itemId").getAsString());
+
+        played(roomId, s2e1, 3000);
+        owner.error("no_next_episode", "{\"type\":\"queue.nextEpisode\"}");
+
+        played(roomId, item("A song"), 4000);
+        owner.error("not_a_show", "{\"type\":\"queue.nextEpisode\"}");
+    }
+
+    @Test
+    void nextEpisodeWithNothingPlayedYet() throws Exception {
+        room("fresh", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"fresh\"}");
+        owner.error("nothing_playing", "{\"type\":\"queue.nextEpisode\"}");
+    }
+
     @Test
     void roleChangesAndBansReachTheSockets() throws Exception {
         String roomId = room("roles", "public", "owner");
