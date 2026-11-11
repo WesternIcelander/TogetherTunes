@@ -215,7 +215,7 @@ The filter is the mezzanine's scale filter. Every card's avcC is checked against
 The image is rendered with Java2D at the output resolution:
 
 - **Item card:** artwork, title, artist and album. The text must fit (shrink, then ellipsize).
-- **Server filler cards:** "Paused", "Queue is empty", "Loading…". Stored as `cards/<encoding>/paused.mp4`, `idle.mp4` and `loading.mp4`, each with a `.key` fingerprint (card format, pixels, encoder arguments incl. the bitrate, reference avcC); startup re-encodes only the ones whose fingerprint or avcC no longer matches.
+- **Server filler cards:** "Paused", "Queue is empty", "Loading…", and a blank one (the background alone, for the gap between items without a transition card, [program-output.md](program-output.md#transitions)). Stored as `cards/<encoding>/paused.mp4`, `idle.mp4`, `loading.mp4` and `blank.mp4`, each with a `.key` fingerprint (card format, pixels, encoder arguments incl. the bitrate, reference avcC); startup re-encodes only the ones whose fingerprint or avcC no longer matches.
 - **Room cards:** the idle card with the room's name; with the QR overlay enabled, overlaid versions of every card ([overlay.md](overlay.md)).
 
 Don't rely on colour alone to convey anything: use text labels and strong contrast.

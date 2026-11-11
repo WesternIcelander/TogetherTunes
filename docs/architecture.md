@@ -52,7 +52,7 @@
       card.mp4            2 s still-card GOP (audio-only items; also used as transition card)
       index.bin           packager sample index (see library-and-ingest.md)
       cover.jpg           artwork (embedded, from YouTube thumbnail, or generated)
-  cards/<encoding>/       (e.g. cards/720p30-3000k-v3/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading.mp4 (+ .key fingerprints)
+  cards/<encoding>/       (e.g. cards/720p30-3000k-v3/) reference.mp4 + reference.avcC; server-wide filler cards paused/idle/loading/blank.mp4 (+ .key fingerprints)
   rooms/<roomId>/
     overlay.png           rendered QR + link overlay (regenerated when the room's slug or overlay settings change)
     overlay.json          overlay.png's spec, position in the frame and overlayHash

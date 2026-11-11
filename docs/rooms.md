@@ -62,7 +62,7 @@ Details (as implemented):
 | `allowDownvotes` | false | Vote mode only |
 | `voteSkipThreshold` | 0.5 | Fraction of present identified members (listen + remote), or `off` |
 | `noRepeatWindow` | 10 | Refuse an item that was played in the last N entries |
-| `transitionCard`, `gapMs` | off, 0 | |
+| `transitionCard`, `gapMs` | off, 0 | [Transitions](#transitions): a pause between items, with the next item's card in the stream outputs |
 | `audioOnly` | off | [Audio-only room](#audio-only-rooms): only audio plays, for listeners and in the stream outputs (cards at a lower constant rate). A change applies from the next item |
 | `guests.*` | see below | |
 | `outputs.rtmp`, `outputs.ts`, `outputs.hls`, `outputs.mp3` | off | Each one available only if the server enables it |
@@ -79,7 +79,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | `allowDownvotes` | false | |
 | `voteSkipThreshold` | 0.5 | (0, 1], or `"off"` |
 | `noRepeatWindow` | 10 | 0 (off)–1000 |
-| `transitionCard` | false | |
+| `transitionCard` | false | the gap between items is then at least 2 s ([transitions](#transitions)) |
 | `gapMs` | 0 | 0–10000 |
 | `audioOnly` | false | Manage room → Settings → Playback ("Audio-only room") |
 | `guests.canVote`, `guests.canRequestLibrary` | true | |
@@ -271,6 +271,15 @@ Added 2026-11-10 (Siggi: "a new room setting to make it audio-only, where only a
 - **Program output:** see [program-output.md](program-output.md#audio-only-rooms): every audio-only entry plays as its card with its audio-only file, padded to `output.audioOnlyBitrateKbps`. Remote mode's delays (`estimatedDelayMs.*`) are unaffected.
 
 As implemented: `RoomSettings.audioOnly()`; `QueueEntry.audioOnly` (the mode) and `audioOnlyMs` (`items.audio_only_ms`, videos only), `lengthMs()` (the timeline's length) and `playsAudioOnlyFile()`. `RoomState` sets waiting entries' mode from the setting (on load, on add, on a settings change) and an entry's mode when it becomes current; `RoomStore` writes `current_audio_only` with every timeline save. `RoomViews.item(…, audioOnly)` gives the audio-only item view.
+
+## Transitions
+
+Added 2026-11-11 (M7). Hard cuts only, no crossfades; the owner can put a pause between items (Manage room → Settings → Playback):
+
+- `gapMs` (0–10000): after an item **ends by itself**, the next entry starts that much later. It becomes current at once (the timeline is `playing` it with its start in the future, as after a skip: `Timeline.startingAt(entry, now + gap)`), so listeners see it as current and keep it silent at 0 until the start; the advance task counts its length from the start. Skips, `previous` and starts from idle get no gap (they have their own delayed start), and the last item going idle has none.
+- `transitionCard`: the stream outputs show the **next item's card** (cover art, title, artist) during the gap; without it they show a blank card. With the card on the gap is **at least 2 s** (one card GOP), so `transitionCard` alone gives a 2 s card (`RoomSettings.transitionGapMs()` = `max(gapMs, 2000)` while on, else `gapMs`).
+- Web listeners hear silence in the gap; the listen page shows the new entry as current (its video element, if any, stays on its first frame). The stream side is in [program-output.md](program-output.md#transitions).
+- A change of either setting applies from the next natural end. Pause, seek or skip during the gap work as in any delayed start ([Room state](#room-state)).
 
 ## Program output and the timeline
 
