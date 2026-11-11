@@ -39,7 +39,7 @@ At ingest, every video source (upload, YouTube download or refetch, whatever typ
 
 ## Loudness
 
-`movie` and `show` items skip the music loudness normalisation (it would flatten quiet dialogue against loud scenes). Music, `uncategorized` and `audio` keep it.
+`movie` and `show` items skip the music loudness normalisation (it would flatten quiet dialogue against loud scenes). Music, `uncategorized` and `audio` keep it. The normalisation is part of the encode, so a type change into or out of `movie`/`show` re-encodes the item's audio (a system re-encode: the video is kept, no Undo); see [library-and-ingest.md](library-and-ingest.md#loudness-and-media-types).
 
 ## QR overlay modes
 

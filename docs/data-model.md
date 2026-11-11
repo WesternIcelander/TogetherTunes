@@ -72,6 +72,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       audio_only_ms BIGINT NULL,            -- a video's audio-only file's length (audio-only.m4a from its audio trim, library-and-ingest.md#audio-trim); NULL: none, it is audio.m4a (duration_ms)
       card_version INTEGER,                 -- card format of its card.mp4 (CardEncoder.CARD_VERSION: 1 x264 GOP, 2 skip-frame card, 3 skip-frame card with our own MP4 writer; migration 0018); older ones get a card-only re-encode at startup (library-and-ingest.md#cards)
       card_fonts TEXT NULL,                 -- which fonts drew its card's text: CardFonts.key over title, artist, album (migration 0021); differs from what the current fonts give → card-only re-encode; NULL: from before, made again once (library-and-ingest.md#card-fonts)
+      loudness_normalized INTEGER,          -- 1: its files' audio has the music loudness normalisation; 0: encoded without it (a movie or show); migration 0024, 1 for everything before. Not matching the media type → audio re-encode (library-and-ingest.md#loudness-and-media-types)
       media_version INTEGER,                -- current version of its files: media/<id>/v<N>/ (0: the flat layout from before versions); only grows (an undo links the old files into a new version), kept by a purge (library-and-ingest.md#storage-layout-and-media-versions)
       last_referenced_at BIGINT,            -- see libraries.md#retention
       purged_at NULL)
@@ -81,6 +82,7 @@ media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the 
       audio_only_ms, original_web, original_gain_db,  -- (migration 0015) also restored by an undo
       card_version,                         -- (migration 0018) also restored by an undo
       card_fonts,                           -- (migration 0021) also restored by an undo
+      loudness_normalized,                  -- (migration 0024) also restored by an undo
       media_type,                           -- (migration 0023) the item's type when the version was made (a metadata edit of the type updates the current version's row); an undo restores it only when 'audio' is on one side (a still image published as audio ↔ its video), so a classification between video types made meanwhile stays
       edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs?, firstGopFrames? (the version's first GOP in frames when a smart trim made it shorter than 60; absent = 60) (library-and-ingest.md#trim, #audio-trim)
 
