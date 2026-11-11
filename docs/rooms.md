@@ -84,7 +84,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | `audioOnly` | false | Manage room → Settings → Playback ("Audio-only room") |
 | `guests.canVote`, `guests.canRequestLibrary` | true | |
 | `guests.canUpload`, `guests.canYoutube` | false | |
-| `overlay.enabled` | false | |
+| `overlay.mode` | `off` | `off` \| `always` \| `idleOnly` ([media-types.md](media-types.md#qr-overlay-modes)); replaced `overlay.enabled` (migration 0025: true → `always`) |
 | `overlay.corner` | `br` | `br` \| `bl` \| `tr` \| `tl` |
 | `overlay.heightPct` | 22 | 5–50 (% of the frame height) |
 | `overlay.margin` | 3 | 0–20 (% of the frame height) |

@@ -53,6 +53,8 @@ The room setting `overlay.enabled` becomes `overlay.mode`:
 
 `movie` and `show` items **never** get the overlay, in any mode. Existing rooms migrate `overlay.enabled: true` → `always`, false → `off`. The server switch `overlay.enabled` stays as it is.
 
+As implemented: `RoomSettings.overlayMode()`; migration 0025 rewrites `settings_json` (both databases); `OverlayDecisions` gives entries `off` unless the mode is `always` and the item isn't a movie or show (a movie or show is `off` whatever was recorded), so `uncategorized` and `music_video` keep the per-entry `cards`/`video` decision; `OverlayCards` overlays every filler card for `always` and only the queue-empty card for `idleOnly`. A movie or show played audio-only shows its plain item card, and is never re-encoded. Details in [overlay.md](overlay.md#permissions).
+
 ## Views, auto-delete and pins
 
 - **A view** is any playback at all, however short: an entry of the item becoming current in a room, or a client reporting playback outside a room through the API (`POST /api/items/{id}/view`, by anyone who may play the item; the report is what counts, never a `GET` of the media file). Each view sets `items.last_viewed_at`.
