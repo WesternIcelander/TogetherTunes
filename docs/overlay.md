@@ -20,15 +20,15 @@ The decision is recorded per queue entry when the overlay job is planned, so a c
 
 - A QR code for `{publicBaseUrl}/r/{slug}` (short path; it redirects to the room page in remote mode). Error correction level **M**, 4-module quiet zone, black on white. Generated with ZXing core (`QRCodeWriter`), or a hand-written encoder.
 - A text line **"Requests at {url}"** (the same short URL, without `https://`), in a large, high-contrast font, for people who would rather type it. It goes on the side of the QR code that faces the middle of the frame: **below** the QR code in the bottom corners (`bl`, `br`), **above** it in the top corners (`tl`, `tr`), aligned to the same edge as the QR code (left for `bl`/`tl`, right for `br`/`tr`). The text is part of the overlay image and of `overlayHash`.
-- A rounded, semi-opaque dark panel behind the QR code and the text, so the overlay stays readable on any video.
+- A rounded, semi-opaque dark **backdrop behind the text only**, hugging it (padding and corner radius scaled with the text size), so the text stays readable on any video. The QR code's white square (with its quiet zone) stands on its own, with no panel around it, and a small transparent gap separates it from the backdrop, so nothing darkens the picture where there is no content (Siggi, 2026-11-11; the first version had one panel behind both, which darkened a large empty area).
 
 Room settings:
 
 - `overlay.corner`: `br` (default), `bl`, `tr` or `tl`.
 - `overlay.heightPct`: default 22% of the frame height (5–50). It is the side of the QR code's white square, quiet zone included, rounded down to whole pixels per module (at least 2, so the smallest setting still survives scaling and compression). A VRChat screen is often viewed small and at an angle, so the QR code must be big. The text line is sized from the QR code (16% of its side, at least 3% of the frame height) and shrunk to fit the frame width if the URL is long; it is never cut.
-- `overlay.margin`: default 3% of the frame height (0–20): the panel's distance from the two frame edges of its corner.
+- `overlay.margin`: default 3% of the frame height (0–20): the distance of the overlay's outer edges (the QR square's and the text backdrop's) from the two frame edges of its corner.
 
-`overlay.png` holds only the panel (transparent outside its rounded corners); its position in the frame (even `x`, `y`, and even width and height, for 4:2:0 chroma) is stored next to it in `rooms/<roomId>/overlay.json`, together with the spec it was rendered from (render version, frame size, corner, size, margin, URL) and its `overlayHash`. Cards draw the panel at that position, and the music-video encode uses it as `overlay=<x>:<y>`. Code: `overlay/OverlayRenderer` (drawing, hash) and `overlay/Overlays` (the stored images).
+`overlay.png` is one ARGB image holding the QR square and the text with its backdrop, side by side as described, transparent everywhere else (around the QR square, in the gap, outside the backdrop's rounded corners); its position in the frame (even `x`, `y`, and even width and height, for 4:2:0 chroma) is stored next to it in `rooms/<roomId>/overlay.json`, together with the spec it was rendered from (render version, frame size, corner, size, margin, URL) and its `overlayHash`. Cards draw the image at that position, and the music-video encode uses it as `overlay=<x>:<y>`. Code: `overlay/OverlayRenderer` (drawing, hash) and `overlay/Overlays` (the stored images).
 
 Test that the code scans from a phone pointed at the stream on a screen at a typical viewing distance before choosing the defaults. Any player works for that (e.g. VLC playing the `.ts` or HLS URL); it doesn't have to be VRChat.
 
