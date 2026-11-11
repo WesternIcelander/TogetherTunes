@@ -48,7 +48,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -86,6 +88,12 @@ class OidcLoginTest {
     /** The nonce each login (by state) was started with, and each code was issued for. */
     private final Map<String, String> nonceByState = new ConcurrentHashMap<>();
     private final Map<String, String> nonceByCode = new ConcurrentHashMap<>();
+    /** The key the token endpoint signs ID tokens with, the JWKS it publishes, and how often that was fetched. */
+    private final AtomicReference<RSAKey> issuingKey = new AtomicReference<>();
+    private final AtomicReference<JWKSet> publishedKeys = new AtomicReference<>();
+    private final AtomicInteger jwksHits = new AtomicInteger();
+    /** Changes the token endpoint makes to the claims of the ID tokens it issues (a misbehaving IdP). */
+    private final AtomicReference<Consumer<JWTClaimsSet.Builder>> claimsTweak = new AtomicReference<>(b -> { });
 
     private Database database;
     private Providers providers;
@@ -112,7 +120,8 @@ class OidcLoginTest {
                 if (path.endsWith("/.well-known/openid-configuration")) {
                     body = discoveryDoc.get() != null ? discoveryDoc.get() : discovery(List.of("S256"), List.of());
                 } else if (path.endsWith("/jwks")) {
-                    body = new JWKSet(signingKey).toString(true);
+                    jwksHits.incrementAndGet();
+                    body = publishedKeys.get().toString(true);
                 } else if (path.endsWith("/token")) {
                     Map<String, String> form = parseForm(readAll(exchange.getRequestBody()));
                     tokenForms.add(form);
@@ -146,6 +155,8 @@ class OidcLoginTest {
                 }
             }
         });
+        issuingKey.set(signingKey);
+        publishedKeys.set(new JWKSet(signingKey));
         idp.start();
         issuer = "http://127.0.0.1:" + idp.getAddress().getPort() + "/idp";
         tokenAnswer.set(new Object[]{200,
@@ -194,10 +205,12 @@ class OidcLoginTest {
         if (nonce != null) {
             claims.claim("nonce", nonce);
         }
+        claimsTweak.get().accept(claims);
+        RSAKey key = issuingKey.get();
         try {
             SignedJWT jwt = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256)
-                    .keyID(signingKey.getKeyID()).build(), claims.build());
-            jwt.sign(new RSASSASigner(signingKey));
+                    .keyID(key.getKeyID()).build(), claims.build());
+            jwt.sign(new RSASSASigner(key));
             return jwt.serialize();
         } catch (JOSEException e) {
             throw new IllegalStateException(e);
@@ -623,6 +636,82 @@ class OidcLoginTest {
         tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + early + "\"}"});
         assertError("/login.html", "id_token_invalid", callback("idp", d.state(), "c3", d.cookie()));
         assertTrue(completed.isEmpty());
+    }
+
+    /**
+     * The four ID-token failures the plan names (bad {@code nonce}, bad {@code aud}, expired token,
+     * unknown {@code kid}) end to end: a real login through the router, the fake IdP's token endpoint
+     * handing out the bad token. Each ends in {@code id_token_invalid} with the login's {@code next},
+     * the completion is never called, and the state can't be retried. A good login before and after
+     * shows the IdP and the flow are otherwise fine; a rotated-in key (new {@code kid}) is accepted
+     * after one JWKS refetch, a never-published one is not.
+     */
+    @Test
+    void badIdTokensAreRefusedAtTheCallback() throws Exception {
+        oidc("idp", null);
+        Started ok = start("idp", "", null);
+        assertEquals(200, callback("idp", ok.state(), "ok1", ok.cookie()).statusCode());
+        assertEquals("user-ok1", completed.get(0).idToken().subject());
+        assertEquals(1, jwksHits.get());
+        String browser = ok.cookie();
+
+        Map<String, Consumer<JWTClaimsSet.Builder>> bad = new LinkedHashMap<>();
+        bad.put("nonce of another login", b -> b.claim("nonce", "Zm9yZWlnbi1ub25jZS1mcm9tLWFub3RoZXItbG9naW4"));
+        bad.put("no nonce", b -> b.claim("nonce", null));
+        bad.put("aud of another client", b -> b.audience("client-other"));
+        bad.put("no aud", b -> b.audience((String) null));
+        bad.put("several aud, no azp", b -> b.audience(List.of("client-idp", "client-other")));
+        bad.put("azp of another client", b -> b.audience(List.of("client-idp", "client-other"))
+                .claim("azp", "client-other"));
+        bad.put("expired 2 min ago", b -> b.issueTime(new Date(clock.millis() - 30_000))
+                .expirationTime(new Date(clock.millis() - 120_000)));
+        bad.put("expired exactly at the skew", b -> b.expirationTime(
+                new Date(clock.millis() - IdTokenValidator.MAX_SKEW_MS)));
+        bad.put("no exp", b -> b.expirationTime(null));
+        int n = 0;
+        for (Map.Entry<String, Consumer<JWTClaimsSet.Builder>> e : bad.entrySet()) {
+            claimsTweak.set(e.getValue());
+            Started s = start("idp", "?next=%2Frooms%2Fr" + n, browser);
+            HttpResponse<String> r = callback("idp", s.state(), "bad" + n, s.cookie());
+            assertError("/login.html", "id_token_invalid", r);
+            assertEquals("/rooms/r" + n, query(location(r)).get("next"), e.getKey());
+            // the failed state is gone: the same callback again doesn't get a second try
+            assertNotEquals("id_token_invalid", query(location(
+                    callback("idp", s.state(), "bad" + n, s.cookie()))).get("error"), e.getKey());
+            n++;
+        }
+        assertEquals(1, completed.size(), "no bad token reached the completion");
+        assertEquals(1, jwksHits.get(), "claim failures need no key refetch");
+
+        // unknown kid: signed by a key the IdP never published -> one refetch, still unknown, refused
+        claimsTweak.set(b -> { });
+        clock.advance(OidcDiscovery.REFETCH_MIN_MS);
+        issuingKey.set(new RSAKeyGenerator(2048).keyID("never-published").keyUse(KeyUse.SIGNATURE).generate());
+        Started u = start("idp", "?next=%2Fq", browser);
+        HttpResponse<String> r = callback("idp", u.state(), "kid1", u.cookie());
+        assertError("/login.html", "id_token_invalid", r);
+        assertEquals("/q", query(location(r)).get("next"));
+        assertEquals(2, jwksHits.get(), "the unknown kid made the keys be fetched again");
+        // a second try right away doesn't hammer the IdP (refetch rate limit), and is refused too
+        Started u2 = start("idp", "", browser);
+        assertError("/login.html", "id_token_invalid", callback("idp", u2.state(), "kid2", u2.cookie()));
+        assertEquals(2, jwksHits.get());
+        // an impostor key reusing the published kid: the signature doesn't verify
+        issuingKey.set(new RSAKeyGenerator(2048).keyID(signingKey.getKeyID()).generate());
+        Started u3 = start("idp", "", browser);
+        assertError("/login.html", "id_token_invalid", callback("idp", u3.state(), "kid3", u3.cookie()));
+        assertEquals(1, completed.size());
+
+        // the IdP rotates in a new key: its new kid is fetched and the login goes through
+        clock.advance(OidcDiscovery.REFETCH_MIN_MS);
+        RSAKey rotated = new RSAKeyGenerator(2048).keyID("k2").keyUse(KeyUse.SIGNATURE).generate();
+        publishedKeys.set(new JWKSet(List.of(signingKey, rotated)));
+        issuingKey.set(rotated);
+        Started k = start("idp", "", browser);
+        assertEquals(200, callback("idp", k.state(), "ok2", k.cookie()).statusCode());
+        assertEquals(3, jwksHits.get());
+        assertEquals(2, completed.size());
+        assertEquals("user-ok2", completed.get(1).idToken().subject());
     }
 
     @Test
