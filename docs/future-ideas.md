@@ -102,3 +102,11 @@ The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is th
 - **A hook after the token exchange:** keep the step that turns the token response into an identity in one place, so a provider-specific step (calling the service's API with the access token, storing the result on the identity) can be added there later. Don't store access or refresh tokens until this idea is built.
 - **Room permissions:** keep request and vote checks in one server-side place per room, so an extra rule ("needs a subscription through provider Y") can be added there.
 
+## Home-server bans
+
+From the M9 moderation menu (Siggi, 2026-11-11): **ban a home server** from a room (block every user whose account comes from that server), and, for admins, **ban a home server server-wide**. Only meaningful once users from other servers can join (federation or similar), which nothing plans yet.
+
+### What current work should keep open
+
+- Keep room bans and server bans as rows with a target kind, so a "home server" target can be added beside users and guests.
+

@@ -53,6 +53,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS / MP3 outputs |
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
 | [media-types.md](media-types.md) | Media types (audio, uncategorized, music video, movie, show), still-image detection, auto-delete and pins, custom card images (M8) |
+| [ui.md](ui.md) | The new web UI (M9): layout, alone vs. in a room, autoplay from playlists, moderation menu, requests-only mode |
 | [api.md](api.md) | REST endpoints and WebSocket messages |
 | [milestones.md](milestones.md) | Build order, with acceptance criteria and testing strategy |
 | [user-guide.md](user-guide.md) | External user documentation: using the stream URLs in VRChat (allowlist, "Allow Untrusted URLs"), an RTMP service like VRCDN, HLS desync, MP3 in Euro Truck Simulator 2 / American Truck Simulator radio (`live_streams.sii`). The UI itself names no third-party products |

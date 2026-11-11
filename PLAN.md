@@ -909,6 +909,12 @@ Design: `docs/media-types.md` (Siggi's decisions, 2026-11-11). Read it first; ea
   - 2026-11-11 gate run: every M8 step is `[x]` (the still-image manual check is `[?]`, which doesn't block), so the full `mvn verify` ran and **failed** in the unit phase (1718 tests, 1 failure; the integration tests didn't run): `SqliteInitialSchemaTest.everyDocumentedTableExistsWithItsColumns` (via `InitialSchemaContract`, line 122): the `items` table has `loudness_normalized` (migration `0024_loudness_normalized`, from the "Movies and shows skip loudness normalisation" step) but the contract's expected `items` column list doesn't. Likely fix: add `loudness_normalized` to the `items` columns in `src/test/java/io/siggi/togethertunes/db/InitialSchemaContract.java` (check `PostgresInitialSchemaIT` uses the same list), then rerun the gate.
   - 2026-11-11 gate rerun (main `fbbe0ca`): every M8 step is `[x]` except the still-image manual check (`[?]`, doesn't block). Full `mvn verify` passed: 1718 unit tests and 404 integration tests (Testcontainers PostgreSQL), 0 failures, 0 errors, 0 skipped. Still to check by hand: the still-image detection on real media step.
 
+## M9 — New web UI
+
+Design: `docs/ui.md` and `drawings/ui_main.png` (Siggi, 2026-11-11). **More drawings and decisions are coming; the UI steps are written once they exist.**
+
+- [ ] **On hold (Siggi, 2026-11-11): don't start M9 yet.** A run that reaches this step leaves it unchecked and returns ok=false. Siggi removes this step when M9 may start.
+
 ## Before the first release
 
 A first release isn't planned yet. These steps wait on upstream releases; if the release isn't out yet, leave the step unchecked with a note and return ok=false.
