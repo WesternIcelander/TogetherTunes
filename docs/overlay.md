@@ -76,6 +76,14 @@ ffmpeg -ss <g0*2> -i media/<itemId>/mezz.mp4 -i rooms/<roomId>/overlay.png \
 5. Append each access unit to `rooms/<roomId>/ov/<itemId>/gops.h264`, and an entry `(frameIndex, offset, size, isIdr)` to `gops.idx`.
 6. Mark GOP *g* **complete** once its 60 frames have been written (or the stream has ended), and publish that to the packager through an in-memory `BitSet` per job.
 
+As implemented (`overlay/OverlayVideoEncoder`, `overlay/OverlayGops`, `media/AnnexBReader`, `media/AccessUnitGrouper`):
+
+- **Seeking:** for `g0 > 0` the command starts with `-seek_timestamp 1 -ss <t>us`, where `t` is the GOP's keyframe time from the item's index (`pts`, so any edit-list shift is already in it), rounded down to the microsecond: ffmpeg drops the decoded frames before `t`, and the previous frame is a whole frame earlier. The filter chain ends with `EncodeProfile.COLOUR_FILTER` like every chain feeding x264 (invariant 1). The keyframe expression is the mezzanine's own first-GOP length from frame 0, the normal 2 s one from a later GOP (the output's time starts at 0 there).
+- **The GOPs are the mezzanine's:** GOP *g* runs from its *g*-th keyframe in the index to the next (a smart trim's short first GOP is GOP 0), and frame numbers are the mezzanine's sample numbers. Output frame *i* must be mezzanine frame `start + i`, an IDR exactly where the mezzanine has a keyframe, and the count must match to the end; any difference (or an SPS/PPS that isn't the reference's, or none before the first frame) aborts the job before the affected GOP is published, and the item plays without the overlay.
+- **`gops.h264` holds AVCC samples**, not Annex B: each frame's remaining NAL units with length prefixes of the reference avcC's size, exactly like a `mezz.mp4` sample, so the packager substitutes a frame one for one (its muxer adds AUD, SPS and PPS as for any sample). `gops.idx` is a 12-byte header (`TTOV`, version, the mezzanine's frame count) and a 17-byte big-endian entry per frame (frame, offset, size, flags with 1 = IDR); a frame's bytes are written before its entry, and entries are flushed when a GOP completes.
+- **`OverlayGops`** is the job's state for the packager: `isComplete(g)` (the `BitSet`), and each frame's offset and size, stored before its GOP is published. `OverlayGops.load` reads a finished encode back (complete GOPs only; it stops at a gap, a wrong IDR flag, bytes missing from `gops.h264` or a torn last entry).
+- ffmpeg's stdout is read on the tool's reader thread (`ToolCall.stdoutStream`); cancelling the job interrupts the worker, which stops ffmpeg.
+
 ### Packager substitution
 
 For each GOP of a video item, the packager uses the overlay GOP if it's complete, and the original GOP otherwise. Both have identical SPS, closed GOPs and the same frame timing, so switching at GOP boundaries is seamless. In practice:
