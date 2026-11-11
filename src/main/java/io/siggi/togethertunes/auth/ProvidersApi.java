@@ -58,6 +58,7 @@ public final class ProvidersApi {
     private final Permissions permissions;
     private final Accounts accounts;
     private final String publicBaseUrl;
+    private OidcLogin login;
 
     public ProvidersApi(Providers providers, Permissions permissions, Accounts accounts, String publicBaseUrl) {
         this.providers = Objects.requireNonNull(providers);
@@ -67,7 +68,18 @@ public final class ProvidersApi {
         this.publicBaseUrl = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
+    /**
+     * The login flow ({@code /auth/oidc/{slug}/start} and {@code /callback}), registered with the
+     * other routes; without it only the provider admin and list exist.
+     */
+    public void loginFlow(OidcLogin login) {
+        this.login = Objects.requireNonNull(login);
+    }
+
     public void register(Router router) {
+        if (login != null) {
+            login.register(router);
+        }
         var perm = permissions.hook(Permission.ADMIN_PROVIDERS);
         router.get("/api/auth/providers", this::publicList);
         router.get("/api/admin/providers", this::list, perm);
@@ -79,7 +91,7 @@ public final class ProvidersApi {
 
     /** The redirect URI of a provider with this slug. */
     public String redirectUri(String slug) {
-        return publicBaseUrl + "/auth/oidc/" + slug + "/callback";
+        return OidcLogin.redirectUri(publicBaseUrl, slug);
     }
 
     // ------------------------------------------------------------- handlers

@@ -39,12 +39,17 @@ public final class TestUploads {
     private TestUploads() {
     }
 
-    /** The login provider API with a fixed test key (all zero bytes). */
+    /** The login provider API (with the login flow routes) with a fixed test key (all zero bytes). */
     public static io.siggi.togethertunes.auth.ProvidersApi providersApi(Database db, Config config, Settings settings,
             io.siggi.togethertunes.auth.Accounts accounts) {
-        return new io.siggi.togethertunes.auth.ProvidersApi(
-                new io.siggi.togethertunes.auth.Providers(db, new io.siggi.togethertunes.secrets.SecretCipher(new byte[32])),
-                new Permissions(db, settings), accounts, config.publicBaseUrl());
+        var providers = new io.siggi.togethertunes.auth.Providers(db,
+                new io.siggi.togethertunes.secrets.SecretCipher(new byte[32]));
+        var api = new io.siggi.togethertunes.auth.ProvidersApi(providers, new Permissions(db, settings), accounts,
+                config.publicBaseUrl());
+        // with the login routes, as Main wires them
+        api.loginFlow(new io.siggi.togethertunes.auth.OidcLogin(providers,
+                new io.siggi.togethertunes.auth.OidcDiscovery(), config.publicBaseUrl(), config.secureCookies()));
+        return api;
     }
 
     public static Uploads uploads(Database db, Path dir, Config config, Tools tools, Clock clock) {

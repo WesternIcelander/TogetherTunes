@@ -165,6 +165,11 @@ class PermissionMatrixTest {
             row("POST /api/auth/logout", c -> Call.post("/api/auth/logout", null), 204, 204, 204, 204),
             row("POST /api/auth/token", c -> Call.post("/api/auth/token", c.targetCredentialsJson()), 201, 201, 201, 201),
             row("GET /api/auth/providers", c -> Call.get("/api/auth/providers"), 200, 200, 200, 200),
+            // Provider login (OidcLogin): always a redirect, to the provider or back with an error
+            // (here: no such provider, or no such state).
+            row("GET /auth/oidc/{slug}/start", c -> Call.get("/auth/oidc/nope/start"), 302, 302, 302, 302),
+            row("GET /auth/oidc/{slug}/callback", c -> Call.get("/auth/oidc/nope/callback?state=x&code=y"),
+                    302, 302, 302, 302),
 
             // Me: users and guests manage themselves; an anonymous caller only reads.
             row("GET /api/me", c -> Call.get("/api/me"), 200, 200, 200, 200),

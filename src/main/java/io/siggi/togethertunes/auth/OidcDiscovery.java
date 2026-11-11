@@ -76,10 +76,11 @@ public final class OidcDiscovery {
     /** What a provider's discovery document says (the parts the relying party uses). */
     public record Metadata(String issuer, String authorizationEndpoint, String tokenEndpoint,
                            String userinfoEndpoint, String jwksUri, List<String> idTokenSigningAlgs,
-                           List<String> codeChallengeMethods) {
+                           List<String> codeChallengeMethods, List<String> tokenEndpointAuthMethods) {
         public Metadata {
             idTokenSigningAlgs = List.copyOf(idTokenSigningAlgs);
             codeChallengeMethods = List.copyOf(codeChallengeMethods);
+            tokenEndpointAuthMethods = List.copyOf(tokenEndpointAuthMethods);
         }
 
         /**
@@ -320,7 +321,8 @@ public final class OidcDiscovery {
                 userinfo == null ? null : endpoint(doc, "userinfo_endpoint"),
                 endpoint(doc, "jwks_uri"),
                 strings(doc, "id_token_signing_alg_values_supported"),
-                strings(doc, "code_challenge_methods_supported"));
+                strings(doc, "code_challenge_methods_supported"),
+                strings(doc, "token_endpoint_auth_methods_supported"));
     }
 
     static JWKSet parseJwks(String body) throws DiscoveryException {

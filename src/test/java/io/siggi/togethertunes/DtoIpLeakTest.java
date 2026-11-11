@@ -197,6 +197,13 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.Providers$Spec", "a login provider's settings on their way in;"
                     + " the API answers with Providers.Provider"),
             Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Keep", "an update's secret handling; never sent"),
+            Map.entry("io.siggi.togethertunes.auth.OidcDiscovery$Metadata", "a provider's discovery document; server-side only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$Callback", "a provider login after the code exchange; server-side only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$Endpoints", "a provider's endpoints for one login; server-side only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$Pending", "a started provider login (state, nonce, verifier); kept in memory only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$PendingLogins$Entry", "the pending-login store's row; in memory only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$PendingLogins$Taken", "a pending login taken from the store; in memory only"),
+            Map.entry("io.siggi.togethertunes.auth.OidcLogin$TokenResponse", "a provider's token response; never sent to clients"),
             Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Replace", "a new client secret on its way"
                     + " in; never sent"),
             Map.entry("io.siggi.togethertunes.auth.Actor$Guest", "request identity, never serialised"),
@@ -884,7 +891,8 @@ class DtoIpLeakTest {
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
-                "/api/rooms/" + f.roomSlug + "/server-switches");
+                "/api/rooms/" + f.roomSlug + "/server-switches", "/auth/oidc/nope/start",
+                "/auth/oidc/nope/callback?state=x&code=y");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();
@@ -1325,8 +1333,10 @@ class DtoIpLeakTest {
         }
         headers.forEach(b::header);
         HttpResponse<String> r = http.send(b.build(), HttpResponse.BodyHandlers.ofString());
-        // The short link /r/{slug} only ever redirects (its Location is scanned like any header).
-        if (r.statusCode() / 100 == 2 || (r.statusCode() == 302 && path.startsWith("/r/"))) {
+        // The short link /r/{slug} and the provider login routes only ever redirect (their Location
+        // is scanned like any header).
+        if (r.statusCode() / 100 == 2 || (r.statusCode() == 302
+                && (path.startsWith("/r/") || path.startsWith("/auth/oidc/")))) {
             succeeded.add(routeOf(method, path));
         }
         scan(who, method + " " + path, path, r);

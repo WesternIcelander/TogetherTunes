@@ -7,6 +7,8 @@ import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
 import io.siggi.togethertunes.auth.Providers;
+import io.siggi.togethertunes.auth.OidcDiscovery;
+import io.siggi.togethertunes.auth.OidcLogin;
 import io.siggi.togethertunes.auth.ProvidersApi;
 import io.siggi.togethertunes.auth.Guests;
 import io.siggi.togethertunes.auth.MeApi;
@@ -270,8 +272,12 @@ public final class Main {
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
         admin.diskSpace(diskSpace);
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
-        ProvidersApi providersApi = new ProvidersApi(new Providers(database, secrets), permissions, accounts,
-                config.publicBaseUrl());
+        Providers loginProviders = new Providers(database, secrets);
+        ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, config.publicBaseUrl());
+        // The provider login flow (authorization code + PKCE); ID-token validation and identity
+        // resolution plug in as its completion.
+        providersApi.loginFlow(new OidcLogin(loginProviders, new OidcDiscovery(), config.publicBaseUrl(),
+                config.secureCookies()));
         // An admin can't pick an x264 preset that doesn't give the reference avcC.
         admin.settingCheck((key, value) -> {
             if (value instanceof X264Preset preset

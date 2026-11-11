@@ -11,6 +11,7 @@
   <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
   <h1>Log in</h1>
   <p id="login-status" role="status" hidden></p>
+  <p id="provider-error" class="error" role="alert" hidden></p>
   <form id="login-form" class="form">
     <label>Username
       <input name="username" autocomplete="username" required maxlength="32" autofocus>
@@ -21,6 +22,10 @@
     <button type="submit">Log in</button>
     <p id="login-error" class="error" role="alert"></p>
   </form>
+  <div id="login-providers" hidden>
+    <p>Or log in with:</p>
+    <ul id="login-provider-list"></ul>
+  </div>
   <p>No account yet? <a id="register-link" href="/register.html">Register</a></p>
 </body>
 </html>
