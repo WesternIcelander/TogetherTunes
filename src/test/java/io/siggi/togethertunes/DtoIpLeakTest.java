@@ -120,6 +120,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Guests$GuestView",
             "io.siggi.togethertunes.auth.Guests$Page",
             "io.siggi.togethertunes.auth.Roles$Role",
+            "io.siggi.togethertunes.auth.Providers$Provider",
+            "io.siggi.togethertunes.auth.ClaimMapping",
             "io.siggi.togethertunes.auth.Sessions$Created",
             "io.siggi.togethertunes.auth.Sessions$Page",
             "io.siggi.togethertunes.auth.Sessions$SessionView",
@@ -192,6 +194,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.http.PathPattern$Segment", "routing"),
             Map.entry("io.siggi.togethertunes.http.Route", "routing"),
             Map.entry("io.siggi.togethertunes.auth.Actor$User", "request identity, never serialised"),
+            Map.entry("io.siggi.togethertunes.auth.Providers$Spec", "a login provider's settings on their way in;"
+                    + " the API answers with Providers.Provider"),
+            Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Keep", "an update's secret handling; never sent"),
+            Map.entry("io.siggi.togethertunes.auth.Providers$SecretChange$Replace", "a new client secret on its way"
+                    + " in; never sent"),
             Map.entry("io.siggi.togethertunes.auth.Actor$Guest", "request identity, never serialised"),
             Map.entry("io.siggi.togethertunes.auth.Actor$Anonymous", "request identity, never serialised"),
             Map.entry("io.siggi.togethertunes.auth.ActorResolver$Credentials", "request input (holds the client IP)"),
@@ -502,6 +509,7 @@ class DtoIpLeakTest {
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, roles, permissions, settings),
+                TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
@@ -733,6 +741,8 @@ class DtoIpLeakTest {
             }
         }
         produced.add(roles.list());
+        produced.add(new io.siggi.togethertunes.auth.Providers(database,
+                new io.siggi.togethertunes.secrets.SecretCipher(new byte[32])).list());
         produced.add(new ArrayList<>(settings.all().values())); // some are null (unset)
         String closes = expect(200, anon(), "GET", "/test/ws-echo/closes?tag=dto-leak", null).body();
         Class<?> closed = Class.forName("io.siggi.togethertunes.http.EchoEndpoint$Closed");
@@ -861,7 +871,8 @@ class DtoIpLeakTest {
                 "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
-                "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/admin/encoding", "/api/admin/guests",
+                "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
+                "/api/admin/providers", "/api/admin/providers/" + f.providerId(), "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
@@ -886,7 +897,7 @@ class DtoIpLeakTest {
 
     private record Fixture(Who admin, Who alice, Who aliceBearer, Who help, Who cookieGuest, String adminId,
                            String aliceId, String roleId, String uploadId, String itemId, String playlistId,
-                           String roomSlug, String cookieGuestId) {
+                           String roomSlug, String cookieGuestId, String providerId) {
     }
 
     /**
@@ -968,6 +979,19 @@ class DtoIpLeakTest {
         expect(200, help, "GET", "/api/admin/guests", null);
         expect(200, help, "GET", "/api/admin/audit", null);
         expect(200, admin, "GET", "/api/admin/ip/sessions/" + aliceId, null);
+
+        // login providers, administered by the admin
+        String providerId = json(expect(201, admin, "POST", "/api/admin/providers",
+                "{\"slug\":\"idp\",\"displayName\":\"Identity\",\"issuer\":\"https://idp.example\","
+                        + "\"clientId\":\"client\",\"clientSecret\":\"secret\"}")).get("id").getAsString();
+        expect(200, admin, "GET", "/api/admin/providers", null);
+        expect(200, admin, "GET", "/api/admin/providers/" + providerId, null);
+        expect(200, admin, "PATCH", "/api/admin/providers/" + providerId, "{\"allowSignup\":true,\"claimMapping\":{\"username\":\"nickname\"}}");
+        String spareProvider = json(expect(201, admin, "POST", "/api/admin/providers",
+                "{\"slug\":\"spare\",\"displayName\":\"Spare\",\"issuer\":\"https://idp.example\","
+                        + "\"clientId\":\"client\"}")).get("id").getAsString();
+        expectOk(admin, "DELETE", "/api/admin/providers/" + spareProvider, null);
+        expect(200, anon, "GET", "/api/auth/providers", null);
 
         // a cookie guest, renamed both ways
         HttpResponse<String> guestCreated = expect(201, anon.withForwarded(V4_GUEST), "POST", "/api/me/guest", null);
@@ -1157,7 +1181,7 @@ class DtoIpLeakTest {
         expect(204, alice, "DELETE", "/api/rooms/" + doomedRoom, null);
 
         return new Fixture(admin, alice, aliceBearer, help, cookieGuest, adminId, aliceId, roleId, uploadId, itemId,
-                playlistId, roomSlug, cookieGuestId);
+                playlistId, roomSlug, cookieGuestId, providerId);
     }
 
     /** A room socket ({@code /ws}) opened as {@code who}. */

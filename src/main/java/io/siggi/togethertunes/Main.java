@@ -6,6 +6,8 @@ import io.siggi.togethertunes.auth.AdminActivityApi;
 import io.siggi.togethertunes.auth.AdminApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AuthApi;
+import io.siggi.togethertunes.auth.Providers;
+import io.siggi.togethertunes.auth.ProvidersApi;
 import io.siggi.togethertunes.auth.Guests;
 import io.siggi.togethertunes.auth.MeApi;
 import io.siggi.togethertunes.auth.AuthRateLimits;
@@ -189,7 +191,6 @@ public final class Main {
             System.exit(EXIT_STARTUP);
             return;
         }
-        // TODO(OIDC provider admin): pass `secrets` to the repositories with *_enc columns (client_secret_enc).
         Database database;
         try {
             database = Database.open(config.dbUrl());
@@ -268,6 +269,9 @@ public final class Main {
         Permissions permissions = new Permissions(database, settings);
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
         admin.diskSpace(diskSpace);
+        // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
+        ProvidersApi providersApi = new ProvidersApi(new Providers(database, secrets), permissions, accounts,
+                config.publicBaseUrl());
         // An admin can't pick an x264 preset that doesn't give the reference avcC.
         admin.settingCheck((key, value) -> {
             if (value instanceof X264Preset preset
@@ -412,7 +416,7 @@ public final class Main {
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
                 roomRegistry, roomQueue, database, Clock.systemUTC());
         roomSocket.covers(new io.siggi.togethertunes.library.Covers(dataDir));
-        Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, activity,
+        Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, providersApi, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
         // http.insecureBaseUrl: plain HTTP serves only stream URLs (by slug, or a private room's
@@ -1202,7 +1206,8 @@ public final class Main {
      * bearer tokens ({@code /api/auth/...}), {@link SessionsApi} the user's own sessions
      * ({@code /api/me/sessions}), {@link MeApi} who-am-I and the guest identity ({@code /api/me},
      * {@code /api/me/guest}), {@link AdminApi} the admin API for users, roles and settings
-     * ({@code /api/admin/...}), {@link AdminActivityApi} the admin guest list, audit log and session
+     * ({@code /api/admin/...}), {@link ProvidersApi} the login providers ({@code /api/admin/providers},
+     * {@code /api/auth/providers}), {@link AdminActivityApi} the admin guest list, audit log and session
      * IPs ({@code /api/admin/guests}, {@code /api/admin/audit}, {@code /api/admin/ip/...}),
      * {@link UploadsApi} chunked uploads ({@code /api/uploads...}), {@link YoutubeImportsApi} YouTube
      * imports ({@code /api/imports/youtube}), {@link LibraryApi} the caller's library
@@ -1217,7 +1222,8 @@ public final class Main {
      * {@code /rooms/{idOrSlug}} and the short link {@code /r/{slug}}.
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
-                         SessionsApi sessions, MeApi me, AdminApi admin, AdminActivityApi activity,
+                         SessionsApi sessions, MeApi me, AdminApi admin, ProvidersApi providers,
+                         AdminActivityApi activity,
                          UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library,
                          ItemsApi items, PlaylistsApi playlists, SharesApi shares,
                          UserLibrariesApi userLibraries, MediaApi media, RoomsApi rooms, RoomSocket roomSocket) {
@@ -1229,6 +1235,7 @@ public final class Main {
         sessions.register(router);
         me.register(router);
         admin.register(router);
+        providers.register(router);
         activity.register(router);
         uploads.register(router);
         youtube.register(router);

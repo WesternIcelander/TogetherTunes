@@ -93,6 +93,7 @@ class MeApiTest {
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, tickets),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
+                TestUploads.providersApi(database, config, settings, accounts),
                 io.siggi.togethertunes.auth.AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),

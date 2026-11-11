@@ -13,6 +13,7 @@
   <nav class="tabs" id="admin-tabs">
     <a href="#users" data-tab="users">Users</a>
     <a href="#roles" data-tab="roles">Roles</a>
+    <a href="#providers" data-tab="providers">Login providers</a>
     <a href="#settings" data-tab="settings">Settings</a>
     <a href="#fonts" data-tab="fonts">Fonts</a>
     <a href="#jobs" data-tab="jobs">Jobs</a>
@@ -64,6 +65,13 @@
       <button type="submit">Create role</button>
       <p class="error" role="alert"></p>
     </form>
+  </section>
+
+  <section id="tab-providers" hidden>
+    <h2>Login providers</h2>
+    <p>Any number of OpenID Connect and OAuth providers, each with its own login button. A provider with
+      linked accounts can't change its issuer (OAuth: userinfo URL and subject) or be deleted; disable it instead.</p>
+    <div id="provider-list"></div>
   </section>
 
   <section id="tab-settings" hidden>

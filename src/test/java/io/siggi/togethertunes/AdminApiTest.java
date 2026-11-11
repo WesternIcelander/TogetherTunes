@@ -115,6 +115,7 @@ class AdminApiTest {
                         new MeApi(accounts, new Users(database, passwords, clock), new Permissions(database, settings),
                                 new Guests(database, settings, config.secureCookies()), settings,
                                 new io.siggi.togethertunes.auth.IdentityTickets()), adminApi,
+                        TestUploads.providersApi(database, config, settings, accounts),
                         io.siggi.togethertunes.auth.AdminActivityApi.create(database,
                                 new Guests(database, settings, config.secureCookies()), new Permissions(database, settings),
                                 clock),
@@ -747,6 +748,158 @@ class AdminApiTest {
         call(200, "PUT", "/api/admin/users/" + bothId + "/roles", "{\"roleIds\":[\"" + emptyRole + "\"]}", admin);
         assertEquals(List.of(), strings(call(200, "GET", "/api/me", null, both).getAsJsonArray("permissions")));
         assertError("forbidden", call(403, "GET", "/api/admin/guests", null, both));
+    }
+
+    // ------------------------------------------------------------------ login providers
+
+    private static final String OWN_PROVIDER = "{\"slug\":\"own\",\"displayName\":\"Own login\","
+            + "\"issuer\":\"https://id.tunes.example\",\"clientId\":\"tunes\",\"clientSecret\":\"s3cret-own\","
+            + "\"allowSignup\":true}";
+    private static final String CHAT_PROVIDER = "{\"slug\":\"chat\",\"displayName\":\"Chat login\","
+            + "\"kind\":\"oauth2\",\"clientId\":\"chat-client\",\"clientSecret\":\"s3cret-chat\","
+            + "\"scopes\":\"user:read:email identify\",\"claimMapping\":{"
+            + "\"authorizationEndpoint\":\"https://chat.example/oauth2/authorize\","
+            + "\"tokenEndpoint\":\"https://chat.example/oauth2/token\","
+            + "\"userinfoUrl\":\"https://api.chat.example/users/@me\",\"subject\":\"data.0.id\","
+            + "\"username\":\"data.0.login\",\"displayName\":\"data.0.display_name\"}}";
+
+    @Test
+    void twoProvidersEnabledAtOnce() throws Exception {
+        assertEquals(0, call(200, "GET", "/api/auth/providers", null, null).getAsJsonArray("items").size());
+        JsonObject own = call(201, "POST", "/api/admin/providers", OWN_PROVIDER, admin);
+        JsonObject chat = call(201, "POST", "/api/admin/providers", CHAT_PROVIDER, admin);
+        assertEquals("oidc", own.get("kind").getAsString());
+        assertTrue(own.get("hasClientSecret").getAsBoolean());
+        assertEquals("openid profile email", own.get("scopes").getAsString());
+        assertEquals(PUBLIC_BASE_URL + "/auth/oidc/own/callback", own.get("redirectUri").getAsString());
+        assertEquals(0, own.get("identities").getAsLong());
+        assertFalse(own.has("claimMapping"), own.toString());
+        assertEquals("oauth2", chat.get("kind").getAsString());
+        assertEquals("https://chat.example", chat.get("issuer").getAsString());
+        assertEquals("data.0.id", chat.getAsJsonObject("claimMapping").get("subject").getAsString());
+        assertEquals(PUBLIC_BASE_URL + "/auth/oidc/chat/callback", chat.get("redirectUri").getAsString());
+
+        // both are login buttons, for anyone; no secret, issuer or client id in the public list
+        HttpResponse<String> list = send("GET", "/api/auth/providers", null, null);
+        assertEquals(200, list.statusCode());
+        assertEquals("no-store", list.headers().firstValue("Cache-Control").orElse(""));
+        assertEquals("{\"items\":[{\"slug\":\"own\",\"displayName\":\"Own login\",\"allowSignup\":true,"
+                + "\"startUrl\":\"/auth/oidc/own/start\"},{\"slug\":\"chat\",\"displayName\":\"Chat login\","
+                + "\"allowSignup\":false,\"startUrl\":\"/auth/oidc/chat/start\"}]}", list.body());
+
+        // one user linked to both: both stay listed, each counts its identity
+        String userId = createUser("linked", "linked-password");
+        database.write(c -> {
+            for (JsonObject p : List.of(own, chat)) {
+                try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO user_identities (id, user_id,"
+                        + " provider_id, subject, created_at) VALUES (?, ?, ?, ?, 0)")) {
+                    ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
+                    ps.setString(2, userId);
+                    ps.setString(3, p.get("id").getAsString());
+                    ps.setString(4, "subject-of-linked");
+                    ps.executeUpdate();
+                }
+            }
+            return null;
+        });
+        JsonArray all = call(200, "GET", "/api/admin/providers", null, admin).getAsJsonArray("items");
+        assertEquals(2, all.size());
+        for (JsonElement e : all) {
+            assertEquals(1, e.getAsJsonObject().get("identities").getAsLong(), e.toString());
+        }
+
+        // disabling one leaves the other
+        call(200, "PATCH", "/api/admin/providers/" + chat.get("id").getAsString(), "{\"enabled\":false}", admin);
+        JsonArray buttons = call(200, "GET", "/api/auth/providers", null, null).getAsJsonArray("items");
+        assertEquals(1, buttons.size());
+        assertEquals("own", buttons.get(0).getAsJsonObject().get("slug").getAsString());
+    }
+
+    @Test
+    void providerAdmin() throws Exception {
+        JsonObject own = call(201, "POST", "/api/admin/providers", OWN_PROVIDER, admin);
+        String id = own.get("id").getAsString();
+        String path = "/api/admin/providers/" + id;
+        assertEquals(own, call(200, "GET", path, null, admin));
+
+        // the secret is write-only: keep, remove, set
+        JsonObject renamed = call(200, "PATCH", path, "{\"displayName\":\"Renamed\",\"slug\":\"Own-2\"}", admin);
+        assertEquals("Renamed", renamed.get("displayName").getAsString());
+        assertEquals("own-2", renamed.get("slug").getAsString());
+        assertEquals(PUBLIC_BASE_URL + "/auth/oidc/own-2/callback", renamed.get("redirectUri").getAsString());
+        assertTrue(renamed.get("hasClientSecret").getAsBoolean());
+        assertFalse(call(200, "PATCH", path, "{\"clientSecret\":null}", admin).get("hasClientSecret").getAsBoolean());
+        assertTrue(call(200, "PATCH", path, "{\"clientSecret\":\"s3cret-new\"}", admin)
+                .get("hasClientSecret").getAsBoolean());
+
+        // validation
+        assertError("unknown_field", call(400, "PATCH", path, "{\"secret\":\"x\"}", admin));
+        assertError("invalid_provider", call(400, "PATCH", path, "{\"kind\":\"oauth2\"}", admin));
+        assertError("invalid_provider", call(400, "PATCH", path, "{\"issuer\":\"http://id.tunes.example\"}", admin));
+        assertError("invalid_provider", call(400, "PATCH", path, "{\"scopes\":\"profile\"}", admin));
+        assertError("invalid_provider", call(400, "PATCH", path,
+                "{\"claimMapping\":{\"userinfoUrl\":\"https://x.example\"}}", admin));
+        assertError("invalid_json", call(400, "PATCH", path, "{\"enabled\":\"yes\"}", admin));
+        assertError("invalid_provider", call(400, "POST", "/api/admin/providers",
+                "{\"slug\":\"x\",\"displayName\":\"X\",\"kind\":\"oauth2\",\"clientId\":\"c\"}", admin));
+        assertError("invalid_provider", call(400, "POST", "/api/admin/providers",
+                "{\"slug\":\"x\",\"displayName\":\"X\",\"kind\":\"saml\",\"clientId\":\"c\"}", admin));
+        assertError("provider_slug_taken", call(409, "POST", "/api/admin/providers",
+                OWN_PROVIDER.replace("\"own\"", "\"own-2\""), admin));
+        assertError("provider_not_found", call(404, "GET", "/api/admin/providers/" + adminId, null, admin));
+        // OpenID Connect claim names may be set, and removed again
+        assertEquals("nickname", call(200, "PATCH", path, "{\"claimMapping\":{\"username\":\"nickname\"}}", admin)
+                .getAsJsonObject("claimMapping").get("username").getAsString());
+        assertFalse(call(200, "PATCH", path, "{\"claimMapping\":null}", admin).has("claimMapping"));
+
+        // an identity pins the issuer and blocks deleting
+        String userId = createUser("linked", "linked-password");
+        database.write(c -> {
+            try (java.sql.PreparedStatement ps = c.prepareStatement("INSERT INTO user_identities (id, user_id,"
+                    + " provider_id, subject, created_at) VALUES (?, ?, ?, 'sub', 0)")) {
+                ps.setString(1, io.siggi.togethertunes.db.UuidV7.newId());
+                ps.setString(2, userId);
+                ps.setString(3, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertError("provider_has_identities", call(409, "PATCH", path,
+                "{\"issuer\":\"https://other.tunes.example\"}", admin));
+        assertError("provider_has_identities", call(409, "DELETE", path, null, admin));
+        call(200, "PATCH", path, "{\"enabled\":false}", admin);
+        String spare = call(201, "POST", "/api/admin/providers", OWN_PROVIDER, admin).get("id").getAsString();
+        call(204, "DELETE", "/api/admin/providers/" + spare, null, admin);
+        assertEquals(1, call(200, "GET", "/api/admin/providers", null, admin).getAsJsonArray("items").size());
+
+        // audited, never with the secret
+        List<String> audit = database.read(c -> {
+            List<String> out = new ArrayList<>();
+            try (java.sql.PreparedStatement ps = c.prepareStatement(
+                    "SELECT action, details_json FROM audit_log WHERE action LIKE 'admin.provider%' ORDER BY id");
+                 java.sql.ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getString(1) + " " + rs.getString(2));
+                }
+            }
+            return out;
+        });
+        assertEquals(List.of("admin.provider_created", "admin.provider_updated", "admin.provider_updated",
+                        "admin.provider_updated", "admin.provider_updated", "admin.provider_updated",
+                        "admin.provider_updated", "admin.provider_created", "admin.provider_deleted"),
+                audit.stream().map(a -> a.substring(0, a.indexOf(' '))).toList(), audit.toString());
+        assertTrue(audit.get(0).contains("\"clientSecret\":\"set\""), audit.get(0));
+        assertTrue(audit.get(2).contains("\"clientSecret\":\"removed\""), audit.get(2));
+        for (String a : audit) {
+            assertFalse(a.contains("s3cret"), a);
+        }
+
+        // admin.providers is needed
+        createUser("plain", "plain-password");
+        String plain = login("plain", "plain-password");
+        assertError("forbidden", call(403, "GET", "/api/admin/providers", null, plain));
+        assertError("forbidden", call(403, "POST", "/api/admin/providers", OWN_PROVIDER, plain));
+        assertError("not_authenticated", call(401, "GET", "/api/admin/providers", null, null));
     }
 
     @Test

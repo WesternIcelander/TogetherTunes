@@ -93,6 +93,7 @@ class MainRouterTest {
                 new MeApi(accounts, new Users(database, fastPasswords, clock), new Permissions(database, settings),
                         new Guests(database, settings, config.secureCookies()), settings,
                         new io.siggi.togethertunes.auth.IdentityTickets()), admin,
+                TestUploads.providersApi(database, config, settings, accounts),
                 io.siggi.togethertunes.auth.AdminActivityApi.create(database,
                         new Guests(database, settings, config.secureCookies()), new Permissions(database, settings), clock),
                 TestUploads.api(database, dir, config, new Permissions(database, settings), clock),

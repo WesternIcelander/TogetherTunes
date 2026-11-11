@@ -164,6 +164,7 @@ class PermissionMatrixTest {
             row("POST /api/auth/login", c -> Call.post("/api/auth/login", c.targetCredentialsJson()), 200, 200, 200, 200),
             row("POST /api/auth/logout", c -> Call.post("/api/auth/logout", null), 204, 204, 204, 204),
             row("POST /api/auth/token", c -> Call.post("/api/auth/token", c.targetCredentialsJson()), 201, 201, 201, 201),
+            row("GET /api/auth/providers", c -> Call.get("/api/auth/providers"), 200, 200, 200, 200),
 
             // Me: users and guests manage themselves; an anonymous caller only reads.
             row("GET /api/me", c -> Call.get("/api/me"), 200, 200, 200, 200),
@@ -198,6 +199,12 @@ class PermissionMatrixTest {
                     c -> Call.get("/api/admin/roles/" + c.targetRoleId() + "/permissions"), 200),
             admin("PUT /api/admin/roles/{id}/permissions", c -> Call.put("/api/admin/roles/" + c.targetRoleId()
                     + "/permissions", "{\"permissions\":[\"library.upload\"]}"), 200),
+            admin("GET /api/admin/providers", c -> Call.get("/api/admin/providers"), 200),
+            admin("POST /api/admin/providers", c -> Call.post("/api/admin/providers", c.newProviderJson()), 201),
+            admin("GET /api/admin/providers/{id}", c -> Call.get("/api/admin/providers/" + c.targetProviderId()), 200),
+            admin("PATCH /api/admin/providers/{id}", c -> Call.patch("/api/admin/providers/" + c.targetProviderId(),
+                    "{\"displayName\":\"Renamed\",\"clientSecret\":\"new-secret\"}"), 200),
+            admin("DELETE /api/admin/providers/{id}", c -> Call.delete("/api/admin/providers/" + c.targetProviderId()), 204),
             admin("GET /api/admin/settings", c -> Call.get("/api/admin/settings"), 200),
             admin("PATCH /api/admin/settings", c -> Call.patch("/api/admin/settings", "{\"overlay.enabled\":false}"), 200),
             admin("GET /api/admin/storage", c -> Call.get("/api/admin/storage"), 200),
@@ -388,6 +395,7 @@ class PermissionMatrixTest {
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
+                TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
@@ -488,6 +496,7 @@ class PermissionMatrixTest {
         private String targetUserId;
         private String targetUsername;
         private String targetRoleId;
+        private String targetProviderId;
 
         Cell(Who who, int n) {
             this.who = who;
@@ -733,6 +742,26 @@ class PermissionMatrixTest {
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }
+        }
+
+        /** A new login provider's settings, with a slug of its own. */
+        String newProviderJson() {
+            return "{\"slug\":\"p" + n + "\",\"displayName\":\"Provider " + n
+                    + "\",\"issuer\":\"https://idp.example\",\"clientId\":\"client\",\"clientSecret\":\"secret\"}";
+        }
+
+        /** A login provider nobody else touches. */
+        String targetProviderId() {
+            if (targetProviderId == null) {
+                try {
+                    targetProviderId = json(ok(Call.post("/api/admin/providers",
+                            "{\"slug\":\"target-" + n + "\",\"displayName\":\"Target\",\"issuer\":\"https://idp.example\","
+                                    + "\"clientId\":\"client\"}")).body()).get("id").getAsString();
+                } catch (IOException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return targetProviderId;
         }
 
         /** A custom role nobody else touches. */

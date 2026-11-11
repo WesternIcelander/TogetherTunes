@@ -122,7 +122,7 @@ function formValue(form: HTMLFormElement, name: string): string {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["users", "roles", "settings", "fonts", "jobs"] as const;
+const TABS = ["users", "roles", "providers", "settings", "fonts", "jobs"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -148,6 +148,8 @@ async function showTab(): Promise<void> {
       await loadUsers(true);
     } else if (tab === "roles") {
       await loadRoles();
+    } else if (tab === "providers") {
+      await loadProviders();
     } else if (tab === "jobs") {
       await loadJobs();
     } else if (tab === "fonts") {
@@ -395,6 +397,109 @@ function setUpRoles(): void {
       await loadRoles();
     });
   });
+}
+
+// ------------------------------------------------------------------ login providers
+
+interface Provider {
+  id: string;
+  slug: string;
+  displayName: string;
+  kind: "oidc" | "oauth2";
+  issuer: string;
+  clientId: string;
+  hasClientSecret: boolean;
+  scopes: string;
+  enabled: boolean;
+  allowSignup: boolean;
+  claimMapping?: Record<string, string>;
+  redirectUri: string;
+  identities: number;
+}
+
+async function loadProviders(): Promise<void> {
+  const list = await api<{ items: Provider[] }>("GET", "/api/admin/providers");
+  element("provider-list").replaceChildren(...list.items.map((p) => providerForm(p)), providerForm(null));
+}
+
+/** The form of one provider, or (`null`) the form that adds one. */
+function providerForm(p: Provider | null): HTMLElement {
+  const error = h("p", { class: "error", role: "alert" });
+  const input = (name: string, value: string, extra: Record<string, string | boolean> = {}): HTMLInputElement =>
+    h("input", { name, value, ...extra });
+  const form = h("form", { class: "panel form" },
+    h("h3", { text: p === null ? "Add a login provider" : p.displayName }),
+    p === null ? null : h("p", { class: "muted" }, "Redirect URI to register at the provider: ",
+      h("code", { text: p.redirectUri }), ` · ${p.identities} linked account${p.identities === 1 ? "" : "s"}`),
+    h("label", {}, "Kind ", h("select", { name: "kind", disabled: p !== null },
+      h("option", { value: "oidc", text: "OpenID Connect", selected: p?.kind !== "oauth2" }),
+      h("option", { value: "oauth2", text: "OAuth 2.0 (userinfo URL and claim paths)", selected: p?.kind === "oauth2" }))),
+    h("label", {}, "Slug (in the login URLs) ", input("slug", p?.slug ?? "", { required: true, maxlength: "32" })),
+    h("label", {}, "Button label ", input("displayName", p?.displayName ?? "", { required: true, maxlength: "64" })),
+    h("label", {}, "Issuer (OpenID Connect; optional for OAuth) ", input("issuer", p?.issuer ?? "")),
+    h("label", {}, "Client ID ", input("clientId", p?.clientId ?? "", { required: true })),
+    h("label", {}, "Client secret ", input("clientSecret", "", { type: "password", autocomplete: "off",
+      placeholder: p === null ? "none (public client)" : p.hasClientSecret ? "unchanged" : "none" })),
+    p !== null && p.hasClientSecret
+      ? h("label", {}, h("input", { type: "checkbox", name: "removeSecret" }), " Remove the client secret") : null,
+    h("label", {}, "Scopes (empty: the default) ", input("scopes", p?.scopes ?? "")),
+    h("label", {}, "Claim mapping (JSON; required for OAuth) ",
+      h("textarea", { name: "claimMapping", rows: "4",
+        text: p?.claimMapping === undefined ? "" : JSON.stringify(p.claimMapping, null, 2) })),
+    h("label", {}, h("input", { type: "checkbox", name: "enabled", checked: p === null || p.enabled }), " Enabled"),
+    h("label", {}, h("input", { type: "checkbox", name: "allowSignup", checked: p?.allowSignup ?? false }),
+      " New accounts can sign up through it"),
+    h("button", { type: "submit", text: p === null ? "Add provider" : "Save" }),
+    p === null ? null : h("button", { type: "button", "data-action": "delete", text: "Delete provider" }),
+    error);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const data = new FormData(form);
+    void run(error, form, async () => {
+      const text = (name: string): string => String(data.get(name) ?? "").trim();
+      const mapping = text("claimMapping");
+      let claimMapping: unknown = null;
+      if (mapping !== "") {
+        try {
+          claimMapping = JSON.parse(mapping);
+        } catch {
+          throw new Error("The claim mapping isn't valid JSON.");
+        }
+      }
+      const body: Record<string, unknown> = {
+        slug: text("slug"), displayName: text("displayName"), issuer: text("issuer") || null,
+        clientId: text("clientId"), scopes: text("scopes") || null, claimMapping,
+        enabled: data.get("enabled") !== null, allowSignup: data.get("allowSignup") !== null,
+      };
+      const secret = String(data.get("clientSecret") ?? "");
+      if (secret !== "") {
+        body["clientSecret"] = secret;
+      } else if (data.get("removeSecret") !== null) {
+        body["clientSecret"] = null;
+      }
+      if (p === null) {
+        body["kind"] = text("kind");
+        await api("POST", "/api/admin/providers", body);
+        status(`Added ${text("displayName")}.`);
+      } else {
+        await api("PATCH", "/api/admin/providers/" + encodeURIComponent(p.id), body);
+        status(`Saved ${text("displayName")}.`);
+      }
+      await loadProviders();
+    });
+  });
+  const del = form.querySelector<HTMLButtonElement>("button[data-action=delete]");
+  if (p !== null && del !== null) {
+    del.addEventListener("click", () => {
+      if (!confirm(`Delete the login provider ${p.displayName}?`)) return;
+      void run(error, del, async () => {
+        await api("DELETE", "/api/admin/providers/" + encodeURIComponent(p.id));
+        status(`Deleted ${p.displayName}.`);
+        await loadProviders();
+      });
+    });
+  }
+  return form;
 }
 
 // ------------------------------------------------------------------ settings

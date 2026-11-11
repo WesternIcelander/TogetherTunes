@@ -36,7 +36,7 @@ abstract class InitialSchemaContract {
         t("password_credentials", "user_id", "hash", "updated_at", "must_change");
         t("user_identities", "id", "user_id", "provider_id", "subject", "email", "created_at", "last_login_at");
         t("oidc_providers", "id", "slug", "display_name", "issuer", "client_id", "client_secret_enc", "scopes",
-                "enabled", "allow_signup", "claim_mapping_json");
+                "enabled", "allow_signup", "claim_mapping_json", "kind");
         t("roles", "id", "name", "builtin", "is_default");
         t("role_permissions", "role_id", "permission");
         t("user_roles", "user_id", "role_id");
