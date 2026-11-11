@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.fonts.CardFonts;
 import io.siggi.togethertunes.ingest.CardRenderer.Filler;
 import io.siggi.togethertunes.ingest.CardRenderer.Fitted;
 import io.siggi.togethertunes.ingest.CardRenderer.ItemCard;
@@ -26,6 +27,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
 class CardRendererTest {
+    /** The bundled font and the installed ones, as on a server without downloaded fonts. */
+    private static final CardFonts FONTS = CardFonts.bundledOnly();
     private static final String LONG = "An Extraordinarily Long Song Title That Goes On And On Well Past The Edge Of Any "
             + "Reasonable Card Layout (Extended Deluxe Anniversary Remastered Version)";
 
@@ -69,9 +72,9 @@ class CardRendererTest {
 
     @Test
     void shortTextKeepsItsSize() {
-        Fitted f = CardRenderer.fit("Hello", Font.BOLD, 56, 32, 600, frc());
+        Fitted f = CardRenderer.fit(FONTS, "Hello", Font.BOLD, 56, 32, 600, frc());
         assertEquals("Hello", f.text());
-        assertEquals(56f, f.font().getSize2D());
+        assertEquals(56f, f.size());
         assertFalse(f.shrunk());
         assertFalse(f.ellipsized());
         assertTrue(f.width() <= 600);
@@ -81,24 +84,23 @@ class CardRendererTest {
     void shrinksBeforeEllipsizing() {
         FontRenderContext frc = frc();
         String text = "A Moderately Long Title Here";
-        double atFull = CardRenderer.advance(new Font(CardRenderer.FONT_FAMILY, Font.BOLD, 56), text, frc);
+        double atFull = CardRenderer.advance(FONTS, text, Font.BOLD, 56f, frc);
         double max = atFull * 0.8; // fits at about 45
-        Fitted f = CardRenderer.fit(text, Font.BOLD, 56, 32, max, frc);
+        Fitted f = CardRenderer.fit(FONTS, text, Font.BOLD, 56, 32, max, frc);
         assertEquals(text, f.text());
         assertTrue(f.shrunk());
         assertFalse(f.ellipsized());
-        assertTrue(f.font().getSize2D() < 56 && f.font().getSize2D() > 32, "size " + f.font().getSize2D());
+        assertTrue(f.size() < 56 && f.size() > 32, "size " + f.size());
         assertTrue(f.width() <= max);
         // The largest size that fits: one point bigger doesn't.
-        Font bigger = f.font().deriveFont(f.font().getSize2D() + 1);
-        assertTrue(CardRenderer.advance(bigger, text, frc) > max);
+        assertTrue(CardRenderer.advance(FONTS, text, Font.BOLD, f.size() + 1, frc) > max);
     }
 
     @Test
     void ellipsizesAtTheMinimumSize() {
-        Fitted f = CardRenderer.fit(LONG, Font.BOLD, 56, 32, 600, frc());
+        Fitted f = CardRenderer.fit(FONTS, LONG, Font.BOLD, 56, 32, 600, frc());
         assertTrue(f.ellipsized());
-        assertEquals(32f, f.font().getSize2D());
+        assertEquals(32f, f.size());
         assertTrue(f.width() <= 600, "width " + f.width());
         assertTrue(f.text().endsWith(CardRenderer.ELLIPSIS));
         String kept = f.text().substring(0, f.text().length() - 1);
@@ -108,7 +110,7 @@ class CardRendererTest {
         // As many graphemes as fit: one more character would overflow.
         String oneMore = LONG.substring(0, kept.length() + 1).stripTrailing() + CardRenderer.ELLIPSIS;
         if (!oneMore.equals(f.text())) {
-            assertTrue(CardRenderer.advance(f.font(), oneMore, frc()) > 600 || LONG.charAt(kept.length()) == ' ');
+            assertTrue(CardRenderer.advance(FONTS, oneMore, f.style(), f.size(), frc()) > 600 || LONG.charAt(kept.length()) == ' ');
         }
     }
 
@@ -117,7 +119,7 @@ class CardRendererTest {
         // Emoji outside the BMP and a flag (two regional indicators = one grapheme).
         String text = "🎵".repeat(60) + "🇮🇸".repeat(40);
         for (int max = 40; max < 800; max += 37) {
-            Fitted f = CardRenderer.fit(text, Font.PLAIN, 40, 26, max, frc());
+            Fitted f = CardRenderer.fit(FONTS, text, Font.PLAIN, 40, 26, max, frc());
             String kept = f.text().substring(0, f.text().length() - (f.ellipsized() ? 1 : 0));
             assertTrue(text.startsWith(kept));
             assertFalse(!kept.isEmpty() && Character.isHighSurrogate(kept.charAt(kept.length() - 1)), "split pair");
@@ -130,7 +132,7 @@ class CardRendererTest {
 
     @Test
     void textNarrowerThanAnEllipsisBecomesJustTheEllipsis() {
-        Fitted f = CardRenderer.fit("Wide", Font.BOLD, 56, 32, 1, frc());
+        Fitted f = CardRenderer.fit(FONTS, "Wide", Font.BOLD, 56, 32, 1, frc());
         assertEquals(CardRenderer.ELLIPSIS, f.text());
     }
 

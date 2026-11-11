@@ -9,6 +9,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 import io.siggi.togethertunes.config.OutputProfile;
 import io.siggi.togethertunes.rooms.RoomSettings;
 import java.awt.Color;
+import io.siggi.togethertunes.fonts.CardFonts;
 import java.awt.Font;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -106,8 +107,10 @@ public final class OverlayRenderer {
 
         /** A stable one-line form, stored next to the image to tell whether it is still current. */
         public String key() {
+            // The fonts the text is drawn with (docs/library-and-ingest.md#card-fonts): another card
+            // font or a newly downloaded one for its characters renders the overlay again.
             return version + "|" + frameWidth + "x" + frameHeight + "|" + corner + "|" + heightPct + "|" + margin
-                    + "|" + url;
+                    + "|" + url + "|" + CardFonts.installed().key(text());
         }
     }
 
@@ -188,19 +191,18 @@ public final class OverlayRenderer {
         // The text: sized from the QR code, shrunk to fit inside the frame's margins.
         FontRenderContext frc = fontContext();
         String text = spec.text();
-        Font base = new Font(Font.SANS_SERIF, Font.BOLD, 1);
+        CardFonts fonts = CardFonts.installed();
         double size = Math.max(qrSide * TEXT_PER_QR, frameH * TEXT_MIN_PER_HEIGHT);
         double maxTextWidth = frameW - 2.0 * margin - 2.0 * pad;
-        double width = advance(base.deriveFont((float) size), text, frc);
+        double width = fonts.advance(text, Font.BOLD, (float) size, frc);
         if (width > maxTextWidth) {
             size = Math.max(frameH * TEXT_FLOOR_PER_HEIGHT, Math.floor(size * maxTextWidth / width));
             while (size > frameH * TEXT_FLOOR_PER_HEIGHT
-                    && advance(base.deriveFont((float) size), text, frc) > maxTextWidth) {
+                    && fonts.advance(text, Font.BOLD, (float) size, frc) > maxTextWidth) {
                 size -= 1;
             }
         }
-        Font font = base.deriveFont((float) size);
-        double textWidth = advance(font, text, frc);
+        double textWidth = fonts.advance(text, Font.BOLD, (float) size, frc);
         double lineHeight = size * 1.2;
 
         int panelW = even((int) Math.ceil(Math.max(qrSide, textWidth) + 2.0 * pad));
@@ -243,9 +245,8 @@ public final class OverlayRenderer {
 
             double lineTop = spec.bottom() ? qrY + qrSide + gap : qrY - gap - lineHeight;
             double textX = spec.right() ? panelW - pad - textWidth : pad;
-            g.setFont(font);
             g.setColor(TEXT);
-            g.drawString(text, (float) textX, (float) (lineTop + size * 0.95));
+            fonts.draw(g, text, Font.BOLD, (float) size, (float) textX, (float) (lineTop + size * 0.95));
         } finally {
             g.dispose();
         }
@@ -286,9 +287,5 @@ public final class OverlayRenderer {
 
     private static FontRenderContext fontContext() {
         return new FontRenderContext(null, true, true);
-    }
-
-    private static double advance(Font font, String text, FontRenderContext frc) {
-        return font.getStringBounds(text, frc).getWidth();
     }
 }

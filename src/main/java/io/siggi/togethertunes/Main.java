@@ -32,7 +32,16 @@ import io.siggi.togethertunes.http.StaticFiles;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.http.WebSockets;
 import io.siggi.togethertunes.ingest.EncodePresets;
+import io.siggi.togethertunes.fonts.CardFonts;
+import io.siggi.togethertunes.fonts.FontDownloader;
+import io.siggi.togethertunes.fonts.FontLibrary;
+import io.siggi.togethertunes.fonts.FontManifest;
+import io.siggi.togethertunes.fonts.FontsApi;
+import io.siggi.togethertunes.fonts.SystemFonts;
+import io.siggi.togethertunes.fonts.TextRenderingCheck;
+import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.ingest.FillerCards;
+import io.siggi.togethertunes.settings.CjkVariant;
 import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
 import io.siggi.togethertunes.overlay.Overlays;
@@ -111,6 +120,8 @@ import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.security.SecureRandom;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.util.List;
@@ -151,6 +162,11 @@ public final class Main {
         Startup startup = load(args, ConfigLoader.forProcess(), System.out, System.err);
         if (startup.status() != 0) {
             System.exit(startup.status());
+        }
+        // Before anything renders: Java2D needs FreeType, fontconfig and a font (a clear message, not a crash).
+        int text = checkTextRendering(TextRenderingCheck.JAVA2D, System.err);
+        if (text != 0) {
+            System.exit(text);
         }
         Config config = startup.config();
         DataDir dataDir;
@@ -194,6 +210,8 @@ public final class Main {
         }
         // Config keys that are also admin settings: the config gives the default, the admin setting wins.
         Settings settings = new Settings(database, config);
+        // The card fonts (bundled, downloaded, uploaded, installed), before the first card renders.
+        FontLibrary fonts = startFonts(dataDir, settings, System.err);
         // The output encoding (output.profile, output.videoBitrateKbps) with its reference and filler
         // cards; an admin can change it at runtime (OutputAssets.follow, from the settings listener below).
         // TODO(overlay, M5): the overlay encoder verifies its encodes against the reference card too.
@@ -252,6 +270,10 @@ public final class Main {
             if (value instanceof X264Preset preset
                     && (key == Settings.INGEST_QUICK_PRESET || key == Settings.INGEST_QUALITY_PRESET)) {
                 presets.validate(key.name(), preset);
+            }
+            // cards.font names an installed family or an uploaded font.
+            if (key == Settings.CARDS_FONT) {
+                fonts.validateCardFont((String) value);
             }
         });
         // Shared with the room WebSocket (RoomSocket), which redeems the tickets.
@@ -445,8 +467,15 @@ public final class Main {
                 return ingest.jobs().countStale(target);
             }
         });
+        // New card fonts (a setting, a download that landed, a removed font): the filler cards are made
+        // again and items whose cards were drawn with other fonts get a card-only re-encode.
+        fonts.changeListener(cardFontsChanged(outputAssets, ingest, System.out, System.err));
+        new FontsApi(fonts, settings, permissions, database, itemTexts(database), dataDir.tmp(), Clock.systemUTC())
+                .register(appRouter);
         admin.settingsListener(() -> {
             Thread.ofVirtual().start(outputControl::reconcile);
+            // cards.font and fonts.cjkVariant: rebuilt (and the cards follow) when the chain changed.
+            Thread.ofVirtual().start(fonts::rebuild);
             // ingest.workers, output.profile and output.videoBitrateKbps take effect without a restart.
             Thread.ofVirtual().start(() -> applyRuntimeSettings(settings, ingest, outputAssets, System.err));
         });
@@ -493,6 +522,7 @@ public final class Main {
             // Before the database: running jobs are put back in the queue on the way out.
             ingest.close();
             staticFiles.close();
+            fonts.close();
             database.close();
         }, "shutdown"));
         System.out.println("Listening on " + config.httpBind() + ":" + web.port());
@@ -554,9 +584,10 @@ public final class Main {
                 err.println("WARNING: could not queue re-encode jobs for the output profile: " + e.getMessage());
             }
             try {
-                int cards = jobs.enqueueCardRemakes(referenceCard.encoding());
+                int cards = jobs.enqueueCardRemakes(referenceCard.encoding(), cardFontKey());
                 if (cards > 0) {
-                    err.println("Queued " + cards + " card-only re-encode jobs (items with cards in an older card format)");
+                    err.println("Queued " + cards + " card-only re-encode jobs (items with cards in an older card"
+                            + " format or drawn with other fonts)");
                 }
             } catch (SQLException e) {
                 err.println("WARNING: could not queue card-only re-encode jobs: " + e.getMessage());
@@ -576,6 +607,103 @@ public final class Main {
             err.println("WARNING: could not start the ingest queue: " + e.getMessage());
         }
         return queue;
+    }
+
+    /**
+     * The startup text check ({@link TextRenderingCheck}): 0 if Java2D can draw text, else the
+     * message on {@code err} and {@link #EXIT_STARTUP}.
+     */
+    static int checkTextRendering(TextRenderingCheck.Probe probe, PrintStream err) {
+        String problem = TextRenderingCheck.check(probe);
+        if (problem == null) {
+            return 0;
+        }
+        err.println(problem);
+        return EXIT_STARTUP;
+    }
+
+    /**
+     * The card fonts ({@code docs/library-and-ingest.md#card-fonts}) from {@code <data>/fonts} and the
+     * settings, installed for every card renderer. If the directory can't be used, cards use the
+     * bundled and installed fonts (reported).
+     */
+    static FontLibrary startFonts(DataDir dataDir, Settings settings, PrintStream err) {
+        FontLibrary fonts = new FontLibrary(dataDir.fonts(), FontManifest.load(), new FontDownloader(),
+                SystemFonts.installed(), new FontLibrary.Prefs() {
+                    @Override
+                    public String cardFont() throws SQLException {
+                        return settings.cardsFont();
+                    }
+
+                    @Override
+                    public boolean autoDownload() throws SQLException {
+                        return settings.fontsAutoDownload();
+                    }
+
+                    @Override
+                    public CjkVariant cjkVariant() throws SQLException {
+                        return settings.fontsCjkVariant();
+                    }
+                }, FontLibrary.DEFAULT_BACKOFF, Clock.systemUTC());
+        try {
+            fonts.start();
+        } catch (IOException | RuntimeException e) {
+            err.println("WARNING: could not read the card fonts in " + dataDir.fonts() + ": " + e.getMessage());
+            fonts.rebuild();
+        }
+        return fonts;
+    }
+
+    /** The fonts key of an item card's text with the card fonts in use ({@link CardRenderer#fontKey}). */
+    static IngestJobs.CardFontKey cardFontKey() {
+        return (title, artist, album) -> CardRenderer.fontKey(CardFonts.installed(), title, artist, album);
+    }
+
+    /**
+     * What happens when the card fonts changed: the filler cards are made again for the encoding in
+     * use ({@link OutputAssets#refreshCards}) and items whose card was drawn with other fonts get a
+     * card-only re-encode ({@link IngestJobs#enqueueCardRemakes(OutputEncoding, IngestJobs.CardFontKey)}).
+     * Runs on its own thread, one change at a time.
+     */
+    static Runnable cardFontsChanged(OutputAssets assets, IngestQueue ingest, PrintStream out, PrintStream err) {
+        ReentrantLock lock = new ReentrantLock();
+        return () -> Thread.ofVirtual().name("card-fonts-changed").start(() -> {
+            lock.lock();
+            try {
+                if (assets.refreshCards()) {
+                    out.println("Card fonts changed: the filler cards are up to date");
+                }
+                ReferenceCard reference = assets.reference();
+                if (reference != null) {
+                    int queued = ingest.jobs().enqueueCardRemakes(reference.encoding(), cardFontKey());
+                    if (queued > 0) {
+                        out.println("Card fonts changed: queued " + queued + " card-only re-encode jobs");
+                        ingest.wake();
+                    }
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                err.println("WARNING: could not apply the new card fonts: " + e.getMessage());
+            } finally {
+                lock.unlock();
+            }
+        });
+    }
+
+    /** Every item's title, artist and album, for the fonts panel's uncovered characters. */
+    static FontLibrary.Texts itemTexts(Database database) {
+        return consumer -> database.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT title, artist, album FROM items");
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    for (int i = 1; i <= 3; i++) {
+                        consumer.accept(rs.getString(i));
+                    }
+                }
+            }
+            return null;
+        });
     }
 
     /**

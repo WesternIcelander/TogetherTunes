@@ -85,6 +85,32 @@ public final class OutputAssets {
     }
 
     /**
+     * Makes the current encoding's cards again (the filler cards are re-rendered and re-encoded if
+     * their pixels changed, e.g. after the card fonts changed; {@code docs/library-and-ingest.md#card-fonts})
+     * and uses them from the next program output start. The listeners are not told: the encoding
+     * is the same.
+     *
+     * @return whether new assets were made (false if the cards couldn't be made; the old ones stay)
+     */
+    public boolean refreshCards() throws InterruptedException {
+        switching.lock();
+        try {
+            Assets previous = current;
+            Assets made = maker.make(previous.encoding());
+            if (made == null || made.reference() == null || made.fillerCards() == null
+                    || !made.encoding().equals(previous.encoding())) {
+                return false;
+            }
+            current = made;
+            return true;
+        } catch (IllegalStateException e) {
+            return false;
+        } finally {
+            switching.unlock();
+        }
+    }
+
+    /**
      * Switches to the encoding {@code target} gives, read once this switch has its turn (so of two
      * quick changes, the later one wins). Nothing happens if it's already the current one.
      *

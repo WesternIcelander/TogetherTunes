@@ -2,6 +2,8 @@
 // (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
 import { api, ApiError } from "./api.js";
+import { busy, CJK_VARIANTS, cardFontChoices, cardFontSetting, downloadAllText, formatSize, statusText,
+  type FontsInfo } from "./fonts.js";
 import { mountJobs, type JobsView } from "./jobs.js";
 import { pageSignal } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
@@ -120,7 +122,7 @@ function formValue(form: HTMLFormElement, name: string): string {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["users", "roles", "settings", "jobs"] as const;
+const TABS = ["users", "roles", "settings", "fonts", "jobs"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -148,6 +150,8 @@ async function showTab(): Promise<void> {
       await loadRoles();
     } else if (tab === "jobs") {
       await loadJobs();
+    } else if (tab === "fonts") {
+      await loadFonts();
     } else {
       await loadSettings();
     }
@@ -397,8 +401,13 @@ function setUpRoles(): void {
 
 let loadedSettings: Setting[] = [];
 
+/** The Fonts tab edits the card font settings; the Settings tab leaves them out. */
+function withoutFonts(items: Setting[]): Setting[] {
+  return items.filter((s) => s.group !== "fonts");
+}
+
 async function loadSettings(): Promise<void> {
-  loadedSettings = (await api<{ items: Setting[] }>("GET", "/api/admin/settings")).items;
+  loadedSettings = withoutFonts((await api<{ items: Setting[] }>("GET", "/api/admin/settings")).items);
   renderSettings();
   await loadStorage();
 }
@@ -488,7 +497,7 @@ function settingRow(s: Setting): HTMLElement {
     void run(error, reset, async () => {
       if (!(await confirmEncodingChange({ [s.key]: s.default === undefined ? null : s.default }))) return;
       const r = await api<SettingsResponse>("PATCH", "/api/admin/settings", { [s.key]: null });
-      loadedSettings = r.items;
+      loadedSettings = withoutFonts(r.items);
       status(`Reset ${s.key}.` + savedNotice(r));
       renderSettings();
       await loadStorage();
@@ -610,12 +619,130 @@ function setUpSettings(): void {
     void run(form.querySelector(".error"), form, async () => {
       if (!(await confirmEncodingChange(changes))) return;
       const r = await api<SettingsResponse>("PATCH", "/api/admin/settings", changes);
-      loadedSettings = r.items;
+      loadedSettings = withoutFonts(r.items);
       status("Saved " + Object.keys(changes).join(", ") + "." + savedNotice(r));
       renderSettings();
       await loadStorage();
     });
   });
+}
+
+// ------------------------------------------------------------------ fonts
+
+let fontsTimer: number | undefined;
+
+/** The Fonts tab (admin.settings): card font, script font downloads, uploads, uncovered characters. */
+async function loadFonts(): Promise<void> {
+  if (fontsTimer !== undefined) {
+    clearTimeout(fontsTimer);
+    fontsTimer = undefined;
+  }
+  const info = await api<FontsInfo>("GET", "/api/admin/fonts");
+  renderFonts(info);
+  if (busy(info)) {
+    fontsTimer = window.setTimeout(() => {
+      if (currentTab() === "fonts") void loadFonts().catch((e) => status(message(e)));
+    }, 3000);
+  }
+}
+
+async function patchFontSetting(key: string, value: unknown): Promise<void> {
+  await api("PATCH", "/api/admin/settings", { [key]: value });
+  status("Saved " + key + ".");
+  await loadFonts();
+}
+
+function renderFonts(info: FontsInfo): void {
+  const root = element("fonts-root");
+  const error = h("p", { class: "error", role: "alert" });
+
+  const cardFont = h("select", { "aria-label": "Card font" },
+    ...cardFontChoices(info).map((c) => h("option", { value: c.value, text: c.label, selected: c.value === info.cardFont })));
+  const saveFont = h("button", { type: "button", text: "Use this font" });
+  saveFont.addEventListener("click", () => void run(error, saveFont,
+    () => patchFontSetting("cards.font", cardFontSetting(cardFont.value))));
+
+  const file = h("input", { type: "file", accept: ".ttf,.otf,font/ttf,font/otf", "aria-label": "Font file" });
+  const upload = h("button", { type: "button", text: "Upload" });
+  upload.addEventListener("click", () => void run(error, upload, async () => {
+    const picked = file.files?.[0];
+    if (picked === undefined) throw new Error("Pick a TrueType or OpenType font file first.");
+    const u = await api<{ family: string }>("POST", "/api/admin/fonts/uploads", picked);
+    status(`Uploaded ${u.family}. Pick it as the card font to use it.`);
+    await loadFonts();
+  }));
+  const uploads = h("ul", {}, ...info.choices.uploads.map((u) => {
+    const del = h("button", { type: "button", text: "Delete" });
+    del.addEventListener("click", () => void run(error, del, async () => {
+      await api("DELETE", "/api/admin/fonts/uploads/" + encodeURIComponent(u.id));
+      status(`Deleted ${u.family}.`);
+      await loadFonts();
+    }));
+    return h("li", {}, `${u.family} (${formatSize(u.size)}) `, del);
+  }));
+
+  const auto = h("input", { type: "checkbox", checked: info.autoDownload });
+  auto.addEventListener("change", () => void run(error, null,
+    () => patchFontSetting("fonts.autoDownload", auto.checked)));
+  const cjk = h("select", { "aria-label": "Preferred CJK variant" },
+    ...CJK_VARIANTS.map((v) => h("option", { value: v.value, text: v.label, selected: v.value === info.cjkVariant })));
+  cjk.addEventListener("change", () => void run(error, null, () => patchFontSetting("fonts.cjkVariant", cjk.value)));
+
+  const all = h("button", { type: "button", text: `Download all (${formatSize(info.missingBytes)})`,
+    disabled: info.missingBytes === 0 });
+  all.addEventListener("click", () => {
+    if (!confirm(downloadAllText(info))) return;
+    void run(error, all, async () => {
+      await api("POST", "/api/admin/fonts/download-all");
+      await loadFonts();
+    });
+  });
+
+  const rows = info.fonts.map((f) => {
+    const action = f.status === "installed"
+      ? h("button", { type: "button", text: "Remove" })
+      : h("button", { type: "button", text: "Download", disabled: f.status === "queued" || f.status === "downloading" });
+    action.addEventListener("click", () => void run(error, action, async () => {
+      if (f.status === "installed") {
+        await api("DELETE", "/api/admin/fonts/scripts/" + encodeURIComponent(f.id));
+      } else {
+        await api("POST", "/api/admin/fonts/scripts/" + encodeURIComponent(f.id) + "/download");
+      }
+      await loadFonts();
+    }));
+    return h("tr", {}, h("td", { text: f.name }), h("td", { text: f.scripts.join(", ") }),
+      h("td", { text: formatSize(f.size) }),
+      h("td", { text: statusText(f, (ms) => new Date(ms).toLocaleTimeString()) }), h("td", {}, action));
+  });
+
+  const uncovered = info.uncovered.length === 0
+    ? h("p", { text: "Every character in the library's titles, artists and albums has a font." })
+    : h("table", { class: "list" },
+      h("thead", {}, h("tr", {}, h("th", { text: "Character" }), h("th", { text: "Code point" }),
+        h("th", { text: "Script" }), h("th", { text: "Items" }), h("th", { text: "Font that has it" }))),
+      h("tbody", {}, ...info.uncovered.map((u) => h("tr", {}, h("td", { text: u.char }), h("td", { text: u.codePoint }),
+        h("td", { text: u.script }), h("td", { text: String(u.count) }),
+        h("td", { text: u.font === undefined ? "none known" : info.fonts.find((f) => f.id === u.font)?.name ?? u.font })))));
+
+  root.replaceChildren(
+    h("h3", { text: "Card font" }),
+    h("p", { text: "The font card text is drawn with. Characters it lacks fall back to the built-in font, the downloaded script fonts and then any installed font." }),
+    h("div", { class: "row" }, cardFont, saveFont),
+    h("h4", { text: "Upload a font" }),
+    h("p", { text: "A TrueType or OpenType file (at most 32 MiB), e.g. for servers without internet access." }),
+    h("div", { class: "row" }, file, upload),
+    uploads,
+    h("h3", { text: "Script fonts" }),
+    h("label", {}, auto, " Download a missing script font when a card needs it"),
+    h("label", {}, "Han characters without kana or hangul are drawn as ", cjk),
+    h("div", { class: "row" }, all),
+    h("table", { class: "list" },
+      h("thead", {}, h("tr", {}, h("th", { text: "Font" }), h("th", { text: "Scripts" }), h("th", { text: "Size" }),
+        h("th", { text: "Status" }), h("th", { text: "" }))),
+      h("tbody", {}, ...rows)),
+    h("h3", { text: "Characters without a font" }),
+    uncovered,
+    error);
 }
 
 // ------------------------------------------------------------------ jobs

@@ -338,20 +338,41 @@ public final class IngestJobs {
      * @return the number of jobs queued
      */
     public int enqueueCardRemakes(OutputEncoding encoding) throws SQLException {
+        return enqueueCardRemakes(encoding, null);
+    }
+
+    /** What an item card's text is, for {@link #enqueueCardRemakes(OutputEncoding, CardFontKey)}. */
+    @FunctionalInterface
+    public interface CardFontKey {
+        /** The fonts key the card would get now ({@code CardRenderer.fontKey}). */
+        String of(String title, String artist, String album);
+    }
+
+    /**
+     * {@link #enqueueCardRemakes(OutputEncoding)}, and also for every such item whose card was
+     * drawn with other fonts than {@code fontKey} gives for its text now ({@code items.card_fonts};
+     * {@code docs/library-and-ingest.md#card-fonts}): a new card font, or a downloaded script font
+     * for characters that had none. Null {@code fontKey}: the card format only.
+     */
+    public int enqueueCardRemakes(OutputEncoding encoding, CardFontKey fontKey) throws SQLException {
         Objects.requireNonNull(encoding);
         return db.write(c -> {
             List<String> stale = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items i WHERE status = 'ready'"
-                    + " AND output_profile = ? AND card_version < ?"
+            try (PreparedStatement ps = c.prepareStatement("SELECT id, card_version, card_fonts, title, artist, album"
+                    + " FROM items i WHERE status = 'ready' AND output_profile = ?"
+                    + (fontKey == null ? " AND card_version < " + CardEncoder.CARD_VERSION : "")
                     + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
                     + " ORDER BY added_at, id")) {
                 ps.setString(1, encoding.id());
-                ps.setInt(2, CardEncoder.CARD_VERSION);
-                ps.setString(3, State.QUEUED.wire());
-                ps.setString(4, State.RUNNING.wire());
+                ps.setString(2, State.QUEUED.wire());
+                ps.setString(3, State.RUNNING.wire());
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        stale.add(rs.getString(1));
+                        boolean old = rs.getInt(2) < CardEncoder.CARD_VERSION;
+                        if (old || !Objects.equals(rs.getString(3),
+                                fontKey.of(rs.getString(4), rs.getString(5), rs.getString(6)))) {
+                            stale.add(rs.getString(1));
+                        }
                     }
                 }
             }

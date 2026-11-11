@@ -17,6 +17,7 @@ import java.util.List;
  *   cards/   server-wide filler cards
  *   rooms/   one directory per room
  *   tmp/     in-progress uploads and ingest scratch
+ *   fonts/   downloaded and uploaded card fonts (made by the font library when it starts)
  * </pre>
  *
  * <p>{@link #create} makes all of them on startup (existing ones are kept as they are) and checks
@@ -65,6 +66,11 @@ public record DataDir(Path root, Path db, Path media, Path cards, Path rooms, Pa
             }
         }
         return dir;
+    }
+
+    /** {@code <data>/fonts}: downloaded script fonts and their licences, uploads in {@code uploads/}. */
+    public Path fonts() {
+        return root.resolve("fonts");
     }
 
     /** {@link #root} followed by the subdirectories. */

@@ -7,10 +7,16 @@ export class ApiError extends Error {
   }
 }
 
-/** Sends a request with an optional JSON body and returns the parsed JSON response. */
+/**
+ * Sends a request with an optional JSON body and returns the parsed JSON response. A `Blob` body
+ * (e.g. a picked file) is sent as is, as `application/octet-stream`.
+ */
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
   const init: RequestInit = { method, headers: { Accept: "application/json" }, credentials: "same-origin" };
-  if (body !== undefined) {
+  if (body instanceof Blob) {
+    init.headers = { ...init.headers, "Content-Type": "application/octet-stream" };
+    init.body = body;
+  } else if (body !== undefined) {
     init.headers = { ...init.headers, "Content-Type": "application/json" };
     init.body = JSON.stringify(body);
   }

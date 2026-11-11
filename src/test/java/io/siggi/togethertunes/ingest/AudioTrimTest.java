@@ -254,6 +254,25 @@ class AudioTrimTest extends IngestPipelineTestBase {
         CardEncoderTest.checkSkipFrameCard(tools, after.resolve(IngestPipeline.CARD), reference.encoding());
         assertEquals(edit, MediaVersions.currentEditJson(db, item), "the edit settings are kept");
         assertEquals(CardEncoder.CARD_VERSION, new IngestItems(db).cardVersion(item));
+        // Card fonts (docs/library-and-ingest.md#card-fonts): recorded with the card; other fonts
+        // than the text gets now (here: a stale key) make the card again, card only.
+        IngestItems.Item row = new IngestItems(db).get(item).orElseThrow();
+        String fonts = CardRenderer.fontKey(io.siggi.togethertunes.fonts.CardFonts.installed(), row.title(),
+                row.artist(), row.album());
+        assertEquals(fonts, new IngestItems(db).cardFonts(item));
+        IngestJob same = run(q, Kind.REENCODE, item);
+        assertTrue(same.log().contains("already encoded"), same.log());
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET card_fonts = 'stale' WHERE id = ?")) {
+                ps.setString(1, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        IngestJob fontsChanged = run(q, Kind.REENCODE, item);
+        assertTrue(fontsChanged.log().contains("[ingest] card only"), fontsChanged.log());
+        assertEquals(fonts, new IngestItems(db).cardFonts(item));
+        assertTrue(Files.isSameFile(after.resolve(IngestPipeline.MEZZ), cur(item).resolve(IngestPipeline.MEZZ)));
         assertNoLeftovers();
     }
 }

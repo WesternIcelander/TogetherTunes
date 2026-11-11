@@ -1,6 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 import io.siggi.togethertunes.config.OutputProfile;
+import io.siggi.togethertunes.fonts.CardFonts;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -34,10 +35,11 @@ import javax.imageio.ImageIO;
  * meaning carried by text labels, never by colour alone). Each text line that is too wide is first
  * shrunk down to a minimum size, then ellipsized at grapheme boundaries ({@link #fit}).
  *
- * <p>Text uses the logical {@code SansSerif} font, whose fallback chain covers the scripts the
- * system has fonts for; a server image must therefore ship fonts (e.g. Noto incl. CJK). Requires
- * {@code java.awt.headless=true} on a server ({@code Main} sets it). Instances are immutable and
- * thread-safe; each call draws into its own image.
+ * <p>Text is drawn with the card fonts ({@link CardFonts}, {@code docs/library-and-ingest.md#card-fonts}):
+ * the admin's card font, else the bundled DejaVu Sans, with a per-run fallback to downloaded script
+ * fonts and installed fonts, so titles in any script the server has a font for draw without boxes.
+ * Requires {@code java.awt.headless=true} on a server ({@code Main} sets it). Instances are
+ * immutable and thread-safe; each call draws into its own image.
  */
 public final class CardRenderer {
     /** The server-wide filler cards. Their labels are the visible text. */
@@ -73,11 +75,10 @@ public final class CardRenderer {
     public record ItemCard(String title, String artist, String album, BufferedImage artwork) {
     }
 
-    /** One fitted line of text: the font size chosen and the (possibly ellipsized) text. */
-    record Fitted(String text, Font font, double width, boolean shrunk, boolean ellipsized) {
+    /** One fitted line of text: the style and size chosen and the (possibly ellipsized) text. */
+    record Fitted(String text, int style, float size, double width, boolean shrunk, boolean ellipsized) {
     }
 
-    static final String FONT_FAMILY = Font.SANS_SERIF;
     static final String ELLIPSIS = "…";
     static final String UNTITLED = "Untitled";
 
@@ -104,12 +105,19 @@ public final class CardRenderer {
     static final float BACKDROP_DIM = 0.72f;
 
     private final OutputProfile profile;
+    private final CardFonts fonts;
     private final int width;
     private final int height;
     private final double scale;
 
+    /** A renderer with the card fonts in use now ({@link CardFonts#installed()}). */
     public CardRenderer(OutputProfile profile) {
+        this(profile, CardFonts.installed());
+    }
+
+    public CardRenderer(OutputProfile profile, CardFonts fonts) {
         this.profile = Objects.requireNonNull(profile);
+        this.fonts = Objects.requireNonNull(fonts);
         this.width = profile.width();
         this.height = profile.height();
         this.scale = height / DESIGN_HEIGHT;
@@ -117,6 +125,19 @@ public final class CardRenderer {
 
     public OutputProfile profile() {
         return profile;
+    }
+
+    public CardFonts fonts() {
+        return fonts;
+    }
+
+    /**
+     * Which fonts draw an item card's text ({@link CardFonts#key}; stored as
+     * {@code items.card_fonts}): it changes when the card would be drawn with other fonts.
+     */
+    public static String fontKey(CardFonts fonts, String title, String artist, String album) {
+        String t = clean(title);
+        return fonts.key(t.isEmpty() ? UNTITLED : t, clean(artist), clean(album));
     }
 
     /** Renders an item card: artwork on the left, title/artist/album to its right. */
@@ -145,16 +166,16 @@ public final class CardRenderer {
             List<Fitted> lines = new ArrayList<>();
             List<Color> colors = new ArrayList<>();
             String title = clean(item.title());
-            lines.add(fit(title.isEmpty() ? UNTITLED : title, Font.BOLD, TITLE_SIZE * scale, TITLE_MIN * scale, maxWidth, frc));
+            lines.add(fit(fonts, title.isEmpty() ? UNTITLED : title, Font.BOLD, TITLE_SIZE * scale, TITLE_MIN * scale, maxWidth, frc));
             colors.add(TEXT);
             String artist = clean(item.artist());
             if (!artist.isEmpty()) {
-                lines.add(fit(artist, Font.PLAIN, ARTIST_SIZE * scale, ARTIST_MIN * scale, maxWidth, frc));
+                lines.add(fit(fonts, artist, Font.PLAIN, ARTIST_SIZE * scale, ARTIST_MIN * scale, maxWidth, frc));
                 colors.add(TEXT);
             }
             String album = clean(item.album());
             if (!album.isEmpty()) {
-                lines.add(fit(album, Font.PLAIN, ALBUM_SIZE * scale, ALBUM_MIN * scale, maxWidth, frc));
+                lines.add(fit(fonts, album, Font.PLAIN, ALBUM_SIZE * scale, ALBUM_MIN * scale, maxWidth, frc));
                 colors.add(TEXT_DIM);
             }
             drawLinesCentered(g, lines, colors, textX, false, height / 2.0);
@@ -183,11 +204,11 @@ public final class CardRenderer {
             double maxWidth = width - 2 * MARGIN * scale;
             List<Fitted> lines = new ArrayList<>();
             List<Color> colors = new ArrayList<>();
-            lines.add(fit(filler.label(), Font.BOLD, FILLER_SIZE * scale, FILLER_MIN * scale, maxWidth, frc));
+            lines.add(fit(fonts, filler.label(), Font.BOLD, FILLER_SIZE * scale, FILLER_MIN * scale, maxWidth, frc));
             colors.add(TEXT);
             String sub = clean(subtitle);
             if (!sub.isEmpty()) {
-                lines.add(fit(sub, Font.PLAIN, SUBTITLE_SIZE * scale, SUBTITLE_MIN * scale, maxWidth, frc));
+                lines.add(fit(fonts, sub, Font.PLAIN, SUBTITLE_SIZE * scale, SUBTITLE_MIN * scale, maxWidth, frc));
                 colors.add(TEXT_DIM);
             }
 
@@ -226,24 +247,25 @@ public final class CardRenderer {
      * {@code minSize} at which it fits; if it doesn't fit even at {@code minSize}, it is cut at a
      * grapheme boundary and {@link #ELLIPSIS} appended (trailing whitespace before it removed).
      */
-    static Fitted fit(String text, int style, double size, double minSize, double maxWidth, FontRenderContext frc) {
-        Font base = new Font(FONT_FAMILY, style, 1);
+    static Fitted fit(CardFonts fonts, String text, int style, double size, double minSize, double maxWidth,
+                      FontRenderContext frc) {
         double s = Math.round(size);
         double min = Math.min(s, Math.round(minSize));
         while (true) {
-            Font font = base.deriveFont((float) s);
-            double w = advance(font, text, frc);
+            float fs = (float) s;
+            double w = advance(fonts, text, style, fs, frc);
             if (w <= maxWidth) {
-                return new Fitted(text, font, w, s < Math.round(size), false);
+                return new Fitted(text, style, fs, w, s < Math.round(size), false);
             }
             if (s <= min) {
-                return ellipsize(text, font, maxWidth, frc);
+                return ellipsize(fonts, text, style, fs, maxWidth, frc);
             }
             s = Math.max(min, s - 1);
         }
     }
 
-    private static Fitted ellipsize(String text, Font font, double maxWidth, FontRenderContext frc) {
+    private static Fitted ellipsize(CardFonts fonts, String text, int style, float size, double maxWidth,
+                                    FontRenderContext frc) {
         List<Integer> bounds = new ArrayList<>();
         BreakIterator it = BreakIterator.getCharacterInstance(Locale.ROOT);
         it.setText(text);
@@ -254,22 +276,23 @@ public final class CardRenderer {
         int lo = 0, hi = bounds.size() - 1;
         while (lo < hi) {
             int mid = (lo + hi + 1) >>> 1;
-            if (advance(font, withEllipsis(text, bounds.get(mid)), frc) <= maxWidth) {
+            if (advance(fonts, withEllipsis(text, bounds.get(mid)), style, size, frc) <= maxWidth) {
                 lo = mid;
             } else {
                 hi = mid - 1;
             }
         }
         String result = withEllipsis(text, bounds.get(lo));
-        return new Fitted(result, font, advance(font, result, frc), true, true);
+        return new Fitted(result, style, size, advance(fonts, result, style, size, frc), true, true);
     }
 
     private static String withEllipsis(String text, int end) {
         return text.substring(0, end).stripTrailing() + ELLIPSIS;
     }
 
-    static double advance(Font font, String text, FontRenderContext frc) {
-        return text.isEmpty() ? 0 : font.getStringBounds(text, frc).getWidth();
+    /** The advance width of {@code text} drawn with {@code fonts} (per-run fallback, shaped). */
+    static double advance(CardFonts fonts, String text, int style, float size, FontRenderContext frc) {
+        return fonts.advance(text, style, size, frc);
     }
 
     /** Null-safe; control characters (incl. line breaks) become spaces, runs of spaces collapse. */
@@ -410,8 +433,7 @@ public final class CardRenderer {
     private double blockHeight(List<Fitted> lines) {
         double h = 0;
         for (int n = 0; n < lines.size(); n++) {
-            Font f = lines.get(n).font();
-            h += f.getSize2D() * 1.2;
+            h += lines.get(n).size() * 1.2;
             if (n > 0) {
                 h += LINE_GAP * scale;
             }
@@ -429,11 +451,10 @@ public final class CardRenderer {
         double y = centerY - blockHeight(lines) / 2;
         for (int n = 0; n < lines.size(); n++) {
             Fitted line = lines.get(n);
-            double size = line.font().getSize2D();
-            g.setFont(line.font());
+            double size = line.size();
             g.setColor(colors.get(n));
             double lx = centerX ? x - line.width() / 2 : x;
-            g.drawString(line.text(), (float) lx, (float) (y + size * 0.95));
+            fonts.draw(g, line.text(), line.style(), line.size(), (float) lx, (float) (y + size * 0.95));
             y += size * 1.2 + LINE_GAP * scale;
         }
     }

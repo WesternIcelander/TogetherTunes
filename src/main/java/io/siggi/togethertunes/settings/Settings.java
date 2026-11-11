@@ -172,6 +172,19 @@ public final class Settings {
     public static final SettingKey<Long> OVERLAY_CACHE_MAX_BYTES = SettingKey.bytes(
             "overlay.cacheMaxBytes", 20 * GIB, 0, MAX_BYTES);
 
+    // Card fonts (docs/library-and-ingest.md#card-fonts)
+    /**
+     * The font card text is drawn with: unset = the bundled DejaVu Sans, {@code system:<family>} an
+     * installed font family, {@code upload:<id>} a font file an admin uploaded. Characters it has no
+     * glyph for fall back to the bundled font, the downloaded script fonts and then any installed font.
+     */
+    public static final SettingKey<String> CARDS_FONT = SettingKey.optionalString("cards.font");
+    /** Download a missing script font when a card needs it. */
+    public static final SettingKey<Boolean> FONTS_AUTO_DOWNLOAD = SettingKey.bool("fonts.autoDownload", true);
+    /** The CJK font variant for Han text without kana, hangul or bopomofo. */
+    public static final SettingKey<CjkVariant> FONTS_CJK_VARIANT = SettingKey.enumeration(
+            "fonts.cjkVariant", CjkVariant.class, CjkVariant.JP, CjkVariant::wireName);
+
     /** Every setting, in documentation order, by name. */
     public static final Map<String, SettingKey<?>> KEYS;
 
@@ -198,7 +211,8 @@ public final class Settings {
                 OUTPUTS_FORCE_AUTO_OFF, OUTPUTS_MAX_AUTO_OFF_MINUTES,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OUTPUTS_MP3_ENABLED, OUTPUTS_MP3_BITRATE_KBPS,
-                OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES)) {
+                OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES,
+                CARDS_FONT, FONTS_AUTO_DOWNLOAD, FONTS_CJK_VARIANT)) {
             if (keys.put(k.name(), k) != null) {
                 throw new ExceptionInInitializerError("duplicate setting " + k.name());
             }
@@ -556,5 +570,18 @@ public final class Settings {
 
     public boolean overlayEnabled() throws SQLException {
         return get(OVERLAY_ENABLED);
+    }
+
+    /** {@code cards.font}: null for the bundled font. */
+    public String cardsFont() throws SQLException {
+        return get(CARDS_FONT);
+    }
+
+    public boolean fontsAutoDownload() throws SQLException {
+        return get(FONTS_AUTO_DOWNLOAD);
+    }
+
+    public CjkVariant fontsCjkVariant() throws SQLException {
+        return get(FONTS_CJK_VARIANT);
     }
 }

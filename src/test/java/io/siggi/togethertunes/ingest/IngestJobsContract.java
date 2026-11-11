@@ -629,6 +629,51 @@ abstract class IngestJobsContract {
     }
 
     /**
+     * Card fonts ({@code docs/library-and-ingest.md#card-fonts}): an item whose card was drawn with
+     * other fonts than its text gets now ({@code card_fonts}; null = not recorded) gets a card-only
+     * re-encode; one whose key matches doesn't. A publish with a new card records its key; a
+     * card-only remake records the new one.
+     */
+    @Test
+    void enqueueCardRemakesQueuesItemsWhoseCardFontsChanged() throws SQLException {
+        OutputEncoding encoding = OutputEncoding.defaultFor(OutputProfile.P720_30);
+        String same = fixtures.item("ready");
+        String changed = fixtures.item("ready");
+        String unknown = fixtures.item("ready");
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET output_profile = ?, card_version = ?, title = ?,"
+                    + " card_fonts = ? WHERE id = ?")) {
+                for (String id : List.of(same, changed, unknown)) {
+                    ps.setString(1, encoding.id());
+                    ps.setInt(2, CardEncoder.CARD_VERSION);
+                    ps.setString(3, id.equals(changed) ? "เพลงไทย" : "Latin");
+                    ps.setString(4, id.equals(unknown) ? null : "key-Latin");
+                    ps.setString(5, id);
+                    ps.executeUpdate();
+                }
+            }
+            return null;
+        });
+        IngestJobs.CardFontKey key = (title, artist, album) -> "key-" + title;
+        assertEquals(0, jobs.enqueueCardRemakes(encoding), "the card format alone: all current");
+        assertEquals(2, jobs.enqueueCardRemakes(encoding, key));
+        java.util.Set<String> queued = new java.util.HashSet<>();
+        for (IngestJob j : jobs.list(State.QUEUED, 10)) {
+            assertEquals(Kind.REENCODE, j.kind());
+            queued.add(j.itemId());
+        }
+        assertEquals(java.util.Set.of(changed, unknown), queued);
+        IngestItems items = new IngestItems(db);
+        assertEquals("key-Latin", items.cardFonts(same));
+        assertNull(items.cardFonts(unknown));
+        items.published(unknown, false, 1, encoding, X264Preset.VERYFAST, true, null, null, -1, null, null,
+                CardEncoder.CARD_VERSION, "key-new");
+        assertEquals("key-new", items.cardFonts(unknown));
+        items.published(unknown, false, 1, encoding, X264Preset.VERYFAST, true, null, null, -1, null, null);
+        assertEquals("key-new", items.cardFonts(unknown), "a publish that took the card over keeps it");
+    }
+
+    /**
      * The encoding changed while a job ran (an admin changed output.profile or the bitrate): the
      * job finishes for the old encoding, so its item gets a {@code reencode} at once; an item that
      * finished for the current encoding doesn't. {@link IngestJobs#countStale} counts the ready

@@ -691,6 +691,9 @@ public final class AdminApi {
         if (name.startsWith("overlay.")) {
             return "overlay";
         }
+        if (name.startsWith("cards.") || name.startsWith("fonts.")) {
+            return "fonts";
+        }
         return "library";
     }
 
