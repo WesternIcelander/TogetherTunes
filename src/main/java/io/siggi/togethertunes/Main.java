@@ -44,6 +44,7 @@ import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.settings.CjkVariant;
 import io.siggi.togethertunes.overlay.OverlayCards;
 import io.siggi.togethertunes.overlay.OverlayDecisions;
+import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
 import io.siggi.togethertunes.ingest.IngestJobs;
@@ -306,6 +307,10 @@ public final class Main {
         OverlayCards.Lookups overlayLookups = OverlayCards.lookupsFrom(database, dataDir, settings,
                 new OverlayDecisions(database, settings, permissions));
         OverlayCards overlayCards = new OverlayCards(dataDir.rooms(), Tools.from(config));
+        // Music-video overlay re-encodes run in their own pool (overlay.workers), never behind ingest;
+        // its jobs live in memory only (docs/architecture.md#threading).
+        OverlayPool overlayPool = new OverlayPool(setting(settings::overlayWorkers, config.overlayWorkers()));
+        overlayPool.start();
         ProgramOutputs programOutputs = programOutputs(config, dataDir, database, outputAssets, silence, settings,
                 (roomId, reference) -> overlayCards.forRoom(roomId, reference, overlays, overlayLookups));
         // A new output encoding: presets are checked against its reference card, every item re-encodes
@@ -476,8 +481,10 @@ public final class Main {
             Thread.ofVirtual().start(outputControl::reconcile);
             // cards.font and fonts.cjkVariant: rebuilt (and the cards follow) when the chain changed.
             Thread.ofVirtual().start(fonts::rebuild);
-            // ingest.workers, output.profile and output.videoBitrateKbps take effect without a restart.
-            Thread.ofVirtual().start(() -> applyRuntimeSettings(settings, ingest, outputAssets, System.err));
+            // ingest.workers, overlay.workers, output.profile and output.videoBitrateKbps take effect
+            // without a restart.
+            Thread.ofVirtual().start(() -> applyRuntimeSettings(settings, ingest, overlayPool, outputAssets,
+                    System.err));
         });
         // The room pages' view of the outputs: `outputs` in `state`, `output.status` on every change.
         OutputStatusFeed outputStatus = new OutputStatusFeed(streamOutputs, outputControl, roomSocket::outputStatus);
@@ -515,6 +522,7 @@ public final class Main {
                 mp3Encoders.close();
             }
             programOutputs.close();
+            overlayPool.close();
             // After the web server (no new requests), before the database (rooms persist on the way out).
             roomRegistry.close();
             retention.close();
@@ -801,12 +809,13 @@ public final class Main {
 
     /**
      * Applies the admin settings that change running parts of the server after an admin saved
-     * settings: {@code ingest.workers} resizes the ingest pool, {@code output.profile} and
+     * settings: {@code ingest.workers} resizes the ingest pool, {@code overlay.workers} the overlay
+     * encoder pool, {@code output.profile} and
      * {@code output.videoBitrateKbps} switch the output encoding ({@link OutputAssets#follow}:
      * new cards, re-encodes queued, program outputs restarted). Problems are logged.
      */
-    static void applyRuntimeSettings(Settings settings, IngestQueue ingest, OutputAssets outputAssets,
-                                     PrintStream err) {
+    static void applyRuntimeSettings(Settings settings, IngestQueue ingest, OverlayPool overlayPool,
+                                     OutputAssets outputAssets, PrintStream err) {
         try {
             int workers = settings.ingestWorkers();
             if (workers != ingest.workers()) {
@@ -814,6 +823,14 @@ public final class Main {
             }
         } catch (SQLException | RuntimeException e) {
             err.println("WARNING: could not apply ingest.workers: " + e.getMessage());
+        }
+        try {
+            int workers = settings.overlayWorkers();
+            if (workers != overlayPool.workers()) {
+                overlayPool.resize(workers);
+            }
+        } catch (SQLException | RuntimeException e) {
+            err.println("WARNING: could not apply overlay.workers: " + e.getMessage());
         }
         try {
             outputAssets.follow(settings::outputEncoding);

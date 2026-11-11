@@ -18,6 +18,7 @@ import io.siggi.togethertunes.ingest.FillerCards;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestQueue;
+import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.ingest.OutputAssets;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.CardRenderer.Filler;
@@ -124,6 +125,7 @@ class MainEncodingTest {
         IngestJobs jobs = new IngestJobs(db);
         jobs.currentEncoding(assets::encoding);
         queue = new IngestQueue(jobs, 1, job -> { });
+        OverlayPool overlayPool = new OverlayPool(1);
         EncodePresets presets = EncodePresets.checkedAgainst(assets::reference, io.siggi.togethertunes.ingest.Tools.from(config),
                 dataDir.cards(), settings::ingestQuickPreset, settings::ingestQualityPreset);
         assertTrue(presets.matches(X264Preset.VERYFAST));
@@ -135,17 +137,19 @@ class MainEncodingTest {
         String older = readyItem("720p30");
 
         // Nothing changed: nothing happens.
-        Main.applyRuntimeSettings(settings, queue, assets, out);
+        Main.applyRuntimeSettings(settings, queue, overlayPool, assets, out);
         assertEquals(initial, assets.encoding());
         assertTrue(jobs.list(IngestJob.State.QUEUED, 10).isEmpty());
 
         // An admin lowers the bitrate and raises the worker count.
         settings.setJson("output.videoBitrateKbps", "2000");
         settings.setJson("ingest.workers", "3");
-        Main.applyRuntimeSettings(settings, queue, assets, out);
+        settings.setJson("overlay.workers", "2");
+        Main.applyRuntimeSettings(settings, queue, overlayPool, assets, out);
         OutputEncoding lower = new OutputEncoding(OutputProfile.P720_30, 2000);
         assertEquals(lower, assets.encoding());
         assertEquals(3, queue.workers());
+        assertEquals(2, overlayPool.workers());
         ReferenceCard reference = assets.reference();
         assertEquals(lower, reference.encoding());
         assertTrue(Files.isRegularFile(reference.card()), reference.card().toString());
@@ -172,7 +176,7 @@ class MainEncodingTest {
 
         // A reset goes back to the config's encoding (cards already there).
         settings.reset(Settings.OUTPUT_VIDEO_BITRATE_KBPS);
-        Main.applyRuntimeSettings(settings, queue, assets, out);
+        Main.applyRuntimeSettings(settings, queue, overlayPool, assets, out);
         assertEquals(initial, assets.encoding());
         assertFalse(text.contains("WARNING"), text);
         outputs.close();
