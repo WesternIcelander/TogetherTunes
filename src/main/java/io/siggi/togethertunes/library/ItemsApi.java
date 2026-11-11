@@ -30,7 +30,7 @@ import java.util.Set;
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
  *       "mediaType", "show"?: {"name", "season"?, "episode"},
- *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry", "canPin"}, "pinned"?: {"pinnedAt"},
+ *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry", "canPin", "canDeleteRecord"}, "pinned"?: {"pinnedAt"},
  *       "undo"?: {"changedAt"}}}. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
@@ -73,7 +73,12 @@ import java.util.Set;
  *       {@code pinned: {"pinnedAt"}} while pinned (for every caller; not who pinned it) and
  *       {@code you.canPin}. Views ({@code POST /api/items/{id}/view}) are {@link MediaApi}'s.</li>
  *   <li>{@code DELETE /api/items/{id}} → {@code 204}: purge now. {@code library.purge}.
- *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running).</li>
+ *       {@code 404 item_not_found}, {@code 409 item_busy} (an ingest job is running). With
+ *       {@code retention.purgedEntryDays} 0 the item's library and playlist entries go too.</li>
+ *   <li>{@code DELETE /api/admin/items/{id}} → {@code 204}: Delete record ({@link Items#deleteRecord}):
+ *       the item row and everything referencing it; audit {@code item.deleted}. Admins only (the
+ *       admin role; {@code 401 not_authenticated}, {@code 403 forbidden}). {@code 404
+ *       item_not_found}, {@code 409 item_busy}, {@code 409 item_in_room}.</li>
  *   <li>{@code GET /api/items/{id}/job} (any actor) → the latest ingest job {@code {"id", "kind",
  *       "state", "progress", "attempts", "createdAt", "startedAt"?, "finishedAt"?, "log"?}};
  *       {@code log} only for callers who may edit the item. {@code 404 item_not_found},
@@ -111,6 +116,7 @@ public final class ItemsApi {
         router.get("/api/items/{id}", this::get);
         router.patch("/api/items/{id}", this::update);
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
+        router.delete("/api/admin/items/{id}", this::deleteRecord, permissions.adminHook());
         router.get("/api/items/{id}/job", this::job);
         router.post("/api/items/{id}/undo", this::undo);
         router.post("/api/items/{id}/trim", this::trim);
@@ -128,7 +134,7 @@ public final class ItemsApi {
         return new Items.Rights(permissions.allowed(actor, Permission.LIBRARY_EDIT_ANY),
                 permissions.allowed(actor, Permission.LIBRARY_PURGE), permissions.allowed(actor, Permission.ADMIN_JOBS),
                 youtube != null && permissions.enabled(Feature.YOUTUBE),
-                permissions.allowed(actor, Permission.LIBRARY_PIN));
+                permissions.allowed(actor, Permission.LIBRARY_PIN), permissions.isAdmin(actor));
     }
 
     private void pin(Request request, Response response) throws Exception {
@@ -312,6 +318,13 @@ public final class ItemsApi {
     private void purge(Request request, Response response) throws Exception {
         Actor.User user = (Actor.User) ActorResolver.actor(request); // the permission hook let only users through
         items.purge(request.pathParam("id"), items.auditedBy(user.userId(), request.clientIp()));
+        response.empty(204);
+    }
+
+    private void deleteRecord(Request request, Response response) throws Exception {
+        Actor.User user = (Actor.User) ActorResolver.actor(request); // the admin hook let only admins through
+        items.deleteRecord(user, request.pathParam("id"), request.clientIp());
+        response.header("Cache-Control", "no-store");
         response.empty(204);
     }
 

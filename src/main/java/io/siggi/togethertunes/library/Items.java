@@ -47,8 +47,13 @@ import java.util.Objects;
  * {@code media/<itemId>} and its upload staging directory are renamed aside
  * ({@link IngestPipeline#moveAside}), so a refetch or re-upload that starts after the commit
  * can't lose its new files to the delete; they are deleted after the commit (leftovers of a crash
- * by {@link IngestPipeline#recoverDirectories}). Library and playlist entries stay: the item
- * shows as "media expired". Purging an already purged item deletes any leftover files again.
+ * by {@link IngestPipeline#recoverDirectories}). Library and playlist entries stay for
+ * {@code retention.purgedEntryDays} (the item shows as "media expired"; removed in the purge
+ * transaction when the setting is 0, by the retention sweeper later, never at -1; see
+ * {@link PurgedEntries}). Purging an already purged item deletes any leftover files again.
+ *
+ * <p><b>Delete record</b> ({@link #deleteRecord}, admins): the row and everything referencing it
+ * go; only an audit row stays.
  */
 public final class Items {
     /** {@code audit_log} action of a metadata edit. */
@@ -178,14 +183,21 @@ public final class Items {
      *                  on, and the caller may edit the item or holds {@code admin.jobs}
      * @param canPin    whether the caller may pin and unpin the item ({@code library.pin}; admins
      *                  hold every permission)
+     * @param canDeleteRecord whether the caller is an admin, who may delete the item's record
+     *                  ({@code DELETE /api/admin/items/{id}})
      */
-    public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin) {
+    public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin,
+                      boolean canDeleteRecord) {
         public You(boolean inLibrary, boolean canEdit, boolean canPurge) {
-            this(inLibrary, canEdit, canPurge, false, false);
+            this(inLibrary, canEdit, canPurge, false, false, false);
         }
 
         public You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry) {
-            this(inLibrary, canEdit, canPurge, canRetry, false);
+            this(inLibrary, canEdit, canPurge, canRetry, false, false);
+        }
+
+        public You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin) {
+            this(inLibrary, canEdit, canPurge, canRetry, canPin, false);
         }
     }
 
@@ -225,14 +237,20 @@ public final class Items {
      * @param retryAny holds {@code admin.jobs}: may retry any failed YouTube item
      * @param youtube  YouTube imports are on ({@code ytdlp.enabled}); retries need it
      * @param pin      holds {@code library.pin}: may pin and unpin any item
+     * @param admin    is an admin (the built-in admin role): may delete records
      */
-    public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin) {
+    public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin,
+                         boolean admin) {
         public Rights(boolean editAny, boolean purge) {
-            this(editAny, purge, false, false, false);
+            this(editAny, purge, false, false, false, false);
         }
 
         public Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube) {
-            this(editAny, purge, retryAny, youtube, false);
+            this(editAny, purge, retryAny, youtube, false, false);
+        }
+
+        public Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin) {
+            this(editAny, purge, retryAny, youtube, pin, false);
         }
     }
 
@@ -295,7 +313,8 @@ public final class Items {
         boolean canEdit = user && (rights.editAny() || adder && inLibrary);
         boolean retryable = "youtube".equals(row.source()) && "failed".equals(row.status());
         return new You(inLibrary, canEdit, user && rights.purge(),
-                retryable && rights.youtube() && (canEdit || user && rights.retryAny()), user && rights.pin());
+                retryable && rights.youtube() && (canEdit || user && rights.retryAny()), user && rights.pin(),
+                user && rights.admin());
     }
 
     private ItemPage page(Connection c, Row r, You you) throws SQLException {
@@ -858,6 +877,24 @@ public final class Items {
     public record Purged(String previousStatus, int cancelledJobs) {
     }
 
+    /** The {@code retention.purgedEntryDays} setting, read at each purge. */
+    @FunctionalInterface
+    public interface Days {
+        int get() throws SQLException;
+    }
+
+    private volatile Days purgedEntryDays = () -> -1;
+
+    /**
+     * Sets where {@link #purge} reads {@code retention.purgedEntryDays}: at {@code 0} the item's
+     * library and playlist entries are removed in the purge transaction
+     * ({@code docs/media-types.md#after-media-is-deleted}); otherwise they stay (the retention
+     * sweeper removes them later, or never at {@code -1}). Default: kept.
+     */
+    public void purgedEntryDays(Days days) {
+        this.purgedEntryDays = days == null ? () -> -1 : days;
+    }
+
     /**
      * Purges the item (see the class comment).
      *
@@ -867,10 +904,107 @@ public final class Items {
      */
     public Purged purge(String itemId, PurgeCheck check) throws SQLException, IOException {
         long now = EpochMs.now(clock);
+        boolean removeEntries = purgedEntryDays.get() == 0;
+        return withFilesRemoved(itemId, (c, row) -> {
+            check.check(c, itemId, row.status());
+            int cancelled = cancelQueuedJobs(c, itemId, now);
+            refuseRunningJob(c, itemId);
+            // Nothing is kept for undo once the files are gone.
+            MediaVersions.forgetAll(c, itemId);
+            // An item that already was purged keeps its purge time.
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET purged_at = CASE WHEN status = 'purged'"
+                    + " THEN COALESCE(purged_at, ?) ELSE ? END, status = 'purged' WHERE id = ?")) {
+                ps.setLong(1, now);
+                ps.setLong(2, now);
+                ps.setString(3, itemId);
+                ps.executeUpdate();
+            }
+            if (removeEntries) {
+                PurgedEntries.removeForItem(c, itemId, now);
+            }
+            db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
+            return new Purged(row.status(), cancelled);
+        });
+    }
+
+    /** {@code audit_log} action of an admin's Delete record ({@code DELETE /api/admin/items/{id}}). */
+    public static final String AUDIT_DELETED = "item.deleted";
+
+    /**
+     * Delete record ({@code docs/media-types.md#after-media-is-deleted}): removes the item as if it
+     * had never existed: its files (and, through the purge listener, its overlay re-encodes and
+     * cards), media versions and undo, library, playlist and share entries, its queue entries
+     * (room history, with their votes), uploads that produced it, every ingest job, and the
+     * item row. Only the audit row {@code item.deleted} (with its title) stays. A YouTube item's
+     * video ID is free afterwards: adding the link again creates a new item. The caller checks
+     * that the actor is an admin.
+     *
+     * @throws HttpError {@code 404 item_not_found}; {@code 409 item_busy} (an ingest job is
+     *                   running); {@code 409 item_in_room} (queued, suggested or current in a room:
+     *                   remove it from the queue first)
+     */
+    public void deleteRecord(Actor.User actor, String itemId, String clientIp) throws SQLException, IOException {
+        Objects.requireNonNull(actor);
+        long now = EpochMs.now(clock);
+        withFilesRemoved(itemId, (c, row) -> {
+            // Cancelling first waits for a worker claiming one of them right now (row locks), so the
+            // check below sees its job running.
+            cancelQueuedJobs(c, itemId, now);
+            refuseRunningJob(c, itemId);
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM queue_entries qe WHERE qe.item_id = ?"
+                    + " AND (qe.state IN ('queued', 'suggested', 'playing')"
+                    + " OR EXISTS (SELECT 1 FROM rooms r WHERE r.current_entry_id = qe.id))")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        throw new HttpError(409, "item_in_room",
+                                "This item is queued or playing in a room; remove it from the queue first");
+                    }
+                }
+            }
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("title", row.title());
+            details.put("source", row.source());
+            if (row.youtubeId() != null) {
+                details.put("youtubeId", row.youtubeId());
+            }
+            details.put("previousStatus", row.status());
+            AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_DELETED, itemId, details);
+            MediaVersions.forgetAll(c, itemId);
+            PurgedEntries.removeForItem(c, itemId, now);
+            // Votes and skip votes go with their entries (ON DELETE CASCADE).
+            for (String sql : List.of("DELETE FROM shares WHERE item_id = ?",
+                    "DELETE FROM queue_entries WHERE item_id = ?",
+                    "DELETE FROM uploads WHERE item_id = ?",
+                    "DELETE FROM ingest_jobs WHERE item_id = ?",
+                    "DELETE FROM items WHERE id = ?")) {
+                try (PreparedStatement ps = c.prepareStatement(sql)) {
+                    ps.setString(1, itemId);
+                    ps.executeUpdate();
+                }
+            }
+            return null;
+        });
+    }
+
+    /** Work done in the transaction of {@link #withFilesRemoved}, with the locked item row. */
+    @FunctionalInterface
+    private interface FilesTx<T> {
+        T run(Connection c, Row row) throws SQLException;
+    }
+
+    /**
+     * Runs {@code work} in a write transaction with the item row locked ({@code 404
+     * item_not_found} when there is none), renames the item directory and its upload staging
+     * directory aside in that transaction (so a refetch or re-upload starting after the commit
+     * can't lose its new files), puts them back if the transaction fails, deletes them after the
+     * commit, and then tells the purge listener (overlay caches).
+     */
+    private <T> T withFilesRemoved(String itemId, FilesTx<T> work) throws SQLException, IOException {
         List<Path[]> moved = new ArrayList<>(); // {aside, original}
-        Purged purged;
+        T result;
         try {
-            purged = db.write(c -> {
+            result = db.write(c -> {
                 Row row = lockedRow(c, itemId);
                 if (row == null) {
                     throw notFound();
@@ -878,38 +1012,7 @@ public final class Items {
                 // Only now: an id from the URL could be anything, one from the table is a UUID.
                 Path itemDir = IngestPipeline.itemDir(dataDir, row.id());
                 Path staging = IngestPipeline.stagingDir(dataDir, row.id());
-                check.check(c, itemId, row.status());
-                int cancelled;
-                try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = ?, finished_at = ?"
-                        + " WHERE item_id = ? AND state = ?")) {
-                    ps.setString(1, IngestJob.State.FAILED.wire());
-                    ps.setLong(2, now);
-                    ps.setString(3, itemId);
-                    ps.setString(4, IngestJob.State.QUEUED.wire());
-                    cancelled = ps.executeUpdate();
-                }
-                try (PreparedStatement ps = c.prepareStatement(
-                        "SELECT 1 FROM ingest_jobs WHERE item_id = ? AND state = ?")) {
-                    ps.setString(1, itemId);
-                    ps.setString(2, IngestJob.State.RUNNING.wire());
-                    try (ResultSet rs = ps.executeQuery()) {
-                        if (rs.next()) {
-                            throw new HttpError(409, "item_busy",
-                                    "This item is being processed right now; try again when its ingest job has ended");
-                        }
-                    }
-                }
-                // Nothing is kept for undo once the files are gone.
-                MediaVersions.forgetAll(c, itemId);
-                // An item that already was purged keeps its purge time.
-                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET purged_at = CASE WHEN status = 'purged'"
-                        + " THEN COALESCE(purged_at, ?) ELSE ? END, status = 'purged' WHERE id = ?")) {
-                    ps.setLong(1, now);
-                    ps.setLong(2, now);
-                    ps.setString(3, itemId);
-                    ps.executeUpdate();
-                }
-                db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
+                T out = work.run(c, row);
                 // Renamed inside the transaction: nothing can publish new files for the item until
                 // the commit, and nothing can see it purged before they are gone from their place.
                 try {
@@ -922,7 +1025,7 @@ public final class Items {
                 } catch (IOException e) {
                     throw new SQLException("Could not move the item's files aside: " + e.getMessage(), e);
                 }
-                return new Purged(row.status(), cancelled);
+                return out;
             });
         } catch (SQLException | RuntimeException e) {
             for (Path[] m : moved) {
@@ -938,8 +1041,8 @@ public final class Items {
             try {
                 IngestPipeline.deleteTree(m[0]);
             } catch (IOException e) {
-                // The row is purged; recoverDirectories deletes what is left at the next start.
-                LOG.log(System.Logger.Level.WARNING, "Could not delete " + m[0] + " of purged item " + itemId
+                // The row is purged or gone; recoverDirectories deletes what is left at the next start.
+                LOG.log(System.Logger.Level.WARNING, "Could not delete " + m[0] + " of item " + itemId
                         + ": " + e.getMessage());
             }
         }
@@ -947,10 +1050,37 @@ public final class Items {
         try {
             purgeListener.accept(itemId);
         } catch (RuntimeException e) {
-            LOG.log(System.Logger.Level.WARNING, "Could not delete the overlay files of purged item " + itemId
+            LOG.log(System.Logger.Level.WARNING, "Could not delete the overlay files of item " + itemId
                     + ": " + e, e);
         }
-        return purged;
+        return result;
+    }
+
+    /** Cancels (marks {@code failed}) the item's queued ingest jobs; returns how many. */
+    private static int cancelQueuedJobs(Connection c, String itemId, long now) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = ?, finished_at = ?"
+                + " WHERE item_id = ? AND state = ?")) {
+            ps.setString(1, IngestJob.State.FAILED.wire());
+            ps.setLong(2, now);
+            ps.setString(3, itemId);
+            ps.setString(4, IngestJob.State.QUEUED.wire());
+            return ps.executeUpdate();
+        }
+    }
+
+    /** {@code 409 item_busy} while an ingest job of the item is running. */
+    private static void refuseRunningJob(Connection c, String itemId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(
+                "SELECT 1 FROM ingest_jobs WHERE item_id = ? AND state = ?")) {
+            ps.setString(1, itemId);
+            ps.setString(2, IngestJob.State.RUNNING.wire());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    throw new HttpError(409, "item_busy",
+                            "This item is being processed right now; try again when its ingest job has ended");
+                }
+            }
+        }
     }
 
     /** The purge check of {@code DELETE /api/items/{id}}: an audit row by the acting user. */

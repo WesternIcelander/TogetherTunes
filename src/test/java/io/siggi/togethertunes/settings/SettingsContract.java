@@ -82,6 +82,7 @@ abstract class SettingsContract {
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(14, settings.retentionVideoUnviewedDays());
         assertEquals(72, settings.retentionVideoAfterViewHours());
+        assertEquals(30, settings.retentionPurgedEntryDays());
         assertEquals(1800, settings.ingestMaxDurationSeconds());
         assertEquals(90, settings.roomsRequestHistoryDays());
         assertEquals(5L * 1024 * 1024 * 1024, settings.storageMinFreeBytes());
@@ -109,7 +110,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(41, all.size());
+        assertEquals(42, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -168,6 +169,12 @@ abstract class SettingsContract {
     @Test
     void invalidValuesAreRejectedOnSet() throws SQLException {
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.RETENTION_UNREFERENCED_DAYS, -1));
+        // retention.purgedEntryDays: -1 = keep forever, 0 = at the purge
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.RETENTION_PURGED_ENTRY_DAYS, -2));
+        settings.set(Settings.RETENTION_PURGED_ENTRY_DAYS, -1);
+        assertEquals(-1, settings.retentionPurgedEntryDays());
+        settings.set(Settings.RETENTION_PURGED_ENTRY_DAYS, 0);
+        assertEquals(0, settings.retentionPurgedEntryDays());
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.INGEST_MAX_DURATION_SECONDS, 0));
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.GUESTS_ENABLED, null));
         assertThrows(IllegalArgumentException.class, () -> new UploadQuota(-1, 10));
@@ -239,7 +246,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(41, settings.all().size());
+        assertEquals(42, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

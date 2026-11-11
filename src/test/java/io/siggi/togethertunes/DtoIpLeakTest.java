@@ -1141,6 +1141,7 @@ class DtoIpLeakTest {
         expect(200, admin, "PUT", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
+        expect(204, admin, "DELETE", "/api/admin/items/" + insertItem(adminId), null);
         // undo of a media change: alice's own item, edited (version 2, version 1 kept for undo), undone
         String undoItem = insertItem(aliceId);
         expect(201, alice, "PUT", "/api/library/" + undoItem, null);

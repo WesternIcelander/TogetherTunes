@@ -262,6 +262,7 @@ class PermissionMatrixTest {
             row("PATCH /api/items/{id}", c -> Call.patch("/api/items/" + c.itemId(), "{\"title\":\"Renamed\"}"),
                     401, 401, 403, 200),
             row("DELETE /api/items/{id}", c -> Call.delete("/api/items/" + c.itemId()), 401, 401, 403, 204),
+            row("DELETE /api/admin/items/{id}", c -> Call.delete("/api/admin/items/" + c.itemId()), 401, 401, 403, 204),
             row("GET /api/items/{id}/job", c -> Call.get("/api/items/" + c.jobItemId() + "/job"), 200, 200, 200, 200),
             // Undo of a media change: those who may edit; the admin finds nothing to undo (MediaVersionsTest,
             // ItemsContract and ItemsApiTest cover the switch).

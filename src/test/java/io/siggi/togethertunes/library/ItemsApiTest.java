@@ -263,6 +263,34 @@ class ItemsApiTest {
         assertEquals("item_not_found", code(call("DELETE", "/api/items/not-an-id/pin", bob, null)));
     }
 
+    /** Delete record is for admins only (the admin role, not merely every permission). */
+    @Test
+    void deleteRecordIsForAdminsOnly() throws Exception {
+        String id = item("audio");
+        String path = "/api/admin/items/" + id;
+        assertEquals(401, call("DELETE", path, null, null).statusCode());
+        assertEquals(403, call("DELETE", path, alice, null).statusCode(), "the adder isn't enough");
+        assertFalse(json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you")
+                .get("canDeleteRecord").getAsBoolean());
+        // a role holding every permission still isn't the admin role
+        io.siggi.togethertunes.auth.Roles roles = new io.siggi.togethertunes.auth.Roles(db);
+        io.siggi.togethertunes.auth.Roles.Role all = roles.create("Everything",
+                java.util.List.copyOf(io.siggi.togethertunes.auth.Permission.all()), false);
+        roles.setUserRoles(bobId, java.util.List.of(all.id()));
+        assertEquals(403, call("DELETE", path, bob, null).statusCode());
+        assertFalse(json(call("GET", "/api/items/" + id, bob, null)).getAsJsonObject("you")
+                .get("canDeleteRecord").getAsBoolean());
+
+        assertTrue(json(call("GET", "/api/items/" + id, admin, null)).getAsJsonObject("you")
+                .get("canDeleteRecord").getAsBoolean());
+        HttpResponse<String> deleted = call("DELETE", path, admin, null);
+        assertEquals(204, deleted.statusCode(), deleted.body());
+        assertEquals("item_not_found", code(call("GET", "/api/items/" + id, admin, null)));
+        assertEquals(1, audits(Items.AUDIT_DELETED, id));
+        assertEquals("item_not_found", code(call("DELETE", path, admin, null)));
+        assertEquals("item_not_found", code(call("DELETE", "/api/admin/items/not-an-id", admin, null)));
+    }
+
     @Test
     void getShowsTheItemToAnyone() throws Exception {
         String id = item("video");
@@ -273,7 +301,7 @@ class ItemsApiTest {
         assertEquals(JsonParser.parseString("{\"id\":\"" + id + "\",\"kind\":\"video\",\"title\":\"Song\","
                 + "\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\",\"presentAsAudio\":false,"
                 + "\"mediaType\":\"uncategorized\",\"addedAt\":3,\"mediaVersion\":0,\"hasCover\":false,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
-                + "\"canRetry\":false,\"canPin\":false}}"), page);
+                + "\"canRetry\":false,\"canPin\":false,\"canDeleteRecord\":false}}"), page);
         JsonObject mine = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you");
         assertTrue(mine.get("inLibrary").getAsBoolean() && mine.get("canEdit").getAsBoolean());
         assertFalse(mine.get("canPurge").getAsBoolean());

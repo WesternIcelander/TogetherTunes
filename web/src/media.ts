@@ -37,9 +37,11 @@ export interface ItemPage extends ItemSummary {
   hasCover: boolean;
   /**
    * `canRetry`: may retry the failed YouTube fetch now (`POST /api/items/{id}/retry`); `canPin`: may
-   * pin and unpin it (`PUT`/`DELETE /api/items/{id}/pin`).
+   * pin and unpin it (`PUT`/`DELETE /api/items/{id}/pin`); `canDeleteRecord`: an admin, who may
+   * delete the item's record (`DELETE /api/admin/items/{id}`).
    */
-  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean; canPin?: boolean };
+  you: { inLibrary: boolean; canEdit: boolean; canPurge: boolean; canRetry?: boolean; canPin?: boolean;
+    canDeleteRecord?: boolean };
   /** While the item is pinned (its media is never deleted automatically). */
   pinned?: { pinnedAt: number };
   /** Only for those who may edit, while a media change can be undone (`POST /api/items/{id}/undo`). */

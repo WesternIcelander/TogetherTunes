@@ -6,6 +6,7 @@ import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.library.Items;
+import io.siggi.togethertunes.library.PurgedEntries;
 import java.io.IOException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -45,6 +46,12 @@ import java.util.concurrent.TimeUnit;
  *
  * <p><b>Pinned items</b> ({@code items.pinned_at}) are never purged by either rule.
  *
+ * <p><b>Entries of purged items</b> ({@code docs/media-types.md#after-media-is-deleted}): last,
+ * the sweep removes the library and playlist entries of items purged (for any reason) more than
+ * {@code retention.purgedEntryDays} ago ({@link PurgedEntries}; {@code -1}: never; at {@code 0}
+ * {@link Items#purge} already removed them, and the sweep catches older ones). Room history
+ * keeps its rows.
+ *
  * <p>Remaining race (both dialects, accepted): an add that read the item as {@code ready} just
  * before the sweep commits its library/playlist entry just after it; the entry then shows the
  * item as "media expired", as after a manual purge. It needs an item that was unreferenced for
@@ -72,8 +79,16 @@ public final class RetentionSweeper implements AutoCloseable {
         int get() throws SQLException;
     }
 
-    /** The three retention settings, read at each sweep; each {@code 0} disables its rule. */
-    public record Limits(int unreferencedDays, int videoUnviewedDays, int videoAfterViewHours) {
+    /**
+     * The retention settings, read at each sweep; each of the first three {@code 0} disables its
+     * rule. {@code purgedEntryDays}: days a purged item's library and playlist entries are kept
+     * ({@code 0}: removed at the purge, and by the sweep for anything older; {@code -1}: kept forever).
+     */
+    public record Limits(int unreferencedDays, int videoUnviewedDays, int videoAfterViewHours, int purgedEntryDays) {
+        /** Purged items' entries kept forever. */
+        public Limits(int unreferencedDays, int videoUnviewedDays, int videoAfterViewHours) {
+            this(unreferencedDays, videoUnviewedDays, videoAfterViewHours, -1);
+        }
     }
 
     /** Reads the {@link Limits} at each sweep. */
@@ -94,8 +109,16 @@ public final class RetentionSweeper implements AutoCloseable {
 
     private final List<NamedChore> chores = new java.util.concurrent.CopyOnWriteArrayList<>();
 
-    /** What one sweep did. */
-    public record Result(int purged, int skipped, int failed) {
+    /**
+     * What one sweep did.
+     *
+     * @param removedEntries library and playlist entries of purged items removed
+     *                       ({@code retention.purgedEntryDays})
+     */
+    public record Result(int purged, int skipped, int failed, int removedEntries) {
+        public Result(int purged, int skipped, int failed) {
+            this(purged, skipped, failed, 0);
+        }
     }
 
     /** Thrown by the purge check to roll back the purge of an item that is referenced again. */
@@ -203,6 +226,10 @@ public final class RetentionSweeper implements AutoCloseable {
                 LOG.log(System.Logger.Level.INFO, "Retention: purged " + r.purged() + " items"
                         + (r.failed() > 0 ? ", " + r.failed() + " failed" : ""));
             }
+            if (r.removedEntries() > 0) {
+                LOG.log(System.Logger.Level.INFO, "Retention: removed " + r.removedEntries()
+                        + " library and playlist entries of purged items");
+            }
         } catch (Throwable t) {
             // Never let the schedule die; the next sweep tries again.
             LOG.log(System.Logger.Level.WARNING, "Retention sweep failed: " + t, t);
@@ -257,7 +284,13 @@ public final class RetentionSweeper implements AutoCloseable {
             extra.put("videoAfterViewHours", afterViewHours);
             pass(AUTO_DELETE, new long[] {unviewedCutoff, viewedCutoff}, extra, now, counts);
         }
-        return new Result(counts[0], counts[1], counts[2]);
+        int removed = 0;
+        int entryDays = limits.purgedEntryDays();
+        if (entryDays >= 0 && !Thread.currentThread().isInterrupted()) {
+            long cutoff = now - entryDays * DAY_MS;
+            removed = db.write(c -> PurgedEntries.removePurgedBefore(c, cutoff, now));
+        }
+        return new Result(counts[0], counts[1], counts[2], removed);
     }
 
     /** Purges every item matching {@code predicate} (on {@code items i}, parameters {@code cutoffs}). */

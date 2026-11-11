@@ -32,7 +32,7 @@ export const AUDIT_ACTIONS: readonly string[] = [
   "auth.logout", "auth.password_change_failed", "auth.password_changed", "auth.session_revoked",
   "auth.sessions_revoked", "auth.token",
   "guest.created", "guest.merged", "guest.renamed",
-  "item.ingest_retried", "item.media_undone", "item.pinned", "item.purged", "item.trimmed", "item.unpinned",
+  "item.deleted", "item.ingest_retried", "item.media_undone", "item.pinned", "item.purged", "item.trimmed", "item.unpinned",
   "item.updated",
   "job.cancelled", "job.retried",
   "room.created", "room.deleted", "room.guest_banned", "room.guest_unbanned", "room.member_removed",

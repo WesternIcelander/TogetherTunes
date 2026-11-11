@@ -397,6 +397,8 @@ public final class Main {
             overlayCache.itemPurged(itemId);
         });
         items.trimJobs(ingest.jobs());
+        // retention.purgedEntryDays = 0: a purge also removes the item's library and playlist entries.
+        items.purgedEntryDays(settings::retentionPurgedEntryDays);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
@@ -573,7 +575,8 @@ public final class Main {
         }
         RetentionSweeper retention = new RetentionSweeper(database, items,
                 () -> new RetentionSweeper.Limits(settings.retentionUnreferencedDays(),
-                        settings.retentionVideoUnviewedDays(), settings.retentionVideoAfterViewHours()),
+                        settings.retentionVideoUnviewedDays(), settings.retentionVideoAfterViewHours(),
+                        settings.retentionPurgedEntryDays()),
                 Clock.systemUTC());
         retention.alsoRun("trimmed room history entries", roomHistory::trim);
         retention.start();

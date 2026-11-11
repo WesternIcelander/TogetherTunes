@@ -444,6 +444,15 @@ function render(item: ItemPage, job: JobView | undefined): void {
       await refresh();
     }, showError, "danger"));
   }
+  if (item.you.canDeleteRecord === true) {
+    actions.append(button("Delete record", async () => {
+      if (!confirm("Delete this item entirely, as if it had never existed? Its media, its entries in every library,"
+        + " playlist and room history, and its jobs go. This can't be undone.")) return;
+      await api("DELETE", "/api/admin/items/" + encodeURIComponent(item.id));
+      body.replaceChildren(h("p", { text: "The item's record was deleted." }));
+      showNotice("Deleted.");
+    }, showError, "danger"));
+  }
 
   body.replaceChildren(...nodes(
     h("div", { class: "item-head" }, cover,

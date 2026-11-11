@@ -49,6 +49,7 @@ abstract class RetentionSweeperContract {
     private int days = 14;
     private int unviewedDays = 14;
     private int afterViewHours = 72;
+    private int purgedEntryDays = -1;
     static final long HOUR = 60L * 60 * 1000;
 
     /** Opens a fresh, empty database. */
@@ -61,7 +62,7 @@ abstract class RetentionSweeperContract {
         data = DataDir.create(dir.resolve("data"));
         jobs = new IngestJobs(db, clock);
         sweeper = new RetentionSweeper(db, new Items(db, data, clock),
-                () -> new RetentionSweeper.Limits(days, unviewedDays, afterViewHours), clock);
+                () -> new RetentionSweeper.Limits(days, unviewedDays, afterViewHours, purgedEntryDays), clock);
         userId = UuidV7.newId();
         exec("INSERT INTO users (id, username, display_name, created_at, disabled) VALUES (?, 'u', 'u', ?, 0)",
                 userId, 1L);
@@ -456,5 +457,90 @@ abstract class RetentionSweeperContract {
         assertEquals("purged", status(untouched));
         assertEquals("purged", status(inLibrary), "a library entry doesn't protect a movie or show");
         assertEquals(2, audit().size(), "no audit row for the skipped items");
+    }
+
+    private long count(String sql, Object... args) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < args.length; i++) {
+                    ps.setObject(i + 1, args[i]);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    private String purgedAt(long purgedAt) throws Exception {
+        String id = item("purged", NOW - 100 * DAY);
+        exec("UPDATE items SET purged_at = ? WHERE id = ?", purgedAt, id);
+        libraryEntry(id);
+        playlistEntry(id);
+        queueEntry(id, "played");
+        return id;
+    }
+
+    private long entries(String itemId) throws SQLException {
+        return count("SELECT (SELECT COUNT(*) FROM library_entries WHERE item_id = ?)"
+                + " + (SELECT COUNT(*) FROM playlist_entries WHERE item_id = ?)", itemId, itemId);
+    }
+
+    /**
+     * {@code retention.purgedEntryDays}: library and playlist entries of items purged (for any
+     * reason) that long ago go; room history stays; -1 keeps them, 0 removes all.
+     */
+    @Test
+    void removesTheEntriesOfItemsPurgedLongAgo() throws Exception {
+        days = 0;
+        unviewedDays = 0;
+        afterViewHours = 0;
+        String old = purgedAt(NOW - 30 * DAY - 1);
+        String boundary = purgedAt(NOW - 30 * DAY);
+        String recent = purgedAt(NOW - 29 * DAY);
+        String ready = item("ready", NOW);
+        libraryEntry(ready);
+        playlistEntry(ready);
+        // purged long ago, then fetched again: it's ready, its entries stay
+        String refetched = item("ready", NOW);
+        exec("UPDATE items SET purged_at = ? WHERE id = ?", NOW - 100 * DAY, refetched);
+        libraryEntry(refetched);
+
+        assertEquals(new RetentionSweeper.Result(0, 0, 0), sweeper.sweep(), "-1: kept forever");
+        assertEquals(2, entries(old));
+
+        purgedEntryDays = 30;
+        assertEquals(new RetentionSweeper.Result(0, 0, 0, 4), sweeper.sweep());
+        assertEquals(0, entries(old));
+        assertEquals(0, entries(boundary), "purged exactly 30 days ago");
+        assertEquals(2, entries(recent));
+        assertEquals(2, entries(ready));
+        assertEquals(1, entries(refetched));
+        assertEquals(1, count("SELECT COUNT(*) FROM queue_entries WHERE item_id = ?", old), "room history stays");
+        assertEquals("purged", status(old), "the row stays");
+        assertEquals(2, count("SELECT COUNT(*) FROM playlists WHERE updated_at = ?", NOW),
+                "the playlists that lost an entry were updated");
+
+        purgedEntryDays = 0;
+        assertEquals(new RetentionSweeper.Result(0, 0, 0, 2), sweeper.sweep());
+        assertEquals(0, entries(recent));
+        assertEquals(2, entries(ready));
+    }
+
+    /** At 0, an item the sweeper purges loses its entries in the same purge. */
+    @Test
+    void purgedEntryDaysZeroRemovesTheEntriesOfAnAutoDeletedItemAtOnce() throws Exception {
+        purgedEntryDays = 0;
+        Items items = new Items(db, data, clock);
+        items.purgedEntryDays(() -> purgedEntryDays);
+        RetentionSweeper s = new RetentionSweeper(db, items,
+                () -> new RetentionSweeper.Limits(days, unviewedDays, afterViewHours, purgedEntryDays), clock);
+        String movie = video("movie", NOW - 20 * DAY, null);
+        libraryEntry(movie);
+        playlistEntry(movie);
+        assertEquals(new RetentionSweeper.Result(1, 0, 0), s.sweep(), "removed by the purge, not the entries pass");
+        assertEquals("purged", status(movie));
+        assertEquals(0, entries(movie));
     }
 }

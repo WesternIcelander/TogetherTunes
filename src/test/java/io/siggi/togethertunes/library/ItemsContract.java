@@ -631,4 +631,190 @@ abstract class ItemsContract {
             }
         }));
     }
+
+    // ------------------------------------------------------------------ after media is deleted
+
+    private void exec(String sql, Object... params) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < params.length; i++) {
+                    ps.setObject(i + 1, params[i]);
+                }
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    private long count(String sql, Object... params) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < params.length; i++) {
+                    ps.setObject(i + 1, params[i]);
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
+    private String playlist(Actor.User owner, String itemId) throws SQLException {
+        String playlist = UuidV7.newId();
+        exec("INSERT INTO playlists (id, owner_id, name, created_at, updated_at) VALUES (?, ?, 'p', 1, 1)",
+                playlist, owner.userId());
+        exec("INSERT INTO playlist_entries (id, playlist_id, item_id, position, added_at) VALUES (?, ?, ?, 1, 1)",
+                UuidV7.newId(), playlist, itemId);
+        return playlist;
+    }
+
+    private String room(Actor.User owner) throws SQLException {
+        String room = UuidV7.newId();
+        exec("INSERT INTO rooms (id, slug, name, owner_id, created_at, visibility, control_mode, settings_json,"
+                + " playback_state) VALUES (?, ?, 'Room', ?, 1, 'public', 'owner', '{}', 'paused')",
+                room, "r" + room.substring(room.length() - 8), owner.userId());
+        return room;
+    }
+
+    private String queueEntry(String room, String itemId, String state) throws SQLException {
+        String entry = UuidV7.newId();
+        exec("INSERT INTO queue_entries (id, room_id, item_id, added_by_user_id, added_at, state, position, played_at)"
+                + " VALUES (?, ?, ?, ?, 1, ?, 1, ?)", entry, room, itemId, alice.userId(), state,
+                state.equals("played") ? 2L : null);
+        return entry;
+    }
+
+    /** {@code retention.purgedEntryDays} 0: the purge removes the library and playlist entries too. */
+    @Test
+    void purgeRemovesLibraryAndPlaylistEntriesWhenPurgedEntryDaysIsZero() throws Exception {
+        String room = room(alice);
+        String kept = aliceItem("audio");
+        playlist(alice, kept);
+        items.purgedEntryDays(() -> 30);
+        items.purge(kept, (c, i, s) -> { });
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", kept), "kept for 30 days");
+        assertEquals(1, count("SELECT COUNT(*) FROM playlist_entries WHERE item_id = ?", kept));
+
+        String id = aliceItem("audio");
+        entry(bob, id);
+        String playlist = playlist(alice, id);
+        String other = aliceItem("audio");
+        exec("INSERT INTO playlist_entries (id, playlist_id, item_id, position, added_at) VALUES (?, ?, ?, 2, 1)",
+                UuidV7.newId(), playlist, other);
+        queueEntry(room, id, "played");
+        items.purgedEntryDays(() -> 0);
+        clock.advance(1000);
+        items.purge(id, (c, i, s) -> { });
+        assertEquals("purged", column(id, "status"));
+        assertEquals(0, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", id));
+        assertEquals(0, count("SELECT COUNT(*) FROM playlist_entries WHERE item_id = ?", id));
+        assertEquals(clock.millis(), count("SELECT updated_at FROM playlists WHERE id = ?", playlist));
+        assertEquals(1, count("SELECT COUNT(*) FROM playlist_entries WHERE item_id = ?", other), "others stay");
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", other));
+        assertEquals(1, count("SELECT COUNT(*) FROM queue_entries WHERE item_id = ?", id),
+                "room history keeps its media expired row");
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", kept),
+                "items purged earlier are the sweeper's");
+    }
+
+    /** Delete record: the row and everything referencing it go (foreign keys), an audit row stays. */
+    @Test
+    void deleteRecordRemovesTheItemAndEverythingReferencingIt() throws Exception {
+        String id = aliceItem("video");
+        exec("UPDATE items SET source = 'youtube', youtube_id = 'dQw4w9WgXcQ', title = 'Never' WHERE id = ?", id);
+        entry(bob, id);
+        String playlist = playlist(bob, id);
+        exec("INSERT INTO shares (id, item_id, from_user_id, to_user_id, created_at) VALUES (?, ?, ?, ?, 1)",
+                UuidV7.newId(), id, alice.userId(), bob.userId());
+        String room = room(alice);
+        String played = queueEntry(room, id, "played");
+        String skipped = queueEntry(room, id, "skipped");
+        exec("INSERT INTO votes (entry_id, voter_user_id, value, at) VALUES (?, ?, 1, 1)", played, bob.userId());
+        exec("INSERT INTO skip_votes (entry_id, voter_user_id, at) VALUES (?, ?, 1)", skipped, bob.userId());
+        String otherItem = aliceItem("audio");
+        String current = queueEntry(room, otherItem, "playing");
+        exec("UPDATE rooms SET current_entry_id = ? WHERE id = ?", current, room);
+        exec("INSERT INTO uploads (id, user_id, filename, size, created_at, updated_at, item_id)"
+                + " VALUES (?, ?, 'a.mp4', 10, 1, 1, ?)", UuidV7.newId(), alice.userId(), id);
+        publishVersion(id, 1, null, null, 5000);
+        clock.advance(60_000);
+        publishVersion(id, 2, 1, null, 5000);
+        assertTrue(count("SELECT COUNT(*) FROM media_undo WHERE item_id = ?", id) > 0, "fixture: an undo is kept");
+        jobs.enqueue(id, IngestJob.Kind.REENCODE);
+        jobs.complete(jobs.claimNext().id(), "done");
+        jobs.enqueue(id, IngestJob.Kind.REENCODE);
+        Path itemDir = files(id);
+        Path staging = staged(id);
+        List<String> told = new ArrayList<>();
+        items.purgeListener(told::add);
+
+        clock.advance(1000);
+        items.deleteRecord(bob, id, "2001:db8::2");
+
+        for (String table : List.of("library_entries", "playlist_entries", "shares", "queue_entries", "uploads",
+                "ingest_jobs", "media_versions", "media_undo")) {
+            assertEquals(0, count("SELECT COUNT(*) FROM " + table + " WHERE item_id = ?", id), table);
+        }
+        assertEquals(0, count("SELECT COUNT(*) FROM items WHERE id = ?", id));
+        assertEquals(0, count("SELECT COUNT(*) FROM votes WHERE entry_id = ?", played));
+        assertEquals(0, count("SELECT COUNT(*) FROM skip_votes WHERE entry_id = ?", skipped));
+        assertEquals(clock.millis(), count("SELECT updated_at FROM playlists WHERE id = ?", playlist));
+        assertEquals(1, count("SELECT COUNT(*) FROM queue_entries WHERE id = ?", current), "other entries stay");
+        assertEquals(1, count("SELECT COUNT(*) FROM rooms WHERE current_entry_id = ?", current));
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", otherItem));
+        assertFalse(Files.exists(itemDir));
+        assertFalse(Files.exists(staging));
+        assertNoLeftovers();
+        assertEquals(List.of(id), told, "the overlay caches are told");
+        assertEquals(List.of(bob.userId() + " " + id + " {\"title\":\"Never\",\"source\":\"youtube\","
+                + "\"youtubeId\":\"dQw4w9WgXcQ\",\"previousStatus\":\"ready\"} 2001:db8::2"),
+                audit(Items.AUDIT_DELETED));
+        assertEquals("item_not_found", code(() -> items.get(alice, id, NONE)));
+        assertEquals("item_not_found", code(() -> items.deleteRecord(bob, id, null)));
+
+        // the video ID is free again: a new row may take it
+        String again = item("video", "pending", alice.userId(), null);
+        exec("UPDATE items SET source = 'youtube', youtube_id = 'dQw4w9WgXcQ' WHERE id = ?", again);
+        assertEquals("dQw4w9WgXcQ", column(again, "youtube_id"));
+    }
+
+    @Test
+    void deleteRecordOfAPurgedItem() throws Exception {
+        String id = aliceItem("audio");
+        items.purge(id, (c, i, s) -> { });
+        items.deleteRecord(alice, id, null);
+        assertEquals(0, count("SELECT COUNT(*) FROM items WHERE id = ?", id));
+        assertEquals(0, count("SELECT COUNT(*) FROM library_entries WHERE item_id = ?", id));
+    }
+
+    /** Refused while a room has the item queued, suggested or current, or while a job runs. */
+    @Test
+    void deleteRecordIsRefusedWhileInUse() throws Exception {
+        String room = room(alice);
+        for (String state : List.of("queued", "suggested", "playing")) {
+            String id = aliceItem("audio");
+            String entry = queueEntry(room, id, state);
+            Path itemDir = files(id);
+            assertEquals("item_in_room", code(() -> items.deleteRecord(alice, id, null)), state);
+            assertEquals("ready", column(id, "status"));
+            assertTrue(Files.exists(itemDir.resolve("audio.m4a")));
+            exec("UPDATE queue_entries SET state = 'played' WHERE id = ?", entry);
+            items.deleteRecord(alice, id, null);
+            assertEquals(0, count("SELECT COUNT(*) FROM items WHERE id = ?", id), state);
+        }
+        // a finished entry that is still the room's current one
+        String id = aliceItem("audio");
+        String entry = queueEntry(room, id, "played");
+        exec("UPDATE rooms SET current_entry_id = ? WHERE id = ?", entry, room);
+        assertEquals("item_in_room", code(() -> items.deleteRecord(alice, id, null)));
+
+        String busy = aliceItem("video");
+        IngestJob job = jobs.enqueue(busy, IngestJob.Kind.REENCODE);
+        jobs.claimNext();
+        assertEquals("item_busy", code(() -> items.deleteRecord(alice, busy, null)));
+        assertEquals(IngestJob.State.RUNNING, jobs.get(job.id()).orElseThrow().state());
+        assertEquals(3, audit(Items.AUDIT_DELETED).size(), "only the deletes that went through are audited");
+        assertEquals("item_not_found", code(() -> items.deleteRecord(alice, UuidV7.newId(), null)));
+    }
 }

@@ -76,6 +76,12 @@ public final class Settings {
     /** Hours a viewed movie or show is kept after its most recent view; 0 = off. */
     public static final SettingKey<Integer> RETENTION_VIDEO_AFTER_VIEW_HOURS = SettingKey.integer(
             "retention.videoAfterViewHours", 72, 0, 876_000);
+    /**
+     * Days the library and playlist entries of a purged item are kept after the purge; 0 = removed
+     * at the purge, -1 = kept forever ({@code docs/media-types.md#after-media-is-deleted}).
+     */
+    public static final SettingKey<Integer> RETENTION_PURGED_ENTRY_DAYS = SettingKey.integer(
+            "retention.purgedEntryDays", 30, -1, 36_500);
     /** Default here is the documented 1800; {@link #Settings(Database, Config)} uses the config file's value. */
     public static final SettingKey<Integer> INGEST_MAX_DURATION_SECONDS = SettingKey.integer(
             "ingest.maxDurationSeconds", 1800, 1, Integer.MAX_VALUE);
@@ -216,7 +222,8 @@ public final class Settings {
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS,
-                RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, INGEST_MAX_DURATION_SECONDS,
+                RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, RETENTION_PURGED_ENTRY_DAYS,
+                INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,
                 STORAGE_MIN_FREE_BYTES, MEDIA_UNDO_HOURS,
                 ROOMS_REQUEST_HISTORY_DAYS,
@@ -490,6 +497,14 @@ public final class Settings {
     /** Hours a viewed movie or show is kept after its most recent view; 0 means off. */
     public int retentionVideoAfterViewHours() throws SQLException {
         return get(RETENTION_VIDEO_AFTER_VIEW_HOURS);
+    }
+
+    /**
+     * Days a purged item's library and playlist entries are kept; 0 means removed at the purge,
+     * -1 kept forever.
+     */
+    public int retentionPurgedEntryDays() throws SQLException {
+        return get(RETENTION_PURGED_ENTRY_DAYS);
     }
 
     /** Days a room's history is kept ({@link #ROOMS_REQUEST_HISTORY_DAYS}); 0 means never trim. */

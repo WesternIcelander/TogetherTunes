@@ -76,6 +76,48 @@ public final class Permissions {
         return out;
     }
 
+    /**
+     * Whether {@code actor} is an admin: an enabled user holding the built-in admin role (not
+     * merely every permission). For the few admin-only actions, such as Delete record.
+     */
+    public boolean isAdmin(Actor actor) throws SQLException {
+        if (!(actor instanceof Actor.User user)) {
+            return false;
+        }
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT r.name, r.builtin FROM user_roles ur"
+                    + " JOIN users u ON u.id = ur.user_id JOIN roles r ON r.id = ur.role_id"
+                    + " WHERE ur.user_id = ? AND u.disabled = 0")) {
+                ps.setString(1, user.userId());
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        if (BuiltinRoles.isAdmin(rs.getString(1), rs.getInt(2) != 0)) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        });
+    }
+
+    /**
+     * A per-route hook letting only admins ({@link #isAdmin}) through: {@code 401
+     * not_authenticated} for guests and anonymous callers, {@code 403 forbidden} for other users.
+     */
+    public Hook adminHook() {
+        return (request, response, next) -> {
+            Actor actor = ActorResolver.actor(request);
+            if (!(actor instanceof Actor.User)) {
+                throw notAuthenticated();
+            }
+            if (!isAdmin(actor)) {
+                throw HttpError.forbidden("Only administrators can do this");
+            }
+            next.handle(request, response);
+        };
+    }
+
     /** Whether a feature is switched on. */
     public boolean enabled(Feature feature) throws SQLException {
         return settings.get(feature.setting());
