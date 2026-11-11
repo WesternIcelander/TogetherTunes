@@ -63,7 +63,10 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
       original_web INTEGER,                 -- 1 if browsers can play the original (audio uploads only)
       original_gain_db REAL NULL,           -- gain the web client applies to the original (audio uploads only)
-      present_as_audio INTEGER,             -- 1: a video item played with its card (see library-and-ingest.md)
+      media_type TEXT,                      -- 'audio'|'uncategorized'|'music_video'|'movie'|'show' (migration 0023, media-types.md); replaced present_as_audio: a video item of type 'audio' plays with its card. Audio items are always 'audio'; new videos 'uncategorized'
+      show_name TEXT NULL, season_number INTEGER NULL, episode_number INTEGER NULL,  -- type 'show' only (name and episode required, numbers >= 0); NULL for every other type
+      last_viewed_at BIGINT NULL,           -- most recent view (media-types.md#views-auto-delete-and-pins)
+      pinned_at BIGINT NULL, pinned_by_user_id NULL FK users ON DELETE SET NULL,  -- pinned: never deleted automatically
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
       encode_quality INTEGER,               -- 1: its files are the quality encode (library-and-ingest.md#presets)
       audio_only_ms BIGINT NULL,            -- a video's audio-only file's length (audio-only.m4a from its audio trim, library-and-ingest.md#audio-trim); NULL: none, it is audio.m4a (duration_ms)
@@ -78,6 +81,7 @@ media_versions(item_id FK, version INTEGER,  -- PK (item_id, version): what the 
       audio_only_ms, original_web, original_gain_db,  -- (migration 0015) also restored by an undo
       card_version,                         -- (migration 0018) also restored by an undo
       card_fonts,                           -- (migration 0021) also restored by an undo
+      media_type,                           -- (migration 0023) the item's type when the version was made (a metadata edit of the type updates the current version's row); an undo restores it only when 'audio' is on one side (a still image published as audio ↔ its video), so a classification between video types made meanwhile stays
       edit_json TEXT NULL)                  -- edit settings as JSON: videoStartMs?, videoEndMs?, audioStartMs?, audioEndMs?, originalMs?, firstGopFrames? (the version's first GOP in frames when a smart trim made it shorter than 60; absent = 60) (library-and-ingest.md#trim, #audio-trim)
 
 media_undo(item_id PK FK, version INTEGER,  -- the item's kept previous version, for undo (one step back)

@@ -74,8 +74,10 @@ Admins can create more roles (e.g. "trusted", "moderator") and assign several to
 | `library.viewAll` | Browse and search other users' libraries and playlists |
 | `library.editAny` | Edit the metadata of any item |
 | `library.purge` | Delete any item from the server immediately |
+| `library.pin` | Pin items so their media is never deleted automatically ([media-types.md](media-types.md#views-auto-delete-and-pins)); admins always can |
 | `rooms.create` | Create rooms |
 | `rooms.moderateAny` | Act as moderator in any room |
+| `rooms.customCards` | Upload custom card images for rooms this user owns ([media-types.md](media-types.md#custom-card-images)) |
 | `output.overlayVideo` | Rooms owned by this user may re-encode music videos to add the QR overlay ([overlay.md](overlay.md)) |
 
 Server-wide feature switches (below) are checked **before** permissions: a disabled feature is off for everyone, admins included, until it is re-enabled.
