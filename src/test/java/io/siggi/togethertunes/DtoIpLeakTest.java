@@ -380,6 +380,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomState$ItemInfo", "item status/duration read by the room executor"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryAdded", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryMoved", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestMerged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.GuestMerge$Moved", "what a merge moved: plain counts the"
+                    + " response and the audit row copy"),
+            Map.entry("io.siggi.togethertunes.rooms.GuestMerge$CookieGuest", "the guest a gid cookie names, for the"
+                    + " merge checks; the response is built from an ActorRef"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryItemsChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.QueueOps$Added", "entry/item ids and state; the WebSocket layer"
                     + " acks with it"),
@@ -889,6 +894,7 @@ class DtoIpLeakTest {
     private void sweep(Who who, Fixture f) throws Exception {
         List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo", "/ws",
                 "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions", "/api/me/identities",
+                "/api/me/merge-guest",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
@@ -1033,6 +1039,12 @@ class DtoIpLeakTest {
         expect(200, cookieGuest, "PATCH", "/api/me/guest", "{\"name\":\"Blue Fox\"}");
         expect(200, cookieGuest, "PATCH", "/api/me", "{\"name\":\"Blue Fox Two\"}");
         expect(200, cookieGuest, "GET", "/api/me", null);
+        // another cookie guest (from its own address) merged into alice in the browser holding both cookies
+        HttpResponse<String> mergedCreated = expect(201, anon.withForwarded(V6_GUEST), "POST", "/api/me/guest", null);
+        Who aliceWithGuest = new Who("alice + guest", alice.cookie() + "; " + cookie(mergedCreated, "gid"), null,
+                V6_ALICE, false);
+        expect(200, aliceWithGuest, "GET", "/api/me/merge-guest", null);
+        expect(200, aliceWithGuest, "POST", "/api/me/merge-guest", null);
 
         // the test socket: a tagged close, its report, a plain GET, the test page
         WebsocketHeaders headers = new WebsocketHeaders();

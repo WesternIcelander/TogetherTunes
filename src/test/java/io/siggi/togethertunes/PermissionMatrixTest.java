@@ -187,6 +187,10 @@ class PermissionMatrixTest {
             row("GET /api/me/identities", c -> Call.get("/api/me/identities"), 401, 401, 200, 200),
             row("DELETE /api/me/identities/{id}", c -> Call.delete("/api/me/identities/" + c.spareIdentityId()),
                     401, 401, 204, 204),
+            // Guest -> account merge (GuestMerge): users only; the cells hold no gid cookie next to
+            // their sid, so a user has nothing to merge (GuestMergeApiTest covers the merge itself).
+            row("GET /api/me/merge-guest", c -> Call.get("/api/me/merge-guest"), 401, 401, 200, 200),
+            row("POST /api/me/merge-guest", c -> Call.post("/api/me/merge-guest", null), 401, 401, 404, 404),
 
             // Admin: admin.users / admin.roles / admin.settings / ip.view.
             admin("GET /api/admin/users", c -> Call.get("/api/admin/users"), 200),

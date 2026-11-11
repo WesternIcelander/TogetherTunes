@@ -98,6 +98,13 @@ public interface RoomEvent {
     }
 
     /**
+     * A guest was merged into an account ({@code POST /api/me/merge-guest}): its entries and votes in
+     * this room are now the user's; the new values are in the {@link RoomState}.
+     */
+    record GuestMerged(String guestId, String userId) implements RoomEvent {
+    }
+
+    /**
      * A user's role in the room was set or removed (a member added, promoted, demoted, banned,
      * unbanned or gone). The WebSocket layer re-checks that user's sockets: new capabilities, or
      * {@code kicked} if it may no longer see the room.

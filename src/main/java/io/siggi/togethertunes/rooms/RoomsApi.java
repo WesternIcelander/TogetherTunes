@@ -88,6 +88,8 @@ import java.util.Set;
  *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}; {@code overlay.videoOverlay}: the
  *       overlay is on and the room's owner holds {@code output.overlayVideo}, so music videos get
  *       it too). Owner and moderators.</li>
+ *   <li>{@code GET} / {@code POST /api/me/merge-guest}: guest → account merge, see {@link GuestMerge}
+ *       (registered here because it moves room data).</li>
  * </ul>
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
@@ -200,6 +202,8 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/search", this::search);
         router.get("/api/rooms/{room}/history", this::history);
         router.get("/api/rooms/{room}/server-switches", this::serverSwitches);
+        // Guest -> account merge moves room data, so it lives with the rooms (GuestMerge).
+        new GuestMerge(registry).register(router);
     }
 
     private static Actor.User user(Request request) throws Exception {

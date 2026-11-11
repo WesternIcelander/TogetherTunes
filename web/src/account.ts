@@ -9,6 +9,7 @@ import {
 import {
   providerErrorMessage, providerLinkUrl, type LinkedIdentity, type ProviderButton,
 } from "./providers.js";
+import { mergeableGuest, mergedText, mergeGuest, mergeQuestion } from "./guestmerge.js";
 
 interface SessionItem {
   id: string;
@@ -157,6 +158,28 @@ function showLinkResult(): void {
   if (error !== null || linked !== null) history.replaceState(null, "", location.pathname);
 }
 
+/** Offers to merge the guest this browser holds (e.g. after a provider login), if there is one. */
+async function showGuestMerge(): Promise<void> {
+  const guest = await mergeableGuest();
+  const section = element("guest-merge");
+  section.hidden = guest === undefined;
+  if (guest === undefined) return;
+  element("guest-merge-question").textContent = mergeQuestion(guest);
+  const button = element<HTMLButtonElement>("guest-merge-button");
+  button.onclick = () => {
+    button.disabled = true;
+    element("guest-merge-error").textContent = "";
+    mergeGuest().then((result) => {
+      section.hidden = true;
+      const notice = element("guest-merge-notice");
+      notice.textContent = mergedText(result);
+      notice.hidden = false;
+    }).catch((e: unknown) => {
+      element("guest-merge-error").textContent = message(e);
+    }).finally(() => { button.disabled = false; });
+  };
+}
+
 function showProfile(me: MeUser): void {
   element("account-username").textContent = me.username;
   element("account-roles").textContent = me.roles.join(", ");
@@ -200,6 +223,7 @@ async function start(): Promise<void> {
       .finally(() => { others.disabled = false; });
   });
 
+  showGuestMerge().catch(() => undefined);
   showLinkResult();
   try {
     await loadIdentities();

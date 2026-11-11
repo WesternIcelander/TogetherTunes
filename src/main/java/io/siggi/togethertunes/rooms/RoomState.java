@@ -308,6 +308,23 @@ public final class RoomState {
         }
     }
 
+    /**
+     * Moves the votes and skip votes of voter {@code fromKey} to {@code toKey} (a guest merged into
+     * an account). Where {@code toKey} already voted on an entry, its own vote stays and
+     * {@code fromKey}'s is dropped.
+     */
+    void mergeVoter(String fromKey, String toKey) {
+        for (Map<String, Integer> byVoter : votes.values()) {
+            Integer v = byVoter.remove(fromKey);
+            if (v != null) {
+                byVoter.putIfAbsent(toKey, v);
+            }
+        }
+        if (skipVotes.remove(fromKey)) {
+            skipVotes.add(toKey);
+        }
+    }
+
     void addSkipVote(String voterKey) {
         skipVotes.add(voterKey);
     }

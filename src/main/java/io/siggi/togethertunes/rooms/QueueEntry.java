@@ -112,6 +112,12 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
                 newStatus, newDurationMs, newFilesUsable, newAudioOnlyMs, audioOnly);
     }
 
+    /** This entry as added by the user {@code userId} (a guest merged into that account). */
+    public QueueEntry withAddedByUser(String userId) {
+        return new QueueEntry(id, itemId, Objects.requireNonNull(userId), null, addedAt, state, position, pinned,
+                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
+    }
+
     /** This entry playing audio-only, or not. */
     public QueueEntry withAudioOnly(boolean newAudioOnly) {
         if (newAudioOnly == audioOnly) {

@@ -2,7 +2,7 @@
 // (`registration.mode`); when it isn't, the API's error is shown.
 import { api, ApiError, setupNeeded } from "./api.js";
 import {
-  element, formValue, LOGIN_PAGE, loadMe, nextPath, onReady, onSubmit, renderNav, withNext,
+  element, formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, withNext,
 } from "./session.js";
 
 async function start(): Promise<void> {
@@ -44,6 +44,7 @@ async function start(): Promise<void> {
       }
       throw e;
     }
+    await offerGuestMerge();
     location.assign(next);
   });
 }

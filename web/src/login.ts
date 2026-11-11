@@ -2,7 +2,8 @@
 // (set by an admin) goes to the change-password page first; everyone else to `?next=` or `/`.
 import { api, setupNeeded } from "./api.js";
 import {
-  element, formValue, loadMe, nextPath, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav, withNext,
+  element, formValue, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav,
+  withNext,
 } from "./session.js";
 import { providerErrorMessage, providerStartUrl, type ProviderButton } from "./providers.js";
 
@@ -63,6 +64,7 @@ async function start(): Promise<void> {
       username: formValue(form, "username"),
       password: formValue(form, "password"),
     });
+    if (!result.user.mustChangePassword) await offerGuestMerge();
     location.assign(afterLogin(result.user.mustChangePassword, next));
   });
 }

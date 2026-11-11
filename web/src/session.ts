@@ -2,6 +2,7 @@
 // that needs an account goes through: to the login page when nobody is logged in, and to the
 // change-password page while the password is a temporary one an admin set.
 import { api } from "./api.js";
+import { mergeableGuest, mergeGuest, mergeQuestion } from "./guestmerge.js";
 import { pageSignal, rememberPlaying, showStoppedNote } from "./nav.js";
 
 /** `GET /api/me` for a logged-in user. */
@@ -210,4 +211,18 @@ export function onSubmit(form: HTMLFormElement, errorEl: HTMLElement, action: ()
       buttons.forEach((b) => { b.disabled = false; });
     });
   });
+}
+
+/**
+ * After logging in or registering: if this browser was a guest, asks (a confirm dialog) whether to
+ * move that guest's songs and votes to the account, and does it. Never throws: the account page
+ * offers it again.
+ */
+export async function offerGuestMerge(): Promise<void> {
+  try {
+    const guest = await mergeableGuest();
+    if (guest !== undefined && window.confirm(mergeQuestion(guest))) await mergeGuest();
+  } catch {
+    // offered again on the account page
+  }
 }

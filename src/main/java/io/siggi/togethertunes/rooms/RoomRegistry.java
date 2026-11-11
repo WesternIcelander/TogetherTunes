@@ -160,6 +160,16 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         return playing;
     }
 
+    /** The database the rooms live in. */
+    Database db() {
+        return store.db();
+    }
+
+    /** The rooms' clock. */
+    Clock clock() {
+        return clock;
+    }
+
     /** The room's executor if it is loaded, else {@code null}. */
     public RoomExecutor loaded(String roomId) {
         RoomExecutor e = executors.get(roomId);
