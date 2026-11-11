@@ -24,7 +24,7 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 | POST | `/api/me/password` | `{currentPassword, newPassword}`: change your own password (replaces a temporary one; logs out your other sessions) |
 | POST | `/api/me/merge-guest` | After login: merge the guest held in this browser's cookie into the account |
 | GET / DELETE | `/api/me/sessions[/{id}]` | No IP field. `DELETE /api/me/sessions` revokes all sessions except the current one |
-| GET / DELETE | `/api/me/identities[/{id}]` | |
+| GET / DELETE | `/api/me/identities[/{id}]` | Users only. `GET` → `{items:[{id, provider:{slug, displayName, enabled}, email?, createdAt, lastLoginAt?}], hasPassword}` (oldest first; no subject, no IP). `DELETE` → `204`; `404 identity_not_found`, `409 last_login_method` (no password and no other identity at an enabled provider). Linking: `/auth/oidc/{slug}/start?intent=link`, back to `/account/?linked=<slug>` or `?error=<code>` |
 
 ## Items, libraries, playlists, sharing
 
