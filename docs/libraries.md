@@ -4,7 +4,7 @@
 
 An **item** is a media object stored once on the server: its files, metadata and ingest state. A **library** is a per-user set of references to items (`library_entries`). The same item can be in any number of libraries; it is never copied.
 
-- **Adding** an item by upload or YouTube puts it in the adding user's library (`via='upload'|'youtube'`). The exception is a request made inside a room, where "also add to my library" is a checkbox, on by default for logged-in users. Guests have no library.
+- **Adding** an item by upload or YouTube puts it in the adding user's library (`via='upload'|'youtube'`). The exception is a request made inside a room, where "also add to my library" is a checkbox, on by default for logged-in users. Guests have no library. **In the new UI** (Siggi, 2026-11-14) there is no checkbox: a signed-in user's request **by link or by dropping a file or link** (Request Link, drops on the queue or room view) always adds the item to their library as well; a video whose type isn't known yet goes in as `uncategorized` (no classify question, it shows under Uncategorized Videos). Requesting an item that already exists by its id (from a list or search) doesn't add it. On a **guest merge** the items of the guest's link and file requests are added to the account's library the same way (not only the items the guest fetched first).
 - **Dedupe:** re-adding content that already exists reuses the existing item:
   - YouTube imports match on `youtube_id` (see [library-and-ingest.md](library-and-ingest.md#youtube-caching));
   - uploads match on the SHA-256 of the uploaded file.
