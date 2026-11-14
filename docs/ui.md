@@ -132,7 +132,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 - **Guests:** under the request section, **Join as guest**; once joined, the guest's assigned name with an **edit** button (where the admin allows choosing a name).
 - **Sound blocked by the browser:** a translucent dark layer over the **video area only**, with "Click to enable sound" in the middle. Clicking anywhere else on the page works normally and doesn't start sound.
 - **Manage Room** button above the people list, in the room view and in the right sidebar's Room tab. The management page holds members and roles, moderators, handing over, leaving, bans and Unban, visibility, link name, deleting the room, and all room settings including the **stream outputs** (URLs, private-token rotation, the plain-HTTP warning).
-- **Quick output buttons:** for the owner and moderators, below the room's title in the room view: an output the server allows but the room has off gets a **Turn on** button; one that is on gets **Copy link**.
+- **Quick output buttons:** for the owner and moderators, in the room view **above the Request Link box**: an output the server allows but the room has off gets a **Turn on** button; one that is on gets **Copy link**.
 - **Upload requests** have no place on phones for now (drag and drop is desktop only); revisit later.
 
 **Library**
