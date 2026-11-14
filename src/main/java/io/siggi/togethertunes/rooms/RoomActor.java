@@ -22,9 +22,11 @@ import io.siggi.togethertunes.http.HttpError;
  * @param canYoutube        may request a YouTube link (a user: {@code library.youtube} and
  *                          {@code ytdlp.enabled}; a guest: {@code guests.canYoutube})
  * @param canVote           may vote on entries and vote to skip
+ * @param restriction       the ban or timeout that makes them read-only in the room ({@link RoomBans}),
+ *                          or {@code null}; while set, every right above is off
  */
 public record RoomActor(String userId, String guestId, Rooms.Role role, boolean canRequestLibrary, boolean canUpload,
-                        boolean canYoutube, boolean canVote) {
+                        boolean canYoutube, boolean canVote, RoomBans.Restriction restriction) {
     /** An anonymous visitor: may listen, and must become a guest before anything else. */
     public static final RoomActor ANONYMOUS = new RoomActor(null, null, null, false, false, false, false);
 
@@ -34,6 +36,34 @@ public record RoomActor(String userId, String guestId, Rooms.Role role, boolean 
         }
         if (guestId != null && role != null) {
             throw new IllegalArgumentException("guests have no room role");
+        }
+        if (restriction != null) {
+            canRequestLibrary = canUpload = canYoutube = canVote = false;
+        }
+    }
+
+    public RoomActor(String userId, String guestId, Rooms.Role role, boolean canRequestLibrary, boolean canUpload,
+                     boolean canYoutube, boolean canVote) {
+        this(userId, guestId, role, canRequestLibrary, canUpload, canYoutube, canVote, null);
+    }
+
+    /** This actor, read-only by {@code restriction} ({@code null}: unchanged). */
+    public RoomActor restricted(RoomBans.Restriction restriction) {
+        if (restriction == null || moderates()) {
+            return this;
+        }
+        return new RoomActor(userId, guestId, role, false, false, false, false, restriction);
+    }
+
+    /** Read-only in the room (banned or timed out): may listen, nothing else. */
+    public boolean readOnly() {
+        return restriction != null;
+    }
+
+    /** @throws HttpError {@code 403 banned_from_room} / {@code timed_out} while read-only */
+    public void requireNotReadOnly() {
+        if (restriction != null) {
+            throw restriction.error();
         }
     }
 
@@ -53,7 +83,7 @@ public record RoomActor(String userId, String guestId, Rooms.Role role, boolean 
     public static RoomActor user(String userId, Rooms.Role role, boolean mayUpload, boolean mayYoutube) {
         boolean rights = role != Rooms.Role.BANNED;
         return new RoomActor(java.util.Objects.requireNonNull(userId), null, role, rights, rights && mayUpload,
-                rights && mayYoutube, rights);
+                rights && mayYoutube, rights, role == Rooms.Role.BANNED ? RoomBans.Restriction.BAN : null);
     }
 
     /** A guest whose request rights are all {@code canRequest} (tests and simple callers). */

@@ -95,6 +95,8 @@ export interface You {
   canModerate: boolean;
   /** May request items by id (library search, the history's Add to Queue). */
   canRequestLibrary?: boolean;
+  /** Banned or timed out here: read-only (may listen, nothing else); `until` ends a timeout. */
+  restriction?: { kind: "ban" | "timeout" | string; until?: number };
 }
 
 export interface RoomSettingsView {

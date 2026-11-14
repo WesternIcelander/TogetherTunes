@@ -162,7 +162,8 @@ public final class AutoplaySelections {
     private static Listing listing(Connection c, Rooms.Access a, Actor actor) throws SQLException {
         String uid = userId(actor);
         Rooms.Room room = a.room();
-        boolean canSelect = uid != null && maySelect(room, uid, Rooms.memberRole(c, room.id(), uid));
+        boolean canSelect = uid != null && a.restriction() == null
+                && maySelect(room, uid, Rooms.memberRole(c, room.id(), uid));
         Map<String, ActorRef> people = new LinkedHashMap<>();
         Map<String, Long> firstSelected = new LinkedHashMap<>();
         Map<String, List<SelectedPlaylist>> byUser = new LinkedHashMap<>();
@@ -252,6 +253,9 @@ public final class AutoplaySelections {
         Listing listing = db.write(c -> {
             Rooms.Access a = rooms.access(c, actor, idOrSlug, true, moderateAny);
             Rooms.Room room = a.room();
+            if (requireRight && a.restriction() != null) {
+                throw a.restriction().error(); // read-only: banned or timed out
+            }
             if (requireRight && !maySelect(room, user.userId(), Rooms.memberRole(c, room.id(), user.userId()))) {
                 throw HttpError.forbidden("You can't select playlists for autoplay in this room");
             }

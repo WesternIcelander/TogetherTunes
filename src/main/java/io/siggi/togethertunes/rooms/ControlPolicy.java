@@ -138,7 +138,7 @@ public final class ControlPolicy {
             return;
         }
         boolean waiting = entry.state() == QueueEntry.State.QUEUED || entry.state() == QueueEntry.State.SUGGESTED;
-        if (waiting && a.added(entry)) {
+        if (waiting && a.added(entry) && !a.readOnly()) {
             return;
         }
         switch (s.controlMode()) {

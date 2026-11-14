@@ -340,9 +340,11 @@ abstract class AutoplaySelectionsContract {
         assertFalse(listing(carol, roomId).get("canSelect").getAsBoolean());
         expectError(403, "forbidden", call(carol, "PUT", "/api/rooms/" + roomId + "/autoplay/playlists/" + carols,
                 null));
-        // Banned: not even the room.
+        // Banned: reads the room (listens), selects nothing.
         role(roomId, alice, carolId, "banned");
-        expectError(403, "banned_from_room", call(carol, "GET", "/api/rooms/" + roomId + "/autoplay", null));
+        assertFalse(listing(carol, roomId).get("canSelect").getAsBoolean());
+        expectError(403, "banned_from_room", call(carol, "PUT", "/api/rooms/" + roomId + "/autoplay/playlists/"
+                + carols, null));
 
         // Guests and anonymous visitors never select.
         expectError(401, "not_authenticated", call(null, "PUT", "/api/rooms/" + roomId + "/autoplay/playlists/"

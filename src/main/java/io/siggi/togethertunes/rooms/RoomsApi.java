@@ -69,6 +69,16 @@ import java.util.Set;
  *       "banned", "bannedAt"?, "warning"?, "ip"?}}: {@code warning} for an IP-mode guest (the ban
  *       covers everyone sharing its address), {@code ip} (the guest's last IP) only for
  *       {@code ip.view} holders.</li>
+ *   <li>{@code GET /api/rooms/{room}/bans?cursor=&limit=} → {@code {"items": [restriction],
+ *       "nextCursor"?}}: the room's active bans and timeouts (users and guests), newest first;
+ *       {@code GET|PUT|DELETE /api/rooms/{room}/bans/users/{userId}} and {@code …/bans/guests/{guestId}}:
+ *       read one, ban (no body) or time out ({@code {"durationMs"}}, 1 s to 3650 days; {@code 400
+ *       invalid_duration}) → {@code 201} if new, else {@code 200}, and lift ({@code 204}, {@code 404
+ *       ban_not_found}). Owner and moderators ({@link RoomBans}, {@link Rooms#restrictUser},
+ *       {@link RoomGuests#restrict}). A restriction is {@code {"person": actor, "kind": "ban"|"timeout",
+ *       "until"?, "at", "addressCovered", "identifiedBy"? (guests), "ip"? (a guest's last IP, ip.view
+ *       only)}}; the guest paths answer with the guest-ban shape above plus {@code timedOutUntil}.
+ *       {@code 409 cannot_restrict_self} / {@code target_moderates}.</li>
  *   <li>{@code GET /api/rooms/{room}/search?q=&kind=&cursor=&limit=&all=} → {@code {"items": [item],
  *       "nextCursor"?}}: the request search ({@link RequestSearch}): the owner's library and
  *       playlists and the requester's library, or with {@code all=1} every item on the server that
@@ -101,7 +111,8 @@ import java.util.Set;
  * A room is {@code {"id", "slug", "name", "owner": actor, "visibility", "controlMode", "settings",
  * "createdAt", "you": {"role"?, "canEdit", "canDelete", "canModerate"}}}; a member is
  * {@code {"user": actor, "role", "joinedAt"}}. A room the caller can't see is {@code 404
- * room_not_found}; a banned user gets {@code 403 banned_from_room}. Body errors: {@code 400
+ * room_not_found}; a banned or timed-out person may read it (and listen), nothing else
+ * ({@code 403 banned_from_room} / {@code timed_out} where they'd change something). Body errors: {@code 400
  * invalid_name} / {@code name_too_long}, {@code invalid_slug}, {@code invalid_visibility},
  * {@code invalid_control_mode}, {@code invalid_role}, {@code unknown_field}. Room roles need a
  * logged-in user: guests and anonymous callers get {@code 401 not_authenticated} on every
@@ -230,6 +241,13 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/guest-bans/{guestId}", this::guestBan);
         router.put("/api/rooms/{room}/guest-bans/{guestId}", this::banGuest);
         router.delete("/api/rooms/{room}/guest-bans/{guestId}", this::unbanGuest);
+        router.get("/api/rooms/{room}/bans", this::restrictions);
+        router.get("/api/rooms/{room}/bans/users/{userId}", this::userRestriction);
+        router.put("/api/rooms/{room}/bans/users/{userId}", this::restrictUser);
+        router.delete("/api/rooms/{room}/bans/users/{userId}", this::liftUser);
+        router.get("/api/rooms/{room}/bans/guests/{guestId}", this::guestBan);
+        router.put("/api/rooms/{room}/bans/guests/{guestId}", this::restrictGuest);
+        router.delete("/api/rooms/{room}/bans/guests/{guestId}", this::unbanGuest);
         router.get("/api/rooms/{room}/search", this::search);
         router.get("/api/rooms/{room}/history", this::history);
         router.get("/api/rooms/{room}/server-switches", this::serverSwitches);
@@ -359,7 +377,7 @@ public final class RoomsApi {
     }
 
     private void get(Request request, Response response) throws Exception {
-        Rooms.RoomView room = rooms.get(ActorResolver.actor(request), request.pathParam("room"));
+        Rooms.RoomView room = rooms.get(ActorResolver.actor(request), request.pathParam("room"), request.clientIp());
         response.header("Cache-Control", "no-store");
         response.json(room);
     }
@@ -474,6 +492,9 @@ public final class RoomsApi {
             tx.refreshAutoplay(); // the role change may have pruned selections
             // The WebSocket layer re-checks that user's sockets (role, capabilities, a ban).
             tx.event(new RoomEvent.MemberChanged(target));
+            if (r.restrictionsChanged()) {
+                tx.event(new RoomEvent.RestrictionsChanged()); // the ban covers their IP address too
+            }
             return r;
         });
         response.header("Cache-Control", "no-store");
@@ -541,17 +562,142 @@ public final class RoomsApi {
         String target = request.pathParam("userId");
         // Through the room's executor, so the WebSocket layer re-checks that user's sockets.
         boolean removed = registry.call(id, tx -> {
-            if (!rooms.removeMember(user, id, target, request.clientIp())) {
+            Rooms.Role was = rooms.removeMemberRole(user, id, target, request.clientIp());
+            if (was == null) {
                 return false;
             }
             tx.refreshAutoplay(); // their selections went
             tx.event(new RoomEvent.MemberChanged(target));
+            if (was == Rooms.Role.BANNED) {
+                tx.event(new RoomEvent.RestrictionsChanged()); // lifted for their IP address too
+            }
             return true;
         });
         if (!removed) {
             throw new HttpError(404, "member_not_found", "That user has no role in this room");
         }
         response.empty(204);
+    }
+
+    private static final Set<String> RESTRICT_FIELDS = Set.of("durationMs");
+
+    /**
+     * The optional body of a ban or timeout: none (or no {@code durationMs}) is a ban,
+     * {@code {"durationMs": n}} a timeout of that length.
+     */
+    private static Long durationMs(Request request) throws Exception {
+        if (request.header("Content-Type") == null && request.contentLength() <= 0) {
+            return null;
+        }
+        JsonObject body = request.readJson(JsonObject.class);
+        fields(body, RESTRICT_FIELDS);
+        JsonElement d = body.get("durationMs");
+        if (d == null || d.isJsonNull()) {
+            return null;
+        }
+        if (!(d instanceof JsonPrimitive p) || !p.isNumber()) {
+            throw new HttpError(400, "invalid_duration", "durationMs must be a number of milliseconds");
+        }
+        double v = p.getAsDouble();
+        if (v != Math.rint(v) || v < RoomBans.MIN_TIMEOUT_MS || v > RoomBans.MAX_TIMEOUT_MS) {
+            throw new HttpError(400, "invalid_duration", "A timeout lasts from 1 second to 3650 days");
+        }
+        return (long) v;
+    }
+
+    /**
+     * A restriction as JSON: {@code {"person": actor, "kind": "ban"|"timeout", "until"?, "at",
+     * "addressCovered", "identifiedBy"? (guests), "ip"? (a guest's last IP, ip.view only)}}.
+     */
+    private static Map<String, Object> restrictionJson(RoomBans.Entry e, Map<String, String> ips) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("person", e.person());
+        m.put("kind", e.kind());
+        m.put("until", e.until());
+        m.put("at", e.at());
+        m.put("addressCovered", e.addressCovered());
+        m.put("identifiedBy", e.identifiedBy());
+        String ip = e.person().isGuest() ? ips.get(e.person().id()) : null;
+        if (ip != null) {
+            m.put("ip", ip);
+        }
+        return m;
+    }
+
+    private void restrictions(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        int limit = limit(request);
+        RoomBans.Page page = rooms.restrictions(user, request.pathParam("room"), cursor(request), limit);
+        List<String> guestIds = new ArrayList<>();
+        for (RoomBans.Entry e : page.items()) {
+            if (e.person().isGuest()) {
+                guestIds.add(e.person().id());
+            }
+        }
+        Map<String, String> ips = guests.ipsOf(user, guestIds);
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (RoomBans.Entry e : page.items()) {
+            items.add(restrictionJson(e, ips));
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("items", items);
+        body.put("nextCursor", page.nextCursor());
+        response.header("Cache-Control", "no-store");
+        response.json(body);
+    }
+
+    private void userRestriction(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        RoomBans.Entry e = rooms.restrictionOfUser(user, request.pathParam("room"), request.pathParam("userId"));
+        if (e == null) {
+            throw new HttpError(404, "ban_not_found", "That user isn't banned or timed out in this room");
+        }
+        response.header("Cache-Control", "no-store");
+        response.json(restrictionJson(e, Map.of()));
+    }
+
+    private void restrictUser(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        Long durationMs = durationMs(request);
+        String id = roomId(request);
+        String target = request.pathParam("userId");
+        Rooms.Restricting r = registry.call(id, tx -> {
+            Rooms.Restricting set = rooms.restrictUser(user, id, target, durationMs, request.clientIp());
+            tx.refreshAutoplay(); // a ban ends their role, and may have pruned selections
+            tx.event(new RoomEvent.MemberChanged(target));
+            tx.event(new RoomEvent.RestrictionsChanged());
+            return set;
+        });
+        registry.timeoutSet(id, r.entry().until());
+        response.header("Cache-Control", "no-store");
+        response.json(r.created() ? 201 : 200, restrictionJson(r.entry(), Map.of()));
+    }
+
+    private void liftUser(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        String id = roomId(request);
+        String target = request.pathParam("userId");
+        boolean lifted = registry.call(id, tx -> {
+            if (!rooms.liftUser(user, id, target, request.clientIp())) {
+                return false;
+            }
+            tx.event(new RoomEvent.MemberChanged(target));
+            tx.event(new RoomEvent.RestrictionsChanged());
+            return true;
+        });
+        if (!lifted) {
+            throw new HttpError(404, "ban_not_found", "That user isn't banned or timed out in this room");
+        }
+        response.empty(204);
+    }
+
+    private void restrictGuest(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        Long durationMs = durationMs(request);
+        RoomGuests.BanSet set = guests.restrict(user, request.pathParam("room"), request.pathParam("guestId"),
+                durationMs, request.clientIp());
+        response.header("Cache-Control", "no-store");
+        response.json(set.created() ? 201 : 200, banJson(user, set.ban()));
     }
 
     /** A ban as JSON, with the guest's {@code ip} added from {@code ips} (only ever filled for {@code ip.view}). */
@@ -562,6 +708,7 @@ public final class RoomsApi {
         m.put("banned", ban.banned());
         m.put("bannedAt", ban.bannedAt());
         m.put("warning", ban.warning());
+        m.put("timedOutUntil", ban.timedOutUntil());
         String ip = ips.get(ban.guest().id());
         if (ip != null) {
             m.put("ip", ip);
@@ -611,7 +758,7 @@ public final class RoomsApi {
     private void unbanGuest(Request request, Response response) throws Exception {
         Actor.User user = user(request);
         if (!guests.unban(user, request.pathParam("room"), request.pathParam("guestId"), request.clientIp())) {
-            throw new HttpError(404, "ban_not_found", "That guest isn't banned from this room");
+            throw new HttpError(404, "ban_not_found", "That guest isn't banned or timed out in this room");
         }
         response.empty(204);
     }

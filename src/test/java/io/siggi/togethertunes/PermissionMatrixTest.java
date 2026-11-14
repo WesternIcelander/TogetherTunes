@@ -360,6 +360,22 @@ class PermissionMatrixTest {
                     401, 401, 403, 201),
             row("DELETE /api/rooms/{room}/guest-bans/{guestId}", c -> Call.delete(c.rootRoomGuestBanPath(true)),
                     401, 401, 403, 204),
+            // Bans and timeouts of users and guests (docs/rooms.md#bans-and-timeouts): owner and
+            // moderators. RoomGuestsContract and RoomsApiTest cover the rules.
+            row("GET /api/rooms/{room}/bans", c -> Call.get("/api/rooms/" + c.sharedRoomSlug() + "/bans"),
+                    401, 401, 403, 200),
+            row("GET /api/rooms/{room}/bans/users/{userId}", c -> Call.get(c.rootRoomUserBanPath(true)),
+                    401, 401, 403, 200),
+            row("PUT /api/rooms/{room}/bans/users/{userId}", c -> Call.put(c.rootRoomUserBanPath(false),
+                    "{\"durationMs\":60000}"), 401, 401, 403, 201),
+            row("DELETE /api/rooms/{room}/bans/users/{userId}", c -> Call.delete(c.rootRoomUserBanPath(true)),
+                    401, 401, 403, 204),
+            row("GET /api/rooms/{room}/bans/guests/{guestId}", c -> Call.get(c.sharedRoomGuestBanPath(false)),
+                    401, 401, 403, 200),
+            row("PUT /api/rooms/{room}/bans/guests/{guestId}", c -> Call.put(c.sharedRoomGuestBanPath(false),
+                    "{\"durationMs\":60000}"), 401, 401, 403, 201),
+            row("DELETE /api/rooms/{room}/bans/guests/{guestId}", c -> Call.delete(c.sharedRoomGuestBanPath(true)),
+                    401, 401, 403, 204),
             // Request search: anyone who may open the room and request from the library (guests and
             // anonymous visitors by guests.canRequestLibrary, on by default). RequestSearchContract
             // covers the scopes and refusals.
@@ -546,6 +562,9 @@ class PermissionMatrixTest {
      * One cell's caller and targets. Targets are created lazily, by the setup admin, so each cell
      * only pays for what its row uses.
      */
+    /** See {@link Cell#sharedRoomSlug}. */
+    private String sharedRoomSlug;
+
     final class Cell {
         final Who who;
         final int n;
@@ -829,6 +848,55 @@ class PermissionMatrixTest {
                         Call.post("/api/me/guest", null));
                 assertTrue(r.statusCode() / 100 == 2, r.body());
                 String path = "/api/rooms/" + rootRoomSlug() + "/guest-bans/" + json(r.body()).get("id").getAsString();
+                if (banned) {
+                    ok(Call.put(path, null));
+                }
+                return path;
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * {@code /api/rooms/{room}/bans/users/{userId}} for this cell's target user in the shared public
+         * room of the setup admin; with {@code banned}, the user is banned there.
+         */
+        String rootRoomUserBanPath(boolean banned) {
+            try {
+                String path = "/api/rooms/" + sharedRoomSlug() + "/bans/users/" + targetUserId();
+                if (banned) {
+                    ok(Call.put(path, null));
+                }
+                return path;
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * One public room of the setup admin shared by the cells whose targets are their own anyway
+         * (bans of the cell's target user or a new guest), so the admin stays under the
+         * {@value io.siggi.togethertunes.rooms.Rooms#MAX_OWNED} rooms anyone may own.
+         */
+        String sharedRoomSlug() {
+            if (sharedRoomSlug == null) {
+                try {
+                    sharedRoomSlug = json(ok(Call.post("/api/rooms", "{\"name\":\"Shared room\","
+                            + "\"visibility\":\"public\"}")).body()).get("slug").getAsString();
+                } catch (IOException | InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }
+            return sharedRoomSlug;
+        }
+
+        /** {@link #rootRoomGuestBanPath} under {@code /bans/guests/} in the {@link #sharedRoomSlug shared room}. */
+        String sharedRoomGuestBanPath(boolean banned) {
+            try {
+                HttpResponse<String> r = send(null, "2001:db8:1:" + Integer.toHexString(n) + "::7",
+                        Call.post("/api/me/guest", null));
+                assertTrue(r.statusCode() / 100 == 2, r.body());
+                String path = "/api/rooms/" + sharedRoomSlug() + "/bans/guests/" + json(r.body()).get("id").getAsString();
                 if (banned) {
                     ok(Call.put(path, null));
                 }

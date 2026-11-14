@@ -298,7 +298,13 @@ function renderHeader(s: RoomState): void {
   element("room-name").textContent = s.room.name;
   const mode = { owner: "Owner picks", vote: "Vote", open: "Open" }[s.room.controlMode] ?? s.room.controlMode;
   const role = s.room.you.role;
-  element("room-meta").textContent = "Control: " + mode + (role !== undefined ? " · You are " + role : "");
+  const r = s.room.you.restriction;
+  const restricted = r === undefined ? ""
+    : r.kind === "timeout" && r.until !== undefined
+      ? " · You are timed out until " + new Date(r.until).toLocaleString() + ": you can listen, nothing else"
+      : " · You are banned here: you can listen, nothing else";
+  element("room-meta").textContent = "Control: " + mode + (role !== undefined && role !== "banned" ? " · You are " + role : "")
+    + restricted;
   // The management view (settings, members, guest bans) for the owner and moderators.
   const manage = element<HTMLAnchorElement>("room-manage-link");
   manage.hidden = !s.room.you.canModerate;
@@ -1254,6 +1260,7 @@ function onRequest(r: NewRequest): void {
 
 const KICK_TEXT: Record<string, string> = {
   banned_from_room: "You are banned from this room.",
+  timed_out: "You are timed out in this room.",
   room_not_found: "This room is no longer available to you.",
   room_deleted: "This room was deleted.",
   session_ended: "Your session ended. Log in again to rejoin.",

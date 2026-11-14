@@ -98,6 +98,9 @@ public final class RequestSearch {
         Rooms.Access access = rooms.access(actor, idOrSlug);
         Rooms.Room room = access.room();
         boolean mods = access.role() != null && access.role().moderates();
+        if (!mods) {
+            access.requireUnrestricted(); // read-only: banned or timed out
+        }
         if (!mods && !room.settings().libraryRequests()) {
             throw new HttpError(403, "library_requests_off", "This room doesn't take requests from libraries");
         }

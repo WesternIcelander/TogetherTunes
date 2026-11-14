@@ -8,6 +8,7 @@ import io.siggi.togethertunes.auth.IpAccess;
 import io.siggi.togethertunes.auth.Permission;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.settings.Settings;
@@ -29,30 +30,31 @@ import java.util.Objects;
  * setting are both on ({@link #effective}): {@code guests.canVote}, {@code guests.canRequestLibrary},
  * {@code guests.canUpload}, {@code guests.canYoutube} (the last also needs {@code ytdlp.enabled}).
  * With {@code guests.enabled} off, or for a guest banned server-wide, nothing is effective. A
- * guest banned from the room can't open it at all ({@code 403 banned_from_room}, {@link Rooms}).
+ * guest banned or timed out in the room ({@link RoomBans}) may open it and listen, nothing else.
  * {@link #roomActor} turns a request's {@link Actor} into the {@link RoomActor} the queue
  * operations check; {@link #require} is the room half of {@link
  * io.siggi.togethertunes.library.AddMediaPolicy} (uploads and YouTube links by guests).
  *
- * <h2>Guest bans</h2>
- * The owner and moderators (incl. {@code rooms.moderateAny}) ban guests from a room
- * ({@code room_guest_bans}), list the bans and lift them. A ban removes the guest's connections
- * from the room's presence and is broadcast as {@link RoomEvent.GuestBanned} (the WebSocket layer
- * closes those sockets). A guest identified by IP ({@code identifiedBy: "ip"}) is everyone
- * sharing that IPv4 address or IPv6 /64, so its {@link GuestBan} carries {@link #IP_MODE_WARNING}
- * for the UI. The address itself is never part of a {@link GuestBan}: an {@code ip.view} holder
- * gets it separately from {@link #ipsOf} ({@link IpAccess}). Audited ({@code room.guest_banned},
- * {@code room.guest_unbanned}).
+ * <h2>Guest bans and timeouts</h2>
+ * The owner and moderators (incl. {@code rooms.moderateAny}) ban or time out guests in a room
+ * ({@code room_bans}, {@link RoomBans}): the guest and its IP address (an IP-mode guest is its
+ * address; a cookie guest's is the one it connects from now, else its last known one). They list
+ * the bans and lift them (the guest and the address together). A ban or timeout is broadcast as
+ * {@link RoomEvent.RestrictionsChanged}: the guest stays in the room, read-only. A ban by IP covers
+ * everyone sharing that IPv4 address or IPv6 /64 who isn't a member of the room, so a
+ * {@link GuestBan} carries {@link #IP_MODE_WARNING} for the UI. The address itself is never part
+ * of a {@link GuestBan}: an {@code ip.view} holder gets the guest's last IP separately from
+ * {@link #ipsOf} ({@link IpAccess}). Audited ({@code room.guest_banned}, {@code room.guest_unbanned}).
  */
 public final class RoomGuests implements RoomGuestRules {
     public static final String AUDIT_BANNED = "room.guest_banned";
     public static final String AUDIT_UNBANNED = "room.guest_unbanned";
     public static final int LIST_DEFAULT = 50;
     public static final int LIST_MAX = 200;
-    /** The warning shown before (and with) a ban of an IP-mode guest. Contains no address. */
-    public static final String IP_MODE_WARNING = "This guest is identified by its IP address: banning it bans"
-            + " everyone sharing that address (IPv4) or /64 network (IPv6), for example a whole household or"
-            + " venue.";
+    /** The warning shown before (and with) a guest's ban. Contains no address. */
+    public static final String IP_MODE_WARNING = "Bans and timeouts follow the IP address: this one also covers"
+            + " everyone sharing the guest's address (IPv4) or /64 network (IPv6) who isn't a member of the room,"
+            + " for example a whole household or venue.";
 
     /**
      * What a guest may do in a room: each one is the server setting AND the room setting.
@@ -71,11 +73,16 @@ public final class RoomGuests implements RoomGuestRules {
      *
      * @param guest        the guest (an actor ref: id and name, never an address)
      * @param identifiedBy {@code cookie} or {@code ip}
-     * @param banned       whether the room has banned it
-     * @param bannedAt     when, or {@code null} if not banned
-     * @param warning      {@link #IP_MODE_WARNING} for an IP-mode guest, else {@code null}
+     * @param banned       whether the room has banned it (a ban, not a timeout)
+     * @param bannedAt     when the ban or timeout was put in place, or {@code null} if there is none
+     * @param warning      {@link #IP_MODE_WARNING} (bans follow the IP address), always set
+     * @param timedOutUntil the end of its timeout (epoch ms), or {@code null}
      */
-    public record GuestBan(ActorRef guest, String identifiedBy, boolean banned, Long bannedAt, String warning) {
+    public record GuestBan(ActorRef guest, String identifiedBy, boolean banned, Long bannedAt, String warning,
+                           Long timedOutUntil) {
+        public GuestBan(ActorRef guest, String identifiedBy, boolean banned, Long bannedAt, String warning) {
+            this(guest, identifiedBy, banned, bannedAt, warning, null);
+        }
     }
 
     /** One page of bans; {@code nextCursor} is {@code null} on the last page. */
@@ -92,6 +99,7 @@ public final class RoomGuests implements RoomGuestRules {
     private final Rooms rooms;
     private final RoomRegistry registry;
     private final IpAccess ipAccess;
+    private final RoomBans.CurrentIps currentIps;
 
     public RoomGuests(Database db, Settings settings, Permissions permissions, Rooms rooms, RoomRegistry registry) {
         this.db = Objects.requireNonNull(db);
@@ -99,7 +107,8 @@ public final class RoomGuests implements RoomGuestRules {
         this.permissions = Objects.requireNonNull(permissions);
         this.rooms = Objects.requireNonNull(rooms);
         this.registry = Objects.requireNonNull(registry);
-        this.ipAccess = new IpAccess(db, permissions);
+        this.ipAccess = new IpAccess(db, permissions, rooms.clock());
+        this.currentIps = new RoomBans.CurrentIps(ipAccess, registry.mediaAccess());
     }
 
     // ------------------------------------------------------------------ capabilities
@@ -144,8 +153,8 @@ public final class RoomGuests implements RoomGuestRules {
 
     /**
      * What a guest (or an anonymous visitor, once it becomes one) may do in a room with these
-     * settings. A guest banned server-wide gets {@link Capabilities#NONE}; a room ban is checked
-     * when the room is opened ({@link Rooms#access}), not here.
+     * settings. A guest banned server-wide gets {@link Capabilities#NONE}; a room ban or timeout
+     * is the {@link Rooms.Access}'s ({@link #roomActor}), not here.
      *
      * @throws IllegalArgumentException for a user (users have rights by role and permission)
      */
@@ -164,23 +173,34 @@ public final class RoomGuests implements RoomGuestRules {
      * effective capabilities, or {@link RoomActor#ANONYMOUS}.
      */
     public RoomActor roomActor(Actor actor, Rooms.Access access) throws SQLException {
-        return switch (actor) {
+        RoomActor a = switch (actor) {
             case Actor.User u -> RoomActor.user(u.userId(), access.role(),
                     permissions.allowed(u, Permission.LIBRARY_UPLOAD),
                     permissions.enabled(Feature.YOUTUBE) && permissions.allowed(u, Permission.LIBRARY_YOUTUBE));
             case Actor.Guest g -> RoomActor.guest(g.guestId(), capabilities(g, access.room().settings()));
             case Actor.Anonymous ignored -> RoomActor.ANONYMOUS;
         };
+        return a.restricted(access.restriction());
     }
 
     /**
-     * {@link #roomActor(Actor, Rooms.Access)} for the room with this id or slug.
+     * {@link #roomActor(Actor, Rooms.Access)} for the room with this id or slug, without the
+     * caller's IP address (only the account's or guest's own ban or timeout counts).
      *
-     * @throws HttpError {@code 404 room_not_found} (also a private room for a guest),
-     *                   {@code 403 banned_from_room} (a banned user, or a guest banned from the room)
+     * @throws HttpError {@code 404 room_not_found} (also a private room for a guest)
      */
     public RoomActor roomActor(Actor actor, String idOrSlug) throws SQLException {
         return roomActor(actor, rooms.access(actor, idOrSlug));
+    }
+
+    /**
+     * {@link #roomActor(Actor, Rooms.Access)} for the room with this id or slug, seen from
+     * {@code clientIp}: a ban or timeout of that address counts too.
+     *
+     * @throws HttpError {@code 404 room_not_found} (also a private room for a guest)
+     */
+    public RoomActor roomActor(Actor actor, String clientIp, String idOrSlug) throws SQLException {
+        return roomActor(actor, rooms.access(actor, idOrSlug, clientIp));
     }
 
     /**
@@ -193,6 +213,7 @@ public final class RoomGuests implements RoomGuestRules {
     @Override
     public void require(String roomId, Actor guest, Capability capability) throws SQLException {
         Rooms.Access access = rooms.access(guest, roomId);
+        access.requireUnrestricted(); // read-only there
         RoomSettings room = access.room().settings();
         switch (capability) {
             case UPLOAD -> {
@@ -246,21 +267,14 @@ public final class RoomGuests implements RoomGuestRules {
         }
     }
 
-    private static Long bannedAt(Connection c, String roomId, String guestId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT created_at FROM room_guest_bans WHERE room_id = ? AND guest_id = ?")) {
-            ps.setString(1, roomId);
-            ps.setString(2, guestId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next() ? rs.getLong(1) : null;
-            }
+    private static GuestBan view(Connection c, String roomId, String guestId, GuestRow g, long now)
+            throws SQLException {
+        RoomBans.Entry e = RoomBans.entry(c, roomId, RoomBans.GUEST, guestId, now);
+        if (e == null) {
+            return new GuestBan(ActorRef.guest(guestId, g.name()), g.kind(), false, null, IP_MODE_WARNING, null);
         }
-    }
-
-    private static GuestBan view(String guestId, GuestRow g, Long bannedAt) {
-        boolean ipMode = "ip".equals(g.kind());
-        return new GuestBan(ActorRef.guest(guestId, g.name()), g.kind(), bannedAt != null, bannedAt,
-                ipMode ? IP_MODE_WARNING : null);
+        return new GuestBan(ActorRef.guest(guestId, g.name()), g.kind(), e.until() == null, e.at(), IP_MODE_WARNING,
+                e.until());
     }
 
     private static HttpError guestNotFound() {
@@ -281,12 +295,13 @@ public final class RoomGuests implements RoomGuestRules {
             if (g == null) {
                 throw guestNotFound();
             }
-            return view(guestId, g, bannedAt(c, roomId, guestId));
+            return view(c, roomId, guestId, g, EpochMs.now(rooms.clock()));
         });
     }
 
     /**
-     * The room's guest bans, newest first (then by guest id, descending). Owner and moderators only.
+     * The room's guest bans and timeouts, newest first (then by guest, descending). Owner and
+     * moderators only.
      *
      * @param cursor the previous page's {@code nextCursor}, or {@code null}; {@code 400 invalid_cursor} if malformed
      */
@@ -294,98 +309,112 @@ public final class RoomGuests implements RoomGuestRules {
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
         }
-        long cursorAt = 0;
-        String cursorId = null;
-        if (cursor != null) {
-            int sep = cursor.indexOf('_');
-            try {
-                cursorAt = Long.parseLong(cursor.substring(0, Math.max(sep, 0)));
-            } catch (NumberFormatException e) {
-                sep = -1;
-            }
-            if (sep <= 0 || sep == cursor.length() - 1) {
-                throw new HttpError(400, "invalid_cursor", "Malformed cursor");
-            }
-            cursorId = cursor.substring(sep + 1);
-        }
         String roomId = roomId(idOrSlug);
         requireModerator(actor, roomId);
-        String sql = "SELECT b.guest_id, b.created_at, g.display_name, g.kind FROM room_guest_bans b"
-                + " JOIN guests g ON g.id = b.guest_id WHERE b.room_id = ?"
-                + (cursorId != null ? " AND (b.created_at < ? OR (b.created_at = ? AND b.guest_id < ?))" : "")
-                + " ORDER BY b.created_at DESC, b.guest_id DESC LIMIT " + (limit + 1);
-        long at = cursorAt;
-        String afterId = cursorId;
+        long now = EpochMs.now(rooms.clock());
         return db.read(c -> {
+            // Guests only: walk the room's restrictions page by page until enough guests are found.
             List<GuestBan> items = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setString(1, roomId);
-                if (afterId != null) {
-                    ps.setLong(2, at);
-                    ps.setLong(3, at);
-                    ps.setString(4, afterId);
-                }
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        items.add(view(rs.getString(1), new GuestRow(rs.getString(3), rs.getString(4)),
-                                rs.getLong(2)));
-                    }
-                }
-            }
+            String pageCursor = cursor;
             String next = null;
-            if (items.size() > limit) {
-                items = new ArrayList<>(items.subList(0, limit));
-                GuestBan last = items.get(limit - 1);
-                next = last.bannedAt() + "_" + last.guest().id();
+            while (true) {
+                RoomBans.Page page = RoomBans.list(c, roomId, pageCursor, RoomBans.LIST_MAX, now);
+                for (int i = 0; i < page.items().size(); i++) {
+                    RoomBans.Entry e = page.items().get(i);
+                    if (!e.person().isGuest()) {
+                        continue;
+                    }
+                    if (items.size() == limit) {
+                        GuestBan last = items.get(limit - 1);
+                        next = last.bannedAt() + "_" + RoomBans.guestSubject(last.guest().id());
+                        return new GuestBanPage(List.copyOf(items), next);
+                    }
+                    items.add(new GuestBan(e.person(), e.identifiedBy() == null ? "cookie" : e.identifiedBy(),
+                            e.until() == null, e.at(), IP_MODE_WARNING, e.until()));
+                }
+                if (page.nextCursor() == null) {
+                    return new GuestBanPage(List.copyOf(items), null);
+                }
+                pageCursor = page.nextCursor();
             }
-            return new GuestBanPage(List.copyOf(items), next);
         });
     }
 
     /**
-     * Bans a guest from the room (owner and moderators). Banning again changes nothing. The
-     * guest's connections leave the room's presence ({@link RoomEvent.GuestBanned}); its queue
-     * entries and votes stay (moderators can remove entries), as for a banned user.
+     * Bans a guest from the room (owner and moderators): read-only there, see {@link #restrict}.
      *
      * @param ip the caller's IP, for the audit row only
      * @throws HttpError {@code 404 room_not_found} / {@code guest_not_found}, {@code 403 forbidden}
      */
     public BanSet ban(Actor actor, String idOrSlug, String guestId, String ip) throws Exception {
+        return restrict(actor, idOrSlug, guestId, null, ip);
+    }
+
+    /**
+     * Bans ({@code durationMs} {@code null}) or times out a guest in the room (owner and
+     * moderators): the guest and its IP address, which also covers everyone at that address who
+     * isn't a member. The guest stays in the room, read-only ({@link RoomEvent.RestrictionsChanged});
+     * its queue entries and votes stay (moderators can remove entries). Banning a banned guest again
+     * changes nothing; anything else replaces the previous ban or timeout.
+     *
+     * @param ip the caller's IP, for the audit row only
+     * @throws HttpError {@code 404 room_not_found} / {@code guest_not_found}, {@code 403 forbidden},
+     *                   {@code 400 invalid_duration}
+     */
+    public BanSet restrict(Actor actor, String idOrSlug, String guestId, Long durationMs, String ip) throws Exception {
         String roomId = roomId(idOrSlug);
         String actorUserId = actor instanceof Actor.User u ? u.userId() : null;
-        return registry.call(roomId, tx -> {
+        BanSet set = registry.call(roomId, tx -> {
             requireModerator(actor, roomId);
             GuestRow g = db.read(c -> guestRow(c, guestId));
             if (g == null) {
                 throw guestNotFound();
             }
-            Long existing = db.read(c -> bannedAt(c, roomId, guestId));
-            if (existing != null) {
-                return new BanSet(view(guestId, g, existing), false);
-            }
             long now = tx.now();
+            String subject = RoomBans.guestSubject(guestId);
+            RoomBans.Restriction existing = db.read(c -> RoomBans.ofSubject(c, roomId, subject, now));
+            if (existing != null && existing.ban() && durationMs == null) {
+                return new BanSet(db.read(c -> view(c, roomId, guestId, g, now)), false);
+            }
+            Long until = durationMs == null ? null : RoomBans.timeoutEnd(now, durationMs);
+            // An IP-mode guest is its address (key_hash is the hash of its IP key); a cookie guest's
+            // is where it connects from now, else its last known one.
+            String ipKeyHash = "ip".equals(g.kind()) ? db.read(c -> keyHash(c, guestId)) : currentIps.ofGuest(guestId);
             tx.persist(c -> {
-                try (PreparedStatement ps = c.prepareStatement(
-                        "INSERT INTO room_guest_bans (room_id, guest_id, created_at) VALUES (?, ?, ?)")) {
-                    ps.setString(1, roomId);
-                    ps.setString(2, guestId);
-                    ps.setLong(3, now);
-                    ps.executeUpdate();
+                RoomBans.put(c, roomId, subject, RoomBans.GUEST, guestId, ipKeyHash, until, actorUserId, now);
+                Map<String, Object> details = new java.util.LinkedHashMap<>();
+                details.put("guestId", guestId);
+                details.put("identifiedBy", g.kind());
+                details.put("kind", until == null ? "ban" : "timeout");
+                if (until != null) {
+                    details.put("until", until);
                 }
-                AuditLog.write(c, now, actorUserId, null, ip, AUDIT_BANNED, roomId,
-                        Map.of("guestId", guestId, "identifiedBy", g.kind()));
+                details.put("addressCovered", ipKeyHash != null);
+                AuditLog.write(c, now, actorUserId, null, ip, AUDIT_BANNED, roomId, details);
                 return null;
             });
-            List<String> kicked = PresenceOps.removeActor(tx, "g:" + guestId);
-            tx.event(new RoomEvent.GuestBanned(guestId, kicked));
-            return new BanSet(view(guestId, g, now), true);
+            tx.event(new RoomEvent.RestrictionsChanged());
+            GuestBan view = new GuestBan(ActorRef.guest(guestId, g.name()), g.kind(), until == null, now,
+                    IP_MODE_WARNING, until);
+            return new BanSet(view, existing == null);
         });
+        registry.timeoutSet(roomId, set.ban().timedOutUntil());
+        return set;
+    }
+
+    private static String keyHash(Connection c, String guestId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT key_hash FROM guests WHERE id = ?")) {
+            ps.setString(1, guestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
     }
 
     /**
-     * Lifts a guest's ban (owner and moderators).
+     * Lifts a guest's ban or timeout (owner and moderators): the guest and the address together.
      *
-     * @return whether there was a ban
+     * @return whether there was one
      * @throws HttpError {@code 404 room_not_found}, {@code 403 forbidden}
      */
     public boolean unban(Actor actor, String idOrSlug, String guestId, String ip) throws Exception {
@@ -393,21 +422,20 @@ public final class RoomGuests implements RoomGuestRules {
         String actorUserId = actor instanceof Actor.User u ? u.userId() : null;
         return registry.call(roomId, tx -> {
             requireModerator(actor, roomId);
-            if (guestId == null || !UuidV7.isValid(guestId) || db.read(c -> bannedAt(c, roomId, guestId)) == null) {
+            if (guestId == null || !UuidV7.isValid(guestId)) {
                 return false;
             }
             long now = tx.now();
+            String subject = RoomBans.guestSubject(guestId);
+            if (db.read(c -> RoomBans.ofSubject(c, roomId, subject, now)) == null) {
+                return false;
+            }
             tx.persist(c -> {
-                try (PreparedStatement ps = c.prepareStatement(
-                        "DELETE FROM room_guest_bans WHERE room_id = ? AND guest_id = ?")) {
-                    ps.setString(1, roomId);
-                    ps.setString(2, guestId);
-                    ps.executeUpdate();
-                }
+                RoomBans.lift(c, roomId, subject, false, now);
                 AuditLog.write(c, now, actorUserId, null, ip, AUDIT_UNBANNED, roomId, Map.of("guestId", guestId));
                 return null;
             });
-            tx.event(new RoomEvent.GuestUnbanned(guestId));
+            tx.event(new RoomEvent.RestrictionsChanged());
             return true;
         });
     }

@@ -115,6 +115,48 @@ public final class IpAccess {
         });
     }
 
+    /**
+     * The {@link GuestKeys#ipKeyHash IP key hash} of the address a user last used: the IP of their
+     * most recently seen live session, or {@code null} if none is known. For room bans by IP
+     * ({@code docs/rooms.md#bans-and-timeouts}) when the user has no connection in the room. No
+     * {@code ip.view} check: only the one-way hash leaves this class, and callers only store and
+     * compare it, never show it.
+     */
+    public String ipKeyHashOfUser(String userId) throws SQLException {
+        if (userId == null) {
+            return null;
+        }
+        long now = EpochMs.now(clock);
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT ip FROM sessions WHERE user_id = ?"
+                    + " AND expires_at > ? AND ip IS NOT NULL ORDER BY last_seen_at DESC, id DESC LIMIT 1")) {
+                ps.setString(1, userId);
+                ps.setLong(2, now);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? GuestKeys.ipKeyHash(rs.getString(1)) : null;
+                }
+            }
+        });
+    }
+
+    /**
+     * The {@link GuestKeys#ipKeyHash IP key hash} of a guest's last IP ({@code guests.ip_last}), or
+     * {@code null}. As {@link #ipKeyHashOfUser}: only the hash leaves this class.
+     */
+    public String ipKeyHashOfGuest(String guestId) throws SQLException {
+        if (guestId == null) {
+            return null;
+        }
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT ip_last FROM guests WHERE id = ?")) {
+                ps.setString(1, guestId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() && rs.getString(1) != null ? GuestKeys.ipKeyHash(rs.getString(1)) : null;
+                }
+            }
+        });
+    }
+
     private Map<String, String> byId(Actor actor, String sqlPrefix, Collection<String> ids) throws SQLException {
         if (ids.isEmpty() || !mayView(actor)) {
             return Map.of();

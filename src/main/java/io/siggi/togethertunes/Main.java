@@ -382,6 +382,7 @@ public final class Main {
         // RTMP pushes (supervised ffmpeg); started by the outputs API. Null without ffmpeg.
         RtmpPushers rtmpPushers = config.ffmpeg() == null ? null : new RtmpPushers(programOutputs, config.ffmpeg());
         Rooms rooms = new Rooms(database, permissions, Clock.systemUTC());
+        rooms.liveIps(roomRegistry.mediaAccess()); // a room ban covers the address a person connects from now
         RoomGuests roomGuests = new RoomGuests(database, settings, permissions, rooms, roomRegistry);
         // Guests add media only as a request in a room that allows it (server AND room setting).
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);

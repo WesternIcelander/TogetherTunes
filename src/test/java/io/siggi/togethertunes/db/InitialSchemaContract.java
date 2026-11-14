@@ -66,7 +66,8 @@ abstract class InitialSchemaContract {
         t("play_history", "id", "user_id", "item_id", "room_id", "room_name", "played_at");
         t("room_members", "room_id", "user_id", "role", "joined_at");
         t("room_autoplay_selections", "room_id", "playlist_id", "user_id", "selected_at");
-        t("room_guest_bans", "room_id", "guest_id", "created_at");
+        t("room_bans", "room_id", "subject", "target_kind", "target", "expires_at", "created_by_user_id",
+                "created_at");
         t("queue_entries", "id", "room_id", "item_id", "added_by_user_id", "added_by_guest_id", "added_at",
                 "state", "position", "pinned", "played_at", "via", "added_by_name", "overlay", "section");
         t("votes", "entry_id", "voter_user_id", "voter_guest_id", "value", "at");
@@ -170,12 +171,13 @@ abstract class InitialSchemaContract {
         exec("INSERT INTO votes (entry_id, voter_user_id, value, at) VALUES ('q1', 'u1', 1, 1)");
         exec("INSERT INTO stream_outputs (id, room_id, kind, token, created_at) VALUES ('o1', 'r1', 'ts', 'tok', 1)");
         exec("INSERT INTO room_members (room_id, user_id, role, joined_at) VALUES ('r1', 'u1', 'owner', 1)");
-        exec("INSERT INTO room_guest_bans (room_id, guest_id, created_at) VALUES ('r1', 'g1', 1)");
+        exec("INSERT INTO room_bans (room_id, subject, target_kind, target, created_at)"
+                + " VALUES ('r1', 'g:g1', 'guest', 'g1', 1)");
 
         exec("DELETE FROM rooms WHERE id = 'r1'");
 
         for (String table : List.of("rooms", "queue_entries", "votes", "stream_outputs",
-                "room_members", "room_guest_bans")) {
+                "room_members", "room_bans")) {
             assertEquals(0, count(table), table);
         }
         assertEquals(1, count("items"));

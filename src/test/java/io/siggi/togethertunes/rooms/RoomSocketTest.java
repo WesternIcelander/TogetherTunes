@@ -657,11 +657,23 @@ class RoomSocketTest {
         JsonObject skip = anon.ok("{\"type\":\"voteSkip\"}");
         assertEquals(1, skip.get("votes").getAsInt());
 
-        // banning the guest from the room kicks its socket
+        // banning the guest: it stays and listens, read-only; a timeout too
         assertEquals(201, call(alice, "PUT", "/api/rooms/votes/guest-bans/" + guestId, null).statusCode());
-        assertEquals("banned_from_room", anon.await("kicked").get("reason").getAsString());
-        anon.error("not_joined", "{\"type\":\"sync\"}");
-        anon.error("banned_from_room", "{\"type\":\"join\",\"room\":\"votes\"}");
+        JsonObject banned = anon.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").getAsJsonObject("you").has("restriction"));
+        assertEquals("ban", banned.getAsJsonObject("room").getAsJsonObject("you").getAsJsonObject("restriction")
+                .get("kind").getAsString());
+        anon.error("banned_from_room", "{\"type\":\"vote\",\"entryId\":\"" + waiting + "\",\"value\":1}");
+        anon.ok("{\"type\":\"sync\"}");
+        assertEquals(200, call(alice, "PUT", "/api/rooms/votes/bans/guests/" + guestId, "{\"durationMs\":600000}")
+                .statusCode());
+        JsonObject timedOut = anon.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").getAsJsonObject("you").has("restriction")
+                && m.getAsJsonObject("room").getAsJsonObject("you").getAsJsonObject("restriction").has("until"));
+        assertEquals("timeout", timedOut.getAsJsonObject("room").getAsJsonObject("you")
+                .getAsJsonObject("restriction").get("kind").getAsString());
+        anon.error("timed_out", "{\"type\":\"voteSkip\"}");
+        anon.ok("{\"type\":\"join\",\"room\":\"votes\"}");
     }
 
     /** A ready audio item of alice's with {@code audio.m4a} on disk. */
@@ -981,14 +993,24 @@ class RoomSocketTest {
         assertTrue(you.get("canSkip").getAsBoolean());
         member.ok("{\"type\":\"play\"}");
 
-        // banned: kicked, and out of the presence
+        // banned: stays and listens, read-only (docs/rooms.md#bans-and-timeouts)
         assertEquals(200, call(alice, "PUT", "/api/rooms/roles/members/" + bobId, "{\"role\":\"banned\"}")
                 .statusCode());
-        assertEquals("banned_from_room", member.await("kicked").get("reason").getAsString());
-        JsonObject presence = owner.await(m -> m.get("type").getAsString().equals("presence")
-                && m.getAsJsonObject("presence").get("listening").getAsInt() == 1);
-        assertNotNull(presence);
-        member.error("banned_from_room", "{\"type\":\"join\",\"room\":\"" + roomId + "\"}");
+        JsonObject banned = member.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").getAsJsonObject("you").has("restriction"))
+                .getAsJsonObject("room").getAsJsonObject("you");
+        assertEquals("banned", banned.get("role").getAsString());
+        assertEquals("ban", banned.getAsJsonObject("restriction").get("kind").getAsString());
+        assertFalse(banned.get("canRequest").getAsBoolean() || banned.get("canVote").getAsBoolean());
+        member.error("banned_from_room", "{\"type\":\"play\"}");
+        member.error("banned_from_room", "{\"type\":\"voteSkip\"}");
+        member.ok("{\"type\":\"join\",\"room\":\"" + roomId + "\"}");
+        // lifted: the next state has the rights back
+        assertEquals(204, call(alice, "DELETE", "/api/rooms/roles/members/" + bobId, null).statusCode());
+        JsonObject lifted = member.await(m -> m.get("type").getAsString().equals("state")
+                && !m.getAsJsonObject("room").getAsJsonObject("you").has("restriction"));
+        assertNotNull(lifted);
+        member.ok("{\"type\":\"leave\"}");
 
         // the room goes private: anonymous sockets lose it
         Client anon = connect(null, null);

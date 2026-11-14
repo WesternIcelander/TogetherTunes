@@ -48,8 +48,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * with the other messages. Each output carries {@code estimatedDelayMs} (the room setting
  * {@code estimatedDelayMs.<kind>}, whose defaults are 5000 / 2000 / 8000 / 3000 ms for RTMP, .ts, HLS, MP3); the RTMP
  * {@code detail} goes to the owner and moderators only.
- * A banned guest's sockets ({@link RoomEvent.GuestBanned}), and sockets whose actor may no longer
- * see the room after a room, settings or member change, get {@code kicked} and leave the room.
+ * Sockets whose actor may no longer see the room after a room, settings or member change get
+ * {@code kicked} and leave the room. A ban or timeout ({@link RoomEvent.RestrictionsChanged})
+ * re-checks every socket: the person stays and listens, read-only ({@code you.restriction}).
  */
 final class RoomBroadcaster implements RoomListener {
     private static final System.Logger LOG = System.getLogger(RoomBroadcaster.class.getName());
@@ -70,14 +71,23 @@ final class RoomBroadcaster implements RoomListener {
         /** Queues a message; never blocks. */
         void send(JsonObject message);
 
+        /** The socket's client IP (for bans by IP address; never sent anywhere), or {@code null}. */
+        default String clientIp() {
+            return null;
+        }
+
         /** The broadcaster took the socket out of the room ({@code kicked} was sent). */
         void removedFromRoom(RoomBroadcaster from);
     }
 
-    /** Re-checks an actor's access to the room ({@link RoomGuests#roomActor(Actor, String)}). */
+    /** Re-checks an actor's access to the room ({@link RoomGuests#roomActor(Actor, String, String)}). */
     interface Access {
-        /** @throws HttpError {@code 404 room_not_found}, {@code 403 banned_from_room} */
-        RoomActor roomActor(Actor actor, String roomId) throws Exception;
+        /**
+         * The actor from {@code clientIp} ({@code null}: unknown) in the room.
+         *
+         * @throws HttpError {@code 404 room_not_found}
+         */
+        RoomActor roomActor(Actor actor, String clientIp, String roomId) throws Exception;
     }
 
     private sealed interface Task permits Join, Resend, Leave, Changed, Closed, OutputChanged {
@@ -363,18 +373,6 @@ final class RoomBroadcaster implements RoomListener {
     private void changed(RoomSnapshot s, RoomChange change) throws Exception {
         noteSnapshot(s);
         List<RoomEvent> events = change.events();
-        // Banned guests first: their sockets are already out of the presence.
-        for (RoomEvent e : events) {
-            if (e instanceof RoomEvent.GuestBanned b) {
-                for (String connectionId : b.connectionIds()) {
-                    Member m = members.remove(connectionId);
-                    if (m != null) {
-                        interest.decrementAndGet();
-                        kickMessage(m, "banned_from_room");
-                    }
-                }
-            }
-        }
         boolean recheckAll = false;
         Set<String> recheckUsers = new HashSet<>();
         boolean presenceOnly = !events.isEmpty();
@@ -383,6 +381,7 @@ final class RoomBroadcaster implements RoomListener {
             switch (e) {
                 case RoomEvent.RoomUpdated ignored -> recheckAll = true;
                 case RoomEvent.SettingsChanged ignored -> recheckAll = true;
+                case RoomEvent.RestrictionsChanged ignored -> recheckAll = true;
                 case RoomEvent.MemberChanged mc -> recheckUsers.add(mc.userId());
                 default -> {
                 }
@@ -399,7 +398,7 @@ final class RoomBroadcaster implements RoomListener {
                 continue;
             }
             try {
-                m.actor = access.roomActor(m.conn.actor(), roomId);
+                m.actor = access.roomActor(m.conn.actor(), m.conn.clientIp(), roomId);
                 forceFull.add(m);
             } catch (HttpError refused) {
                 members.remove(m.conn.id());
@@ -711,6 +710,16 @@ final class RoomBroadcaster implements RoomListener {
         o.addProperty("canYoutube", c.canYoutube());
         o.addProperty("canSkip", c.canSkip());
         o.addProperty("canModerate", a.moderates());
+        RoomBans.Restriction r = a.restriction();
+        if (r != null) {
+            // Read-only here: listen, nothing else (docs/rooms.md#bans-and-timeouts).
+            JsonObject restriction = new JsonObject();
+            restriction.addProperty("kind", r.kind());
+            if (r.until() != null) {
+                restriction.addProperty("until", r.until());
+            }
+            o.add("restriction", restriction);
+        }
         return o;
     }
 

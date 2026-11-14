@@ -56,6 +56,7 @@ class RoomsApiTest {
     private String alice;
     private String bob;
     private String noCreate; // a user whose roles lack rooms.create
+    private String plainId; // noCreate's user
     private String root; // admin: ip.view, rooms.moderateAny
     private Settings settings;
     private final java.util.List<String> deleted = new java.util.concurrent.CopyOnWriteArrayList<>();
@@ -82,7 +83,7 @@ class RoomsApiTest {
         String rootId = accounts.createLocal("root", null, "root-password", false, null, "account.register").id(); // admin
         aliceId = accounts.createLocal("alice", "Alice", "alice-password", false, null, "account.register").id();
         bobId = accounts.createLocal("bob", "Bob", "bob-password", false, null, "account.register").id();
-        String plainId = accounts.createLocal("plain", null, "plain-password", false, null, "account.register").id();
+        plainId = accounts.createLocal("plain", null, "plain-password", false, null, "account.register").id();
         Roles roles = new Roles(db);
         roles.setUserRoles(plainId, List.of(roles.create("listeners", List.of(Permission.LIBRARY_UPLOAD), false).id()));
         Sessions sessions = new Sessions(db, clock);
@@ -674,7 +675,7 @@ class RoomsApiTest {
         assertEquals(200, call(bob, "PUT", "/api/rooms/" + id + "/guest-bans/" + ipGuest, null).statusCode());
         r = call(bob, "PUT", "/api/rooms/bar/guest-bans/" + cookieGuest, null);
         assertEquals(201, r.statusCode(), r.body());
-        assertFalse(json(r).has("warning"), "a cookie guest is one browser");
+        assertEquals(RoomGuests.IP_MODE_WARNING, json(r).get("warning").getAsString(), "bans follow the address");
 
         r = call(bob, "GET", "/api/rooms/bar/guest-bans?limit=1", null);
         assertEquals(200, r.statusCode(), r.body());
@@ -707,5 +708,92 @@ class RoomsApiTest {
         assertEquals(204, call(bob, "DELETE", "/api/rooms/bar/guest-bans/" + cookieGuest, null).statusCode());
         expectError(404, "ban_not_found", call(bob, "DELETE", "/api/rooms/bar/guest-bans/" + cookieGuest, null));
         assertEquals(1, json(call(alice, "GET", "/api/rooms/bar/guest-bans", null)).getAsJsonArray("items").size());
+    }
+
+    /**
+     * {@code /api/rooms/{room}/bans}: timeouts and bans of users and guests over HTTP, read-only
+     * (not hidden) for the person and for anyone else from the covered address, never showing the
+     * address or its hash.
+     */
+    @Test
+    void bansAndTimeouts() throws Exception {
+        String id = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Bar\",\"visibility\":\"public\"}"))
+                .get("id").getAsString();
+        assertEquals(201, call(alice, "PUT", "/api/rooms/bar/members/" + bobId, "{\"role\":\"moderator\"}").statusCode());
+        // The plain user last used this address (every test request comes from it).
+        sql("UPDATE sessions SET ip = '127.0.0.1' WHERE user_id = ?", plainId);
+        String hash = io.siggi.togethertunes.auth.GuestKeys.ipKeyHash("127.0.0.1");
+
+        // A timeout.
+        HttpResponse<String> r = call(bob, "PUT", "/api/rooms/bar/bans/users/" + plainId, "{\"durationMs\":60000}");
+        assertEquals(201, r.statusCode(), r.body());
+        JsonObject t = json(r);
+        assertEquals(plainId, t.getAsJsonObject("person").get("id").getAsString());
+        assertEquals("timeout", t.get("kind").getAsString());
+        assertEquals(clock.millis() + 60_000, t.get("until").getAsLong());
+        assertTrue(t.get("addressCovered").getAsBoolean());
+        for (HttpResponse<String> any : java.util.List.of(r, call(alice, "GET", "/api/rooms/bar/bans", null),
+                call(root, "GET", "/api/rooms/bar/bans", null), call(noCreate, "GET", "/api/rooms/bar", null),
+                call(alice, "GET", "/api/rooms/bar/bans/users/" + plainId, null))) {
+            assertFalse(any.body().contains("127.0.0.1") || any.body().contains(hash), any.body());
+        }
+        // The person: may open the room, read-only.
+        JsonObject you = json(call(noCreate, "GET", "/api/rooms/bar", null)).getAsJsonObject("you");
+        assertEquals("timeout", you.getAsJsonObject("restriction").get("kind").getAsString());
+        // Anyone else from that address who isn't a member too (here: an anonymous visitor)...
+        JsonObject anon = json(call(null, "GET", "/api/rooms/bar", null)).getAsJsonObject("you");
+        assertEquals("timeout", anon.getAsJsonObject("restriction").get("kind").getAsString());
+        // ...but not the owner or a moderator.
+        assertFalse(json(call(alice, "GET", "/api/rooms/bar", null)).getAsJsonObject("you").has("restriction"));
+        assertFalse(json(call(bob, "GET", "/api/rooms/bar", null)).getAsJsonObject("you").has("restriction"));
+        JsonObject list = json(call(alice, "GET", "/api/rooms/bar/bans", null));
+        assertEquals(1, list.getAsJsonArray("items").size());
+
+        // A ban replaces it (200: there was one); the member list shows them banned.
+        r = call(bob, "PUT", "/api/rooms/bar/bans/users/" + plainId, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("ban", json(r).get("kind").getAsString());
+        assertFalse(json(r).has("until"));
+        assertTrue(call(alice, "GET", "/api/rooms/bar/members", null).body().contains("\"role\":\"banned\""));
+
+        // Refusals.
+        expectError(403, "forbidden", call(noCreate, "PUT", "/api/rooms/bar/bans/users/" + bobId, null));
+        expectError(403, "forbidden", call(noCreate, "GET", "/api/rooms/bar/bans", null));
+        expectError(403, "forbidden", call(bob, "PUT", "/api/rooms/bar/bans/users/" + aliceId, null));
+        expectError(409, "cannot_restrict_self", call(bob, "PUT", "/api/rooms/bar/bans/users/" + bobId, null));
+        expectError(409, "target_moderates", call(alice, "PUT", "/api/rooms/bar/bans/users/" + bobId,
+                "{\"durationMs\":1000}"));
+        expectError(400, "invalid_duration", call(alice, "PUT", "/api/rooms/bar/bans/users/" + plainId,
+                "{\"durationMs\":5}"));
+        expectError(400, "invalid_duration", call(alice, "PUT", "/api/rooms/bar/bans/users/" + plainId,
+                "{\"durationMs\":\"long\"}"));
+        expectError(400, "unknown_field", call(alice, "PUT", "/api/rooms/bar/bans/users/" + plainId,
+                "{\"until\":1}"));
+        expectError(401, "not_authenticated", call(null, "PUT", "/api/rooms/bar/bans/users/" + plainId, null));
+        expectError(404, "user_not_found", call(alice, "PUT", "/api/rooms/bar/bans/users/nope", null));
+
+        // A guest timeout through the same paths.
+        String guest = io.siggi.togethertunes.db.UuidV7.newId();
+        sql("INSERT INTO guests (id, kind, key_hash, ip_last, display_name, created_at, last_seen_at)"
+                + " VALUES (?, 'cookie', 'k3', '198.51.100.9', 'Quiet Walrus', 1, 1)", guest);
+        r = call(bob, "PUT", "/api/rooms/bar/bans/guests/" + guest, "{\"durationMs\":5000}");
+        assertEquals(201, r.statusCode(), r.body());
+        assertFalse(json(r).get("banned").getAsBoolean());
+        assertEquals(clock.millis() + 5000, json(r).get("timedOutUntil").getAsLong());
+        assertFalse(r.body().contains("198.51.100.9"), r.body());
+        r = call(root, "GET", "/api/rooms/bar/bans", null);
+        assertTrue(r.body().contains("\"ip\":\"198.51.100.9\""), "ip.view sees a guest's last IP: " + r.body());
+        r = call(alice, "GET", "/api/rooms/bar/bans", null);
+        assertEquals(2, json(r).getAsJsonArray("items").size());
+        assertFalse(r.body().contains("198.51.100.9"), r.body());
+
+        // Lifting: the account and the address together.
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/bar/bans/users/" + plainId, null).statusCode());
+        expectError(404, "ban_not_found", call(bob, "DELETE", "/api/rooms/bar/bans/users/" + plainId, null));
+        expectError(404, "ban_not_found", call(bob, "GET", "/api/rooms/bar/bans/users/" + plainId, null));
+        assertFalse(json(call(null, "GET", "/api/rooms/bar", null)).getAsJsonObject("you").has("restriction"));
+        assertEquals(204, call(bob, "DELETE", "/api/rooms/bar/bans/guests/" + guest, null).statusCode());
+        assertEquals(0, json(call(alice, "GET", "/api/rooms/bar/bans", null)).getAsJsonArray("items").size());
+        assertTrue(id.length() > 0);
     }
 }

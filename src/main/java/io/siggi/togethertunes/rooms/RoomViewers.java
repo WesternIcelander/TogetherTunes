@@ -33,8 +33,18 @@ public final class RoomViewers implements GuestMediaAccess {
     /** viewer key -> room id -> connections of that viewer in the room. */
     private final Map<String, Map<String, Integer>> rooms = new ConcurrentHashMap<>();
     private final ReentrantLock lock = new ReentrantLock();
+    /**
+     * connection id -> the identified actor on it ({@code u:…} / {@code g:…}) and its client's IP
+     * key, users included: where a person is connecting from right now, for room bans by IP
+     * ({@link #currentIpKey}). In memory only, never sent anywhere.
+     */
+    private final Map<String, ActorIp> ips = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong ipSeq = new java.util.concurrent.atomic.AtomicLong();
 
     private record Seat(String viewerKey, String roomId) {
+    }
+
+    private record ActorIp(String actorKey, String ipKey, long seq) {
     }
 
     public RoomViewers(PlayingItems playing) {
@@ -66,6 +76,17 @@ public final class RoomViewers implements GuestMediaAccess {
         Objects.requireNonNull(connectionId, "connectionId");
         Objects.requireNonNull(roomId, "roomId");
         String key = viewerKey(actor, clientIp);
+        String actorKey = switch (actor) {
+            case Actor.User u -> "u:" + u.userId();
+            case Actor.Guest g -> "g:" + g.guestId();
+            case Actor.Anonymous ignored -> null;
+        };
+        String ipKey = clientIp == null ? null : IpKeys.ipKey(clientIp);
+        if (actorKey != null && ipKey != null) {
+            ips.put(connectionId, new ActorIp(actorKey, ipKey, ipSeq.incrementAndGet()));
+        } else {
+            ips.remove(connectionId);
+        }
         lock.lock();
         try {
             Seat old = byConnection.get(connectionId);
@@ -89,6 +110,7 @@ public final class RoomViewers implements GuestMediaAccess {
 
     /** Connection {@code connectionId} left its room (or closed); nothing if it wasn't recorded. */
     public void exit(String connectionId) {
+        ips.remove(connectionId);
         lock.lock();
         try {
             Seat old = byConnection.remove(connectionId);
@@ -140,6 +162,21 @@ public final class RoomViewers implements GuestMediaAccess {
             }
         }
         return false;
+    }
+
+    /**
+     * The IP key ({@link IpKeys#ipKey}) a person is connected from right now, in any room: the
+     * connection that entered a room most recently. {@code actorKey} is {@code u:<userId>} or
+     * {@code g:<guestId>}; {@code null} if the person has no connection in a room.
+     */
+    public String currentIpKey(String actorKey) {
+        ActorIp best = null;
+        for (ActorIp a : ips.values()) {
+            if (a.actorKey().equals(actorKey) && (best == null || a.seq() > best.seq())) {
+                best = a;
+            }
+        }
+        return best == null ? null : best.ipKey();
     }
 
     /** How many connections are recorded (tests). */

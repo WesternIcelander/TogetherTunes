@@ -200,6 +200,30 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         return c.identified() + c.anonymous();
     }
 
+    /**
+     * A ban or timeout changed in a room ({@link RoomBans}); for a timeout ({@code until}, epoch
+     * ms), the room broadcasts {@link RoomEvent.RestrictionsChanged} again once it ends, so the
+     * sockets' {@code you} follows. Only while the room stays loaded (a room loaded later sends
+     * {@code you.restriction.until}; the server checks every action anyway). Never loads the room.
+     */
+    public void timeoutSet(String roomId, Long until) {
+        if (until == null) {
+            return;
+        }
+        RoomExecutor e = loaded(roomId);
+        if (e == null) {
+            return;
+        }
+        try {
+            e.schedule(java.time.Duration.ofMillis(Math.max(0, until - clock.millis()) + 1), tx -> {
+                tx.event(new RoomEvent.RestrictionsChanged());
+                return null;
+            });
+        } catch (RoomClosedException ignored) {
+            // closed meanwhile: nobody to tell
+        }
+    }
+
     /** How many rooms are loaded. */
     public int loadedCount() {
         return executors.size();

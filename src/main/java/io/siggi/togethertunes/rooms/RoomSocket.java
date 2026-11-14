@@ -235,6 +235,11 @@ public final class RoomSocket {
             return actor;
         }
 
+        @Override
+        public String clientIp() {
+            return clientIp;
+        }
+
         // ------------------------------------------------------------ sending
 
         @Override
@@ -530,9 +535,9 @@ public final class RoomSocket {
             if (j != null) {
                 RoomActor a;
                 try {
-                    a = roomGuests.roomActor(actor, j.roomId());
+                    a = roomGuests.roomActor(actor, clientIp, j.roomId());
                 } catch (HttpError refused) {
-                    // e.g. this guest is banned from the room
+                    // e.g. the room went private
                     leaveRoom();
                     kicked(refused.code());
                     return null;
@@ -556,7 +561,7 @@ public final class RoomSocket {
             refreshActor();
             leaveRoom();
             Actor who = actor;
-            Rooms.Access access = rooms.access(who, room);
+            Rooms.Access access = rooms.access(who, room, clientIp);
             RoomActor a = roomGuests.roomActor(who, access);
             String roomId = access.room().id();
             for (int attempt = 1; ; attempt++) {
@@ -673,17 +678,23 @@ public final class RoomSocket {
             });
         }
 
-        /** A room action: the socket must be in a room; its identity and access are checked again first. */
+        /**
+         * A room action: the socket must be in a room; its identity and access are checked again
+         * first. Every room action changes something, so a banned or timed-out person ({@link
+         * RoomBans}: read-only, they may listen) gets {@code 403 banned_from_room} / {@code timed_out}.
+         */
         private JsonObject room(RoomAction action) throws Exception {
             Joined j = requireJoined();
             refreshActor();
-            return action.run(j, roomActor(j));
+            RoomActor a = roomActor(j);
+            a.requireNotReadOnly();
+            return action.run(j, a);
         }
 
         /** The socket's room actor now; a socket that may no longer see the room is kicked out of it. */
         private RoomActor roomActor(Joined j) throws Exception {
             try {
-                return roomGuests.roomActor(actor, j.roomId());
+                return roomGuests.roomActor(actor, clientIp, j.roomId());
             } catch (HttpError refused) {
                 if (refused.status() == 403 || refused.status() == 404) {
                     leaveRoom();

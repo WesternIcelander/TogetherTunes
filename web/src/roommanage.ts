@@ -371,6 +371,14 @@ function memberRow(m: Member): HTMLTableRowElement {
         reloadPage();
       }, memberError, "small"));
     }
+    if (m.role === "member") {
+      actions.append(button("Time out", async () => {
+        const minutes = Number(prompt("Time out " + m.user.name + " for how many minutes? They can listen, nothing else.", "10"));
+        if (!(minutes > 0)) return;
+        await api("PUT", roomPath() + "/bans/users/" + encodeURIComponent(m.user.id),
+          { durationMs: Math.round(minutes * 60000) });
+      }, memberError, "small"));
+    }
     actions.append(button(m.role === "banned" ? "Lift ban" : "Remove", async () => {
       await api("DELETE", roomPath() + "/members/" + encodeURIComponent(m.user.id));
       row.remove();
@@ -456,7 +464,8 @@ function banRow(b: GuestBan): HTMLTableRowElement {
   const row = h("tr", {},
     h("td", {}, actorLabel(b.guest)),
     identifiedBy(b),
-    h("td", { class: "muted small", text: b.bannedAt !== undefined ? formatTime(b.bannedAt) : "" }),
+    h("td", { class: "muted small", text: (b.bannedAt !== undefined ? formatTime(b.bannedAt) : "")
+      + (b.timedOutUntil !== undefined ? " (timeout until " + formatTime(b.timedOutUntil) + ")" : "") }),
     h("td", { class: "actions" }, button("Unban", async () => {
       await api("DELETE", roomPath() + "/guest-bans/" + encodeURIComponent(b.guest.id));
       row.remove();

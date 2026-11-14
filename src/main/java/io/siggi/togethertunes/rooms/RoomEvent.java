@@ -90,18 +90,11 @@ public interface RoomEvent {
     }
 
     /**
-     * A guest was banned from the room: {@code connectionIds} are its connections that were
-     * removed from the presence (the WebSocket layer closes them with {@code kicked}). In IP mode
-     * one guest is everyone sharing that address.
+     * A ban or timeout in the room was put in place or lifted ({@link RoomBans}; a user's, a
+     * guest's, and the IP address it covers). The WebSocket layer re-checks every socket in the
+     * room: who is read-only now, and its {@code you}. Nobody is kicked: banned people may listen.
      */
-    record GuestBanned(String guestId, java.util.List<String> connectionIds) implements RoomEvent {
-        public GuestBanned {
-            connectionIds = java.util.List.copyOf(connectionIds);
-        }
-    }
-
-    /** A guest's ban from the room was lifted. */
-    record GuestUnbanned(String guestId) implements RoomEvent {
+    record RestrictionsChanged() implements RoomEvent {
     }
 
     /**

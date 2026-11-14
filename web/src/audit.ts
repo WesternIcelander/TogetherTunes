@@ -38,7 +38,8 @@ export const AUDIT_ACTIONS: readonly string[] = [
   "job.cancelled", "job.retried",
   "room.card_removed", "room.card_uploaded", "room.created", "room.deleted", "room.guest_banned", "room.guest_unbanned", "room.member_removed",
   "room.member_role", "room.output_created", "room.output_deleted", "room.output_token_rotated",
-  "room.output_updated", "room.owner_transferred", "room.updated",
+  "room.output_updated", "room.owner_transferred", "room.updated", "room.user_restricted",
+  "room.user_restriction_lifted",
 ];
 
 /** The request path for one page: empty filters are left out, `cursor` continues a listing. */

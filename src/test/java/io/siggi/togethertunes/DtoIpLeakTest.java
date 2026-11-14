@@ -171,6 +171,9 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.rooms.Rooms$You",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBan",
             "io.siggi.togethertunes.rooms.RoomGuests$GuestBanPage",
+            "io.siggi.togethertunes.rooms.RoomBans$Entry",
+            "io.siggi.togethertunes.rooms.RoomBans$Page",
+            "io.siggi.togethertunes.rooms.Rooms$Restricted",
             "io.siggi.togethertunes.rooms.RequestSearch$Page",
             "io.siggi.togethertunes.library.ItemSearch$Page",
             "io.siggi.togethertunes.library.ItemSearch$Hit",
@@ -452,9 +455,14 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RequestAdded", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.retention.RetentionSweeper$NamedChore", "a housekeeping task and its"
                     + " log name"),
-            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestBanned", "executor -> listeners, in memory only"),
-            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$GuestUnbanned", "executor -> listeners, in memory"
-                    + " only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RestrictionsChanged", "executor -> listeners, in"
+                    + " memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomBans$Restriction", "a ban or a timeout's end; sent as"
+                    + " you.restriction {kind, until} (Rooms$Restricted, the socket's you)"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomViewers$ActorIp", "connection -> actor key and IP key, in"
+                    + " memory only, for room bans by address; never sent"),
+            Map.entry("io.siggi.togethertunes.rooms.Rooms$Restricting", "restrictUser's result; the API sends its"
+                    + " entry (RoomBans$Entry)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$MemberChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomSnapshot", "copy of the room state for the WebSocket"
                     + " broadcaster (ids, entries, votes, counts); messages are built field by field and scanned"
@@ -813,6 +821,8 @@ class DtoIpLeakTest {
             io.siggi.togethertunes.rooms.RoomGuests.GuestBanPage bans = roomGuests.list(aliceActor, r.id(), null,
                     io.siggi.togethertunes.rooms.RoomGuests.LIST_MAX);
             produced.add(bans);
+            produced.add(rooms.restrictions(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.RoomBans.LIST_MAX));
+            produced.add(new io.siggi.togethertunes.rooms.Rooms.Restricted("timeout", 1L));
             produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
                     .search(aliceActor, r.id(), null, null, null, io.siggi.togethertunes.rooms.RequestSearch.LIST_MAX));
             produced.add(new io.siggi.togethertunes.rooms.RequestSearch(database, rooms, roomGuests)
@@ -966,7 +976,8 @@ class DtoIpLeakTest {
                 "/api/admin/audit " + V4_SETUP, "/api/admin/audit " + V4_ALICE,
                 "/api/admin/ip/sessions/" + f.aliceId + " " + V4_ALICE,
                 "/api/rooms/" + f.roomSlug + "/guest-bans " + V4_GUEST,
-                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId + " " + V4_GUEST)) {
+                "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId + " " + V4_GUEST,
+                "/api/rooms/" + f.roomSlug + "/bans " + V4_GUEST)) {
             assertTrue(controlHits.contains(expected), expected + " in " + controlHits);
         }
         assertTrue(controlHits.stream().anyMatch(h -> h.startsWith("/api/admin/ip/sessions/" + f.aliceId + " 2001:db8:1234:5678:")),
@@ -993,6 +1004,8 @@ class DtoIpLeakTest {
                 "/media/" + f.itemId + "/v/0/audio.m4a", "/items/" + f.itemId, "/rooms/" + f.roomSlug, "/rooms/" + f.roomSlug + "/manage", "/r/" + f.roomSlug, "/api/rooms", "/api/rooms/" + f.roomSlug,
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
+                "/api/rooms/" + f.roomSlug + "/bans", "/api/rooms/" + f.roomSlug + "/bans/users/" + f.aliceId,
+                "/api/rooms/" + f.roomSlug + "/bans/guests/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
                 "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/autoplay",
                 "/api/rooms/" + f.roomSlug + "/autoplay/playlists/" + f.playlistId, "/auth/oidc/nope/start",
@@ -1302,6 +1315,18 @@ class DtoIpLeakTest {
         expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/guest-bans", null);
         expect(204, alice, "DELETE", banPath, null);
         expect(201, alice, "PUT", banPath, null);
+        // bans and timeouts (docs/rooms.md#bans-and-timeouts): a user's timeout, listed and lifted; the guest's
+        // ban through the same paths
+        String userBanPath = "/api/rooms/" + roomSlug + "/bans/users/" + helpId;
+        expect(201, alice, "PUT", userBanPath, "{\"durationMs\":600000}");
+        expect(200, alice, "GET", userBanPath, null);
+        expect(200, alice, "GET", "/api/rooms/" + roomSlug + "/bans", null);
+        expect(204, alice, "DELETE", userBanPath, null);
+        String guestBanPath = "/api/rooms/" + roomSlug + "/bans/guests/" + cookieGuestId;
+        expect(200, alice, "GET", guestBanPath, null);
+        expect(200, alice, "PUT", guestBanPath, null);
+        expect(204, alice, "DELETE", guestBanPath, null);
+        expect(201, alice, "PUT", guestBanPath, null);
         // the history: an entry the cookie guest added that has played, listed for alice
         String roomId = json(expect(200, alice, "GET", "/api/rooms/" + roomSlug, null)).get("id").getAsString();
         String requestedItem = insertItem(adminId);
@@ -1523,7 +1548,7 @@ class DtoIpLeakTest {
             return;
         }
         boolean ipEndpoint = path.startsWith("/api/admin/guests") || path.startsWith("/api/admin/audit")
-                || path.startsWith("/api/admin/ip/") || path.matches("/api/rooms/[^/]+/guest-bans(/[^/?]+)?(\\?.*)?");
+                || path.startsWith("/api/admin/ip/") || path.matches("/api/rooms/[^/]+/(guest-bans|bans|bans/guests)(/[^/?]+)?(\\?.*)?");
         String bare = path.contains("?") ? path.substring(0, path.indexOf('?')) : path;
         walk(root, "$", (keyPath, key, value) -> {
             if (key != null && key.equals("ip")) {

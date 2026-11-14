@@ -2,6 +2,7 @@ package io.siggi.togethertunes.rooms;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -10,6 +11,7 @@ import io.siggi.togethertunes.TestClock;
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Actor;
 import io.siggi.togethertunes.auth.BuiltinRoles;
+import io.siggi.togethertunes.auth.GuestKeys;
 import io.siggi.togethertunes.auth.Passwords;
 import io.siggi.togethertunes.auth.Permissions;
 import io.siggi.togethertunes.config.Config;
@@ -104,6 +106,7 @@ abstract class RoomGuestsContract {
         ipGuest = new Actor.Guest(ipGuestId, GuestIdentity.IP, false);
         registry = new RoomRegistry(db, clock, changes::add);
         guests = new RoomGuests(db, settings, permissions, rooms, registry);
+        rooms.liveIps(registry.mediaAccess());
     }
 
     @AfterEach
@@ -229,14 +232,17 @@ abstract class RoomGuestsContract {
         assertEquals(new ControlPolicy.Capabilities(null, false, true, true, false, false), you);
         assertEquals(RoomActor.ANONYMOUS, guests.roomActor(Actor.ANONYMOUS, roomId));
 
-        // Private rooms have no guests; a banned guest can't open the room.
+        // Private rooms have no guests; a banned guest opens the room read-only.
         sql("UPDATE rooms SET visibility = 'private' WHERE id = ?", roomId);
         assertEquals("room_not_found", refused(() -> guests.roomActor(guest, roomId)).code());
         sql("UPDATE rooms SET visibility = 'unlisted' WHERE id = ?", roomId);
         guests.ban(alice, roomId, guestId, null);
-        HttpError banned = refused(() -> guests.roomActor(guest, roomId));
-        assertEquals(403, banned.status());
-        assertEquals("banned_from_room", banned.code());
+        RoomActor banned = guests.roomActor(guest, roomId);
+        assertTrue(banned.readOnly());
+        assertEquals(new RoomActor(null, guestId, null, false, false, false, false, RoomBans.Restriction.BAN), banned);
+        HttpError e = refused(banned::requireNotReadOnly);
+        assertEquals(403, e.status());
+        assertEquals("banned_from_room", e.code());
         assertEquals(RoomActor.guest(ipGuestId, new RoomGuests.Capabilities(false, true, true, false)),
                 guests.roomActor(ipGuest, roomId), "another guest is not affected");
     }
@@ -320,12 +326,12 @@ abstract class RoomGuestsContract {
         assertEquals("cookie", ban.identifiedBy());
         assertTrue(ban.banned());
         assertEquals(T0, ban.bannedAt());
-        assertNull(ban.warning(), "a cookie guest is one browser");
+        assertEquals(RoomGuests.IP_MODE_WARNING, ban.warning(), "bans follow the IP address");
         assertEquals(v + 1, version());
         RoomChange change = changes.take();
-        assertTrue(change.events().contains(new RoomEvent.GuestBanned(guestId, List.of("w1", "w2"))), change.toString());
-        assertTrue(change.events().contains(new RoomEvent.PresenceChanged(new RoomPresence.Counts(1, 0, 0))));
-        assertEquals(new RoomPresence.Counts(1, 0, 0), call(tx -> tx.state().presence().counts()));
+        assertEquals(List.of(new RoomEvent.RestrictionsChanged()), change.events(), "nobody is kicked");
+        assertEquals(new RoomPresence.Counts(2, 0, 0), call(tx -> tx.state().presence().counts()),
+                "the banned guest still listens");
         assertEquals(1L, count("SELECT COUNT(*) FROM audit_log WHERE action = ? AND target = ?",
                 RoomGuests.AUDIT_BANNED, roomId));
 
@@ -336,11 +342,16 @@ abstract class RoomGuestsContract {
         assertEquals(T0, again.ban().bannedAt());
         assertEquals(v + 1, version());
 
-        // The banned guest: no access, not listed; others are fine.
-        assertEquals("banned_from_room", refused(() -> rooms.access(guest, roomId)).code());
-        assertEquals("banned_from_room", refused(() -> rooms.get(guest, roomSlug)).code());
+        // The banned guest: opens the room read-only, doesn't see it listed; others are fine.
+        assertEquals(RoomBans.Restriction.BAN, rooms.access(guest, roomId).restriction());
+        assertEquals(new Rooms.Restricted("ban", null), rooms.get(guest, roomSlug).you().restriction());
+        assertEquals("banned_from_room", refused(() -> rooms.access(guest, roomId).requireUnrestricted()).code());
         assertTrue(rooms.list(guest, null, 50).items().isEmpty());
-        assertTrue(rooms.list(guest, roomSlug, null, 50).items().isEmpty(), "nor found by its exact slug");
+        assertEquals(1, rooms.list(guest, roomSlug, null, 50).items().size(), "but by its link (exact slug)");
+        // The cookie guest's last known address is covered too: another visitor from there is read-only.
+        assertEquals(RoomBans.Restriction.BAN, rooms.access(Actor.ANONYMOUS, roomId, "198.51.100.3").restriction());
+        assertNull(rooms.access(Actor.ANONYMOUS, roomId, "198.51.100.4").restriction());
+        assertNull(rooms.access(carol, roomId, "198.51.100.3").restriction(), "a member isn't");
         assertEquals(1, rooms.list(ipGuest, null, 50).items().size());
         assertEquals(1, rooms.list(Actor.ANONYMOUS, null, 50).items().size());
 
@@ -369,18 +380,138 @@ abstract class RoomGuestsContract {
         // Lifting the ban.
         changes.clear();
         assertTrue(guests.unban(bob, roomId, guestId, null));
-        assertTrue(changes.take().events().contains(new RoomEvent.GuestUnbanned(guestId)));
+        assertTrue(changes.take().events().contains(new RoomEvent.RestrictionsChanged()));
         assertFalse(guests.unban(bob, roomId, guestId, null));
         assertFalse(guests.unban(bob, roomId, "nope", null));
         assertFalse(guests.get(alice, roomId, guestId).banned());
         assertNull(guests.get(alice, roomId, guestId).bannedAt());
-        rooms.access(guest, roomId);
+        assertNull(rooms.access(guest, roomId).restriction());
+        assertNull(rooms.access(Actor.ANONYMOUS, roomId, "198.51.100.3").restriction(), "the address is lifted too");
         assertEquals(1L, count("SELECT COUNT(*) FROM audit_log WHERE action = ?", RoomGuests.AUDIT_UNBANNED));
-        assertEquals(1L, count("SELECT COUNT(*) FROM room_guest_bans WHERE room_id = ?", roomId));
+        assertEquals(2L, count("SELECT COUNT(*) FROM room_bans WHERE room_id = ?", roomId),
+                "the IP-mode guest: its guest row and its address");
 
         // Deleting the room removes its bans.
         rooms.delete(alice, roomId, null);
-        assertEquals(0L, count("SELECT COUNT(*) FROM room_guest_bans"));
+        assertEquals(0L, count("SELECT COUNT(*) FROM room_bans"));
+    }
+
+    /**
+     * Timeouts and user bans ({@code docs/rooms.md#bans-and-timeouts}): the account and its current
+     * address, read-only (not kicked), members exempt from the address, timeouts end by themselves,
+     * lifting takes both, who may, and that no response, audit row or JSON carries the address or
+     * its hash.
+     */
+    @Test
+    void timeoutsAndUserBansFollowTheAddress() throws Exception {
+        Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
+        String daveId = accounts.createLocal("dave", "Dave", "dave-password", false, null, "account.register").id();
+        Actor.User dave = new Actor.User(daveId, "s-dave", Actor.Via.BEARER);
+        String daveIp = "2001:db8:1:2::5";
+        String sameNet = "2001:db8:1:2::99"; // the same /64
+        sql("INSERT INTO sessions (id, user_id, token_hash, kind, created_at, last_seen_at, expires_at, user_agent, ip)"
+                + " VALUES (?, ?, ?, 'bearer', ?, ?, ?, NULL, ?)", UuidV7.newId(), daveId, "token-dave", T0, T0,
+                T0 + 86_400_000L, daveIp);
+
+        // A timeout: the account and the last known address (the session's), read-only for 60 s.
+        changes.clear();
+        Rooms.Restricting t = rooms.restrictUser(bob, roomId, daveId, 60_000L, "192.0.2.1");
+        assertTrue(t.created());
+        assertEquals("timeout", t.entry().kind());
+        assertEquals(T0 + 60_000L, t.entry().until());
+        assertTrue(t.entry().addressCovered());
+        assertEquals(daveId, t.entry().person().id());
+        Rooms.Access a = rooms.access(dave, roomId);
+        assertEquals(new RoomBans.Restriction(T0 + 60_000L), a.restriction());
+        assertNull(a.role(), "a timeout isn't a role");
+        RoomActor ra = guests.roomActor(dave, roomId);
+        assertTrue(ra.readOnly());
+        assertFalse(ra.canRequest() || ra.canVote());
+        assertEquals("timed_out", refused(ra::requireNotReadOnly).code());
+        assertEquals(new Rooms.Restricted("timeout", T0 + 60_000L), rooms.get(dave, roomId).you().restriction());
+        // Anyone else from that address who isn't a member: read-only too.
+        assertEquals("timed_out", refused(() -> guests.roomActor(ipGuest, sameNet, roomId).requireNotReadOnly()).code());
+        assertNotNull(rooms.access(Actor.ANONYMOUS, roomId, sameNet).restriction());
+        assertNull(rooms.access(carol, roomId, sameNet).restriction(), "a member isn't");
+        assertNull(rooms.access(bob, roomId, sameNet).restriction(), "nor a moderator");
+        assertNull(rooms.access(ipGuest, roomId, "2001:db8:1:3::1").restriction(), "another /64 isn't");
+        // It ends by itself.
+        clock.advance(60_001);
+        assertNull(rooms.access(dave, roomId).restriction());
+        assertNull(rooms.access(ipGuest, roomId, sameNet).restriction());
+        assertFalse(guests.roomActor(dave, roomId).readOnly());
+
+        // A ban covers where the user connects from now (a socket in a room), not their old session's address.
+        registry.mediaAccess().enter("dave-socket", dave, "203.0.113.200", roomId);
+        Rooms.Restricting b = rooms.restrictUser(alice, roomId, daveId, null, null);
+        assertTrue(b.created());
+        assertEquals("ban", b.entry().kind());
+        assertNull(b.entry().until());
+        assertEquals(Rooms.Role.BANNED, rooms.access(dave, roomId).role());
+        assertEquals("banned_from_room", refused(() -> guests.roomActor(dave, roomId).requireNotReadOnly()).code());
+        assertEquals(RoomBans.Restriction.BAN, rooms.access(Actor.ANONYMOUS, roomId, "203.0.113.200").restriction());
+        assertNull(rooms.access(Actor.ANONYMOUS, roomId, daveIp).restriction());
+        assertEquals("banned", rooms.members(alice, roomId, null, 50).items().stream()
+                .filter(m -> m.user().id().equals(daveId)).findFirst().orElseThrow().role());
+        assertTrue(rooms.list(dave, null, 50).items().isEmpty(), "not listed for them");
+        assertEquals(1, rooms.list(dave, roomSlug, null, 50).items().size(), "but they may open it by its link");
+        // A member who is banned loses the membership (and with it the exemption).
+        clock.advance(1);
+        rooms.restrictUser(bob, roomId, carol.userId(), null, null);
+        assertEquals(Rooms.Role.BANNED, rooms.access(carol, roomId).role());
+
+        // Who may.
+        assertEquals("forbidden", refused(() -> rooms.restrictUser(bob, roomId, alice.userId(), null, null)).code());
+        assertEquals("cannot_restrict_self", refused(() -> rooms.restrictUser(bob, roomId, bob.userId(), 1000L,
+                null)).code());
+        assertEquals("forbidden", refused(() -> rooms.restrictUser(dave, roomId, carol.userId(), null, null)).code());
+        assertEquals("target_moderates", refused(() -> rooms.restrictUser(alice, roomId, bob.userId(), 1000L,
+                null)).code());
+        assertEquals("invalid_duration", refused(() -> rooms.restrictUser(alice, roomId, daveId, 999L, null)).code());
+        assertEquals("user_not_found", refused(() -> rooms.restrictUser(alice, roomId, UuidV7.newId(), null,
+                null)).code());
+        assertEquals("forbidden", refused(() -> rooms.restrictions(dave, roomId, null, 50)).code());
+        assertEquals("forbidden", refused(() -> rooms.liftUser(dave, roomId, daveId, null)).code());
+        assertEquals("banned_from_room", refused(() -> rooms.removeMember(dave, roomId, daveId, null)).code(),
+                "a banned user can't lift their own ban by leaving");
+
+        // A guest timeout, then the listing: newest first, users and guests.
+        clock.advance(1000);
+        RoomGuests.BanSet gt = guests.restrict(alice, roomId, ipGuestId, 5_000L, null);
+        assertFalse(gt.ban().banned());
+        assertEquals(clock.millis() + 5_000L, gt.ban().timedOutUntil());
+        RoomBans.Page page = rooms.restrictions(bob, roomId, null, 50);
+        assertEquals(List.of(ipGuestId, carol.userId(), daveId), page.items().stream().map(e -> e.person().id())
+                .toList());
+        assertEquals(List.of("timeout", "ban", "ban"), page.items().stream().map(RoomBans.Entry::kind).toList());
+
+        // No address, nor its hash, anywhere.
+        String json = Json.GSON.toJson(List.of(t, b, page, rooms.get(dave, roomId, "203.0.113.200"), gt,
+                guests.list(alice, roomId, null, 50), rooms.members(alice, roomId, null, 50)));
+        for (String secret : List.of(daveIp, "2001:db8", "203.0.113.200", GuestKeys.ipKeyHash(daveIp),
+                GuestKeys.ipKeyHash("203.0.113.200"))) {
+            assertFalse(json.contains(secret), secret + " in " + json);
+            for (Object audit : row("SELECT details_json FROM audit_log")) {
+                assertFalse(String.valueOf(audit).contains(secret), secret + " in " + audit);
+            }
+        }
+
+        // Lifting lifts the account and the address together.
+        changes.clear();
+        assertTrue(rooms.liftUser(bob, roomId, daveId, null));
+        assertFalse(rooms.liftUser(bob, roomId, daveId, null));
+        assertNull(rooms.access(dave, roomId).restriction());
+        assertNull(rooms.access(Actor.ANONYMOUS, roomId, "203.0.113.200").restriction());
+        assertEquals(0L, count("SELECT COUNT(*) FROM room_bans WHERE room_id = ? AND subject = ?", roomId,
+                RoomBans.userSubject(daveId)));
+        // Lifting carol's ban through the member API does the same; making someone a member lifts a ban.
+        assertTrue(rooms.removeMember(bob, roomId, carol.userId(), null));
+        assertNull(rooms.access(carol, roomId).role());
+        rooms.restrictUser(bob, roomId, daveId, null, null);
+        Rooms.RoleSet member = rooms.setRole(bob, roomId, daveId, Rooms.Role.MEMBER, null);
+        assertEquals("member", member.member().role());
+        assertTrue(member.restrictionsChanged());
+        assertNull(rooms.access(dave, roomId).restriction());
     }
 
     @Test

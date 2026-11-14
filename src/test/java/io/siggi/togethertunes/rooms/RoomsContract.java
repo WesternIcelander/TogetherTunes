@@ -316,10 +316,12 @@ abstract class RoomsContract {
         assertEquals(new Rooms.You("member", false, false, false), rooms.get(carol, priv.slug()).you());
         assertEquals(List.of(priv.id(), pub.id()), listedIds(carol));
 
-        // banned: 403 on public/unlisted, 404 on private, never listed
+        // banned: read-only on public/unlisted (may listen), 404 on private, never listed
         rooms.setRole(alice, pub.id(), bob.userId(), Rooms.Role.BANNED, IP);
         rooms.setRole(alice, priv.id(), bob.userId(), Rooms.Role.BANNED, IP);
-        expect(403, "banned_from_room", () -> rooms.get(bob, pub.id()));
+        assertEquals(new Rooms.You("banned", false, false, false, new Rooms.Restricted("ban", null)),
+                rooms.get(bob, pub.id()).you());
+        expect(403, "banned_from_room", () -> rooms.access(bob, pub.id()).requireUnrestricted());
         expect(404, "room_not_found", () -> rooms.get(bob, priv.id()));
         assertEquals(List.of(bobs.id()), listedIds(bob));
         // moderateAny overrides a ban
@@ -417,11 +419,11 @@ abstract class RoomsContract {
         assertEquals(List.of(secret.id()), searchedIds(mod, "secret-lounge"));
         assertEquals(List.of(chill.id()), searchedIds(mod, "lounge"), "moderateAny lists only what others do");
 
-        // a banned user finds nothing by the exact slug
-        rooms.setRole(alice, hidden.id(), bob.userId(), Rooms.Role.BANNED, IP);
-        assertEquals(List.of(), searchedIds(bob, "hidden-lounge"));
+        // a banned user doesn't see the room listed, but finds it by its exact slug (they may open it
+        // by its link and listen, read-only)
         rooms.setRole(alice, chill.id(), bob.userId(), Rooms.Role.BANNED, IP);
-        assertEquals(List.of(), searchedIds(bob, "chill"));
+        assertFalse(searchedIds(bob, "lounge").contains(chill.id()));
+        assertEquals(List.of(chill.id()), searchedIds(bob, "chill"));
 
         // paging: the exact match is on the first page only, on top of the limit
         List<String> pubs = new ArrayList<>();
@@ -614,9 +616,9 @@ abstract class RoomsContract {
 
         expect(404, "user_not_found", () -> rooms.setRole(alice, r.id(), UuidV7.newId(), Rooms.Role.MEMBER, IP));
         expect(409, "cannot_change_own_role", () -> rooms.setRole(alice, r.id(), alice.userId(), Rooms.Role.MEMBER, IP));
-        expect(403, "banned_from_room", () -> rooms.setRole(carol, r.id(), bob.userId(), Rooms.Role.MEMBER, IP));
+        expect(403, "forbidden", () -> rooms.setRole(carol, r.id(), bob.userId(), Rooms.Role.MEMBER, IP));
         expect(403, "forbidden", () -> rooms.setRole(outsider(), r.id(), bob.userId(), Rooms.Role.MEMBER, IP));
-        expect(403, "banned_from_room", () -> rooms.setRole(carol, r.id(), carol.userId(), Rooms.Role.MEMBER, IP));
+        expect(403, "forbidden", () -> rooms.setRole(carol, r.id(), carol.userId(), Rooms.Role.MEMBER, IP));
 
         Rooms.MemberPage members = rooms.members(alice, r.id(), null, Rooms.LIST_MAX);
         assertEquals(List.of("owner", "member", "banned"), members.items().stream().map(Rooms.Member::role).toList());

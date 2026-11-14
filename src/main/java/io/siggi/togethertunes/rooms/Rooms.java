@@ -43,17 +43,18 @@ import java.util.regex.Pattern;
  *   <li>{@code private}: invited users only (owner, moderators, members), and users with
  *       {@code rooms.moderateAny}. No guests. Everyone else gets {@code 404 room_not_found}, so
  *       the room's existence doesn't leak.</li>
- *   <li>A user {@code banned} from a room gets {@code 403 banned_from_room} for a public or
- *       unlisted room ({@code 404} for a private one) and doesn't see it listed.</li>
+ *   <li>A user {@code banned} from a room may still open a public or unlisted room and listen,
+ *       read-only ({@link RoomBans}; {@code 404} for a private one), and doesn't see it listed.</li>
  * </ul>
  *
  * <h2>Effective role</h2>
  * The owner is {@code rooms.owner_id} (mirrored by a {@code room_members} row with role
  * {@code owner}). Other users have the role of their {@code room_members} row, if any. A user
  * holding {@code rooms.moderateAny} is a {@code moderator} in every room they don't own, even
- * if the room banned them. Guests and anonymous visitors have no room role. A guest banned from
- * a room ({@code room_guest_bans}, managed by {@link RoomGuests}) is treated like a banned user:
- * {@code 403 banned_from_room}, and the room isn't listed for it.
+ * if the room banned them. Guests and anonymous visitors have no room role. Bans and timeouts
+ * ({@code room_bans}, {@link RoomBans}: of users here, of guests in {@link RoomGuests}) make the
+ * person read-only ({@link Access#restriction}); they cover the person's IP address too, so a
+ * user who isn't a member, a guest or an anonymous visitor from that address is read-only as well.
  *
  * <h2>Who changes what</h2>
  * <ul>
@@ -197,7 +198,20 @@ public final class Rooms {
      * {@code member}, {@code banned} or {@code null}; {@code canEdit}: may change the room;
      * {@code canDelete}: may delete it; {@code canModerate}: owner or moderator.
      */
-    public record You(String role, boolean canEdit, boolean canDelete, boolean canModerate) {
+    public record You(String role, boolean canEdit, boolean canDelete, boolean canModerate, Restricted restriction) {
+        public You(String role, boolean canEdit, boolean canDelete, boolean canModerate) {
+            this(role, canEdit, canDelete, canModerate, null);
+        }
+    }
+
+    /**
+     * The caller's ban or timeout in a room ({@link RoomBans}): {@code kind} {@code ban} or
+     * {@code timeout}, {@code until} a timeout's end (epoch ms). They may listen, nothing else.
+     */
+    public record Restricted(String kind, Long until) {
+        static Restricted of(RoomBans.Restriction r) {
+            return r == null ? null : new Restricted(r.kind(), r.until());
+        }
     }
 
     /** One page of rooms; {@code nextCursor} is {@code null} on the last page. */
@@ -222,8 +236,14 @@ public final class Rooms {
         }
     }
 
-    /** {@link #setRole}'s result: the member row, and whether it was created. */
-    public record RoleSet(Member member, boolean created) {
+    /**
+     * {@link #setRole}'s result: the member row, whether it was created, and whether a ban was put
+     * in place or lifted (then callers broadcast {@link RoomEvent.RestrictionsChanged} too).
+     */
+    public record RoleSet(Member member, boolean created, boolean restrictionsChanged) {
+        public RoleSet(Member member, boolean created) {
+            this(member, created, false);
+        }
     }
 
     /**
@@ -238,18 +258,46 @@ public final class Rooms {
         }
     }
 
-    /** A room and the caller's effective role in it ({@code null}: none). */
-    public record Access(Room room, Role role) {
+    /**
+     * A room and the caller's effective role in it ({@code null}: none), and the ban or timeout that
+     * makes the caller read-only there ({@code null}: none; never for the owner and moderators).
+     * A user banned from the room has the role {@link Role#BANNED}.
+     */
+    public record Access(Room room, Role role, RoomBans.Restriction restriction) {
+        public Access(Room room, Role role) {
+            this(room, role, null);
+        }
+
+        /** @throws HttpError {@code 403 banned_from_room} / {@code timed_out} while restricted */
+        public void requireUnrestricted() {
+            if (restriction != null) {
+                throw restriction.error();
+            }
+        }
     }
 
     private final Database db;
     private final Permissions permissions;
     private final Clock clock;
 
+    private volatile RoomBans.CurrentIps currentIps;
+
     public Rooms(Database db, Permissions permissions, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.permissions = Objects.requireNonNull(permissions);
         this.clock = Objects.requireNonNull(clock);
+        this.currentIps = new RoomBans.CurrentIps(new io.siggi.togethertunes.auth.IpAccess(db, permissions, clock),
+                null);
+    }
+
+    /**
+     * Where people connect from right now ({@link RoomViewers}), so a ban covers a user's current IP
+     * address even when it differs from their last session's. Without it, the database's last known
+     * address is used.
+     */
+    public void liveIps(RoomViewers viewers) {
+        this.currentIps = new RoomBans.CurrentIps(new io.siggi.togethertunes.auth.IpAccess(db, permissions, clock),
+                Objects.requireNonNull(viewers));
     }
 
     Database db() {
@@ -395,7 +443,8 @@ public final class Rooms {
 
     /**
      * Throws unless the caller may see the room: {@code 404 room_not_found} for a private room
-     * they aren't invited to, {@code 403 banned_from_room} for a banned user.
+     * they aren't invited to (a banned user isn't). A ban or timeout doesn't hide a public or
+     * unlisted room: the person may open it and listen, read-only ({@link RoomBans}).
      */
     private static void requireVisible(Access a, String userId) {
         if (a.room().alone() && !a.room().ownerId().equals(userId)) {
@@ -405,37 +454,42 @@ public final class Rooms {
         if (a.room().visibility() == Visibility.PRIVATE && !invited) {
             throw roomNotFound();
         }
-        if (a.role() == Role.BANNED) {
-            throw new HttpError(403, "banned_from_room", "You are banned from this room");
-        }
     }
 
     Access access(Connection c, Actor actor, String idOrSlug, boolean lock, boolean moderateAny)
+            throws SQLException {
+        return access(c, actor, idOrSlug, lock, moderateAny, null);
+    }
+
+    /**
+     * The room and the caller's effective role and restriction. {@code ipKeyHash}: the IP key hash
+     * of the request or socket ({@link RoomBans#ipKeyHash}), or {@code null} where it isn't known
+     * (then only the account's or guest's own ban or timeout counts).
+     */
+    Access access(Connection c, Actor actor, String idOrSlug, boolean lock, boolean moderateAny, String ipKeyHash)
             throws SQLException {
         Room room = find(c, idOrSlug, lock);
         if (room == null) {
             throw roomNotFound();
         }
         String uid = userId(actor);
+        String gid = actor instanceof Actor.Guest g ? g.guestId() : null;
         Role stored = uid == null ? null : memberRole(c, room.id(), uid);
-        Access a = new Access(room, effective(room, uid, stored, moderateAny));
-        requireVisible(a, uid);
-        if (actor instanceof Actor.Guest g && guestBanned(c, room.id(), g.guestId())) {
-            throw new HttpError(403, "banned_from_room", "You are banned from this room");
-        }
-        return a;
-    }
-
-    /** Whether the room banned this guest ({@code room_guest_bans}). */
-    static boolean guestBanned(Connection c, String roomId, String guestId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(
-                "SELECT 1 FROM room_guest_bans WHERE room_id = ? AND guest_id = ?")) {
-            ps.setString(1, roomId);
-            ps.setString(2, guestId);
-            try (ResultSet rs = ps.executeQuery()) {
-                return rs.next();
+        Role role = effective(room, uid, stored, moderateAny);
+        RoomBans.Restriction restriction = null;
+        if (!room.alone() && (role == null || !role.moderates())) {
+            // A user from a banned IP address is treated as banned unless the room made them a member.
+            String ip = uid != null && stored != null ? null : ipKeyHash;
+            restriction = RoomBans.find(c, room.id(), uid, gid, ip, EpochMs.now(clock));
+            if (restriction != null && restriction.ban() && uid != null) {
+                role = Role.BANNED;
+            } else if (role == Role.BANNED) {
+                restriction = RoomBans.Restriction.BAN; // a member row from before room_bans (never written now)
             }
         }
+        Access a = new Access(room, role, restriction);
+        requireVisible(a, uid);
+        return a;
     }
 
     /**
@@ -444,8 +498,17 @@ public final class Rooms {
      * @throws HttpError {@code 404 room_not_found}, {@code 403 banned_from_room}
      */
     public Access access(Actor actor, String idOrSlug) throws SQLException {
+        return access(actor, idOrSlug, null);
+    }
+
+    /**
+     * {@link #access(Actor, String)} for a request or socket from {@code clientIp}, so a ban or
+     * timeout of its IP address counts too ({@link RoomBans}).
+     */
+    public Access access(Actor actor, String idOrSlug, String clientIp) throws SQLException {
         boolean moderateAny = moderatesAny(actor);
-        return db.read(c -> access(c, actor, idOrSlug, false, moderateAny));
+        String ipKeyHash = RoomBans.ipKeyHash(clientIp);
+        return db.read(c -> access(c, actor, idOrSlug, false, moderateAny, ipKeyHash));
     }
 
     /**
@@ -467,23 +530,36 @@ public final class Rooms {
         return db.read(c -> find(c, roomId, false));
     }
 
-    private static You you(Room room, Role role, boolean moderateAny) {
+    private static You you(Room room, Role role, boolean moderateAny, RoomBans.Restriction restriction) {
         return new You(role == null ? null : role.wire(), role == Role.OWNER, role == Role.OWNER || moderateAny,
-                role != null && role.moderates());
+                role != null && role.moderates(), Restricted.of(restriction));
     }
 
     private static RoomView view(Room room, Role role, boolean moderateAny) {
+        return view(room, role, moderateAny, null);
+    }
+
+    private static RoomView view(Room room, Role role, boolean moderateAny, RoomBans.Restriction restriction) {
         return new RoomView(room.id(), room.slug(), room.name(), ActorRef.user(room.ownerId(), room.ownerName()),
                 room.visibility().wire(), room.controlMode().wire(), room.settings().toJson(), room.createdAt(),
-                you(room, role, moderateAny), room.alone() ? Boolean.TRUE : null);
+                you(room, role, moderateAny, restriction), room.alone() ? Boolean.TRUE : null);
     }
 
     /** The room as the caller sees it. @throws HttpError as {@link #access(Actor, String)} */
     public RoomView get(Actor actor, String idOrSlug) throws SQLException {
+        return get(actor, idOrSlug, null);
+    }
+
+    /**
+     * The room as the caller sees it from {@code clientIp} ({@code you.restriction} also by IP).
+     * @throws HttpError as {@link #access(Actor, String)}
+     */
+    public RoomView get(Actor actor, String idOrSlug, String clientIp) throws SQLException {
         boolean moderateAny = moderatesAny(actor);
+        String ipKeyHash = RoomBans.ipKeyHash(clientIp);
         return db.read(c -> {
-            Access a = access(c, actor, idOrSlug, false, moderateAny);
-            return view(a.room(), a.role(), moderateAny);
+            Access a = access(c, actor, idOrSlug, false, moderateAny, ipKeyHash);
+            return view(a.room(), a.role(), moderateAny, a.restriction());
         });
     }
 
@@ -594,8 +670,9 @@ public final class Rooms {
                 + " r.created_at, r.settings_json, r.alone_user_id, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
                 + " LEFT JOIN room_members m ON m.room_id = r.id AND m.user_id = ?"
                 + " WHERE r.alone_user_id IS NULL AND (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
-                + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')"
-                + " AND NOT EXISTS (SELECT 1 FROM room_guest_bans b WHERE b.room_id = r.id AND b.guest_id = ?)))"
+                + " OR (r.visibility = 'public' AND NOT EXISTS (SELECT 1 FROM room_bans b WHERE b.room_id = r.id"
+                + " AND b.expires_at IS NULL AND ((b.target_kind = 'user' AND b.target = ?)"
+                + " OR (b.target_kind = 'guest' AND b.target = ?)))))"
                 + filter + " AND r.id <> ?"
                 + (cursorId != null ? " AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "")
                 + " ORDER BY r.created_at DESC, r.id DESC LIMIT " + (limit + 1);
@@ -616,6 +693,7 @@ public final class Rooms {
             List<RoomView> items = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 int n = 1;
+                ps.setString(n++, uid == null ? "" : uid);
                 ps.setString(n++, uid == null ? "" : uid);
                 ps.setString(n++, uid == null ? "" : uid);
                 ps.setString(n++, gid == null ? "" : gid);
@@ -1037,6 +1115,17 @@ public final class Rooms {
 
     private static final String RANK = "CASE m.role WHEN 'owner' THEN 0 WHEN 'moderator' THEN 1"
             + " WHEN 'member' THEN 2 ELSE 3 END";
+    /**
+     * The member rows plus the users banned from the room ({@code room_bans}, role {@code banned},
+     * {@code joined_at} = when they were banned): {@code uid, name, role, at, rnk}. Binds the room
+     * id twice.
+     */
+    private static final String MEMBERS_AND_BANNED = "SELECT m.user_id AS uid, u.display_name AS name,"
+            + " m.role AS role, m.joined_at AS at, " + RANK + " AS rnk"
+            + " FROM room_members m JOIN users u ON u.id = m.user_id WHERE m.room_id = ?"
+            + " UNION ALL SELECT b.target, u.display_name, 'banned', b.created_at, 3"
+            + " FROM room_bans b JOIN users u ON u.id = b.target WHERE b.room_id = ?"
+            + " AND b.target_kind = 'user' AND b.expires_at IS NULL";
 
     /**
      * The room's members, owner first, then moderators, members and banned users (each group by
@@ -1069,11 +1158,10 @@ public final class Rooms {
         int rank = cRank;
         long at = cAt;
         String afterId = cId;
-        String sql = "SELECT m.user_id, u.display_name, m.role, m.joined_at, " + RANK
-                + " FROM room_members m JOIN users u ON u.id = m.user_id WHERE m.room_id = ?"
-                + (afterId != null ? " AND (" + RANK + " > ? OR (" + RANK + " = ? AND (m.joined_at > ?"
-                + " OR (m.joined_at = ? AND m.user_id > ?))))" : "")
-                + " ORDER BY " + RANK + ", m.joined_at, m.user_id LIMIT " + (limit + 1);
+        String sql = "SELECT x.uid, x.name, x.role, x.at, x.rnk FROM (" + MEMBERS_AND_BANNED + ") x"
+                + (afterId != null ? " WHERE (x.rnk > ? OR (x.rnk = ? AND (x.at > ?"
+                + " OR (x.at = ? AND x.uid > ?))))" : "")
+                + " ORDER BY x.rnk, x.at, x.uid LIMIT " + (limit + 1);
         return db.read(c -> {
             Access a = access(c, actor, idOrSlug, false, moderateAny);
             if (a.role() == null || !a.role().moderates()) {
@@ -1083,12 +1171,13 @@ public final class Rooms {
             List<Integer> ranks = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(sql)) {
                 ps.setString(1, a.room().id());
+                ps.setString(2, a.room().id());
                 if (afterId != null) {
-                    ps.setInt(2, rank);
                     ps.setInt(3, rank);
-                    ps.setLong(4, at);
+                    ps.setInt(4, rank);
                     ps.setLong(5, at);
-                    ps.setString(6, afterId);
+                    ps.setLong(6, at);
+                    ps.setString(7, afterId);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -1131,10 +1220,11 @@ public final class Rooms {
     }
 
     private static Member member(Connection c, String roomId, String userId) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement("SELECT m.user_id, u.display_name, m.role, m.joined_at"
-                + " FROM room_members m JOIN users u ON u.id = m.user_id WHERE m.room_id = ? AND m.user_id = ?")) {
+        try (PreparedStatement ps = c.prepareStatement("SELECT x.uid, x.name, x.role, x.at FROM ("
+                + MEMBERS_AND_BANNED + ") x WHERE x.uid = ? ORDER BY x.rnk")) {
             ps.setString(1, roomId);
-            ps.setString(2, userId);
+            ps.setString(2, roomId);
+            ps.setString(3, userId);
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? new Member(ActorRef.user(rs.getString(1), rs.getString(2)), rs.getString(3),
                         rs.getLong(4)) : null;
@@ -1156,6 +1246,8 @@ public final class Rooms {
         Objects.requireNonNull(role);
         boolean moderateAny = moderatesAny(actor);
         String uid = userId(actor);
+        // Looked up before the write (it may read the database): the address a ban covers too.
+        String ipKeyHash = role == Role.BANNED && targetUserId != null ? currentIps.ofUser(targetUserId) : null;
         return db.write(c -> {
             Access a = access(c, actor, idOrSlug, true, moderateAny);
             Room room = a.room();
@@ -1173,13 +1265,13 @@ public final class Rooms {
                 throw new HttpError(409, "cannot_change_own_role", "You can't change your own role in a room"
                         + (a.role() == Role.OWNER ? "; transfer the room to someone else instead" : ""));
             }
-            Role current = room.ownerId().equals(targetUserId) ? Role.OWNER : memberRole(c, room.id(), targetUserId);
+            long now = EpochMs.now(clock);
+            Role current = currentRole(c, room, targetUserId, now);
             if (a.role() != Role.OWNER) {
                 if (role == Role.OWNER || role == Role.MODERATOR || current == Role.OWNER || current == Role.MODERATOR) {
                     throw HttpError.forbidden("Moderators can only make users members or ban them");
                 }
             }
-            long now = EpochMs.now(clock);
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("userId", targetUserId);
             details.put("role", role.wire());
@@ -1187,11 +1279,13 @@ public final class Rooms {
                 details.put("previousRole", current.wire());
             }
             boolean created;
+            boolean restrictionsChanged = false;
             if (role == Role.OWNER) {
                 if (disabled) {
                     throw new HttpError(409, "user_disabled", "That account is disabled");
                 }
                 created = putMember(c, room.id(), targetUserId, Role.OWNER, now);
+                restrictionsChanged = RoomBans.lift(c, room.id(), RoomBans.userSubject(targetUserId), false, now);
                 putMember(c, room.id(), room.ownerId(), Role.MODERATOR, now);
                 try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET owner_id = ? WHERE id = ?")) {
                     ps.setString(1, targetUserId);
@@ -1200,14 +1294,182 @@ public final class Rooms {
                 }
                 details.put("previousOwnerId", room.ownerId());
                 AuditLog.write(c, now, uid, null, ip, AUDIT_OWNER_TRANSFERRED, room.id(), details);
+            } else if (role == Role.BANNED) {
+                created = current == null;
+                if (current != Role.BANNED) {
+                    ban(c, room.id(), targetUserId, ipKeyHash, null, uid, now);
+                    restrictionsChanged = true;
+                    details.put("addressCovered", ipKeyHash != null);
+                    AuditLog.write(c, now, uid, null, ip, AUDIT_ROLE_SET, room.id(), details);
+                }
             } else {
+                // Making a banned user a member or moderator lifts the ban (the account and the address).
+                restrictionsChanged = RoomBans.lift(c, room.id(), RoomBans.userSubject(targetUserId), true, now);
                 created = putMember(c, room.id(), targetUserId, role, now);
                 if (current != role) {
                     AuditLog.write(c, now, uid, null, ip, AUDIT_ROLE_SET, room.id(), details);
                 }
             }
             AutoplaySelections.prune(c, room.id()); // a demoted, banned or former owner may have lost the right
-            return new RoleSet(member(c, room.id(), targetUserId), created);
+            return new RoleSet(member(c, room.id(), targetUserId), created, restrictionsChanged);
+        });
+    }
+
+    /** A user's role for the member rules: owner, their member row's role, else banned if a ban is on them. */
+    private static Role currentRole(Connection c, Room room, String userId, long now) throws SQLException {
+        if (room.ownerId().equals(userId)) {
+            return Role.OWNER;
+        }
+        Role stored = memberRole(c, room.id(), userId);
+        if (stored != null && stored != Role.BANNED) {
+            return stored;
+        }
+        RoomBans.Restriction r = RoomBans.ofSubject(c, room.id(), RoomBans.userSubject(userId), now);
+        return r != null && r.ban() ? Role.BANNED : null;
+    }
+
+    /**
+     * Bans ({@code until} {@code null}) or times out a user: the account and, if known, their
+     * current IP address. A ban also ends their role in the room (as {@code banned} did before).
+     */
+    private static void ban(Connection c, String roomId, String userId, String ipKeyHash, Long until, String byUserId,
+                            long now) throws SQLException {
+        if (until == null) {
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM room_members WHERE room_id = ? AND user_id = ?")) {
+                ps.setString(1, roomId);
+                ps.setString(2, userId);
+                ps.executeUpdate();
+            }
+        }
+        RoomBans.put(c, roomId, RoomBans.userSubject(userId), RoomBans.USER, userId, ipKeyHash, until, byUserId, now);
+    }
+
+    /** {@link #restrictUser}'s result: the restriction now on the user, and whether it is new. */
+    public record Restricting(RoomBans.Entry entry, boolean created) {
+    }
+
+    public static final String AUDIT_RESTRICTED = "room.user_restricted";
+    public static final String AUDIT_LIFTED = "room.user_restriction_lifted";
+
+    /**
+     * Bans ({@code durationMs} {@code null}) or times out a user in a room
+     * ({@code docs/rooms.md#bans-and-timeouts}): their account and the IP address they connect from
+     * now. The owner and moderators; nobody restricts themselves or the owner, moderators don't
+     * restrict moderators, and a moderator can only be banned (by the owner, which ends their role),
+     * not timed out ({@code 409 target_moderates}). A new ban or timeout replaces the previous one.
+     * Callers broadcast {@link RoomEvent.RestrictionsChanged}.
+     *
+     * @throws HttpError {@code 404 room_not_found} / {@code user_not_found}, {@code 403 forbidden},
+     *                   {@code 409 cannot_restrict_self} / {@code target_moderates}, {@code 400
+     *                   invalid_duration}, {@code 409 alone_room}
+     */
+    public Restricting restrictUser(Actor actor, String idOrSlug, String targetUserId, Long durationMs, String ip)
+            throws SQLException {
+        boolean moderateAny = moderatesAny(actor);
+        String uid = userId(actor);
+        String ipKeyHash = targetUserId == null ? null : currentIps.ofUser(targetUserId);
+        return db.write(c -> {
+            Access a = access(c, actor, idOrSlug, true, moderateAny);
+            Room room = a.room();
+            if (room.alone()) {
+                throw aloneRoom();
+            }
+            if (a.role() == null || !a.role().moderates()) {
+                throw HttpError.forbidden("Only the owner and moderators ban or time out people");
+            }
+            if (userDisabled(c, targetUserId) == null) {
+                throw new HttpError(404, "user_not_found", "No such user");
+            }
+            if (targetUserId.equals(uid)) {
+                throw new HttpError(409, "cannot_restrict_self", "You can't ban or time out yourself");
+            }
+            long now = EpochMs.now(clock);
+            Role current = currentRole(c, room, targetUserId, now);
+            if (current == Role.OWNER) {
+                throw HttpError.forbidden("The owner can't be banned or timed out");
+            }
+            if (current == Role.MODERATOR) {
+                if (a.role() != Role.OWNER) {
+                    throw HttpError.forbidden("Moderators can't ban or time out moderators");
+                }
+                if (durationMs != null) {
+                    throw new HttpError(409, "target_moderates", "Remove their moderator role first");
+                }
+            }
+            Long until = durationMs == null ? null : RoomBans.timeoutEnd(now, durationMs);
+            boolean created = RoomBans.ofSubject(c, room.id(), RoomBans.userSubject(targetUserId), now) == null;
+            ban(c, room.id(), targetUserId, ipKeyHash, until, uid, now);
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("userId", targetUserId);
+            details.put("kind", until == null ? "ban" : "timeout");
+            if (until != null) {
+                details.put("until", until);
+            }
+            if (current != null) {
+                details.put("previousRole", current.wire());
+            }
+            details.put("addressCovered", ipKeyHash != null);
+            AuditLog.write(c, now, uid, null, ip, AUDIT_RESTRICTED, room.id(), details);
+            AutoplaySelections.prune(c, room.id()); // a ban ends the role, and with it the right to select
+            return new Restricting(RoomBans.entry(c, room.id(), RoomBans.USER, targetUserId, now), created);
+        });
+    }
+
+    /**
+     * Lifts a user's ban or timeout in a room (the account and the address together). The owner and
+     * moderators. Callers broadcast {@link RoomEvent.RestrictionsChanged}.
+     *
+     * @return whether there was one
+     * @throws HttpError {@code 404 room_not_found}, {@code 403 forbidden}
+     */
+    public boolean liftUser(Actor actor, String idOrSlug, String targetUserId, String ip) throws SQLException {
+        boolean moderateAny = moderatesAny(actor);
+        String uid = userId(actor);
+        return db.write(c -> {
+            Access a = access(c, actor, idOrSlug, true, moderateAny);
+            if (a.role() == null || !a.role().moderates()) {
+                throw HttpError.forbidden("Only the owner and moderators lift bans and timeouts");
+            }
+            long now = EpochMs.now(clock);
+            if (targetUserId == null || !RoomBans.lift(c, a.room().id(), RoomBans.userSubject(targetUserId), false,
+                    now)) {
+                return false;
+            }
+            AuditLog.write(c, now, uid, null, ip, AUDIT_LIFTED, a.room().id(), Map.of("userId", targetUserId));
+            return true;
+        });
+    }
+
+    /**
+     * The active ban or timeout of one user in the room, or {@code null}. The owner and moderators.
+     *
+     * @throws HttpError {@code 404 room_not_found}, {@code 403 forbidden}
+     */
+    public RoomBans.Entry restrictionOfUser(Actor actor, String idOrSlug, String targetUserId) throws SQLException {
+        boolean moderateAny = moderatesAny(actor);
+        return db.read(c -> {
+            Access a = access(c, actor, idOrSlug, false, moderateAny);
+            if (a.role() == null || !a.role().moderates()) {
+                throw HttpError.forbidden("Only the owner and moderators see bans and timeouts");
+            }
+            return targetUserId == null ? null
+                    : RoomBans.entry(c, a.room().id(), RoomBans.USER, targetUserId, EpochMs.now(clock));
+        });
+    }
+
+    /**
+     * The room's active bans and timeouts (users and guests), newest first. The owner and moderators.
+     *
+     * @throws HttpError {@code 404 room_not_found}, {@code 403 forbidden}, {@code 400 invalid_cursor}
+     */
+    public RoomBans.Page restrictions(Actor actor, String idOrSlug, String cursor, int limit) throws SQLException {
+        boolean moderateAny = moderatesAny(actor);
+        return db.read(c -> {
+            Access a = access(c, actor, idOrSlug, false, moderateAny);
+            if (a.role() == null || !a.role().moderates()) {
+                throw HttpError.forbidden("Only the owner and moderators see bans and timeouts");
+            }
+            return RoomBans.list(c, a.room().id(), cursor, limit, EpochMs.now(clock));
         });
     }
 
@@ -1256,13 +1518,25 @@ public final class Rooms {
      *                   forbidden}, {@code 409 owner_cannot_leave}
      */
     public boolean removeMember(Actor actor, String idOrSlug, String targetUserId, String ip) throws SQLException {
+        return removeMemberRole(actor, idOrSlug, targetUserId, ip) != null;
+    }
+
+    /**
+     * {@link #removeMember}, returning the role the user had ({@link Role#BANNED}: a ban was lifted),
+     * or {@code null} if they had none.
+     */
+    Role removeMemberRole(Actor actor, String idOrSlug, String targetUserId, String ip) throws SQLException {
         boolean moderateAny = moderatesAny(actor);
         String uid = userId(actor);
         return db.write(c -> {
             Access a = access(c, actor, idOrSlug, true, moderateAny);
             Room room = a.room();
             boolean self = targetUserId.equals(uid);
-            Role current = room.ownerId().equals(targetUserId) ? Role.OWNER : memberRole(c, room.id(), targetUserId);
+            long now = EpochMs.now(clock);
+            Role current = currentRole(c, room, targetUserId, now);
+            if (self && current == Role.BANNED) {
+                throw new HttpError(403, "banned_from_room", "You are banned from this room");
+            }
             if (current == Role.OWNER) {
                 if (self) {
                     throw new HttpError(409, "owner_cannot_leave", "Transfer the room to someone else first");
@@ -1277,19 +1551,25 @@ public final class Rooms {
                 }
             }
             if (current == null) {
-                return false;
+                return null;
             }
-            try (PreparedStatement ps = c.prepareStatement("DELETE FROM room_members WHERE room_id = ? AND user_id = ?")) {
-                ps.setString(1, room.id());
-                ps.setString(2, targetUserId);
-                ps.executeUpdate();
+            if (current == Role.BANNED) {
+                // Lifting a ban lifts the account and the address together.
+                RoomBans.lift(c, room.id(), RoomBans.userSubject(targetUserId), true, now);
+            } else {
+                try (PreparedStatement ps = c.prepareStatement(
+                        "DELETE FROM room_members WHERE room_id = ? AND user_id = ?")) {
+                    ps.setString(1, room.id());
+                    ps.setString(2, targetUserId);
+                    ps.executeUpdate();
+                }
             }
             Map<String, Object> details = new LinkedHashMap<>();
             details.put("userId", targetUserId);
             details.put("previousRole", current.wire());
-            AuditLog.write(c, EpochMs.now(clock), uid, null, ip, AUDIT_MEMBER_REMOVED, room.id(), details);
+            AuditLog.write(c, now, uid, null, ip, AUDIT_MEMBER_REMOVED, room.id(), details);
             AutoplaySelections.prune(c, room.id()); // left (or removed) for good: their selections go
-            return true;
+            return current;
         });
     }
 }

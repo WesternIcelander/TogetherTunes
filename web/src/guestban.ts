@@ -11,6 +11,8 @@ export interface GuestBan {
   bannedAt?: number;
   warning?: string;
   ip?: string;
+  /** A timeout's end (epoch ms); absent for a ban. */
+  timedOutUntil?: number;
 }
 
 /** Bans the guest after confirming; `false` if it was already banned or the user said no. */
