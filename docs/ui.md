@@ -2,6 +2,15 @@
 
 Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_main.png) and answers. This replaces the provisional UI (CLAUDE.md, "The web UI is provisional"). **More drawings are coming** (see "Not designed yet" at the end); M9's UI steps are written once those exist. The backend pieces below can be built first.
 
+## Single-page app
+
+(Siggi, 2026-11-14.)
+
+- **One document.** Every UI URL (`/`, playlists, rooms, settings, admin, …) gets the same HTML shell from the server; client-side routing (History API) decides what to show. Moving around never loads another document, so a room keeps playing without a break.
+- **Logging in doesn't reload either.** After login the page fetches the new identity and re-identifies itself (API state, the room socket: reconnect or re-authenticate it), and playback continues through the switch. A guest who logs in inside a room is offered the guest merge ([auth.md](auth.md)) without leaving the page.
+- **Logins on another origin** (OIDC / plain OAuth) open in a **popup window** (opened directly from the click, so popup blockers allow it). The callback page in the popup tells the opener (same-origin `postMessage`, or a `BroadcastChannel`) that the login finished, or why it failed, and closes itself. If the popup is blocked, the page says so and offers the full-page redirect as a fallback (which does reload).
+- **Logging out reloads the document**, so nothing from the logged-in state lingers.
+
 ## Layout (desktop)
 
 - **Header:** logo + "TogetherTunes", a search box, the account button.
