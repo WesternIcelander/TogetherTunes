@@ -20,7 +20,8 @@ Actors are serialised as `{ "kind": "user"|"guest", "id", "name", "isGuest" }` (
 | DELETE | `/api/invites/{id}` | Revoke a pending invite → `200 invite`; own ones (any with `admin.users`; someone else's is `404 invite_not_found`); revoked or expired ones come back unchanged; `409 invite_used` |
 | POST | `/api/auth/token` | Create a bearer token, from `{username, password}` or for the already logged-in user |
 | GET | `/api/auth/providers` | Anyone. `{items:[{slug, displayName, allowSignup, startUrl}]}`: the enabled login providers, oldest first ([auth.md](auth.md#login-providers)) |
-| GET | `/auth/oidc/{slug}/start?intent=login\|link`, `/auth/oidc/{slug}/callback` | |
+| GET | `/auth/oidc/{slug}/start?intent=login\|link[&next=/path][&popup=1]`, `/auth/oidc/{slug}/callback` | `popup=1` (logins only): the login ends at `/auth/popup-done` instead of `next` / `/login?error=` |
+| GET | `/auth/popup-done[?error=<code>]` | The page a popup login ends at (HTML, `no-store`): its script posts `{type: "togethertunes.login", id, ok, error?}` to the opener (same origin) and on the `BroadcastChannel` `togethertunes.login`, then closes ([ui.md](ui.md#single-page-app)) |
 | GET / PATCH | `/api/me` | User profile, or the current guest's identity (`{kind:"guest", name, nameChosen}`), or `{kind:"anonymous"}`. For a user or guest it includes the actor fields (`kind, id, name, isGuest`) |
 | POST | `/api/me/guest` | Create the guest identity now, with an optional `{name}` if custom names are allowed. Normally this happens implicitly on the first action that needs it. Returns the guest (`201` if created, `200` if it already existed) with a fresh `identityTicket` (see [WebSocket](#websocket)) |
 | PATCH | `/api/me/guest` | Rename (custom names only) |
