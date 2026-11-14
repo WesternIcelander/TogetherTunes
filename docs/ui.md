@@ -148,7 +148,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 
 - **User settings** has tabs: preferences (double-click behaviour, **Web Audio** (only here), **debug mode**), account (password, linked logins), and **sessions** (devices with Revoke, API tokens).
 - **Debug mode** shows a **Send diagnostics** button at the top of the page.
-- **Invites:** invite-only registration needs a UI to create and hand out invites (admins; who else gets it is decided when the step is written).
+- **Invites:** invite-only registration needs a UI to create and hand out invites (admins, and non-admins whose role has the new permission `users.invite`).
 
 **Routing**
 
