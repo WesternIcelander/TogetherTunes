@@ -50,3 +50,62 @@ export function providerStartUrl(startUrl: string, next: string): string {
 export function providerLinkUrl(startUrl: string): string {
   return startUrl + (startUrl.indexOf("?") < 0 ? "?" : "&") + "intent=link";
 }
+
+// ------------------------------------------------------------------ popup logins
+// (docs/ui.md#single-page-app) A provider login runs in a popup window, so the page (and a room
+// playing in it) stays. The popup ends at /auth/popup-done (`?error=<code>` on failure), whose
+// script (popupdone.ts) tells this page with a same-origin `postMessage` and on a `BroadcastChannel`
+// (for when the provider's pages cut the popup's opener link), then closes.
+
+/** The popup window's name (reused: a second click brings the same window back). */
+export const LOGIN_POPUP_NAME = "togethertunes-login";
+
+/** The popup window's size. */
+export const LOGIN_POPUP_FEATURES = "popup=yes,width=520,height=700";
+
+/** The `BroadcastChannel` the popup also reports on. */
+export const LOGIN_CHANNEL = "togethertunes.login";
+
+/** The message's `type`. */
+export const LOGIN_MESSAGE_TYPE = "togethertunes.login";
+
+/** How a popup login ended. */
+export interface LoginResult {
+  ok: boolean;
+  /** The failure's code (providerErrorMessage) when not ok. */
+  error?: string;
+  /** Which popup's report it is: the same one comes by postMessage and by the channel. */
+  id?: string;
+}
+
+/** The provider's start URL for a login in a popup (the server ends it at /auth/popup-done). */
+export function providerPopupUrl(startUrl: string): string {
+  return startUrl + (startUrl.indexOf("?") < 0 ? "?" : "&") + "popup=1";
+}
+
+/** What the popup-done page reports, from its query string (`?error=<code>` on failure). */
+export function popupResult(search: string): LoginResult {
+  const error = new URLSearchParams(search).get("error");
+  return error === null ? { ok: true } : { ok: false, error: error === "" ? "provider_error" : error };
+}
+
+/** The message the popup sends (`id`: a random tag, the same on both ways it is sent). */
+export function loginMessage(result: LoginResult, id: string): Record<string, unknown> {
+  return result.ok ? { type: LOGIN_MESSAGE_TYPE, id, ok: true } : { type: LOGIN_MESSAGE_TYPE, id, ok: false, error: result.error };
+}
+
+/**
+ * A received message as a login result, or undefined when it isn't one. `origin` is the message
+ * event's origin (undefined for a BroadcastChannel, which is same-origin by design) and must be
+ * `ownOrigin`.
+ */
+export function parseLoginMessage(data: unknown, origin: string | undefined, ownOrigin: string): LoginResult | undefined {
+  if (origin !== undefined && origin !== ownOrigin) return undefined;
+  if (data === null || typeof data !== "object") return undefined;
+  const d = data as Record<string, unknown>;
+  if (d["type"] !== LOGIN_MESSAGE_TYPE) return undefined;
+  const id = typeof d["id"] === "string" ? d["id"].slice(0, 64) : "";
+  if (d["ok"] === true) return { ok: true, id };
+  const error = typeof d["error"] === "string" && /^[a-z0-9_]{1,64}$/.test(d["error"]) ? d["error"] : "provider_error";
+  return { ok: false, error, id };
+}

@@ -2,7 +2,8 @@
 // that needs an account goes through: to the login page when nobody is logged in, and to the
 // change-password page while the password is a temporary one an admin set.
 import { api } from "./api.js";
-import { mergeableGuest, mergeGuest, mergeQuestion } from "./guestmerge.js";
+import { h } from "./dom.js";
+import { mergeableGuest, mergedText, mergeGuest, mergeQuestion } from "./guestmerge.js";
 import { navigate, pageSignal, rememberPlaying, showStoppedNote } from "./nav.js";
 
 /** `GET /api/me` for a logged-in user. */
@@ -237,14 +238,48 @@ export function onSubmit(form: HTMLFormElement, errorEl: HTMLElement, action: ()
 }
 
 /**
- * After logging in or registering: if this browser was a guest, asks (a confirm dialog) whether to
- * move that guest's songs and votes to the account, and does it. Never throws: the account page
- * offers it again.
+ * After logging in or registering: if this browser was a guest, asks in place (a small dialog over
+ * the page, which keeps playing: docs/ui.md#single-page-app) whether to move that guest's songs and
+ * votes to the account, and does it. Never throws: the account page offers it again.
  */
 export async function offerGuestMerge(): Promise<void> {
   try {
     const guest = await mergeableGuest();
-    if (guest !== undefined && window.confirm(mergeQuestion(guest))) await mergeGuest();
+    if (guest === undefined) return;
+    await new Promise<void>((resolve) => {
+      const text = h("p", { text: mergeQuestion(guest) });
+      const error = h("p", { class: "error", role: "alert" });
+      const yes = h("button", { type: "button", text: "Move them" });
+      const no = h("button", { type: "button", text: "Not now" });
+      const row = h("div", { class: "row" }, yes, no);
+      const overlay = h("div", { class: "classify-prompt merge-prompt" },
+        h("div", { class: "form", role: "dialog", "aria-modal": "true", "aria-label": "Your guest's songs and votes" },
+          text, row, error));
+      const close = (): void => {
+        overlay.remove();
+        resolve();
+      };
+      no.addEventListener("click", close);
+      overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
+      yes.addEventListener("click", () => {
+        yes.disabled = true;
+        no.disabled = true;
+        error.textContent = "";
+        mergeGuest().then((result) => {
+          text.textContent = mergedText(result);
+          const ok = h("button", { type: "button", text: "OK" });
+          ok.addEventListener("click", close);
+          row.replaceChildren(ok);
+          ok.focus();
+        }, (e: unknown) => {
+          error.textContent = message(e) + " You can do it later from your account page.";
+          yes.disabled = false;
+          no.disabled = false;
+        });
+      });
+      document.body.append(overlay);
+      yes.focus();
+    });
   } catch {
     // offered again on the account page
   }

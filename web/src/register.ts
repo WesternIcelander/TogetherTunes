@@ -5,7 +5,7 @@ import {
   element, formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, SETUP_PAGE,
   withNext,
 } from "./session.js";
-import { navigate } from "./nav.js";
+import { identityChanged, navigate } from "./nav.js";
 
 async function start(): Promise<void> {
   const form = element<HTMLFormElement>("register-form");
@@ -19,21 +19,7 @@ async function start(): Promise<void> {
     (form.elements.namedItem("invite") as HTMLInputElement).value = invite;
   }
 
-  try {
-    if (await setupNeeded()) {
-      navigate(SETUP_PAGE, true);
-      return;
-    }
-    const me = await loadMe();
-    renderNav(me);
-    if (me.kind === "user") {
-      status.hidden = false;
-      status.textContent = `You are logged in as ${me.username}. Registering logs you in as the new account.`;
-    }
-  } catch {
-    // The form still works; a real problem shows when it is submitted.
-  }
-
+  // Handled from the start (before the checks below), so an early submit never goes to the browser.
   onSubmit(form, error, async () => {
     if (formValue(form, "password") !== formValue(form, "password2")) {
       throw new Error("The passwords don't match.");
@@ -52,9 +38,26 @@ async function start(): Promise<void> {
       }
       throw e;
     }
+    // Logged in as the new account without a reload (docs/ui.md#single-page-app).
+    await identityChanged();
     await offerGuestMerge();
     navigate(next);
   });
+
+  try {
+    if (await setupNeeded()) {
+      navigate(SETUP_PAGE, true);
+      return;
+    }
+    const me = await loadMe();
+    renderNav(me);
+    if (me.kind === "user") {
+      status.hidden = false;
+      status.textContent = `You are logged in as ${me.username}. Registering logs you in as the new account.`;
+    }
+  } catch {
+    // The form still works; a real problem shows when it is submitted.
+  }
 }
 
 onReady(start);

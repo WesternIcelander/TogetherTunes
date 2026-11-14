@@ -138,7 +138,8 @@
     <h1>Log in</h1>
     <p id="login-status" role="status" hidden></p>
     <p id="provider-error" class="error" role="alert" hidden></p>
-    <form id="login-form" class="form">
+    <p id="provider-status" role="status" hidden></p>
+    <form id="login-form" class="form" method="post">
       <label>Username
         <input name="username" autocomplete="username" required maxlength="32" autofocus>
       </label>
@@ -159,7 +160,7 @@
 
     <h1>Create an account</h1>
     <p id="register-status" role="status" hidden></p>
-    <form id="register-form" class="form">
+    <form id="register-form" class="form" method="post">
       <label>Username
         <input name="username" autocomplete="username" required minlength="3" maxlength="32"
                pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" autofocus>
@@ -188,7 +189,7 @@
 
     <h1>Change password</h1>
     <p id="password-status" role="status">Loading...</p>
-    <form id="password-form" class="form" hidden>
+    <form id="password-form" class="form" method="post" hidden>
       <p id="password-temporary" hidden>Your password is a temporary one set by an administrator.
         Choose your own password to continue.</p>
       <input name="username" autocomplete="username" hidden>
@@ -211,7 +212,7 @@
   <template id="view-setup" data-title="TogetherTunes setup">
     <h1>Welcome to TogetherTunes</h1>
     <p id="setup-status">Checking setup...</p>
-    <form id="setup-form" class="form" hidden>
+    <form id="setup-form" class="form" method="post" hidden>
       <p>Create the administrator account. This is the first account on this server; it gets the <code>admin</code> role.</p>
       <label>Username
         <input name="username" autocomplete="username" required minlength="3" maxlength="32"

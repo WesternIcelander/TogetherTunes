@@ -402,6 +402,32 @@ class OidcLoginTest {
     }
 
     @Test
+    void popupLoginsEndAtThePopupDonePage() throws Exception {
+        oidc("idp", null);
+        Started s = start("idp", "?popup=1&next=%2Frooms%2Fabc", null);
+        assertEquals(200, callback("idp", s.state(), "c", s.cookie()).statusCode());
+        assertTrue(completed.get(0).pending().popup(), "the completion learns it was a popup login");
+        assertEquals("/rooms/abc", completed.get(0).pending().next());
+        // Failures at the callback and at the start go to the done page with the code.
+        Started s2 = start("idp", "?popup=1", null);
+        assertError(OidcLogin.POPUP_DONE_PAGE, "login_browser_mismatch", callback("idp", s2.state(), "c", null));
+        assertError(OidcLogin.POPUP_DONE_PAGE, "provider_unavailable", get("/auth/oidc/nope/start?popup=1", null));
+        // Without popup=1, or for a link, as before.
+        Started plain = start("idp", "", null);
+        assertEquals(200, callback("idp", plain.state(), "c3", plain.cookie()).statusCode());
+        assertFalse(completed.get(1).pending().popup());
+        assertError("/account/", "not_authenticated", get("/auth/oidc/idp/start?intent=link&popup=1", null));
+
+        // The done page: no-store, its script reports to the opener; nothing secret in it.
+        HttpResponse<String> page = get(OidcLogin.POPUP_DONE_PAGE + "?error=login_expired", null);
+        assertEquals(200, page.statusCode());
+        assertTrue(page.headers().firstValue("Content-Type").orElse("").startsWith("text/html"));
+        assertEquals("no-store", page.headers().firstValue("Cache-Control").orElse(null));
+        assertTrue(page.body().contains("src=\"/js/popupdone.js\""), page.body());
+        assertFalse(page.body().contains("<script>"), "no inline script");
+    }
+
+    @Test
     void stateIsSingleUseAndExpires() throws Exception {
         oidc("idp", null);
         Started s = start("idp", "", null);
@@ -780,7 +806,7 @@ class OidcLoginTest {
         for (int i = 0; i < 4; i++) {
             states[i] = Tokens.newToken();
             store.put(states[i], "h", new OidcLogin.Pending("p", "s", Providers.Kind.OIDC, "i", "n", "v",
-                    OidcLogin.Intent.LOGIN, null, "/", clock.millis() + OidcLogin.TTL_MS));
+                    OidcLogin.Intent.LOGIN, null, "/", clock.millis() + OidcLogin.TTL_MS, false));
         }
         assertEquals(3, store.size());
         assertNull(store.take(states[0]), "the oldest went");

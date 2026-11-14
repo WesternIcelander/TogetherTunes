@@ -273,6 +273,27 @@ export class RoomConnection {
     };
   }
 
+  /**
+   * Opens a new socket at once, e.g. after a login: the server reads who it is (the session cookie)
+   * when the socket opens, so this is how the socket re-identifies. Requests still waiting fail;
+   * the room's state comes again with the join. Reports no "connection lost" meanwhile.
+   */
+  reconnect(): void {
+    if (this.#stopped) return;
+    if (this.#reconnectTimer !== undefined) {
+      window.clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = undefined;
+    }
+    const ws = this.#ws;
+    this.#ws = undefined;
+    this.#joined = false;
+    for (const p of this.#pending.values()) p.reject(new ApiError(0, "network_error", "Reconnecting"));
+    this.#pending.clear();
+    ws?.close();
+    this.#attempt = 0;
+    this.connect();
+  }
+
   /** Closes the socket for good. */
   stop(): void {
     this.#stopped = true;

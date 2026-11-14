@@ -2089,3 +2089,8 @@ li.entry.selected {
     background: #222;
   }
 }
+
+/* The page a popup login ends at (/auth/popup-done). */
+.popup-done {
+  padding: 1rem;
+}

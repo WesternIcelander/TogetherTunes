@@ -14,15 +14,17 @@
 //   and clock sync running) when another view is shown; the desktop frame around the views
 //   (frame.ts: sidebars, right panel, player bar) follows that room meanwhile, and a link back shows
 //   the room view again. Another room's link switches rooms in place (the old room view goes, the new
-//   one joins); the identity views (login, register, password, setup) still load a new document;
-//   Leave (in the right panel) takes the room view away in place;
+//   one joins); Leave (in the right panel) takes the room view away in place;
+// - logging in doesn't reload either: the login, register, password and setup views are shown in
+//   place like any other, and after a login nav.ts `identityChanged()` reaches #identityChanged
+//   (the frame and the room's socket re-identify); logging out reloads the document (session.ts);
 // - alone and switching rooms (docs/ui.md#alone-and-in-rooms, rules in alone.ts): a signed-in user
 //   is always in a room or alone, so whenever no room view is open the shell starts the play
 //   session's room (the room they are in, otherwise their alone room) as a background room view
 //   (hidden from the start, with its own signal and path, nav.ts `viewStart`). Leave asks fork or
 //   restore and then plays the alone room; a room deleted while the user is in it asks the same.
 import { decide, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
-import { navigate, registerViewStart, rememberPlaying, setNavigator, setRoomHost, startPageSignal,
+import { navigate, registerViewStart, rememberPlaying, setIdentityHook, setNavigator, setRoomHost, startPageSignal,
   type RoomHandle, type ShellRoom } from "./nav.js";
 import {
   canBeAlone, leaveKind, leaveOffer, needsLeaveChoice, roomPath, sessionRoom, type LeaveChoice, type LeaveOffer,
@@ -91,6 +93,28 @@ export class Shell {
     });
     setNavigator((href, replace) => this.#navigate(href, replace));
     setRoomHost((room) => this.#attach(room));
+    setIdentityHook(() => this.#identityChanged());
+  }
+
+  /**
+   * Who is using the page changed (a login in a view or a popup, nav.ts `identityChanged`): no reload
+   * (docs/ui.md#single-page-app). The frame draws the new identity, and the room playing here
+   * reconnects its socket as it (playback goes on); only the previous user's alone room stops, as it
+   * isn't the new user's, and their own play session's room starts instead.
+   */
+  async #identityChanged(): Promise<void> {
+    const before = this.#me;
+    this.#me = undefined;
+    const me = await this.#loadMe();
+    recordEvent("shell", { identity: me?.kind ?? "unknown" });
+    await this.#frame.identityChanged();
+    const room = this.#followed();
+    if (room !== undefined) {
+      const sameUser = before?.kind === "user" && me?.kind === "user" && before.id === me.id;
+      if (room.state()?.room.alone === true && !sameUser) this.#stopRoom();
+      else await room.reidentify();
+    }
+    void this.#ensureRoom();
   }
 
   /** Shows the view of the document's own URL (the first view after a load). */

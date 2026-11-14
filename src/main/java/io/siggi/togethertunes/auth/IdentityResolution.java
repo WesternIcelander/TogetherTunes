@@ -16,7 +16,7 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code intent=login}: logs the account in ({@link Identities#login}, which may sign one
  *       up): the request's old {@code sid} session is deleted, a new {@code cookie} session and its
- *       {@code sid} cookie are set, and the browser goes to {@code next}.</li>
+ *       {@code sid} cookie are set, and the browser goes to {@code next} (a popup login: {@link OidcLogin#POPUP_DONE_PAGE}).</li>
  *   <li>{@code intent=link}: links the identity to the logged-in user ({@link Identities#link})
  *       and goes to {@code /account/?linked=<slug>}.</li>
  * </ul>
@@ -47,7 +47,7 @@ public final class IdentityResolution implements OidcLogin.Completion {
         Identities.Resolved resolved = identities.login(callback.provider(), identity, request.clientIp());
         sessions.deleteByToken(request.cookie(ActorResolver.SESSION_COOKIE));
         AuthApi.startCookieSession(sessions, secureCookies, request, response, resolved.account());
-        redirect(response, pending.next());
+        OidcLogin.succeedRedirect(response, pending);
     }
 
     /**

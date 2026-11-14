@@ -8,8 +8,8 @@
 // and the static files) are never views.
 //
 // While a room plays in the background (listen mode, another view shown), a link to another room
-// switches rooms in place, and the identity views (login, register, password, setup: they change who is listening) still
-// load a new document, which leaves the room; everything else is shown in place.
+// switches rooms in place, and everything else is shown in place too, the login, register, password
+// and setup views included (a login re-identifies the page without a reload: nav.ts identityChanged).
 
 /** The views of the app. Each has a `<template id="view-…">` in index.html and (most) a module. */
 export type ViewName = "home" | "login" | "register" | "password" | "setup" | "rooms" | "room" | "roomManage"
@@ -40,16 +40,14 @@ export interface ViewInfo {
   template: string;
   /** The module (under /js/) that runs the view, if any. */
   module?: string;
-  /** Whether the view changes who is using the page: never shown in place while a room plays. */
-  identity?: true;
 }
 
 export const VIEWS: Readonly<Record<ViewName, ViewInfo>> = {
   home: { template: "view-home", module: "main" },
-  login: { template: "view-login", module: "login", identity: true },
-  register: { template: "view-register", module: "register", identity: true },
-  password: { template: "view-password", module: "password", identity: true },
-  setup: { template: "view-setup", module: "setup", identity: true },
+  login: { template: "view-login", module: "login" },
+  register: { template: "view-register", module: "register" },
+  password: { template: "view-password", module: "password" },
+  setup: { template: "view-setup", module: "setup" },
   rooms: { template: "view-rooms", module: "rooms" },
   room: { template: "view-room", module: "room" },
   roomManage: { template: "view-room-manage", module: "roommanage" },
@@ -232,7 +230,6 @@ export function decide(href: string, current: string, playingRoom: ((ref: string
   if (playingRoom !== undefined) {
     // Another room: switched in place (the shell takes the playing one away and the new view joins).
     if (route.view === "room") return playingRoom(route.params["ref"] ?? "") ? "room" : "view";
-    if (VIEWS[route.view].identity === true) return "browser";
   }
   return "view";
 }

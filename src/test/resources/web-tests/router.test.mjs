@@ -72,7 +72,8 @@ test("every view has a template, and every view but Not found a module", () => {
     assert.match(info.template, /^view-[a-z-]+$/, name);
     if (name !== "notFound") assert.equal(typeof info.module, "string", name);
   }
-  for (const name of ["login", "register", "password", "setup"]) assert.equal(R.VIEWS[name].identity, true, name);
+  // Login no longer leaves a playing room: no view is special (docs/ui.md#single-page-app).
+  for (const info of Object.values(R.VIEWS)) assert.equal(info.identity, undefined);
   assert.deepEqual(R.SERVER_PREFIXES, ["api", "media", "live", "auth", "r", "ws", "test", "js", "css"]);
 });
 
@@ -88,7 +89,7 @@ test("without a playing room, every view is shown in place", () => {
   assert.equal(R.decide("?id=y", "https://tt.example/playlists/?id=x", undefined, click()), "view");
 });
 
-test("while a room plays: other views and other rooms in place, its own view shown again, identity views load", () => {
+test("while a room plays: other views, other rooms and the login views in place, its own view shown again", () => {
   for (const href of ["/library/", "/playlists/", "/playlists/?id=x", "/account/", "/admin/#roles", "/", "/rooms/",
     "/items/abc", "/rooms/lounge/manage", "/rooms/other/manage", "/nope", "https://tt.example/library/"]) {
     assert.equal(R.decide(href, HERE, isLounge, click()), "view", href);
@@ -103,7 +104,8 @@ test("while a room plays: other views and other rooms in place, its own view sho
   }
   for (const href of ["/login?next=%2F", "/login.html", "/register",
     "/password.html", "/setup"]) {
-    assert.equal(R.decide(href, "https://tt.example/library/", isLounge, click()), "browser", href);
+    assert.equal(R.decide(href, "https://tt.example/library/", isLounge, click()), "view", href);
+    assert.equal(R.decide(href, "https://tt.example/library/", isLounge), "view", href + " (script)");
   }
 });
 

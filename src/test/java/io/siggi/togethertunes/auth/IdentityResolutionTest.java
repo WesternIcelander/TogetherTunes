@@ -386,6 +386,23 @@ class IdentityResolutionTest {
     }
 
     @Test
+    void popupLoginsEndAtThePopupDonePage() throws Exception {
+        provider("a", true);
+        provider("b", false);
+        // Success: logged in, and the popup goes to the done page instead of next.
+        Browser popup = new Browser();
+        assertEquals(OidcLogin.POPUP_DONE_PAGE, loginAs(popup, "a", "?popup=1&next=%2Frooms%2Fx", "pia"));
+        assertNotNull(userOfSession(popup.sid()));
+        // A refusal from identity resolution: the done page with the code, no session.
+        Browser stranger = new Browser();
+        assertEquals(OidcLogin.POPUP_DONE_PAGE + "?error=signup_disabled",
+                loginAs(stranger, "b", "?popup=1&next=%2Frooms%2Fx", "mallory"));
+        assertNull(stranger.sid());
+        // Linking never runs in a popup: popup=1 is ignored there.
+        assertEquals("/account/?linked=b", loginAs(popup, "b", "?intent=link&popup=1", "pia-at-b"));
+    }
+
+    @Test
     void linkRefusalsAndAccountSwitch() throws Exception {
         provider("a", true);
         provider("b", true);

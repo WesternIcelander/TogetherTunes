@@ -43,7 +43,9 @@ import java.util.Objects;
  *       {@code client_id}, {@code redirect_uri}, {@code scope}, {@code state}, {@code nonce} and
  *       {@code code_challenge} / {@code code_challenge_method=S256}. {@code intent=link} needs a
  *       logged-in user and remembers who. {@code next} must be a local path ({@code /…}, not
- *       {@code //…}); anything else becomes {@code /}.</li>
+ *       {@code //…}); anything else becomes {@code /}. {@code popup=1} (logins only, ignored for a
+ *       link) marks a login started in a popup window (docs/ui.md#single-page-app): its end, success
+ *       or failure, goes to {@link #POPUP_DONE_PAGE} instead of {@code next} or the login page.</li>
  *   <li>{@code GET /auth/oidc/{slug}/callback?state&code} (the redirect URI
  *       {@code {publicBaseUrl}/auth/oidc/{slug}/callback}): takes the pending login out of the
  *       store (<b>a state is good for one callback</b>, also a failed one, and for
@@ -53,6 +55,11 @@ import java.util.Objects;
  *       {@link IdTokenValidator}) or fetches the userinfo URL (plain OAuth2, below) and hands the
  *       result to the {@link Completion} (in the server: {@link IdentityResolution}).</li>
  * </ul>
+ *
+ * <p><b>Popup logins:</b> {@code GET} {@value #POPUP_DONE_PAGE} ({@code ?error=<code>} on failure) is a
+ * tiny page whose script ({@code /js/popupdone.js}) tells the page that opened the popup how the
+ * login ended (same-origin {@code postMessage}, and a {@code BroadcastChannel} for when the provider's
+ * pages cut the opener link) and closes the window.
  *
  * <p><b>Browser binding:</b> the start sets the cookie {@value #BINDING_COOKIE} (a random token,
  * {@code HttpOnly; SameSite=Lax; Path=/auth/oidc/}, {@link #TTL_MS}) and the pending login stores its
@@ -105,6 +112,26 @@ public final class OidcLogin {
     static final int NEXT_MAX = 2048;
     static final String LOGIN_PAGE = "/login";
     static final String ACCOUNT_PAGE = "/account/";
+    /** Where a login started in a popup ends ({@code ?error=<code>} on failure). */
+    public static final String POPUP_DONE_PAGE = "/auth/popup-done";
+    /** The popup-done page: no inline script, the result is read from the URL by popupdone.js. */
+    static final String POPUP_DONE_HTML = """
+            <!doctype html>
+            <html lang="en">
+            <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>Logging in · TogetherTunes</title>
+            <link rel="stylesheet" href="/css/main.css">
+            </head>
+            <body>
+            <main class="popup-done">
+            <p id="popup-done-status" role="status">Finishing the login…</p>
+            </main>
+            <script type="module" src="/js/popupdone.js"></script>
+            </body>
+            </html>
+            """;
     static final String USER_AGENT = "TogetherTunes";
 
     /** What the user started the login for. */
@@ -130,9 +157,11 @@ public final class OidcLogin {
      * @param issuer  the provider's issuer when it started (a change fails the callback)
      * @param userId  for {@link Intent#LINK}: the user linking; otherwise {@code null}
      * @param next    local path to return to
+     * @param popup   started in a popup window (logins only): ends at {@link #POPUP_DONE_PAGE}
      */
     public record Pending(String providerId, String slug, Providers.Kind kind, String issuer, String nonce,
-                          String codeVerifier, Intent intent, String userId, String next, long expiresAt) {
+                          String codeVerifier, Intent intent, String userId, String next, long expiresAt,
+                          boolean popup) {
         public Pending {
             Objects.requireNonNull(providerId);
             Objects.requireNonNull(slug);
@@ -144,7 +173,7 @@ public final class OidcLogin {
 
         @Override
         public String toString() {
-            return "Pending[" + slug + ", " + intent + "]";
+            return "Pending[" + slug + ", " + intent + (popup ? ", popup" : "") + "]";
         }
     }
 
@@ -205,8 +234,8 @@ public final class OidcLogin {
     private final RateLimiter limiter;
     private final PendingLogins pending;
     private final IdTokenValidator idTokens;
-    private volatile Completion completion = (request, response, callback) -> failRedirect(response,
-            callback.pending().intent(), callback.pending().next(), "login_unavailable");
+    private volatile Completion completion = (request, response, callback) -> fail(response, callback.pending(),
+            "login_unavailable");
 
     public OidcLogin(Providers providers, OidcDiscovery discovery, String publicBaseUrl, boolean secureCookies) {
         this(providers, discovery, publicBaseUrl, secureCookies,
@@ -248,6 +277,7 @@ public final class OidcLogin {
         var limit = Hooks.rateLimit(limiter);
         router.get("/auth/oidc/{slug}/start", this::start, limit);
         router.get("/auth/oidc/{slug}/callback", this::callback, limit);
+        router.get(POPUP_DONE_PAGE, OidcLogin::popupDone);
     }
 
     /** {@code {publicBaseUrl}/auth/oidc/{slug}/callback}. */
@@ -268,6 +298,7 @@ public final class OidcLogin {
         String slug = request.pathParam("slug");
         Intent intent = Intent.of(request.query("intent"));
         String next = safeNext(request.query("next"));
+        boolean popup = intent == Intent.LOGIN && "1".equals(request.query("popup"));
         if (intent == null) {
             failRedirect(response, Intent.LOGIN, next, "provider_error");
             return;
@@ -282,7 +313,7 @@ public final class OidcLogin {
         }
         Providers.Provider provider = providers.bySlug(slug);
         if (provider == null || !provider.enabled()) {
-            failRedirect(response, intent, next, "provider_unavailable");
+            failRedirect(response, intent, next, popup, "provider_unavailable");
             return;
         }
         Endpoints endpoints;
@@ -290,7 +321,7 @@ public final class OidcLogin {
             endpoints = endpoints(provider);
         } catch (LoginException e) {
             LOG.log(System.Logger.Level.WARNING, "Login with provider " + slug + " can't start: " + e.getMessage());
-            failRedirect(response, intent, next, e.code());
+            failRedirect(response, intent, next, popup, e.code());
             return;
         }
         String state = Tokens.newToken();
@@ -303,7 +334,7 @@ public final class OidcLogin {
         // Set (or refresh) it every time, so it lives as long as the newest pending login.
         response.setCookie(bindingCookie(binding, TTL_MS / 1000));
         pending.put(state, Tokens.hash(binding), new Pending(provider.id(), provider.slug(), provider.kind(),
-                provider.issuer(), nonce, verifier, intent, userId, next, clock.millis() + TTL_MS));
+                provider.issuer(), nonce, verifier, intent, userId, next, clock.millis() + TTL_MS, popup));
 
         Map<String, String> params = new LinkedHashMap<>();
         params.put("response_type", "code");
@@ -375,7 +406,7 @@ public final class OidcLogin {
         } catch (LoginException e) {
             LOG.log(System.Logger.Level.INFO, "Login with provider " + slug + " failed (" + e.code() + "): "
                     + e.getMessage());
-            failRedirect(response, login.intent(), login.next(), e.code());
+            fail(response, login, e.code());
         }
     }
 
@@ -611,6 +642,38 @@ public final class OidcLogin {
         response.header("Cache-Control", "no-store");
         response.header("Referrer-Policy", "no-referrer");
         response.empty(302);
+    }
+
+    /**
+     * Ends a successful login: to {@code next}, or for a popup login to {@link #POPUP_DONE_PAGE}.
+     */
+    public static void succeedRedirect(Response response, Pending login) throws IOException {
+        redirect(response, login.popup() ? POPUP_DONE_PAGE : login.next());
+    }
+
+    /** Ends a failed login of a pending login ({@link #failRedirect}, popup logins at {@link #POPUP_DONE_PAGE}). */
+    public static void fail(Response response, Pending login, String code) throws IOException {
+        failRedirect(response, login.intent(), login.next(), login.popup(), code);
+    }
+
+    /**
+     * Ends a failed login: for a popup login at {@link #POPUP_DONE_PAGE}{@code ?error=<code>},
+     * otherwise as {@link #failRedirect(Response, Intent, String, String)}.
+     */
+    public static void failRedirect(Response response, Intent intent, String next, boolean popup, String code)
+            throws IOException {
+        if (popup && intent == Intent.LOGIN) {
+            redirect(response, POPUP_DONE_PAGE + "?" + form(Map.of("error", code)));
+            return;
+        }
+        failRedirect(response, intent, next, code);
+    }
+
+    /** {@code GET /auth/popup-done}: the page a popup login ends at (it reports to its opener and closes). */
+    private static void popupDone(Request request, Response response) throws IOException {
+        response.header("Cache-Control", "no-store");
+        response.header("Referrer-Policy", "no-referrer");
+        response.send(200, "text/html; charset=utf-8", POPUP_DONE_HTML);
     }
 
     /**

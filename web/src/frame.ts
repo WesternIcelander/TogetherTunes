@@ -405,6 +405,11 @@ export class Frame {
     if (this.#me?.kind !== "user") void this.#reloadMe();
   }
 
+  /** Who is using the page changed (a login, nav.ts `identityChanged`): load and draw it again. */
+  identityChanged(): Promise<void> {
+    return this.#reloadMe();
+  }
+
   async #reloadMe(): Promise<void> {
     try {
       this.#me = await loadMe();

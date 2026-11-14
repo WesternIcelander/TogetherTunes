@@ -1034,7 +1034,7 @@ class DtoIpLeakTest {
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
                 "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/autoplay",
                 "/api/rooms/" + f.roomSlug + "/autoplay/playlists/" + f.playlistId, "/auth/oidc/nope/start",
-                "/auth/oidc/nope/callback?state=x&code=y");
+                "/auth/oidc/nope/callback?state=x&code=y", "/auth/popup-done?error=login_expired");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
         Set<String> swept = new TreeSet<>();

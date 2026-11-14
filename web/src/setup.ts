@@ -1,6 +1,8 @@
-// The first-run setup view (/setup): creates the first account, which becomes admin.
+// The first-run setup view (/setup): creates the first account, which becomes admin (and logs it in,
+// picked up in place: nav.ts identityChanged).
 import { api, ApiError, setupNeeded } from "./api.js";
 import { onReady } from "./session.js";
+import { identityChanged } from "./nav.js";
 
 interface SetupResponse {
   user: { id: string; username: string; displayName: string; roles: string[] };
@@ -55,6 +57,8 @@ async function start(): Promise<void> {
       status.hidden = false;
       status.innerHTML = "";
       status.append(`Created the administrator account "${result.user.username}". `, link("/", "Continue"));
+      // Setup logs the new administrator in: the frame shows them without a reload.
+      await identityChanged();
     } catch (e) {
       if (e instanceof ApiError && e.code === "setup_complete") {
         form.hidden = true;

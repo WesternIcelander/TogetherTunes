@@ -229,6 +229,8 @@ let shown: RoomState | undefined;
 let roomSlug = "";
 let roomRef = "";
 let roomName = "";
+/** Whether this is the user's alone room (RoomResponse.alone). */
+let roomAlone = false;
 /** Why the room stopped playing here (kicked), shown in the mini player. */
 let kickedText: string | undefined;
 /** The shell's side: whether another view is shown, and the mini player (shell.ts). */
@@ -1278,7 +1280,33 @@ function createShell(): RoomHandle {
       player?.setMuted(muted);
     },
     playerContainer: () => document.getElementById("room-player") ?? undefined,
+    reidentify,
   });
+}
+
+/**
+ * Who is using the page changed (a login, docs/ui.md#single-page-app): the new identity, a join for a
+ * user who now can be in rooms, and a new socket (the server identifies it from the cookie). The
+ * player isn't touched: it keeps following the timeline, and the new socket's state continues it.
+ */
+async function reidentify(): Promise<void> {
+  if (ROOM_SIGNAL.aborted || roomId === "" || (conn as RoomConnection | undefined) === undefined) return;
+  me = await loadMe();
+  if (ROOM_SIGNAL.aborted) return;
+  if (shouldJoin(me, { id: roomId, alone: roomAlone })) {
+    try {
+      await api("POST", "/api/me/play-session/join", { room: roomId });
+    } catch (e) {
+      recordEvent("room", { joinFailed: String(e) });
+    }
+    if (ROOM_SIGNAL.aborted) return;
+  }
+  conn.actor = me.kind === "anonymous" ? undefined : { kind: me.kind, id: me.id, name: me.name, isGuest: me.isGuest };
+  recordEvent("room", { reidentify: me.kind });
+  conn.reconnect();
+  renderIdentity();
+  if (shell !== undefined && !shell.away) renderNav(me);
+  shell?.update();
 }
 
 /** The engine's features that decide the sync mode (the user agent may lie). */
@@ -1399,6 +1427,7 @@ async function start(): Promise<void> {
   roomSlug = room.slug;
   roomRef = ref;
   roomName = room.name;
+  roomAlone = room.alone === true;
   shell = createShell();
   if (!shell.away) document.title = room.name + " · TogetherTunes";
   if (shouldJoin(me, room)) {

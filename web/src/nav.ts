@@ -25,6 +25,28 @@ export function setNavigator(n: Navigator | undefined): void {
   navigator = n;
 }
 
+/** What the shell does when who is using the page changed (a login): re-identify without a reload. */
+let identityHook: (() => Promise<void>) | undefined;
+
+/** Installed by the shell (undefined removes it). */
+export function setIdentityHook(hook: (() => Promise<void>) | undefined): void {
+  identityHook = hook;
+}
+
+/**
+ * Who is using the page changed (logged in, registered, set up, or switched account), without a
+ * reload (docs/ui.md#single-page-app): the shell loads the new identity, redraws the frame and
+ * re-identifies an open room's socket, so playback goes on. Never throws.
+ */
+export async function identityChanged(): Promise<void> {
+  if (identityHook === undefined) return;
+  try {
+    await identityHook();
+  } catch {
+    // The next navigation picks the identity up anyway.
+  }
+}
+
 /** Goes to `href` (a view of this site): in place where the shell can, otherwise a normal page load. */
 export function navigate(href: string, replace = false): void {
   if (navigator !== undefined && navigator(href, replace)) return;
@@ -126,6 +148,11 @@ export interface ShellRoom {
   setVolume(gain: number, muted: boolean): void;
   /** The element the room's videos play in (the frame's video panel holds it). */
   playerContainer(): HTMLElement | undefined;
+  /**
+   * Who is using the page changed (a login): loads the new identity and reconnects the room's socket
+   * as it, without stopping playback (the player keeps following the timeline meanwhile).
+   */
+  reidentify(): Promise<void>;
 }
 
 /** What the desktop frame (frame.ts) offers to views. */
