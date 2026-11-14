@@ -114,9 +114,15 @@ library_entries(user_id FK, item_id FK, added_at,
                                             -- shared_by_user_id and the shares table)
       PRIMARY KEY(user_id, item_id))
 
-playlists(id PK, owner_id FK, name, description NULL, created_at, updated_at)
+playlists(id PK, owner_id FK, name, description NULL, created_at, updated_at,
+      builtin TEXT NULL,                    -- 'likes': the user's Liked Songs (at most one per user:
+                                            -- UNIQUE(owner_id, builtin)); NULL: an ordinary playlist
+      position BIGINT)                      -- the user's own order of their playlists (smallest first;
+                                            -- the built-in one is always listed first)
 playlist_entries(id PK, playlist_id FK, item_id FK, position REAL, added_at)
 ```
+
+**An item in a playlist is always in its owner's library** (M9, [libraries.md](libraries.md#playlists)): every `playlist_entries` row has a `library_entries` row for `(playlists.owner_id, item_id)`. Migration `0028_playlists_v2` added the missing ones (`via 'manual'`, `added_at` = when the item first went into one of that user's playlists; uncategorized videos among them stay uncategorized) and numbered each user's playlists 1..n in the order they were listed (most recently changed first).
 
 `purged` items keep their row (title, artist, `youtube_id`), so that history stays readable and a YouTube item can be fetched again. Their files are deleted. Their library and playlist entries are removed `retention.purgedEntryDays` after `purged_at` ([media-types.md](media-types.md#after-media-is-deleted)). Only an admin's **Delete record** removes an item row, together with every row referencing it (the foreign keys to `items` have no `ON DELETE` action, so it deletes them explicitly); `youtube_id` is then free for a new row.
 
