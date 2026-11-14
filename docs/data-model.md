@@ -33,6 +33,9 @@ roles(id PK, name UNIQUE, builtin INTEGER, is_default INTEGER)         -- builti
 role_permissions(role_id FK, permission TEXT, PRIMARY KEY(role_id, permission))
 user_roles(user_id FK, role_id FK, PRIMARY KEY(user_id, role_id))
 
+user_settings(user_id PK FK, settings_json,    -- the user's preferences (ui.md#existing-features-in-the-new-ui): only the keys
+      updated_at)                                -- they set ({doubleClickAlone?, webAudio?, debug?}); no row = defaults (api.md /api/me/settings)
+
 sessions(id PK, user_id FK, token_hash UNIQUE, kind TEXT,              -- 'cookie' | 'bearer'
       created_at, last_seen_at, expires_at, user_agent, ip)
 
