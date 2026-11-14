@@ -164,17 +164,30 @@ export interface Watched { item: ItemPage; job?: JobView }
 /**
  * Polls an item and its latest job every 2 s while ingest is in progress, calling `onUpdate`
  * after each poll (also the first). Stops by itself once the item is ready, failed or purged
- * (after reporting that), or when the returned function is called. Network errors are retried.
+ * (after reporting that), when the returned function is called, or when `signal` aborts (the
+ * view's: nothing is fetched or reported after that). Network errors are retried.
  */
 export function watchItem(itemId: string, onUpdate: (w: Watched) => void,
-                          onError?: (e: unknown) => void): () => void {
+                          onError?: (e: unknown) => void, signal?: AbortSignal): () => void {
   let stopped = false;
   let timer: number | undefined;
+  const stop = (): void => {
+    stopped = true;
+    if (timer !== undefined) window.clearTimeout(timer);
+    timer = undefined;
+    signal?.removeEventListener("abort", stop);
+  };
+  if (signal !== undefined) {
+    if (signal.aborted) return stop;
+    signal.addEventListener("abort", stop);
+  }
   const poll = async (): Promise<void> => {
+    timer = undefined;
     if (stopped) return;
     let again = true;
     try {
       const item = await api<ItemPage>("GET", "/api/items/" + encodeURIComponent(itemId));
+      if (stopped) return;
       let job: JobView | undefined;
       try {
         job = await api<JobView>("GET", "/api/items/" + encodeURIComponent(itemId) + "/job");
@@ -185,15 +198,14 @@ export function watchItem(itemId: string, onUpdate: (w: Watched) => void,
       onUpdate({ item, job });
       again = inProgress(item.status) || (job !== undefined && (job.state === "queued" || job.state === "running"));
     } catch (e) {
+      if (stopped) return;
       if (onError !== undefined) onError(e);
     }
     if (again && !stopped) timer = window.setTimeout(() => void poll(), POLL_MS);
+    else stop();
   };
   void poll();
-  return () => {
-    stopped = true;
-    if (timer !== undefined) window.clearTimeout(timer);
-  };
+  return stop;
 }
 
 /** A short line about a job: "Processing 42%", "Queued", "Failed after 2 attempts"… */

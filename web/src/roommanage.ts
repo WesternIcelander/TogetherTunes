@@ -12,7 +12,7 @@ import { api, ApiError } from "./api.js";
 import { roomCardsPath } from "./customcards.js";
 import { mountCustomCards } from "./customcardsui.js";
 import { actorLabel, type ActorRef } from "./actor.js";
-import { currentRoom, navigate, pageSignal, reloadPage } from "./nav.js";
+import { currentRoom, navigate, reloadPage, viewScope } from "./nav.js";
 import { OutputsPanel } from "./outputspanel.js";
 import type { RoomState } from "./roomclient.js";
 import { button, formatTime, h } from "./dom.js";
@@ -23,8 +23,12 @@ import {
   SETTINGS, thresholdToPercent, type ServerSwitches, type SettingDef,
 } from "./roomsettings.js";
 import {
-  checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
+  checkPasswordChange, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
+
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 interface RoomView {
   id: string;
@@ -42,7 +46,7 @@ interface Member { user: ActorRef; role: string; joinedAt: number }
 
 /** The room from `/rooms/{idOrSlug}/manage` (or `?room=` when the page is opened as a plain file). */
 function roomFromLocation(): string {
-  const m = /^\/rooms\/([^/]+)\/manage\/?$/.exec(location.pathname);
+  const m = /^\/rooms\/([^/]+)\/manage\/?$/.exec(VIEW.path);
   if (m !== null && m[1] !== undefined) {
     try {
       return decodeURIComponent(m[1]);
@@ -50,7 +54,7 @@ function roomFromLocation(): string {
       return "";
     }
   }
-  return new URLSearchParams(location.search).get("room") ?? "";
+  return new URLSearchParams(VIEW.search).get("room") ?? "";
 }
 
 let me: Me;
@@ -84,9 +88,10 @@ function currentTab(): Tab {
 const loaded = new Set<Tab>();
 
 async function showTab(): Promise<void> {
+  if (VIEW.signal.aborted) return;
   const tab = currentTab();
   for (const t of TABS) element("tab-" + t).hidden = t !== tab;
-  for (const a of Array.from(document.querySelectorAll<HTMLAnchorElement>("#manage-tabs a"))) {
+  for (const a of Array.from(VIEW.root.querySelectorAll<HTMLAnchorElement>("#manage-tabs a"))) {
     if (a.dataset["tab"] === tab) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -190,6 +195,7 @@ function renderSettings(): void {
 
 /** The pending preview refresh (debounced while typing). */
 let previewTimer: ReturnType<typeof setTimeout> | undefined;
+VIEW.signal.addEventListener("abort", () => { if (previewTimer !== undefined) clearTimeout(previewTimer); }, { once: true });
 
 /**
  * Under the overlay settings (when the server allows the overlay): notes on where it shows and
@@ -217,6 +223,7 @@ function appendOverlayPreview(fieldset: HTMLElement): void {
     if (input === undefined) continue;
     const later = (): void => {
       if (previewTimer !== undefined) clearTimeout(previewTimer);
+      if (VIEW.signal.aborted) return;
       previewTimer = setTimeout(refresh, 400);
     };
     input.addEventListener("input", later);
@@ -527,11 +534,10 @@ function showOutputs(): void {
   outputs = panel;
   panel.update(outputsState());
   // While the room plays here, follow its push status.
-  const timer = window.setInterval(() => {
+  VIEW.every(() => {
     const playing = currentRoom();
     if (playing !== undefined && playing.isRoom(room.id) && playing.state() !== undefined) panel.update(outputsState());
   }, 2000);
-  pageSignal().addEventListener("abort", () => window.clearInterval(timer));
 }
 
 /** A member who doesn't moderate: only leaving. */
@@ -564,23 +570,25 @@ async function start(): Promise<void> {
   try {
     me = await loadMe();
   } catch (e) {
-    setStatus(message(e));
+    if (!VIEW.signal.aborted) setStatus(message(e));
     return;
   }
+  if (VIEW.signal.aborted) return;
   if (!checkPasswordChange(me)) return;
   renderNav(me);
   if (me.kind !== "user") {
     element("manage-status").replaceChildren("Only the room's owner and moderators manage it. ",
-      h("a", { href: withNext(LOGIN_PAGE, here()), text: "Log in" }), ".");
+      h("a", { href: withNext(LOGIN_PAGE, VIEW.path + VIEW.search), text: "Log in" }), ".");
     return;
   }
   const ref = roomFromLocation();
   try {
     room = await api<RoomView>("GET", "/api/rooms/" + encodeURIComponent(ref));
   } catch (e) {
-    setStatus(e instanceof ApiError && e.status === 404 ? "There is no room at this link." : message(e));
+    if (!VIEW.signal.aborted) setStatus(e instanceof ApiError && e.status === 404 ? "There is no room at this link." : message(e));
     return;
   }
+  if (VIEW.signal.aborted) return;
   renderHeader();
   if (!room.you.canModerate && room.you.role === "member") {
     showMembership();
@@ -597,12 +605,13 @@ async function start(): Promise<void> {
     // Without them nothing is greyed out; the settings still save, and the server ANDs them where used.
     switches = undefined;
   }
+  if (VIEW.signal.aborted) return;
   setStatus("");
   element("manage-tabs").hidden = false;
   setUpSettings();
   setUpMembers();
   element("ban-more").addEventListener("click", () => void loadBans(false));
-  window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
+  window.addEventListener("hashchange", () => void showTab(), { signal: VIEW.signal });
   await showTab();
 }
 

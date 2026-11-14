@@ -2,19 +2,15 @@
 // picked up in place: nav.ts identityChanged).
 import { api, ApiError, setupNeeded } from "./api.js";
 import { onReady } from "./session.js";
-import { identityChanged } from "./nav.js";
+import { identityChanged, viewScope } from "./nav.js";
 
 interface SetupResponse {
   user: { id: string; username: string; displayName: string; roles: string[] };
 }
 
-function element<T extends HTMLElement>(id: string): T {
-  const el = document.getElementById(id);
-  if (el === null) {
-    throw new Error("Missing #" + id);
-  }
-  return el as T;
-}
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("setup-status");
@@ -28,6 +24,7 @@ async function start(): Promise<void> {
     status.textContent = e instanceof Error ? e.message : String(e);
     return;
   }
+  if (VIEW.signal.aborted) return;
   if (!needed) {
     status.innerHTML = "";
     status.append("Setup is already complete. ", link("/", "Go to TogetherTunes"));

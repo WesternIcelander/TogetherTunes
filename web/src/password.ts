@@ -2,9 +2,13 @@
 // password (`mustChangePassword`, set by an admin) are sent here before any other page.
 import { api } from "./api.js";
 import {
-  element, formValue, LOGIN_PAGE, loadMe, message, nextPath, onReady, onSubmit, renderNav, withNext, type Me,
+  formValue, LOGIN_PAGE, loadMe, message, nextPath, onReady, onSubmit, renderNav, withNext, type Me,
 } from "./session.js";
-import { navigate } from "./nav.js";
+import { navigate, viewScope } from "./nav.js";
+
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("password-status");
@@ -19,8 +23,9 @@ async function start(): Promise<void> {
     status.textContent = message(e);
     return;
   }
+  if (VIEW.signal.aborted) return;
   if (me.kind !== "user") {
-    navigate(withNext(LOGIN_PAGE, location.pathname + location.search), true);
+    navigate(withNext(LOGIN_PAGE, VIEW.path + VIEW.search), true);
     return;
   }
   // While the password is temporary, the navigation would only lead back here.

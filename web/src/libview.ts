@@ -31,12 +31,12 @@ import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, ty
 import { clickSelect, doubleClickAction, playNowBefore, selectionText, SONG_ACTION_LABELS, songMenu, toggleKey,
   type DoubleClickAction, type SongList } from "./interactions.js";
 import { MOBILE_QUERY, Selection, selectedText } from "./mobile.js";
-import { currentRoom, navigate, pageSignal, refreshLibrary, type ShellRoom } from "./nav.js";
+import { currentRoom, navigate, refreshLibrary, viewScope, type ShellRoom } from "./nav.js";
 import { copyText } from "./outputspanel.js";
 import { formatTotal, songCount, totalDuration } from "./panels.js";
 import { routeOf, type ListName } from "./router.js";
 import { seasonLabel } from "./shows.js";
-import { element, message, onReady, renderNav, requireUser } from "./session.js";
+import { message, onReady, renderNav, requireUser } from "./session.js";
 import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 
 /** A row of the table: the item, and when it was added here (absent for search results). */
@@ -46,6 +46,14 @@ interface Row {
   /** The playlist entry's id (playlists and Liked Songs). */
   entryId?: string;
 }
+
+/**
+ * This view's start (before any await): which list it shows (`location` may already be the next
+ * view's), its signal for listeners, drags and timers, and its elements only, so a stale instance
+ * finishing a request can't draw into the list shown after it.
+ */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 const PAGE_SIZE = 100;
 
@@ -80,10 +88,12 @@ function aloneSetting(): Promise<string | undefined> {
 }
 
 function showError(e: unknown): void {
+  if (VIEW.signal.aborted) return;
   element("list-error").textContent = e === "" ? "" : message(e);
 }
 
 function notice(text: string): void {
+  if (VIEW.signal.aborted) return;
   const n = element("list-notice");
   n.textContent = text;
   n.hidden = text === "";
@@ -243,7 +253,7 @@ function drawSelection(): void {
   // The desktop's selection (click, Ctrl/Cmd-click, Shift-click) shows the bar too.
   const bar = selecting || selection.size > 0;
   element("list-select-bar").hidden = !bar;
-  document.body.classList.toggle("has-select-bar", bar);
+  if (!VIEW.signal.aborted) document.body.classList.toggle("has-select-bar", bar);
   element("list-rows").querySelectorAll<HTMLTableRowElement>("tr[data-key]").forEach((tr) => {
     const on = selection.has(tr.dataset["key"] ?? "");
     tr.classList.toggle("selected", on);
@@ -257,7 +267,7 @@ function setSelecting(on: boolean): void {
   if (!on) selection.clear();
   anchor = undefined;
   element("list-table").classList.toggle("selecting", on);
-  const b = document.getElementById("list-select");
+  const b = VIEW.find("list-select");
   if (b !== null) b.setAttribute("aria-pressed", on ? "true" : "false");
   drawSelection();
 }
@@ -336,8 +346,8 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
   });
   onLongPress(tr, () => {
     if (!selecting) openRowMenu(key, more);
-  }, pageSignal());
-  if (!mobile()) draggable(tr, () => rowDrag(key), () => rowDragLinks(key), pageSignal());
+  }, VIEW.signal);
+  if (!mobile()) draggable(tr, () => rowDrag(key), () => rowDragLinks(key), VIEW.signal);
   return tr;
 }
 
@@ -396,11 +406,13 @@ async function addToPlaylist(playlistId: string, itemIds: readonly string[], bef
 function playlistDropZone(shown: PlaylistDetail): void {
   dropPlaylist = shown;
   // Once per view: a restart (after a change) shows the list again in the same view.
-  const signal = pageSignal();
+  const signal = VIEW.signal;
   if (dropZoneSignal === signal) return;
   dropZoneSignal = signal;
   signal.addEventListener("abort", () => { dropPlaylist = undefined; });
-  dropZone(element("app"), {
+  const app = document.getElementById("app");
+  if (app === null) return;
+  dropZone(app, {
     accepts: (content, payload) => dropPlaylist !== undefined && (content === "files" || content === "link"
       || (content === "internal" && playlistDrop({ playlistId: dropPlaylist.id, inView: true }, payload).kind !== "none")),
     rows: { selector: "#list-rows tr[data-entry]", key: "data-entry" },
@@ -436,14 +448,14 @@ function appendRows(rows: Row[]): void {
   const tbody = element("list-rows");
   for (const r of rows) tbody.append(rowElement(r, ++shownRows));
   element("list-table").hidden = shownRows === 0;
-  if (shownRows > 0 && document.getElementById("list-select") === null) element("list-actions").append(selectButton());
+  if (shownRows > 0 && VIEW.find("list-select") === null) element("list-actions").append(selectButton());
   drawSelection();
 }
 
 function setHead(title: string, summary: string): void {
   element("list-title").textContent = title;
   element("list-summary").textContent = summary;
-  document.title = title + " · TogetherTunes";
+  if (!VIEW.signal.aborted) document.title = title + " · TogetherTunes";
 }
 
 function setEmpty(text: string): void {
@@ -526,11 +538,11 @@ async function showUncategorized(): Promise<void> {
 
 async function showSearch(): Promise<void> {
   songList = "search";
-  const q = (new URLSearchParams(location.search).get("q") ?? "").trim();
-  const box = document.querySelector<HTMLInputElement>("#app-search input[name=q]");
+  const q = (new URLSearchParams(VIEW.search).get("q") ?? "").trim();
+  const box = VIEW.signal.aborted ? null : document.querySelector<HTMLInputElement>("#app-search input[name=q]");
   if (box !== null && box.value !== q) box.value = q;
   setHead(q === "" ? "Search" : "Search: " + q, "The whole server; your own library first.");
-  document.title = "Search · TogetherTunes";
+  if (!VIEW.signal.aborted) document.title = "Search · TogetherTunes";
   if (q === "") {
     setEmpty("Type in the search box at the top.");
     return;
@@ -552,7 +564,7 @@ interface ShowsResponse {
 
 /** Movies/Shows: movies, then the shows (each opens its seasons and episodes: `/shows?show=<name>`). */
 async function showShows(): Promise<void> {
-  const name = new URLSearchParams(location.search).get("show");
+  const name = new URLSearchParams(VIEW.search).get("show");
   if (name !== null && name.trim() !== "") {
     await showOneShow(name);
     return;
@@ -632,7 +644,7 @@ async function showLiked(): Promise<void> {
 }
 
 async function showOnePlaylist(id: string): Promise<void> {
-  const room = new URLSearchParams(location.search).get("room");
+  const room = new URLSearchParams(VIEW.search).get("room");
   if (room !== null && room !== "") {
     // Another person's playlist, readable while it is selected for autoplay in the room.
     const r = await api<{ owner: { name: string }; playlist: PlaylistDetail }>("GET",
@@ -644,7 +656,7 @@ async function showOnePlaylist(id: string): Promise<void> {
 }
 
 function listName(): { list: ListName; id?: string } {
-  const route = routeOf(location.pathname);
+  const route = routeOf(VIEW.path);
   const list = (route.kind === "view" ? route.params["list"] : undefined) as ListName | undefined;
   const id = route.kind === "view" ? route.params["id"] : undefined;
   return { list: list ?? "songs", id };
@@ -674,20 +686,20 @@ function restart(retrying = false): void {
 }
 
 async function start(): Promise<void> {
-  const me = await requireUser();
-  if (me === null) return;
+  const me = await requireUser(VIEW);
+  if (me === null || VIEW.signal.aborted) return;
   renderNav(me);
   element("list-select-cancel").addEventListener("click", () => setSelecting(false));
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && selection.size > 0 && document.querySelector(".popup-menu") === null) setSelecting(false);
-  }, { signal: pageSignal() });
-  pageSignal().addEventListener("abort", () => window.clearTimeout(linkTimer));
+  }, { signal: VIEW.signal });
+  VIEW.signal.addEventListener("abort", () => window.clearTimeout(linkTimer));
   element("list-select-queue").addEventListener("click", () => {
     const items = selection.inOrder(rowKeys()).map((k) => rowItems[k]).filter((i): i is ItemSummary => i !== undefined);
     if (items.length === 0) return;
     void addToQueue(items).then((ok) => { if (ok) setSelecting(false); });
   });
-  pageSignal().addEventListener("abort", () => document.body.classList.remove("has-select-bar"));
+  VIEW.signal.addEventListener("abort", () => document.body.classList.remove("has-select-bar"));
   element("list-more").addEventListener("click", () => {
     const more = loadMore;
     if (more !== undefined) more().catch(showError);

@@ -271,7 +271,7 @@ export class Shell {
     const m: Mounted = { route, key: path, el, controller, mount };
     this.#kept = m;
     this.#app.append(el);
-    registerViewStart(mount, { path, search: "", signal: controller.signal });
+    registerViewStart(mount, { path, search: "", signal: controller.signal, root: el });
     recordEvent("shell", { background: path });
     const moduleUrl = new URL("/js/" + info.module + ".js", location.href);
     moduleUrl.searchParams.set("mount", String(mount));
@@ -515,7 +515,7 @@ export class Shell {
       // The view's module, run afresh: a new URL is a new module instance, which starts like on a page load.
       const mount = ++this.#mounts;
       m.mount = mount;
-      registerViewStart(mount, { path: url.pathname, search: url.search, signal: controller.signal });
+      registerViewStart(mount, { path: url.pathname, search: url.search, signal: controller.signal, root: el });
       const moduleUrl = new URL("/js/" + info.module + ".js", location.href);
       moduleUrl.searchParams.set("mount", String(mount));
       try {

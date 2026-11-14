@@ -12,9 +12,13 @@ import {
   canCreateRooms, controlModeLabel, createBody, fieldForError, roleLabel, roomPagePath, slugProblem, visibilityLabel,
   type CreateField, type RoomListEntry,
 } from "./roomlist.js";
-import { navigate, pageSignal } from "./nav.js";
+import { navigate, viewScope } from "./nav.js";
 import { createRoomBody } from "./alone.js";
-import { checkPasswordChange, element, formValue, loadMe, message, onReady, renderNav, type Me } from "./session.js";
+import { checkPasswordChange, formValue, loadMe, message, onReady, renderNav, type Me } from "./session.js";
+
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 let cursor: string | undefined;
 let me: Me | undefined;
@@ -22,6 +26,7 @@ let me: Me | undefined;
 let query = "";
 
 function showError(e: unknown): void {
+  if (VIEW.signal.aborted) return;
   element("rooms-error").textContent = message(e);
 }
 
@@ -44,7 +49,7 @@ async function load(reset: boolean): Promise<void> {
   if (cursor !== undefined) params.set("cursor", cursor);
   if (q !== "") params.set("q", q);
   const page = await api<Page<RoomListEntry>>("GET", "/api/rooms?" + params.toString());
-  if (q !== query) return; // overtaken by a newer search
+  if (q !== query || VIEW.signal.aborted) return; // overtaken by a newer search, or the view is gone
   if (reset) tbody.replaceChildren();
   for (const room of page.items) tbody.append(roomRow(room));
   cursor = page.nextCursor;
@@ -109,6 +114,7 @@ async function start(): Promise<void> {
     status.textContent = message(e);
     return;
   }
+  if (VIEW.signal.aborted) return;
   me = who;
   if (!checkPasswordChange(who)) return;
   renderNav(who);
@@ -128,7 +134,7 @@ async function start(): Promise<void> {
     element("create-panel").scrollIntoView({ block: "start" });
     element<HTMLInputElement>("create-name").focus();
   };
-  window.addEventListener("hashchange", focusCreate, { signal: pageSignal() });
+  window.addEventListener("hashchange", focusCreate, { signal: VIEW.signal });
 
   const more = element<HTMLButtonElement>("rooms-more");
   more.addEventListener("click", () => {
@@ -140,18 +146,21 @@ async function start(): Promise<void> {
   let timer: number | undefined;
   search.addEventListener("input", () => {
     window.clearTimeout(timer);
+    if (VIEW.signal.aborted) return;
     timer = window.setTimeout(() => {
       query = search.value.trim();
       element("rooms-error").textContent = "";
       load(true).catch(showError);
     }, 250);
   });
+  VIEW.signal.addEventListener("abort", () => window.clearTimeout(timer), { once: true });
 
   try {
     await load(true);
   } catch (e) {
     showError(e);
   }
+  if (VIEW.signal.aborted) return;
   status.hidden = true;
   element("rooms-body").hidden = false;
   focusCreate();

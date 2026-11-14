@@ -6,8 +6,11 @@ import { actorLabel } from "./actor.js";
 import {
   checkPasswordChange, loadMe, LOGIN_PAGE, message, onReady, REGISTER_PAGE, renderNav, ROOMS_PAGE, SETUP_PAGE,
 } from "./session.js";
-import { navigate } from "./nav.js";
+import { navigate, viewScope } from "./nav.js";
 import { describeVersion } from "./version.js";
+
+/** This view's start (before any await): a stale instance must not navigate or draw after it is gone. */
+const VIEW = viewScope(import.meta.url);
 
 function link(href: string, text: string): HTMLAnchorElement {
   const a = document.createElement("a");
@@ -17,14 +20,17 @@ function link(href: string, text: string): HTMLAnchorElement {
 }
 
 async function start(): Promise<void> {
-  const status = document.getElementById("status");
-  const links = document.getElementById("links");
+  const status = VIEW.find("status");
+  const links = VIEW.find("links");
   try {
-    if (await setupNeeded()) {
+    const needed = await setupNeeded();
+    if (VIEW.signal.aborted) return;
+    if (needed) {
       navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();
+    if (VIEW.signal.aborted) return;
     if (!checkPasswordChange(me)) return;
     // Signed-in users start in their library (the desktop layout's All My Songs).
     if (me.kind === "user") {
@@ -47,7 +53,7 @@ async function start(): Promise<void> {
       links.hidden = false;
     }
   } catch (e) {
-    if (status !== null) status.textContent = describeVersion() + " " + message(e);
+    if (status !== null && !VIEW.signal.aborted) status.textContent = describeVersion() + " " + message(e);
   }
 }
 

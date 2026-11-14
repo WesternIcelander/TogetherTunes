@@ -11,7 +11,6 @@ import {
   type JobRow,
 } from "./jobtext.js";
 import { itemPath } from "./media.js";
-import { pageSignal } from "./nav.js";
 
 /** How often the shown lists are fetched again. */
 const POLL_MS = 3000;
@@ -29,6 +28,8 @@ export interface JobsOptions {
   onError: (e: unknown) => void;
   /** Called after Retry or Cancel, with what happened. */
   onDone?: (text: string) => void;
+  /** The view's signal (nav.ts `viewScope`): polling stops for good when it aborts. */
+  signal: AbortSignal;
 }
 
 interface Section {
@@ -181,6 +182,7 @@ export function mountJobs(root: HTMLElement, opts: JobsOptions): JobsView {
     const params = new URLSearchParams({ state: s.state, limit: String(limit) });
     if (!reset && s.cursor !== undefined) params.set("cursor", s.cursor);
     const page = await api<JobPage>("GET", `${opts.base}?${params.toString()}`);
+    if (opts.signal.aborted) return;
     s.rows = reset ? page.items : s.rows.concat(page.items);
     s.cursor = page.nextCursor;
     if (s.state === "active") paused.hidden = page.paused !== true;
@@ -196,16 +198,18 @@ export function mountJobs(root: HTMLElement, opts: JobsOptions): JobsView {
   const visible = (): boolean => document.visibilityState === "visible" && root.isConnected
     && root.closest("[hidden]") === null;
   const tick = (): void => {
-    if (busy || !visible()) return;
+    if (busy || opts.signal.aborted || !visible()) return;
     busy = true;
     refresh().catch(opts.onError).finally(() => { busy = false; });
   };
-  timer = window.setInterval(tick, POLL_MS);
-  document.addEventListener("visibilitychange", tick, { signal: pageSignal() });
   const stop = (): void => {
     if (timer !== undefined) window.clearInterval(timer);
     timer = undefined;
   };
-  pageSignal().addEventListener("abort", stop);
+  if (!opts.signal.aborted) {
+    timer = window.setInterval(tick, POLL_MS);
+    document.addEventListener("visibilitychange", tick, { signal: opts.signal });
+    opts.signal.addEventListener("abort", stop, { once: true });
+  }
   return { refresh, stop };
 }

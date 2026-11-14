@@ -10,13 +10,23 @@ import {
   ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, removeFromLibrary, watchItem, type ItemPage,
   type JobView,
 } from "./media.js";
-import { checkPasswordChange, element, loadMe, message, onReady, renderNav, type Me } from "./session.js";
+import { viewScope } from "./nav.js";
+import { checkPasswordChange, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
   audioEstimate, audioRange, audioTrimBody, currentRange, estimate, estimateText, formatTime as formatTrimTime,
   fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan, trimBody, type Range,
   type TrimEstimate, type TrimView,
 } from "./trim.js";
 import { pinPath, pinText, viewPath, viewReporter } from "./views.js";
+
+/**
+ * This view's start (taken before any await): its signal stops the polling, the trim panels' timers
+ * and the player when the shell takes the view away, and its elements are looked up inside the
+ * view only, so an instance still finishing a request can't draw into the next item's view.
+ */
+const VIEW = viewScope(import.meta.url);
+const SIGNAL = VIEW.signal;
+const element = VIEW.element;
 
 let me: Me;
 let itemId = "";
@@ -30,10 +40,12 @@ const reportView = viewReporter((id) => api("POST", viewPath(id)));
 let logOpen: boolean | undefined;
 
 function showError(e: unknown): void {
+  if (SIGNAL.aborted) return;
   element("item-error").textContent = message(e);
 }
 
 function showNotice(text: string): void {
+  if (SIGNAL.aborted) return;
   const notice = element("item-notice");
   notice.textContent = text;
   notice.hidden = text === "";
@@ -41,7 +53,7 @@ function showNotice(text: string): void {
 
 /** The id from `/items/{id}` (or `?id=` when the page is opened as a plain file). */
 function idFromLocation(): string {
-  const m = /^\/items\/([^/]+)\/?$/.exec(location.pathname);
+  const m = /^\/items\/([^/]+)\/?$/.exec(VIEW.path);
   if (m !== null && m[1] !== undefined) {
     try {
       return decodeURIComponent(m[1]);
@@ -49,7 +61,7 @@ function idFromLocation(): string {
       return "";
     }
   }
-  return new URLSearchParams(location.search).get("id") ?? "";
+  return new URLSearchParams(VIEW.search).get("id") ?? "";
 }
 
 /** "14:32" today, else the date and time: when a change that can be undone was made. */
@@ -341,6 +353,7 @@ function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
 }
 
 function render(item: ItemPage, job: JobView | undefined): void {
+  if (SIGNAL.aborted) return;
   document.title = item.title + " · TogetherTunes";
   const body = element("item-body");
   // Only ask for a cover the item has (not every item has one).
@@ -461,6 +474,7 @@ function render(item: ItemPage, job: JobView | undefined): void {
  * rest) doesn't throw away what the user is typing.
  */
 function renderForms(item: ItemPage, job: JobView | undefined): void {
+  if (SIGNAL.aborted) return;
   element("item-forms").replaceChildren(
     ...nodes(item.you.canEdit ? editForm(item, (updated) => { render(updated, job); renderForms(updated, job); }) : null,
       ...(item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
@@ -474,7 +488,10 @@ function formsKeyOf(item: ItemPage, job: JobView | undefined): string {
 
 async function refresh(): Promise<void> {
   stopWatching?.();
+  if (SIGNAL.aborted) return;
   await new Promise<void>((resolve) => {
+    // Taken away before the first answer: nothing more to wait for.
+    SIGNAL.addEventListener("abort", () => resolve(), { once: true });
     let first = true;
     let formsKey = "";
     stopWatching = watchItem(itemId, ({ item, job }) => {
@@ -504,7 +521,7 @@ async function refresh(): Promise<void> {
         }
         resolve();
       }
-    });
+    }, SIGNAL);
   });
 }
 
@@ -512,9 +529,10 @@ async function start(): Promise<void> {
   try {
     me = await loadMe();
   } catch (e) {
-    element("item-status").textContent = message(e);
+    if (!SIGNAL.aborted) element("item-status").textContent = message(e);
     return;
   }
+  if (SIGNAL.aborted) return;
   if (!checkPasswordChange(me)) return;
   renderNav(me);
   itemId = idFromLocation();
@@ -525,5 +543,12 @@ async function start(): Promise<void> {
   }
   await refresh();
 }
+
+// Taken away: the polling stops (watchItem has the signal), and so do the trim panels' timers and the player.
+SIGNAL.addEventListener("abort", () => {
+  for (const stop of stopTrimPanels) stop();
+  stopTrimPanels = [];
+  player?.pause();
+}, { once: true });
 
 onReady(start);

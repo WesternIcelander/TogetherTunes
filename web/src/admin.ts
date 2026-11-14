@@ -11,7 +11,7 @@ import { busy, CJK_VARIANTS, cardFontChoices, cardFontSetting, downloadAllText, 
 import { serverCardsPath } from "./customcards.js";
 import { mountCustomCards } from "./customcardsui.js";
 import { mountJobs, type JobsView } from "./jobs.js";
-import { pageSignal } from "./nav.js";
+import { viewScope } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
@@ -68,13 +68,12 @@ const GROUPS: Record<string, string> = {
 
 // ------------------------------------------------------------------ DOM helpers
 
-function element<T extends HTMLElement>(id: string): T {
-  const el = document.getElementById(id);
-  if (el === null) {
-    throw new Error("Missing #" + id);
-  }
-  return el as T;
-}
+/**
+ * This view's start (before any await): its signal stops the polling (yt-dlp update, fonts, jobs),
+ * and its elements only.
+ */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 type Child = Node | string | null | undefined | false;
 
@@ -101,6 +100,7 @@ function message(e: unknown): string {
 }
 
 function status(text: string): void {
+  if (VIEW.signal.aborted) return;
   element("admin-status").textContent = text;
 }
 
@@ -139,11 +139,12 @@ function currentTab(): Tab {
 }
 
 async function showTab(): Promise<void> {
+  if (VIEW.signal.aborted) return;
   const tab = currentTab();
   for (const t of TABS) {
     element("tab-" + t).hidden = t !== tab;
   }
-  for (const a of Array.from(document.querySelectorAll<HTMLAnchorElement>("#admin-tabs a"))) {
+  for (const a of Array.from(VIEW.root.querySelectorAll<HTMLAnchorElement>("#admin-tabs a"))) {
     if (a.dataset["tab"] === tab) {
       a.setAttribute("aria-current", "page");
     } else {
@@ -544,12 +545,13 @@ async function loadYtdlp(): Promise<void> {
   try {
     info = await api<YtdlpInfo>("GET", "/api/admin/ytdlp");
   } catch (e) {
-    element("ytdlp-version").textContent = "yt-dlp: " + message(e);
+    if (!VIEW.signal.aborted) element("ytdlp-version").textContent = "yt-dlp: " + message(e);
     return;
   }
+  if (VIEW.signal.aborted) return;
   renderYtdlp(info);
   if (updating(info) && currentTab() === "settings") {
-    ytdlpPoll = window.setTimeout(() => void loadYtdlp(), 2000);
+    ytdlpPoll = VIEW.signal.aborted ? undefined : window.setTimeout(() => void loadYtdlp(), 2000);
   }
 }
 
@@ -792,6 +794,10 @@ function setUpSettings(): void {
 // ------------------------------------------------------------------ fonts
 
 let fontsTimer: number | undefined;
+VIEW.signal.addEventListener("abort", () => {
+  window.clearTimeout(ytdlpPoll);
+  window.clearTimeout(fontsTimer);
+}, { once: true });
 
 /** The Fonts tab (admin.settings): card font, script font downloads, uploads, uncovered characters. */
 async function loadFonts(): Promise<void> {
@@ -800,6 +806,7 @@ async function loadFonts(): Promise<void> {
     fontsTimer = undefined;
   }
   const info = await api<FontsInfo>("GET", "/api/admin/fonts");
+  if (VIEW.signal.aborted) return;
   renderFonts(info);
   if (busy(info)) {
     fontsTimer = window.setTimeout(() => {
@@ -919,6 +926,7 @@ async function loadJobs(): Promise<void> {
       admin: true,
       onError: (e) => status(message(e)),
       onDone: (text) => status(text),
+      signal: VIEW.signal,
     });
   }
   await jobsView.refresh();
@@ -986,8 +994,8 @@ function setUpAudit(): void {
 async function start(): Promise<void> {
   // Log in first, and replace a temporary password, before anything else.
   try {
-    const me = await requireUser();
-    if (me === null) return;
+    const me = await requireUser(VIEW);
+    if (me === null || VIEW.signal.aborted) return;
     renderNav(me);
     if (!isAdmin(me)) {
       element("admin-tabs").hidden = true;
@@ -998,12 +1006,13 @@ async function start(): Promise<void> {
     status(message(e));
     return;
   }
+  if (VIEW.signal.aborted) return;
   setUpUsers();
   setUpRoles();
   setUpSettings();
   setUpYtdlp();
   setUpAudit();
-  window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
+  window.addEventListener("hashchange", () => void showTab(), { signal: VIEW.signal });
   void showTab();
 }
 

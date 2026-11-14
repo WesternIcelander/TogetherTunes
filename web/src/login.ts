@@ -8,14 +8,18 @@
 // A blocked popup says so here and offers the full-page login, which does reload.
 import { api, setupNeeded } from "./api.js";
 import {
-  element, formValue, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav,
+  formValue, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav,
   SETUP_PAGE, withNext,
 } from "./session.js";
-import { identityChanged, navigate, pageSignal } from "./nav.js";
+import { identityChanged, navigate, viewScope } from "./nav.js";
 import {
   LOGIN_CHANNEL, LOGIN_POPUP_FEATURES, LOGIN_POPUP_NAME, parseLoginMessage, providerErrorMessage, providerPopupUrl,
   providerStartUrl, type LoginResult, type ProviderButton,
 } from "./providers.js";
+
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 interface LoginResponse {
   user: { id: string; username: string; displayName: string; roles: string[]; mustChangePassword: boolean };
@@ -41,13 +45,13 @@ class PopupLogin {
   readonly #seen = new Set<string>();
 
   constructor(onResult: (r: LoginResult) => void) {
-    const signal = pageSignal();
+    const signal = VIEW.signal;
     this.#signal = signal;
     this.#onResult = onResult;
     window.addEventListener("message", (ev) => {
       const r = parseLoginMessage(ev.data, ev.origin, location.origin);
       if (r !== undefined) this.#result(r);
-    }, { signal: pageSignal() });
+    }, { signal: VIEW.signal });
     try {
       if (typeof BroadcastChannel !== "undefined") {
         const channel = new BroadcastChannel(LOGIN_CHANNEL);
@@ -75,6 +79,7 @@ class PopupLogin {
 
 async function showProviders(next: string, status: HTMLElement): Promise<void> {
   const result = await api<{ items: ProviderButton[] }>("GET", "/api/auth/providers");
+  if (VIEW.signal.aborted) return;
   const list = element<HTMLUListElement>("login-provider-list");
   for (const p of result.items) {
     const li = document.createElement("li");
@@ -146,7 +151,7 @@ async function start(): Promise<void> {
   });
   showProviders(next, providerStatus).catch(() => undefined);
   // A full-page provider login that failed comes back here with ?error=.
-  const providerError = new URLSearchParams(location.search).get("error");
+  const providerError = new URLSearchParams(VIEW.search).get("error");
   if (providerError !== null) {
     providerErrorEl.textContent = providerErrorMessage(providerError);
     providerErrorEl.hidden = false;
@@ -162,11 +167,14 @@ async function start(): Promise<void> {
   });
 
   try {
-    if (await setupNeeded()) {
+    const needed = await setupNeeded();
+    if (VIEW.signal.aborted) return;
+    if (needed) {
       navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();
+    if (VIEW.signal.aborted) return;
     renderNav(me);
     if (me.kind === "user") {
       status.hidden = false;

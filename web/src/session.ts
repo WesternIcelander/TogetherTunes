@@ -99,12 +99,14 @@ export function checkPasswordChange(me: Me): boolean {
 
 /**
  * For pages that need an account: returns the user, or redirects (to the login page, or to the
- * change-password page) and returns null.
+ * change-password page) and returns null. With the view's `scope` (nav.ts `viewScope`): null without
+ * redirecting once the view was taken away meanwhile, and the login page comes back to the view's own path.
  */
-export async function requireUser(): Promise<MeUser | null> {
+export async function requireUser(scope?: { signal: AbortSignal; path: string; search: string }): Promise<MeUser | null> {
   const me = await loadMe();
+  if (scope?.signal.aborted === true) return null;
   if (me.kind !== "user") {
-    navigate(withNext(LOGIN_PAGE, here()), true);
+    navigate(withNext(LOGIN_PAGE, scope !== undefined ? scope.path + scope.search + location.hash : here()), true);
     return null;
   }
   if (!checkPasswordChange(me)) {

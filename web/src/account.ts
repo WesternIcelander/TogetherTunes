@@ -12,17 +12,21 @@ import { actorLabel } from "./actor.js";
 import { button, formatTime, h } from "./dom.js";
 import { canRevoke, DEFAULT_EXPIRY_HOURS, EXPIRY_OPTIONS, inviteBody, inviteStatusText, type CreatedInvite,
   type Invite } from "./invites.js";
-import { pageSignal } from "./nav.js";
+import { viewScope } from "./nav.js";
 import { copyField } from "./outputspanel.js";
 import { DOUBLE_CLICK_OPTIONS, WEB_AUDIO_OPTIONS, type Prefs } from "./prefs.js";
 import { prefs } from "./prefsclient.js";
 import {
-  canInvite, element, formValue, LOGIN_PAGE, message, onReady, onSubmit, renderNav, requireUser, type MeUser,
+  canInvite, formValue, LOGIN_PAGE, message, onReady, onSubmit, renderNav, requireUser, type MeUser,
 } from "./session.js";
 import {
   providerErrorMessage, providerLinkUrl, type LinkedIdentity, type ProviderButton,
 } from "./providers.js";
 import { mergeableGuest, mergedText, mergeGuest, mergeQuestion } from "./guestmerge.js";
+
+/** This view's start (before any await): its signal ends the prefs subscription, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 interface SessionItem {
   id: string;
@@ -160,7 +164,7 @@ async function loadIdentities(): Promise<void> {
 
 /** The result of a link (`?linked=<slug>` or `?error=<code>`), shown once. */
 function showLinkResult(): void {
-  const params = new URLSearchParams(location.search);
+  const params = new URLSearchParams(VIEW.search);
   const error = params.get("error");
   const linked = params.get("linked");
   if (error !== null) {
@@ -217,9 +221,10 @@ function currentTab(): Tab {
 const loaded = new Set<Tab>();
 
 async function showTab(): Promise<void> {
+  if (VIEW.signal.aborted) return;
   const tab = currentTab();
   for (const t of TABS) element("acct-tab-" + t).hidden = t !== tab;
-  for (const a of Array.from(document.querySelectorAll<HTMLAnchorElement>("#account-tabs a"))) {
+  for (const a of Array.from(VIEW.root.querySelectorAll<HTMLAnchorElement>("#account-tabs a"))) {
     if (a.dataset["tab"] === tab) a.setAttribute("aria-current", "page");
     else a.removeAttribute("aria-current");
   }
@@ -256,8 +261,9 @@ async function setUpPrefs(): Promise<void> {
   const status = element("prefs-status");
   const error = element("prefs-error");
   element<HTMLFormElement>("prefs-form").addEventListener("submit", (ev) => ev.preventDefault());
+  if (VIEW.signal.aborted) return;
   const unsubscribe = prefs.subscribe((p) => showPrefs(p));
-  pageSignal().addEventListener("abort", unsubscribe);
+  VIEW.signal.addEventListener("abort", unsubscribe, { once: true });
   // Each change is saved at once (and applied at once: the room playing here switches its sound path
   // inside this change event, a user gesture).
   const save = (patch: Partial<Prefs>): void => {
@@ -274,7 +280,8 @@ async function setUpPrefs(): Promise<void> {
   wa.addEventListener("change", () => save({ webAudio: wa.value === "on" || wa.value === "off" ? wa.value : "auto" }));
   debug.addEventListener("change", () => save({ debug: debug.checked }));
   try {
-    showPrefs(await prefs.load());
+    const p = await prefs.load();
+    if (!VIEW.signal.aborted) showPrefs(p);
   } catch (e) {
     error.textContent = message(e);
   }
@@ -393,12 +400,12 @@ async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("account-status");
   let me: MeUser | null;
   try {
-    me = await requireUser();
+    me = await requireUser(VIEW);
   } catch (e) {
-    status.textContent = message(e);
+    if (!VIEW.signal.aborted) status.textContent = message(e);
     return;
   }
-  if (me === null) return;
+  if (me === null || VIEW.signal.aborted) return;
   renderNav(me);
   showProfile(me);
 
@@ -437,15 +444,16 @@ async function start(): Promise<void> {
     setUpInvites(me);
   }
   // Back from linking a login: the Account tab shows the result.
-  const params = new URLSearchParams(location.search);
+  const params = new URLSearchParams(VIEW.search);
   if ((params.has("linked") || params.has("error")) && location.hash === "") {
     history.replaceState(history.state, "", location.pathname + location.search + "#account");
   }
   showLinkResult();
   await setUpPrefs();
+  if (VIEW.signal.aborted) return;
   status.hidden = true;
   element("account-body").hidden = false;
-  window.addEventListener("hashchange", () => void showTab(), { signal: pageSignal() });
+  window.addEventListener("hashchange", () => void showTab(), { signal: VIEW.signal });
   await showTab();
 }
 

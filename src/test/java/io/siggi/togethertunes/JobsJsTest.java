@@ -42,7 +42,7 @@ class JobsJsTest {
         }
         String jobs = read("web/js/jobs.js");
         for (String s : List.of("/retry`", "/cancel`", "opts.admin ? actions(row, s) : null", "visibilityState",
-                "signal: pageSignal()")) {
+                "signal: opts.signal")) {
             assertTrue(jobs.contains(s), s);
         }
         assertFalse(jobs.contains("innerHTML"), "text only, never parsed as HTML");

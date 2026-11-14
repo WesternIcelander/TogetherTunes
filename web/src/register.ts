@@ -2,10 +2,14 @@
 // (`registration.mode`); when it isn't, the API's error is shown.
 import { api, ApiError, setupNeeded } from "./api.js";
 import {
-  element, formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, SETUP_PAGE,
+  formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, SETUP_PAGE,
   withNext,
 } from "./session.js";
-import { identityChanged, navigate } from "./nav.js";
+import { identityChanged, navigate, viewScope } from "./nav.js";
+
+/** This view's start (before any await): its signal, and its elements only. */
+const VIEW = viewScope(import.meta.url);
+const element = VIEW.element;
 
 async function start(): Promise<void> {
   const form = element<HTMLFormElement>("register-form");
@@ -14,7 +18,7 @@ async function start(): Promise<void> {
   const next = nextPath();
   element<HTMLAnchorElement>("login-link").href = withNext(LOGIN_PAGE, next);
   // An invite link (/register?invite=<code>) fills the code in.
-  const invite = new URLSearchParams(location.search).get("invite");
+  const invite = new URLSearchParams(VIEW.search).get("invite");
   if (invite) {
     (form.elements.namedItem("invite") as HTMLInputElement).value = invite;
   }
@@ -45,11 +49,14 @@ async function start(): Promise<void> {
   });
 
   try {
-    if (await setupNeeded()) {
+    const needed = await setupNeeded();
+    if (VIEW.signal.aborted) return;
+    if (needed) {
       navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();
+    if (VIEW.signal.aborted) return;
     renderNav(me);
     if (me.kind === "user") {
       status.hidden = false;

@@ -1,9 +1,10 @@
 // Navigation hooks shared by every view, for the single-page app's shell (shell.ts):
 // - `navigate()`: what views call instead of `location.assign`, so that a script's own navigation
 //   (after saving a form, say) shows the next view in place (and keeps a playing room going);
-// - `pageSignal()`: aborted when the shell takes the view away, for listeners a view adds to
-//   `window` or `document` (its own elements simply go away with it), and for the room view's
-//   socket and player;
+// - `viewScope()` (taken at a view module's start; `pageSignal()` underneath): the view's signal,
+//   aborted when the shell takes the view away, for listeners a view adds to `window` or
+//   `document`, its timers and pollers, and the room view's socket and player; its path; and its
+//   elements, looked up inside the view only;
 // - `attachRoom()`: how the room view tells the shell about itself, so it can keep playing while
 //   other views are shown (mini player);
 // - the note shown after a reload stopped playback;
@@ -62,8 +63,9 @@ export function reloadPage(): void {
 
 /**
  * The signal of the view being shown (the last one the shell started): aborted when the shell takes
- * it away. Pass it as `{ signal }` to window/document listeners. Call it while the view starts
- * (the room view keeps the one it got at its start).
+ * it away. Only right at a module's start is it that module's own: after an `await` it may already
+ * be the next view's. View modules take `viewScope(import.meta.url)` at their start instead and use
+ * its signal everywhere.
  */
 export function pageSignal(): AbortSignal {
   return controller.signal;
@@ -85,6 +87,8 @@ export interface ViewStart {
   search: string;
   /** Aborted when the shell takes the view away. */
   signal: AbortSignal;
+  /** The view's element (its template's clone); undefined: the document. */
+  root?: HTMLElement;
 }
 
 const starts = new Map<string, ViewStart>();
@@ -103,6 +107,69 @@ export function registerViewStart(mount: number, start: ViewStart): void {
 export function viewStart(moduleUrl: string): ViewStart | undefined {
   const m = /[?&]mount=(\d+)/.exec(moduleUrl);
   return m !== null && m[1] !== undefined ? starts.get(m[1]) : undefined;
+}
+
+/**
+ * What a view module keeps from its start: take it **synchronously at the module's start**
+ * (`const VIEW = viewScope(import.meta.url)`), before any `await`, because after one `pageSignal()`
+ * and `location` may already be the next view's. Every timer, poller, socket and listener the view
+ * starts stops on `signal`, async work that finishes after it aborted does nothing, and
+ * `element()` looks up only inside the view's own element, so a stale instance can't draw into the
+ * view shown after it.
+ */
+export interface ViewScope {
+  /** Aborted when the shell takes the view away. */
+  signal: AbortSignal;
+  /** The view's path and query (`location`'s at its start). */
+  path: string;
+  search: string;
+  /** The view's element, or the document without the shell. */
+  root: ParentNode;
+  /** The element with this id inside the view (throws when missing). */
+  element<T extends HTMLElement = HTMLElement>(id: string): T;
+  /** Like `element`, or null when missing. */
+  find<T extends HTMLElement = HTMLElement>(id: string): T | null;
+  /** `setInterval` until the view is taken away. */
+  every(f: () => void, ms: number): void;
+  /** `setTimeout` that doesn't fire after the view was taken away. */
+  after(f: () => void, ms: number): void;
+}
+
+/** This view module's scope (pass `import.meta.url`); see `ViewScope`. */
+export function viewScope(moduleUrl: string): ViewScope {
+  const start = viewStart(moduleUrl);
+  const signal = start?.signal ?? pageSignal();
+  const root: ParentNode = start?.root ?? document;
+  const find = <T extends HTMLElement>(id: string): T | null => {
+    const el = root === document ? document.getElementById(id) : root.querySelector("[id=\"" + id + "\"]");
+    return el as T | null;
+  };
+  return {
+    signal,
+    path: start?.path ?? location.pathname,
+    search: start !== undefined ? start.search : location.search,
+    root,
+    element<T extends HTMLElement>(id: string): T {
+      const el = find<T>(id);
+      if (el === null) throw new Error("Missing #" + id);
+      return el;
+    },
+    find,
+    every(f: () => void, ms: number): void {
+      if (signal.aborted) return;
+      const id = window.setInterval(f, ms);
+      signal.addEventListener("abort", () => window.clearInterval(id), { once: true });
+    },
+    after(f: () => void, ms: number): void {
+      if (signal.aborted) return;
+      const cancel = (): void => window.clearTimeout(id);
+      const id = window.setTimeout(() => {
+        signal.removeEventListener("abort", cancel);
+        if (!signal.aborted) f();
+      }, ms);
+      signal.addEventListener("abort", cancel, { once: true });
+    },
+  };
 }
 
 /** What the shell needs from the room view, to keep it playing while other views are shown. */

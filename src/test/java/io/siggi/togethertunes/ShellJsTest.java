@@ -146,16 +146,49 @@ class ShellJsTest {
             Matcher m = Pattern.compile("(window|document)\\.addEventListener\\(").matcher(module);
             while (m.find()) {
                 String call = callAt(module, m.end() - 1);
-                assertTrue(call.contains("signal: pageSignal()") || call.contains("signal: ROOM_SIGNAL"),
+                assertTrue(call.contains("signal: VIEW.signal") || call.contains("signal: ROOM_SIGNAL"),
                         view.getValue() + ": " + call);
+            }
+            // The view's signal and path are taken at the module's start (after an await,
+            // pageSignal() and location may be the next view's), and its elements are its own.
+            if (!view.getKey().equals("view-room")) {
+                assertTrue(module.contains("const VIEW = viewScope(import.meta.url)"), view.getValue());
+                assertFalse(module.contains("pageSignal()"), view.getValue());
+                assertFalse(module.contains("location.pathname)"), view.getValue());
+                assertFalse(module.contains("new URLSearchParams(location.search)"), view.getValue());
+                // (the frame's #app, a drop zone for the whole middle, is the one element outside a view)
+                assertFalse(module.replace("document.getElementById(\"app\")", "").contains("document.getElementById("),
+                        view.getValue() + " (VIEW.element)");
             }
         }
         String manage = read("web/js/roommanage.js");
         assertTrue(manage.contains("reloadPage()"), manage);
         assertTrue(manage.contains("navigate(\"/\")"), manage);
         String session = read("web/js/session.js");
-        assertTrue(session.contains("navigate(withNext(LOGIN_PAGE, here()), true)"), session);
+        assertTrue(session.contains("navigate(withNext(LOGIN_PAGE, scope !== undefined ? scope.path + scope.search + location.hash : here()), true)"), session);
+        assertTrue(session.contains("if (scope?.signal.aborted === true)"), session);
         assertTrue(session.contains("navigate(withNext(PASSWORD_PAGE, here()), true)"), session);
+    }
+
+    /**
+     * Views stop when the shell takes them away (the song page fight): {@code viewscope.test.mjs}
+     * runs nav.ts {@code viewScope} (elements inside the view only, timers ended by its signal) and
+     * media.ts {@code watchItem} (stops polling and reporting on abort) with fake timers and fetch;
+     * the item page and the jobs lists poll with the view's signal.
+     */
+    @Test
+    void viewsStopWhenTakenAway() throws Exception {
+        NodeTests.run("viewscope.test.mjs", Map.of("NAV_JS", "web/js/nav.js", "MEDIA_JS", "web/js/media.js"));
+        String item = read("web/js/item.js");
+        for (String s : List.of("}, SIGNAL);", "const element = VIEW.element;", "player?.pause()",
+                "exec(VIEW.path)")) {
+            assertTrue(item.contains(s), s);
+        }
+        assertTrue(read("web/js/shell.js").contains("signal: controller.signal, root: el }"));
+        String jobs = read("web/js/jobs.js");
+        assertFalse(jobs.contains("pageSignal"), jobs);
+        assertTrue(read("web/js/encodes.js").contains("signal: VIEW.signal"));
+        assertTrue(read("web/js/admin.js").contains("signal: VIEW.signal"));
     }
 
     @Test
