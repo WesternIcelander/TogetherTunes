@@ -83,12 +83,18 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 - **Timeout:** for a length the moderator types in (any duration).
 - **Ban:** until unbanned.
 - A timeout or ban puts the room into a **read-only state** for that person: they can still be in the room and listen, but can't request, vote, like into the room's queue or otherwise change anything in it.
+- **Room bans follow the IP address** (Siggi, 2026-11-14; the IP key as elsewhere: IPv4 address or IPv6 /64, stored like `guests.key_hash`, never shown without `ip.view`):
+  - Banning a **guest** bans their IP address in the room.
+  - Banning a **logged-in user** bans their account **and** their current IP address in the room.
+  - A logged-in user who isn't banned but comes from a banned IP address is **treated as banned**, unless the room has added them as a **member**.
+  - Unbanning lifts the account and the IP address together. Timeouts work the same way.
 - **Ban from server:** admins only; disables the user's account.
 - (Future ideas, not in M9: ban a whole home server from the room, or from the server; see [future-ideas.md](future-ideas.md).)
 
 ## Library rules
 
-- **Liked Songs** is a built-in playlist per user. A heart adds the song to it.
+- **Liked Songs** is a built-in playlist per user. A heart adds the song to it. **Guests can't heart songs** (no heart shown for them).
+- **Guest merge** (when a guest logs in or registers in the browser holding the guest cookie, [auth.md](auth.md)) also moves **the items the guest added** to the account (`added_by`, so they can still edit them) and adds them to the account's library.
 - **An item in a playlist is always in the library of the playlist's owner** (this replaces "adding to a playlist doesn't add it to your library", [libraries.md](libraries.md#playlists)). So adding to a playlist asks for a type for an uncategorized video ([media-types.md](media-types.md)).
 - **+ Add from link** adds to the open playlist and to the library.
 - **Drag and drop** into a playlist:
