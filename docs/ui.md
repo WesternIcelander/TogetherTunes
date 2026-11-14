@@ -11,6 +11,8 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
 - **Logins on another origin** (OIDC / plain OAuth) open in a **popup window** (opened directly from the click, so popup blockers allow it). The callback page in the popup tells the opener (same-origin `postMessage`, or a `BroadcastChannel`) that the login finished, or why it failed, and closes itself. If the popup is blocked, the page says so and offers the full-page redirect as a fallback (which does reload).
 - **Logging out reloads the document**, so nothing from the logged-in state lingers.
 
+**As built** (M9 SPA step, 2026-11-14): the server sends `web/static/index.html` for every UI path (`StaticFiles.isAppPath`: not under `/api/`, `/media/`, `/live/`, `/auth/`, `/r/`, `/ws`, `/test/`, `/js/`, `/css/`, not file-like; [api.md](api.md)). It holds the header nav, `<main id="app">` and one `<template id="view-…">` per view; `/js/app.js` starts the shell (`web/src/shell.ts`). The router (`web/src/router.ts`, DOM-free, `router.test.mjs`) maps paths to views: `/` home, `/login`, `/register`, `/password`, `/setup`, `/rooms/`, `/rooms/{ref}`, `/rooms/{ref}/manage`, `/library/`, `/playlists/`, `/playlists/{id}` (playlist deep link; `?id=` still works), `/encodes/`, `/account/`, `/admin/`, `/items/{id}`, anything else the Not found view; the old spellings (`/login.html`, `/library` without the slash, …) are aliases, replaced in the address bar. A view = its template cloned into `#app` plus its module imported under a fresh `?mount=N` (a new module instance per visit); the previous view's `pageSignal()` (nav.ts) is aborted and its element removed. Links, `navigate()` / `reloadPage()` and plain GET forms go through `decide()`; back/forward through popstate (scroll positions in `history.state`). The room view keeps playing while other views are shown (see [rooms.md](rooms.md#playback-across-pages-web)). For now (until the "Login without reload" and "Alone and switching rooms" steps), **while a room plays**, a link to another room or to login/register/password/setup still loads a new document (leaving the room), and a successful login navigates in place without re-identifying an open room socket (none is open then).
+
 ## Layout (desktop)
 
 - **Header:** logo + "TogetherTunes", a search box, the account button.
@@ -154,7 +156,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 
 **Routing**
 
-- Every page URL serves the same document, **except `/test/`**, which keeps its own pages.
+- Every page URL serves the same document, **except `/test/`**, which keeps its own pages. (Built: see [Single-page app](#single-page-app).)
 
 ## Not designed yet
 

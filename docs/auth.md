@@ -22,7 +22,7 @@ A **user** can have any number of **identities**: one local password credential,
 While `registration.mode` is `invite`, local registration (`POST /api/auth/register`) needs an invite code (`invite`). (`Invites`, `InvitesApi`, [api.md](api.md#auth-account-guest-identity).)
 
 - **Who:** holders of `users.invite` create invites and see and revoke their own; holders of `admin.users` see and revoke everyone's (admins hold both). `users.invite` isn't in the default role.
-- **The code** is a 256-bit random token; only its SHA-256 is stored (`invites.code_hash`), so it is shown once, when created, with a registration link `{publicBaseUrl}/register.html?invite=<code>` (the page fills it in).
+- **The code** is a 256-bit random token; only its SHA-256 is stored (`invites.code_hash`), so it is shown once, when created, with a registration link `{publicBaseUrl}/register?invite=<code>` (the page fills it in).
 - **Single use:** the registration that uses an invite marks it used (`used_by_user_id`, `used_at`) in the transaction that creates the account, so two registrations with one code make one account; a failed registration (bad password, taken username) leaves it unused. The register audit row names the invite.
 - **Lifetime:** 1 h to 30 days (default 7 days), optional note (who it's for, at most 200 characters). Pending invites can be revoked; used ones can't. Without `admin.users` a user has at most 50 pending invites.
 - An invite whose creator's account is **disabled** can't be used. A creator losing `users.invite` doesn't void the invites already handed out (revoke them).
