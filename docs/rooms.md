@@ -54,6 +54,15 @@ Where the user is lives in `alone_sessions` ([data-model.md](data-model.md#rooms
 
 **Play history** (`play_history`, `GET /api/me/history`): a row whenever an entry starts playing (advance and `previous`): in an alone room for its user (no room), in any other room for every user present then (a socket in listen or requests-only mode), with the room and its name (kept once the room is deleted). Trimmed after `rooms.requestHistoryDays` like the room history.
 
+## Autoplay
+
+(M9, [ui.md](ui.md#autoplay-from-playlists).) Per room, each person selects which of **their own** playlists (Liked Songs too) autoplay draws from (`room_autoplay_selections`, `rooms/AutoplaySelections`, [api.md](api.md#rooms) `…/autoplay`). Any number, zero included.
+
+- **Who selects:** the owner always; others by `autoplay.selectors` and their **stored** room role: `moderators` adds moderators, `members` adds members too. A visitor of a public room without a member row isn't a member; `rooms.moderateAny` doesn't count (an admin power over rooms, not a seat in them); guests and anonymous visitors have no playlists. In an alone room the user is the owner.
+- **Losing the right:** in the same transaction as the change, a person's selections in the room are deleted when they may no longer select: `autoplay.selectors` changed, their role changed (incl. a ban, and the old owner after handing the room over), or their member row was removed (leaving or being removed: leaving for good). Getting the right back doesn't bring them back. Disconnecting keeps them. Deleting the room, the playlist or the account deletes them by cascade.
+- **Visibility:** everyone who may open the room sees everyone's selections there and may read a **selected** playlist's name and entries through the room (`GET …/autoplay/playlists/{id}`); nothing else of its owner's (other playlists, the library) becomes readable, and deselecting ends it. The owner's own `/api/playlists` routes are unchanged.
+- The engine that turns selections into queue entries (sections, weights, turns) is the next M9 step.
+
 ## Control modes
 
 | `controlMode` | Who adds to the queue | Order | Who can skip |
@@ -109,6 +118,11 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | `outputs.autoOff` | true | Turn every output off automatically after `outputs.autoOffMinutes` with an empty queue or, for `.ts`/HLS/MP3, without listeners; it stays off until the owner turns it on ([program-output.md](program-output.md#auto-turn-off)). Off = always on. The server's `outputs.forceAutoOff` makes it on regardless (the field is greyed, "Required by the server admin") |
 | `outputs.autoOffMinutes` | 10 | 1..1440 (whole minutes). The server's `outputs.maxAutoOffMinutes` caps it: a higher value is saved but acts as the maximum (clamped). Replaces `outputs.rtmp.idleStopMinutes` (migration 0017 moved stored values) |
 | `outputs.ts.join` | `next` | `next` \| `latest` |
+| `autoplay.selectors` | `owner` | `owner` \| `moderators` \| `members`: who besides the owner selects playlists for autoplay ([autoplay](#autoplay)) |
+| `autoplay.upcoming` | 5 | 0–50: how many "From Playlist" entries to keep queued (0: autoplay adds nothing) |
+| `autoplay.mix` | `random` | `random` (one pool) \| `turns` (between the people who selected playlists) |
+| `autoplay.recentPct` | 50 | 0–100: a song's weight is back to full once its last play in the room is this % of the pool ago |
+| `autoplay.requestsFirst` | `first` | `first` (requests always play first) \| `alternate` (a request, then an autoplay song) |
 | `estimatedDelayMs.rtmp` / `.ts` / `.hls` / `.mp3` | 5000 / 2000 / 8000 / 3000 | 0–120000 |
 
 Whether an output is on is **not** in `settings_json`: it is the `stream_outputs` row and its `enabled` flag (`/api/rooms/{id}/outputs`), so there is one source of truth. Server switches (`guests.*`, `overlay.enabled`, `outputs.*.enabled`) are not checked when a room setting is saved; the effective value is server AND room, computed where it is used.

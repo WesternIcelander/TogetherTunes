@@ -147,6 +147,14 @@ alone_sessions(user_id PK FK ON DELETE CASCADE,  -- where a user is (rooms.md#al
                                             -- what a fork copies ({currentItemId, positionMs, playing, queue})
       updated_at)
 
+room_autoplay_selections(                   -- autoplay from playlists (rooms.md#autoplay), 0030
+      room_id FK rooms ON DELETE CASCADE,
+      playlist_id FK playlists ON DELETE CASCADE,
+      user_id FK users ON DELETE CASCADE,   -- the playlist's owner (people select only their own)
+      selected_at,
+      PRIMARY KEY (room_id, playlist_id))   -- rows of people who lost the right are deleted
+                                            -- (AutoplaySelections.prune) in the transaction that took it
+
 play_history(id PK, user_id FK ON DELETE CASCADE, item_id FK ON DELETE CASCADE,  -- 0029
       room_id NULL FK rooms ON DELETE SET NULL,  -- NULL with room_name NULL: played alone
       room_name NULL,                       -- the room's name then (kept once it is deleted)

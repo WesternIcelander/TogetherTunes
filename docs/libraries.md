@@ -35,6 +35,7 @@ Sharing items with another account (`/api/shares`, a share adding the item to th
 | Any user | Their own library and playlists |
 | `library.viewAll` | Every user's library and playlists (read-only), searchable by user (`/api/users?q=` finds users by username or display name; their library can be searched like your own) |
 | Room members (users and guests) | Inside a room: the **room owner's** library and playlists plus **their own** library, or with "Search the whole server" every item on the server (below) |
+| Anyone who may open a room | The playlists selected **for autoplay** in that room (name and entries, through `GET /api/rooms/{id}/autoplay/playlists/{playlistId}`, only while selected; [rooms.md](rooms.md#autoplay)); nothing else of their owners' |
 | Any user | On the Library page, with "Search the whole server": every item on the server |
 | Anyone | Any item's page, **by direct link** (`/items/{id}`), whether or not it's in their library |
 
