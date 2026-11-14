@@ -72,7 +72,7 @@ Where the user is lives in `alone_sessions` ([data-model.md](data-model.md#rooms
 - **Recently played (the curve):** a song's *age* is how many songs started playing in the room since it last started (0: the one that started most recently, usually the one playing now; none: never played here, or longer ago than the history read). With `X = autoplay.recentPct / 100 × N`, `N` the number of different songs in the pool being drawn from (the whole pool in `random`, that person's songs in `turns`), the weight is **linear**: `weight = min(1, age / X)`, and 1 without an age or with `X = 0` (`recentPct` 0 switches it off). So a song has weight 0 right after it played and full weight again once X songs played after it (a pool of 40 at 50 %: X = 20, weight 0.5 after 10 songs). A song is drawn with probability weight / total weight; when every candidate has weight 0 (a one-song pool that just played), one of them is drawn uniformly, so a small pool repeats instead of stopping. The randomness is one `Random` per server (seeded in tests).
 - **Requests vs. autoplay** (`autoplay.requestsFirst`): the play order is the manual section in the control mode's order (votes and pins in `vote` mode) and the autoplay section by position, combined: `first` plays every manual entry before the autoplay ones; `alternate` takes turns, starting with the section the current entry isn't from (a request first when idle or while an autoplay song plays), and the rest of the other section follows once one runs out. The `state`'s `queue` is in this order.
 - **↑ on an autoplay entry** (`queue.request`, [api.md](api.md#websocket)) turns it into the caller's request: checked like a request of its item by id (request rights, `requestsPerActor`, `libraryRequests`, the library request right; not `noRepeatWindow`), it moves to the end of the manual section (`owner` mode, others than the owner and moderators: it becomes their suggestion), now added by the caller, and in `vote` mode it gets the caller's vote. Autoplay then adds another. Votes and pins are for requests only: on an autoplay entry they are `409 autoplay_entry`.
-- **Moves** (`queue.move`) stay within the entry's section for now ("to the end" is the end of that section; a `beforeEntryId` in the other section is `409 before_entry_not_found`); moving between sections is the queue-editing step. **`previous`** puts the current entry back at the front of the manual section (an autoplay entry becomes manual there), so it plays next.
+- **Moves** between the sections: see [Queue editing](#queue-editing). An entry moved into the autoplay section by hand (its `via` isn't `autoplay`) counts towards `autoplay.upcoming` but autoplay never removes it (not when trimming, not on a refresh); autoplay's own songs at the end of the section make room for it instead. **`previous`** puts the current entry back at the front of the manual section (an autoplay entry becomes manual there), so it plays next.
 - **Alone:** the alone room autoplays like any room, with the default settings (its settings can't be changed). Fork, restore and "create room" carry only the manual section: autoplay entries belong to the room's own selections, and the room taking the state over fills its section from its selections.
 
 ## Control modes
@@ -337,10 +337,10 @@ The program output ([program-output.md](program-output.md)) **follows** the time
 These are performed by the executor; each one checks the actor's permissions and the mode's rules.
 
 - `add(itemId | uploadId | youtubeUrl | historyEntryId)`: checks `requestsPerActor`, `noRepeatWindow`, the guest capabilities and, by item id or history entry, `libraryRequests` (no scope check: any item on the server). In `owner` mode, a request from anyone else becomes a suggestion.
-- `addPlaylist(playlistId, shuffle)`: owner and moderators only.
+- `addPlaylist(playlistId, shuffle)`: by the request rules ([Queue editing](#queue-editing)).
 - `remove(entryId)`: owner and moderators; the requester while the entry is still queued; or anyone with request rights in `open` mode.
 - `retry(entryId)`: a failed YouTube entry (queued or suggested) is fetched again; owner and moderators, and the requester while they may add YouTube links here ([Retrying](#room-state)).
-- `move(entryId, beforeEntryId)`: `owner` and `open` modes only. `pin(entryId)`: in `vote` mode.
+- `move(entryIds, beforeEntryId, section)`: `owner` and `open` modes only. `pin(entryId)`: in `vote` mode.
 - `vote(entryId, ±1 | 0)`, `voteSkip()`.
 - `play()`, `pause()`, `seek(ms)`, `next()`, `previous()`.
 
@@ -350,6 +350,15 @@ Details (as implemented):
 - Uploads and YouTube links are turned into items before the entry is made, outside the room's executor; the cheap checks (identity, request rights, `requestsPerActor`) run first, so a refused request starts no import. A YouTube request doesn't add the item to the requester's library.
 - `remove` works on queued entries and suggestions; the current entry is skipped with `next` instead.
 - `previous`: more than 3 s into the current entry restarts it. Otherwise the last played (or skipped) entry plays again from the start, and the current entry goes back to the front of the queue (in `vote` mode as the top pin). A paused room stays paused; an idle room replays the last entry.
+
+### Queue editing
+
+(M9, [ui.md](ui.md#library-rules) "Reordering by dragging", [api.md](api.md#websocket) `queue.move`, `queue.addPlaylist`.)
+
+- **Moving** (`queue.move`): one or more queued entries (multi-select drags them together) go, in the given order, before `beforeEntryId`, or to the end of `section`. When `beforeEntryId` is one of the moved entries, they go before the next entry after it that stays. The target section is `beforeEntryId`'s, so entries move **between the sections**: an autoplay entry moved into the manually added section becomes a manual entry (still added by the person who selected it, so it now counts towards their `requestsPerActor`, like any manual entry); a manual entry moved into "From Playlist" becomes part of the autoplay section (its votes go; autoplay never removes it, [above](#the-autoplay-engine)). Only in `owner` mode (owner and moderators) and `open` mode (anyone with request rights); never in `vote` mode (`409 wrong_control_mode`: votes order the requests, the owner and moderators pin instead). Suggestions and the current entry don't move. Alone, the user is the owner of the alone room, so they always may.
+- **×** (`queue.remove`): the owner, a moderator or whoever added the entry (for an autoplay entry the person whose playlist it came from); in `open` mode also anyone with request rights (as before). The current entry isn't removed: × on Now Playing is a skip (`next`, by its rules).
+- **"Add All"** (`queue.addPlaylist`, In Order or Shuffled): a signed-in user adds one of their own playlists by the **request rules**, as if each song was requested by id: request rights and the library request right, `libraryRequests`; in `owner` mode others than the owner and moderators get suggestions. For them `noRepeatWindow` leaves out recently played songs and `requestsPerActor` caps how many are added (the rest is left out and counted, `overLimit`; with no place left at all `409 request_limit`); each added song raises `request.new` (`via: playlist`). The owner and moderators add everything. Songs that can't be played any more are left out (`skipped`).
+- **Pin to top** (`queue.pin`, `vote` mode, owner and moderators) is unchanged.
 
 ### Adding a YouTube link
 
