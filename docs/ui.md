@@ -31,6 +31,7 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
   - **Queue:** Now Playing (heart, ×), **Requests** (each with a vote count and the ↑ vote button, ×), **From Playlist** (the upcoming autoplay songs; ↑ turns one into a request, × removes it). Below: the **video panel**, which plays the music video while one plays and the user isn't in Audio Only; it collapses for audio items.
   - **Recents:** Now Playing, then **Earlier** (the room's history), each with a heart.
   - **Room:** the people in the room. Right-click a person for the moderation menu (below).
+- **Window-filling layout** (Siggi, 2026-11-14): the frame fills the window and the document itself never scrolls. The header stays at the top, the player bar at the bottom, the left sidebar at the left edge and the right panel **against the right edge of the window**; the middle content between them **scrolls on its own** (its own scrollbar sits at the middle's right edge, next to the right panel, not at the window's edge), and each sidebar scrolls on its own when it overflows. The same holds in the room view (left sidebar + middle) and doesn't apply to the mobile layout.
 - **Player bar:** cover, name, artist; previous / play-pause / next; heart (likes the current song); seek bar with times; volume; a menu button with **Audio Only**, **Requests-only mode**, **Now Playing View**, **Fullscreen**.
   - Without permission to control the room, only previous / play-pause / next are replaced, by a **mute** button and a **heart**. Volume and the menu stay. Right-clicking mute offers **Mute player** and **Mute only until end of song**.
 - **Now Playing View** fills the window to its edges. Videos are letterboxed by default. Audio items (or Audio Only) show a view like the stream's item card.
@@ -41,12 +42,12 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
 
 From [`drawings/room_view.png`](../drawings/room_view.png) (2026-11-14):
 
-- Same header. The left sidebar is hidden behind a **☰ button** at the top left.
+- Same header. The **left sidebar stays visible** for signed-in users (Siggi, 2026-11-14: no ☰ button; the drawing's ☰ is superseded).
 - **Video area** large at the top left.
 - Below it: **Now Playing** (heart, ×), **Requests** (votes ↑, ×), **From Playlist** (↑, ×), and beside them a **Request Link** box (URL field + Request button).
 - On the right: the **people** in the room, each with a **⋯** button that opens the moderation menu, and below them **Earlier** (the room's history, with hearts).
-- **Who gets it:** unauthenticated visitors (guests, anonymous) have no library and only ever get the room view, when they open a room by its link. Logged-in users enter it by **double-clicking Queue, Recents or Room** at the top of the right panel, and leave it by opening the left sidebar and clicking a playlist.
-- The **right panel is hidden** in the room view. The **☰** button reveals the left sidebar, which **pushes the page aside** (no overlay).
+- **Who gets it:** unauthenticated visitors (guests, anonymous) have no library and only ever get the room view, when they open a room by its link. Logged-in users enter it by **double-clicking Queue, Recents or Room** at the top of the right panel, and leave it by clicking a playlist in the left sidebar.
+- The **right panel is hidden** in the room view.
 - The **player bar stays** at the bottom (not drawn).
 - **During an audio item** the video area shows the cover and title like the stream's item card, and the title line under the video collapses away.
 
