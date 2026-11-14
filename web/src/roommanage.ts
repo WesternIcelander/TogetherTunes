@@ -1,18 +1,20 @@
 // The room's management view (/rooms/{idOrSlug}/manage; docs/rooms.md).
 //
-// Four tabs: settings (name, link name, visibility, control mode and every room setting; options
+// Five tabs: settings (name, link name, visibility, control mode and every room setting; options
 // the server has turned off are greyed out with "disabled by the server admin"; only the owner
 // saves, moderators see them read-only; the owner or rooms.moderateAny may delete the room),
-// members (roles as the viewer may give them, ownership transfer for the owner, adding by
-// username) and guest bans (list, unban; a guest is banned from the room page's history, with the
-// IP-mode warning first) and card images (the room's custom card images, customcardsui.ts). The
-// request history is gone: the room page's history replaces it.
+// members (roles as the viewer may give them, handing the room over for the owner, adding by
+// username, timeouts, leaving), bans (`/bans`: users and guests, bans and timeouts, with Unban; people
+// are banned from the room view's ⋯ menus), outputs (the stream outputs with their URLs, token
+// rotation, the plain-HTTP warning and the RTMP push: outputspanel.ts) and card images (the room's
+// custom card images, customcardsui.ts). A member who doesn't moderate gets only "Leave".
 import { api, ApiError } from "./api.js";
 import { roomCardsPath } from "./customcards.js";
 import { mountCustomCards } from "./customcardsui.js";
-import type { GuestBan } from "./guestban.js";
 import { actorLabel, type ActorRef } from "./actor.js";
-import { navigate, pageSignal, reloadPage } from "./nav.js";
+import { currentRoom, navigate, pageSignal, reloadPage } from "./nav.js";
+import { OutputsPanel } from "./outputspanel.js";
+import type { RoomState } from "./roomclient.js";
 import { button, formatTime, h } from "./dom.js";
 import { type Page } from "./media.js";
 import {
@@ -71,7 +73,7 @@ function setStatus(text: string): void {
 
 // ------------------------------------------------------------------ tabs
 
-const TABS = ["settings", "members", "bans", "cards"] as const;
+const TABS = ["settings", "members", "bans", "outputs", "cards"] as const;
 type Tab = typeof TABS[number];
 
 function currentTab(): Tab {
@@ -93,6 +95,7 @@ async function showTab(): Promise<void> {
   if (tab === "settings") renderSettings();
   else if (tab === "members") await loadMembers(true);
   else if (tab === "cards") await mountCustomCards(element("cards-root"), roomCardsPath(room.id), true);
+  else if (tab === "outputs") showOutputs();
   else await loadBans(true);
 }
 
@@ -158,8 +161,8 @@ function renderSettings(): void {
   for (const [group, title] of GROUPS) {
     const fieldset = h("fieldset", { class: "panel" }, h("legend", { text: title }));
     if (group === "outputs") {
-      fieldset.append(h("p", { class: "muted small",
-        text: "Turning outputs on and off, their stream URLs and the RTMP target and key are on the room page, under \"Stream outputs\"." }));
+      fieldset.append(h("p", { class: "muted small" }, "Turning outputs on and off, their stream URLs and the RTMP "
+        + "target and key are under ", h("a", { href: "#outputs", text: "Outputs" }), "."));
     }
     for (const def of SETTINGS) {
       if (def.group !== group) continue;
@@ -425,7 +428,19 @@ function setUpMembers(): void {
   });
 }
 
-// ------------------------------------------------------------------ guest bans
+// ------------------------------------------------------------------ bans
+
+/** A ban or timeout (`GET /api/rooms/{id}/bans`). */
+interface Restriction {
+  person: ActorRef;
+  kind: "ban" | "timeout";
+  until?: number;
+  at: number;
+  addressCovered: boolean;
+  identifiedBy?: "cookie" | "ip";
+  /** A guest's last IP address: only ever sent to viewers with ip.view. */
+  ip?: string;
+}
 
 let banCursor: string | undefined;
 
@@ -442,36 +457,96 @@ async function loadBans(reset: boolean): Promise<void> {
   const params = new URLSearchParams({ limit: "100" });
   if (banCursor !== undefined) params.set("cursor", banCursor);
   try {
-    const page = await api<Page<GuestBan>>("GET", roomPath() + "/guest-bans?" + params);
+    const page = await api<Page<Restriction>>("GET", roomPath() + "/bans?" + params);
     for (const b of page.items) rows.append(banRow(b));
     banCursor = page.nextCursor;
     element("ban-more").hidden = page.nextCursor === undefined;
     element("ban-empty").hidden = rows.children.length > 0;
+    element("ban-table").hidden = rows.children.length === 0;
   } catch (e) {
     banError(e);
   }
 }
 
-function identifiedBy(b: GuestBan): HTMLElement {
-  const cell = h("td", {}, b.identifiedBy === "ip" ? "IP address" : "Browser cookie");
+/** "Ban", or "Timeout until …". */
+function restrictionText(r: { kind: string; until?: number }, format: (ms: number) => string): string {
+  if (r.kind === "timeout") return r.until !== undefined ? "Timeout until " + format(r.until) : "Timeout";
+  return "Ban";
+}
+
+function coverage(b: Restriction): HTMLElement {
+  const cell = h("td", { class: "small" });
+  if (b.identifiedBy !== undefined) cell.append(b.identifiedBy === "ip" ? "IP address" : "Browser cookie");
+  else cell.append("Account");
   // The address only ever arrives for viewers with ip.view.
   if (b.ip !== undefined) cell.append(" ", h("code", { text: b.ip }));
-  if (b.warning !== undefined) cell.append(h("div", { class: "muted small", text: b.warning }));
+  if (b.addressCovered) cell.append(h("div", { class: "muted small", text: "Their IP address is covered too." }));
   return cell;
 }
 
-function banRow(b: GuestBan): HTMLTableRowElement {
+function banRow(b: Restriction): HTMLTableRowElement {
+  const path = roomPath() + "/bans/" + (b.person.kind === "guest" ? "guests/" : "users/") + encodeURIComponent(b.person.id);
   const row = h("tr", {},
-    h("td", {}, actorLabel(b.guest)),
-    identifiedBy(b),
-    h("td", { class: "muted small", text: (b.bannedAt !== undefined ? formatTime(b.bannedAt) : "")
-      + (b.timedOutUntil !== undefined ? " (timeout until " + formatTime(b.timedOutUntil) + ")" : "") }),
+    h("td", {}, actorLabel(b.person)),
+    h("td", { text: restrictionText(b, formatTime) }),
+    coverage(b),
+    h("td", { class: "muted small", text: formatTime(b.at) }),
     h("td", { class: "actions" }, button("Unban", async () => {
-      await api("DELETE", roomPath() + "/guest-bans/" + encodeURIComponent(b.guest.id));
+      await api("DELETE", path);
       row.remove();
-      element("ban-empty").hidden = element("ban-rows").children.length > 0;
+      const empty = element("ban-rows").children.length === 0;
+      element("ban-empty").hidden = !empty;
+      element("ban-table").hidden = empty;
     }, banError, "small")));
   return row;
+}
+
+// ------------------------------------------------------------------ outputs
+
+/**
+ * The room state the outputs panel follows: the room's own while it plays here (live push status),
+ * else one made from the room (the panel then loads the outputs from the API, and again after each change).
+ */
+function outputsState(): RoomState {
+  const playing = currentRoom();
+  if (playing !== undefined && playing.isRoom(room.id)) {
+    const s = playing.state();
+    if (s !== undefined) return s;
+  }
+  return {
+    room: { id: room.id, slug: room.slug, name: room.name, visibility: room.visibility, controlMode: room.controlMode,
+      ownerId: room.owner.id, settings: room.settings, you: room.you },
+  } as unknown as RoomState;
+}
+
+let outputs: OutputsPanel | undefined;
+
+function showOutputs(): void {
+  if (outputs !== undefined) return;
+  const panel = new OutputsPanel(element("outputs-root"));
+  outputs = panel;
+  panel.update(outputsState());
+  // While the room plays here, follow its push status.
+  const timer = window.setInterval(() => {
+    const playing = currentRoom();
+    if (playing !== undefined && playing.isRoom(room.id) && playing.state() !== undefined) panel.update(outputsState());
+  }, 2000);
+  pageSignal().addEventListener("abort", () => window.clearInterval(timer));
+}
+
+/** A member who doesn't moderate: only leaving. */
+function showMembership(): void {
+  const error = h("p", { class: "error", role: "alert" });
+  const myId = me.kind === "user" ? me.id : "";
+  const leave = button("Leave the room", async () => {
+    if (!confirm("Leave " + room.name + "? You lose your membership" + (room.visibility === "private"
+      ? " and can't open it again unless you are invited back." : "."))) return;
+    await api("DELETE", roomPath() + "/members/" + encodeURIComponent(myId));
+    navigate(room.visibility === "private" ? "/rooms/" : "/rooms/" + encodeURIComponent(room.slug));
+  }, (e) => { error.textContent = message(e); }, "danger");
+  element("manage-status").replaceChildren(
+    h("p", { text: "You are a member of this room. Its owner and moderators manage it." }),
+    h("p", {}, leave), error);
 }
 
 // ------------------------------------------------------------------ start
@@ -481,7 +556,8 @@ function renderHeader(): void {
   element("manage-name").textContent = room.name;
   element<HTMLAnchorElement>("manage-back").href = "/rooms/" + encodeURIComponent(room.slug);
   element("manage-role").textContent = room.you.role === "owner" ? "You own this room"
-    : "You moderate this room (settings are the owner's)";
+    : room.you.canModerate ? "You moderate this room (settings are the owner's)"
+    : room.you.role === "member" ? "You are a member" : "";
 }
 
 async function start(): Promise<void> {
@@ -506,6 +582,10 @@ async function start(): Promise<void> {
     return;
   }
   renderHeader();
+  if (!room.you.canModerate && room.you.role === "member") {
+    showMembership();
+    return;
+  }
   if (!room.you.canModerate) {
     element("manage-status").replaceChildren("Only the room's owner and moderators manage it. ",
       h("a", { href: "/rooms/" + encodeURIComponent(room.slug), text: "Back to the room" }), ".");

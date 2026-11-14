@@ -53,7 +53,8 @@ class RoomManageJsTest {
         }
         String page = read("web/js/roommanage.js");
         for (String s : List.of("from \"./session.js\"", "from \"./roomsettings.js\"", "\"/server-switches\"",
-                "\"PATCH\"", "\"/members\"", "\"/members?\"", "\"/guest-bans/\"", "\"/guest-bans?\"",
+                "\"PATCH\"", "\"/members\"", "\"/members?\"", "\"/bans?\"", "\"/bans/\"",
+                "\"guests/\"", "\"users/\"", "\"Unban\"", "new OutputsPanel(", "\"Leave the room\"",
                 "serverDisabledReason(")) {
             assertTrue(page.contains(s), s);
         }
@@ -61,7 +62,8 @@ class RoomManageJsTest {
         assertTrue(read("web/js/guestban.js").contains("/guest-bans/"));
         String html = NodeTests.view("view-room-manage");
         for (String s : List.of("id=\"tab-settings\"",
-                "id=\"tab-members\"", "id=\"tab-bans\"", "id=\"member-add\"")) {
+                "id=\"tab-members\"", "id=\"tab-bans\"", "id=\"tab-outputs\"", "id=\"outputs-root\"",
+                "id=\"member-add\"")) {
             assertTrue(html.contains(s), s);
         }
         assertFalse(html.contains("tab-requests"), html);

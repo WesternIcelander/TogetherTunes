@@ -18,10 +18,11 @@
 // room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
 // The outputs panel (outputspanel.ts) shows the RTMP viewer URL to everyone and the stream outputs
 // (URLs with copy buttons, push status, on/off, rotate) to the owner and moderators.
-// In listen mode, "Send diagnostics" posts what the player did (diagnostics.ts) to the server log,
-// for devices without a console; `?sync=rate|seek` overrides the sync mode for testing, and
-// The "Web Audio" setting (Auto / On / Off, per browser) decides whether the media elements play
-// through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`). Auto
+// While this view lives, the debug-mode "Send diagnostics" button (frame.ts) posts what the player did
+// (diagnostics.ts, `setReportSource`) to the server log, for devices without a console; `?sync=rate|seek`
+// overrides the sync mode for testing, and the user's "Web Audio" preference (Auto / On / Off, user
+// settings, prefs.ts; guests: what this browser had stored, else Auto) decides whether the media elements
+// play through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`). Auto
 // uses Web Audio only where the page can't set an element's volume (iOS; `volumeSettable`).
 // While the room plays in listen mode, the single-page app's shell (shell.ts) keeps this view
 // (hidden) when another view is shown, so playback goes on; a mini player there links back to it.
@@ -35,7 +36,8 @@ import {
   type WebAudioSetting,
 } from "./audiohealth.js";
 import { ClockSync } from "./clocksync.js";
-import { captureErrors, recordEvent, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
+import { captureErrors, recordEvent, setReportSource, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
+import { prefs } from "./prefsclient.js";
 import { ListenPlayer, type SoundInfo } from "./listen.js";
 import { syncModeFor, type EngineHints } from "./listensync.js";
 import {
@@ -125,13 +127,17 @@ export function loadAudioOnly(): boolean {
   }
 }
 
-/** Where the "Web Audio" setting (auto / on / off) is remembered (this browser only, all rooms). */
+/**
+ * Where the old per-browser "Web Audio" setting (auto / on / off) was remembered: still read for guests
+ * and anonymous visitors (users have the preference in their settings).
+ */
 const WEB_AUDIO_KEY = "togethertunes.webAudio";
 /** What Auto learnt on this browser (WebAudioMemory as JSON: the rate that works, or direct only). */
 const WEB_AUDIO_MEMORY_KEY = "togethertunes.webAudioAuto";
 
 function loadWebAudioSetting(): WebAudioSetting {
-  return parseWebAudioSetting(storageGet(WEB_AUDIO_KEY));
+  const p = prefs.get();
+  return p !== undefined ? p.webAudio : parseWebAudioSetting(storageGet(WEB_AUDIO_KEY));
 }
 
 function loadWebAudioMemory(): WebAudioMemory | undefined {
@@ -1096,7 +1102,8 @@ function render(s: RoomState): void {
   renderRequests(s);
   renderRequestLink(s);
   renderHistory(s);
-  outputsPanel ??= new OutputsPanel(element("room-outputs"), element("rv-outputs"));
+  // The viewer URL for everyone and the quick buttons here; the full outputs are in Manage Room.
+  outputsPanel ??= new OutputsPanel(element("room-outputs"), element("rv-outputs"), false);
   outputsPanel.update(s);
   renderRemoteDelay();
   // The owner may force requests-only mode: then nothing plays here, whatever the user chose.
@@ -1190,7 +1197,6 @@ function switchMode(m: RoomMode): void {
 
 function createPlayer(): ListenPlayer {
   const syncMode = syncModeFor(engineHints(), new URLSearchParams(PAGE_SEARCH).get("sync"));
-  const select = element("room-webaudio") as HTMLSelectElement;
   const note = element("room-webaudio-note");
   const showSound = (): void => {
     const sound = player?.sound;
@@ -1211,18 +1217,19 @@ function createPlayer(): ListenPlayer {
   player = p;
   p.setVolume(listenerGain);
   p.setMuted(listenerMuted);
-  const hint = element("room-webaudio-hint");
-  select.value = loadWebAudioSetting();
-  hint.hidden = select.value !== "off";
-  select.addEventListener("change", () => {
-    const setting = parseWebAudioSetting(select.value);
-    hint.hidden = setting !== "off";
-    storageSet(WEB_AUDIO_KEY, setting === "auto" ? null : setting);
+  // The user's Web Audio preference (user settings): applied when it loads or changes. A change made in
+  // the settings view reaches here inside its change event, a user gesture: the rebuilt elements are
+  // unlocked in it.
+  let applied = loadWebAudioSetting();
+  const unsubscribe = prefs.subscribe((pr, changed, byUser) => {
+    if (changed.indexOf("webAudio") < 0 || pr.webAudio === applied) return;
+    applied = pr.webAudio;
     // A deliberate choice starts over: Auto checks this browser again.
-    storageSet(WEB_AUDIO_MEMORY_KEY, null);
-    // The change event is a user gesture: the rebuilt elements are unlocked in it.
-    p.setWebAudioPlan(webAudioPlan(urlWebAudio(), setting, undefined, canSetVolume()));
+    if (byUser) storageSet(WEB_AUDIO_MEMORY_KEY, null);
+    p.setWebAudioPlan(webAudioPlan(urlWebAudio(), applied, byUser ? undefined : loadWebAudioMemory(), canSetVolume()),
+      byUser);
   });
+  ROOM_SIGNAL.addEventListener("abort", unsubscribe);
   showSound();
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
@@ -1336,7 +1343,7 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
     page: stripQuery(location.pathname),
     syncOverride: new URLSearchParams(PAGE_SEARCH).get("sync"),
     webAudioOverride: new URLSearchParams(PAGE_SEARCH).get("webaudio"),
-    webAudioSetting: storageGet(WEB_AUDIO_KEY),
+    webAudioSetting: loadWebAudioSetting(),
     webAudioMemory: storageGet(WEB_AUDIO_MEMORY_KEY),
     volumeSettable: canSetVolume(),
     roomId,
@@ -1362,18 +1369,6 @@ function diagnosticsReport(ref: string): Record<string, unknown> {
   return report;
 }
 
-async function sendDiagnostics(): Promise<void> {
-  const status = element("room-diagnostics-status");
-  const ref = Math.random().toString(36).slice(2, 8);
-  status.textContent = "Sending…";
-  try {
-    recordEvent("diagnostics", { ref });
-    await api("POST", "/api/diagnostics", diagnosticsReport(ref));
-    status.textContent = "Sent (ref " + ref + ").";
-  } catch (e) {
-    status.textContent = "Not sent: " + message(e);
-  }
-}
 
 function onRequest(r: NewRequest): void {
   const via = { library: "from the library", upload: "by upload", youtube: "from YouTube",
@@ -1487,7 +1482,9 @@ async function start(): Promise<void> {
   // A better clock estimate moves the target: correct at once instead of at the next tick.
   c.onUpdate = () => { if (mode === "listen") player?.tick(); };
   element("room-mode-toggle").addEventListener("click", () => switchMode(mode === "remote" ? "listen" : "remote"));
-  element("room-diagnostics").addEventListener("click", () => { void sendDiagnostics(); });
+  // The debug-mode "Send diagnostics" button (frame.ts) sends this room's report while the view lives.
+  const dropReport = setReportSource(diagnosticsReport);
+  ROOM_SIGNAL.addEventListener("abort", dropReport);
   element("room-delay-less").addEventListener("click", () => setNudge(stepNudge(nudge, -1, remoteDelays(shown).outputMs)));
   element("room-delay-more").addEventListener("click", () => setNudge(stepNudge(nudge, 1, remoteDelays(shown).outputMs)));
   element("room-delay-reset").addEventListener("click", () => setNudge(0));

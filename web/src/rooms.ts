@@ -12,7 +12,7 @@ import {
   canCreateRooms, controlModeLabel, createBody, fieldForError, roleLabel, roomPagePath, slugProblem, visibilityLabel,
   type CreateField, type RoomListEntry,
 } from "./roomlist.js";
-import { navigate } from "./nav.js";
+import { navigate, pageSignal } from "./nav.js";
 import { createRoomBody } from "./alone.js";
 import { checkPasswordChange, element, formValue, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 
@@ -122,6 +122,13 @@ async function start(): Promise<void> {
     element("create-panel").hidden = false;
     setupCreateForm();
   }
+  // New Room (the sidebar's Rooms tab) links to the form.
+  const focusCreate = (): void => {
+    if (location.hash !== "#create-room" || element("create-panel").hidden) return;
+    element("create-panel").scrollIntoView({ block: "start" });
+    element<HTMLInputElement>("create-name").focus();
+  };
+  window.addEventListener("hashchange", focusCreate, { signal: pageSignal() });
 
   const more = element<HTMLButtonElement>("rooms-more");
   more.addEventListener("click", () => {
@@ -147,6 +154,7 @@ async function start(): Promise<void> {
   }
   status.hidden = true;
   element("rooms-body").hidden = false;
+  focusCreate();
 }
 
 onReady(start);

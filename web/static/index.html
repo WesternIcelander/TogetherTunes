@@ -23,6 +23,12 @@
     <form id="app-search" class="app-search" action="/search" method="get" role="search" hidden>
       <input type="search" name="q" maxlength="200" placeholder="Search" aria-label="Search the whole server">
     </form>
+    <!-- Debug mode (user settings → Preferences): sends what the page and the room's player did to the server log. -->
+    <div id="app-debug" class="app-debug" hidden>
+      <button type="button" id="app-diagnostics" class="small"
+              title="Send what the player did to the server log (for playback and sync problems)">Send diagnostics</button>
+      <span id="app-diagnostics-status" class="muted small" role="status"></span>
+    </div>
     <nav id="site-nav" class="site-nav"></nav>
   </header>
   <div class="app-body">
@@ -329,6 +335,9 @@
               <div id="rv-request-link" class="rv-request-link" hidden></div>
               <div id="room-identity" class="room-identity"></div>
               <div id="room-guest-name" class="panel" hidden></div>
+              <!-- The RTMP viewer URL for everyone (outputspanel.ts); the stream outputs themselves are in
+                   Manage Room → Outputs. -->
+              <section id="room-outputs" class="room-outputs" hidden></section>
             </section>
           </div>
         </div>
@@ -337,37 +346,22 @@
           <section id="rv-earlier" class="rv-earlier"></section>
         </aside>
       </div>
-      <!-- Everything else the room page had, until the later UI steps give it its place: the queue editor
-           (pin, move), the request search, uploads and playlists, the stream outputs, the full history,
-           and this browser's playback settings. -->
+      <!-- What else the old room page had (the queue editor with pin and moves, the request search, uploads
+           and playlists, the full history), until the leftovers step removes it. -->
       <details id="room-more" class="room-more">
-        <summary>More: queue editor, search and upload, stream outputs, full history, playback settings</summary>
+        <summary>More: queue editor, search and upload, full history</summary>
         <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
         <div id="room-listen-controls" class="row room-listen-controls" hidden>
           <label id="room-audio-only-label"><input type="checkbox" id="room-audio-only"> Audio only</label>
           <span id="room-audio-only-room" class="muted small" hidden>Audio-only room</span>
-          <label class="small" title="How this browser plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by itself if Web Audio stutters here. On: always Web Audio. Off: straight from the media element, which costs the crossfade on the audio-only switch and the loudness adjustment for originals where the browser can't set the volume (iOS).">Web Audio
-            <select id="room-webaudio">
-              <option value="auto">Auto</option>
-              <option value="on">On</option>
-              <option value="off">Off</option>
-            </select></label>
+          <!-- How the sound plays (the Web Audio preference is in the user settings). -->
           <span id="room-webaudio-note" class="muted small" role="status"></span>
-          <span id="room-webaudio-hint" class="muted small" hidden>Off plays straight from the media element. Where
-            the browser can't set the volume (iOS), that means no crossfade when switching audio only, and originals
-            play without their loudness adjustment.</span>
-          <button type="button" id="room-diagnostics" class="link small"
-                  title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
-          <span id="room-diagnostics-status" class="muted small" role="status"></span>
         </div>
         <div id="room-main" class="room-main" hidden>
           <section id="room-now" class="panel room-now"></section>
           <section id="room-queue" class="room-queue"></section>
           <section id="room-suggestions" class="room-suggestions" hidden></section>
           <section id="room-request" class="panel room-request"></section>
-          <!-- The program outputs: the RTMP viewer URL for everyone; stream URLs, push status and controls
-               for the owner and moderators (outputspanel.ts). -->
-          <section id="room-outputs" class="panel room-outputs" hidden></section>
           <section id="room-history" class="room-history"></section>
         </div>
       </details>
@@ -385,7 +379,8 @@
       <nav class="tabs" id="manage-tabs" hidden>
         <a href="#settings" data-tab="settings">Settings</a>
         <a href="#members" data-tab="members">Members</a>
-        <a href="#bans" data-tab="bans">Guest bans</a>
+        <a href="#bans" data-tab="bans">Bans</a>
+        <a href="#outputs" data-tab="outputs">Outputs</a>
         <a href="#cards" data-tab="cards">Card images</a>
       </nav>
 
@@ -429,6 +424,13 @@
         </div>
       </section>
 
+      <section id="tab-outputs" hidden>
+        <h2>Outputs</h2>
+        <p class="muted small">The room's stream: URLs for video players and internet radio, and the push to an RTMP
+          service. Only the owner turns them on and off.</p>
+        <div id="outputs-root" class="room-outputs"></div>
+      </section>
+
       <section id="tab-cards" hidden>
         <h2>Card images</h2>
         <p class="muted small">The room's own images for the stream's paused, queue-empty, loading and gap screens.
@@ -454,14 +456,15 @@
       </section>
 
       <section id="tab-bans" hidden>
-        <h2>Guest bans</h2>
-        <p class="muted small">Ban a guest from the history on the room page. Banning a guest identified by IP address bans
-          everyone sharing that address.</p>
-        <table class="list bans">
-          <thead><tr><th>Guest</th><th>Identified by</th><th>Banned</th><th></th></tr></thead>
+        <h2>Bans</h2>
+        <p class="muted small">Ban or time out people from the ⋯ menu beside them in the room's people list. A banned or
+          timed-out person can still listen, nothing else. Bans follow the person's IP address too, so banning a guest
+          identified by IP address bans everyone sharing that address.</p>
+        <table id="ban-table" class="list bans" hidden>
+          <thead><tr><th>Person</th><th>Restriction</th><th>Identified by</th><th>Since</th><th></th></tr></thead>
           <tbody id="ban-rows"></tbody>
         </table>
-        <p id="ban-empty" class="muted" hidden>No guests are banned from this room.</p>
+        <p id="ban-empty" class="muted" hidden>Nobody is banned or timed out in this room.</p>
         <button id="ban-more" type="button" hidden>Load more</button>
         <p id="ban-error" class="error" role="alert"></p>
       </section>
@@ -561,14 +564,45 @@
     <div id="encodes-root"></div>
   </template>
 
-  <template id="view-account" data-title="Account · TogetherTunes">
+  <template id="view-account" data-title="Settings · TogetherTunes">
 
-    <h1>Your account</h1>
+    <!-- User settings (docs/ui.md#existing-features-in-the-new-ui, account.ts): preferences, account, sessions and
+         API tokens, and invites for users who may create them. -->
+    <h1>Settings</h1>
     <p id="account-status" role="status">Loading...</p>
 
     <div id="account-body" hidden>
-      <section>
-        <h2>Profile</h2>
+      <nav class="tabs" id="account-tabs">
+        <a href="#preferences" data-tab="preferences">Preferences</a>
+        <a href="#account" data-tab="account">Account</a>
+        <a href="#sessions" data-tab="sessions">Sessions</a>
+        <a href="#invites" data-tab="invites" id="account-invites-tab" hidden>Invites</a>
+      </nav>
+
+      <section id="acct-tab-preferences" hidden>
+        <h2>Preferences</h2>
+        <form id="prefs-form" class="form">
+          <label>Double-click a song while on your own
+            <select id="pref-doubleClickAlone" name="doubleClickAlone"></select>
+          </label>
+          <small>In a room, double-click requests the song.</small>
+          <label>Web Audio
+            <select id="pref-webAudio" name="webAudio"></select>
+          </label>
+          <small>How the player plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by
+            itself if Web Audio stutters on this device. On: always Web Audio. Off: straight from the media element,
+            which costs the crossfade on the audio-only switch and, where the browser can't set the volume, the
+            loudness adjustment for originals.</small>
+          <label class="check"><input type="checkbox" id="pref-debug" name="debug"> Debug mode</label>
+          <small>Shows a "Send diagnostics" button at the top of the page, which sends what the player did to the
+            server log (for playback problems).</small>
+          <p id="prefs-status" class="muted small" role="status"></p>
+          <p id="prefs-error" class="error" role="alert"></p>
+        </form>
+      </section>
+
+      <section id="acct-tab-account" hidden>
+        <h2>Account</h2>
         <p>Username: <strong id="account-username"></strong></p>
         <p>Roles: <span id="account-roles"></span></p>
         <form id="profile-form" class="row">
@@ -578,19 +612,17 @@
           <button type="submit">Save</button>
           <p id="profile-error" class="error" role="alert"></p>
         </form>
-        <p><a href="/password?next=%2Faccount%2F">Change password</a></p>
-      </section>
+        <p><a href="/password?next=%2Faccount%2F%23account">Change password</a></p>
 
-      <section id="guest-merge" hidden>
-        <h2>Guest activity</h2>
-        <p id="guest-merge-question"></p>
-        <button id="guest-merge-button" type="button">Move to my account</button>
-        <p id="guest-merge-error" class="error" role="alert"></p>
-      </section>
-      <p id="guest-merge-notice" class="notice" role="status" hidden></p>
+        <section id="guest-merge" hidden>
+          <h3>Guest activity</h3>
+          <p id="guest-merge-question"></p>
+          <button id="guest-merge-button" type="button">Move to my account</button>
+          <p id="guest-merge-error" class="error" role="alert"></p>
+        </section>
+        <p id="guest-merge-notice" class="notice" role="status" hidden></p>
 
-      <section>
-        <h2>Linked logins</h2>
+        <h3>Linked logins</h3>
         <p id="identity-notice" class="notice" role="status" hidden></p>
         <p id="identity-error" class="error" role="alert"></p>
         <p id="identity-none" class="muted" hidden>No logins are linked.</p>
@@ -604,18 +636,48 @@
         </div>
       </section>
 
-      <section>
+      <section id="acct-tab-sessions" hidden>
         <h2>Sessions</h2>
-        <p class="muted">Where you are logged in: browsers, and bearer tokens for apps.</p>
+        <p class="muted">Where you are logged in: browsers, and API tokens for apps and scripts.</p>
         <table class="list sessions">
           <thead><tr><th>Device</th><th>Kind</th><th>Logged in</th><th>Last seen</th><th>Expires</th><th></th></tr></thead>
           <tbody id="session-rows"></tbody>
         </table>
+        <p id="session-empty" class="muted" hidden>No sessions.</p>
         <div class="row">
           <button id="session-more" type="button" hidden>Load more</button>
           <button id="session-revoke-others" type="button">Log out everywhere else</button>
         </div>
         <p id="session-error" class="error" role="alert"></p>
+
+        <h3>API tokens</h3>
+        <p class="muted small">A token lets an app or script act as you (<code>Authorization: Bearer …</code>). It is
+          shown only once, right after you create it, and lasts until it goes unused for 30 days or you revoke it
+          above (kind "Token").</p>
+        <button id="token-create" type="button">Create API token</button>
+        <div id="token-new" class="panel" hidden></div>
+        <p id="token-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="acct-tab-invites" hidden>
+        <h2>Invites</h2>
+        <p class="muted small">An invite lets one person create an account while registration is by invite only. The
+          link is shown only once, when you create it; send it however you like.</p>
+        <form id="invite-create" class="row">
+          <label>Valid for <select id="invite-expiry" name="expiresInHours"></select></label>
+          <label class="grow">Note (only you and the admins see it)
+            <input id="invite-note" name="note" maxlength="200" autocomplete="off" placeholder="e.g. who it's for">
+          </label>
+          <button type="submit">Create invite</button>
+        </form>
+        <p id="invite-error" class="error" role="alert"></p>
+        <div id="invite-new" class="panel" hidden></div>
+        <table id="invite-table" class="list invites" hidden>
+          <thead><tr><th>Note</th><th>Status</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+          <tbody id="invite-rows"></tbody>
+        </table>
+        <p id="invite-empty" class="muted" hidden>No invites yet.</p>
+        <button id="invite-more" type="button" hidden>Load more</button>
       </section>
     </div>
   </template>

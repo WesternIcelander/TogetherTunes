@@ -37,7 +37,7 @@ class InteractionsJsTest {
     @Test
     void theListsAndTheFrameUseThem() throws Exception {
         String list = read("web/js/libview.js");
-        for (String s : List.of("\"dblclick\"", "doubleClickAction(", "playNowBefore(", "\"/api/me/settings\"",
+        for (String s : List.of("\"dblclick\"", "doubleClickAction(", "playNowBefore(", "prefs.load()",
                 "clickSelect(", "songMenu(", "\"queue.move\"", "copyText(")) {
             assertTrue(list.contains(s), s);
         }

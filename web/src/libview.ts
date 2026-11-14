@@ -19,6 +19,7 @@
 // playlist, the queue, …; an own playlist's (or Liked Songs') rows take drops at a position: its
 // own entries move, songs from elsewhere are added, files are uploaded into it (filedrop.ts) and a
 // link opens Add from link (addlink.ts). The server enforces every rule.
+import { prefs } from "./prefsclient.js";
 import { openAddLink } from "./addlink.js";
 import { api } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
@@ -34,6 +35,7 @@ import { currentRoom, navigate, pageSignal, refreshLibrary, type ShellRoom } fro
 import { copyText } from "./outputspanel.js";
 import { formatTotal, songCount, totalDuration } from "./panels.js";
 import { routeOf, type ListName } from "./router.js";
+import { seasonLabel } from "./shows.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 
@@ -67,19 +69,14 @@ let dropPlaylist: PlaylistDetail | undefined;
 let dropZoneSignal: AbortSignal | undefined;
 /** The title link waiting to be followed (a double-click on the row cancels it). */
 let linkTimer: number | undefined;
-/** The user setting `doubleClickAlone`, read once per view when first needed. */
-let doubleClickSetting: Promise<string | undefined> | undefined;
 
 function mobile(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
 }
 
+/** The user setting `doubleClickAlone` (`/api/me/settings`, from the page's shared preferences store). */
 function aloneSetting(): Promise<string | undefined> {
-  if (doubleClickSetting === undefined) {
-    doubleClickSetting = api<{ doubleClickAlone?: string }>("GET", "/api/me/settings")
-      .then((r) => r.doubleClickAlone, () => undefined);
-  }
-  return doubleClickSetting;
+  return prefs.load().then((p) => p.doubleClickAlone, () => undefined);
 }
 
 function showError(e: unknown): void {
@@ -553,7 +550,13 @@ interface ShowsResponse {
   shows: { name: string; seasons: { season?: number; episodes: LibraryEntry[] }[] }[];
 }
 
+/** Movies/Shows: movies, then the shows (each opens its seasons and episodes: `/shows?show=<name>`). */
 async function showShows(): Promise<void> {
+  const name = new URLSearchParams(location.search).get("show");
+  if (name !== null && name.trim() !== "") {
+    await showOneShow(name);
+    return;
+  }
   setHead("Movies/Shows", "");
   const [movies, shows] = await Promise.all([
     api<Page<LibraryEntry>>("GET", "/api/library?type=movie&limit=200"),
@@ -563,19 +566,44 @@ async function showShows(): Promise<void> {
   const groups = element("list-groups");
   const parts: HTMLElement[] = [];
   if (movies.items.length > 0) element("list-table").before(h("h2", { text: "Movies" }));
-  for (const show of shows.shows) {
-    const seasons = show.seasons.map((s) => h("details", { class: "season", open: show.seasons.length === 1 },
-      h("summary", { text: s.season === undefined ? "Episodes" : "Season " + s.season }),
-      h("ol", { class: "episodes" }, ...s.episodes.map((e) => h("li", {},
-        h("a", { href: itemPath(e.item.id), text: e.item.title }),
-        h("span", { class: "muted small num", text: " " + formatDuration(e.item.durationMs) }))))));
-    parts.push(h("section", { class: "show" }, h("h2", { text: show.name }), ...seasons));
+  if (shows.shows.length > 0) {
+    parts.push(h("h2", { text: "Shows" }), h("ul", { class: "show-list" }, ...shows.shows.map((show) => {
+      const episodes = show.seasons.reduce((n, season) => n + season.episodes.length, 0);
+      const seasons = show.seasons.filter((season) => season.season !== undefined).length;
+      return h("li", {},
+        h("a", { href: "/shows?show=" + encodeURIComponent(show.name), text: show.name }),
+        h("span", { class: "muted small", text: " " + (seasons > 0 ? seasons + (seasons === 1 ? " season · " : " seasons · ") : "")
+          + episodes + (episodes === 1 ? " episode" : " episodes") }));
+    })));
   }
   groups.replaceChildren(...parts);
   groups.hidden = parts.length === 0;
   element("list-summary").textContent = songCount(movies.items.length).replace("song", "movie") + " · "
     + shows.shows.length + (shows.shows.length === 1 ? " show" : " shows");
-  setEmpty(parts.length === 0 ? "No movies or shows in your library yet." : "");
+  setEmpty(movies.items.length === 0 && shows.shows.length === 0 ? "No movies or shows in your library yet." : "");
+}
+
+/** One show: its seasons in order, each with its episodes as list rows (play, queue, ⋯ like songs). */
+async function showOneShow(name: string): Promise<void> {
+  const r = await api<ShowsResponse>("GET", "/api/library/shows?name=" + encodeURIComponent(name));
+  const show = r.shows[0];
+  element("list-actions").replaceChildren(h("a", { class: "small", href: "/shows", text: "← Movies/Shows" }));
+  if (show === undefined) {
+    setHead(name, "");
+    setEmpty("No episodes of this show in your library.");
+    return;
+  }
+  const episodes = show.seasons.reduce<LibraryEntry[]>((all, season) => all.concat(season.episodes), []);
+  setHead(show.name, episodes.length + (episodes.length === 1 ? " episode" : " episodes") + " · "
+    + formatTotal(totalDuration(episodes.map((e) => e.item))));
+  const tbody = element("list-rows");
+  for (const season of show.seasons) {
+    if (show.seasons.length > 1 || season.season !== undefined) {
+      tbody.append(h("tr", { class: "season-row" }, h("th", { colspan: "7", text: seasonLabel(season.season) })));
+    }
+    appendRows(season.episodes.map((e) => ({ item: e.item, addedAt: e.addedAt })));
+  }
+  setEmpty("No episodes of this show in your library.");
 }
 
 /** Liked Songs or a playlist: header with cover, count and time; Add from link; Add All. */
@@ -638,14 +666,14 @@ async function show(): Promise<void> {
 }
 
 /** Shows the list again from the top (after an add). */
-function restart(): void {
+function restart(retrying = false): void {
   shownRows = 0;
   for (const k of Object.keys(rowEntries)) delete rowEntries[k];
   setSelecting(false);
   cursor = undefined;
   element("list-rows").replaceChildren();
   element("list-table").hidden = true;
-  show().catch(showError);
+  show().catch(retrying ? loadFailed : showError).finally(() => { element("list-status").hidden = true; });
 }
 
 async function start(): Promise<void> {
@@ -670,10 +698,21 @@ async function start(): Promise<void> {
   try {
     await show();
   } catch (e) {
-    showError(e);
+    loadFailed(e);
   } finally {
     element("list-status").hidden = true;
   }
+}
+
+/** The list couldn't be loaded: the error with "Try again". */
+function loadFailed(e: unknown): void {
+  const retry = h("button", { type: "button", class: "link", text: "Try again" });
+  retry.addEventListener("click", () => {
+    element("list-error").textContent = "";
+    element("list-status").hidden = false;
+    restart(true);
+  });
+  element("list-error").replaceChildren("Couldn't load this list: " + message(e) + " ", retry);
 }
 
 onReady(start);

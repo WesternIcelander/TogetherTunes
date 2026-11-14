@@ -1,6 +1,6 @@
 // The classify prompt (docs/media-types.md#media-types): asks for a media type when an add to a
-// library comes back with `409 needs_classification`. Minimal on purpose (the UI is provisional);
-// the rules and the suggestion are in the DOM-free classify.ts.
+// library comes back with `409 needs_classification`: a modal dialog in the app's dialog style (type, and
+// show name, season and episode for a show); the rules and the suggestion are in the DOM-free classify.ts.
 import { api } from "./api.js";
 import { CLASSIFY_TYPES, classifyBody, classifyDefaults, needsClassification, type ClassifyBody,
   type ClassifyNeeded, type Suggestion } from "./classify.js";
@@ -47,6 +47,7 @@ export function askType(o: AskTypeOptions): Promise<ClassifyBody | null> {
     const leave = o.allowLeave === true
       ? h("button", { type: "button", text: "Leave uncategorized", title: "Add it without a type for now" }) : null;
     const form = h("form", { class: "form", role: "dialog", "aria-modal": "true", "aria-label": "Media type" },
+      h("h2", { text: "Media type" }),
       h("p", { text: o.question }),
       h("label", {}, "Media type", type),
       showFields,

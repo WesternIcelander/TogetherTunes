@@ -71,14 +71,16 @@ class ListenJsTest {
             assertTrue(player.contains(s), s);
         }
         String room = read("web/js/room.js");
+        // The setting is the user's Web Audio preference (user settings), applied when it loads or changes.
         for (String s : List.of("webAudioPlan(", "parseWebAudioMemory(", "\"togethertunes.webAudio\"",
-                "\"togethertunes.webAudioAuto\"", "Sound: direct (no volume control)", "setWebAudioPlan(")) {
+                "\"togethertunes.webAudioAuto\"", "Sound: direct (no volume control)", "setWebAudioPlan(",
+                "from \"./prefsclient.js\"", "prefs.subscribe(", "prefs.get()")) {
             assertTrue(room.contains(s), s);
         }
-        String html = NodeTests.view("view-room");
-        for (String s : List.of("id=\"room-webaudio\"", "value=\"auto\"", "value=\"on\"", "value=\"off\"",
-                "id=\"room-webaudio-note\"", "no crossfade")) {
-            assertTrue(html.contains(s), s);
+        assertTrue(NodeTests.view("view-room").contains("id=\"room-webaudio-note\""));
+        String settings = NodeTests.view("view-account");
+        for (String s : List.of("id=\"pref-webAudio\"", "crossfade")) {
+            assertTrue(settings.contains(s), s);
         }
     }
 
@@ -107,13 +109,18 @@ class ListenJsTest {
             assertTrue(player.contains(s), s);
         }
         String room = read("web/js/room.js");
-        for (String s : List.of("captureErrors(window", "\"/api/diagnostics\"", "syncModeFor(engineHints()", "maxTouchPoints", "mozPreservesPitch",
-                "togetherTunesClock")) {
+        for (String s : List.of("captureErrors(window", "setReportSource(diagnosticsReport)", "syncModeFor(engineHints()",
+                "maxTouchPoints", "mozPreservesPitch", "togetherTunesClock")) {
             assertTrue(room.contains(s), s);
         }
-        String html = NodeTests.view("view-room");
-        assertTrue(html.contains("id=\"room-diagnostics\""), html);
-        assertTrue(html.contains("Send diagnostics"), html);
+        // Debug mode's button at the top of the page sends it (frame.ts).
+        String frame = read("web/js/frame.js");
+        for (String s : List.of("\"/api/diagnostics\"", "buildReport(", "app-diagnostics")) {
+            assertTrue(frame.contains(s), s);
+        }
+        String index = read("web/index.html");
+        assertTrue(index.contains("id=\"app-diagnostics\""), index);
+        assertTrue(index.contains("Send diagnostics"), index);
     }
 
     @Test

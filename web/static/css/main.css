@@ -2094,3 +2094,48 @@ li.entry.selected {
 .popup-done {
   padding: 1rem;
 }
+
+/* ------------------------------------------------------------------ remaining screens (M9) */
+
+/* Debug mode's "Send diagnostics" at the top of the page (user settings → Preferences). */
+.app-debug {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.app-debug[hidden] {
+  display: none;
+}
+
+.app-debug:not([hidden]) + .site-nav {
+  margin-left: 0;
+}
+
+/* Movies/Shows: the shows list, and a show's season headings between its episode rows. */
+.show-list {
+  list-style: none;
+  padding: 0;
+}
+
+.show-list li {
+  padding: 0.3rem 0;
+}
+
+.list .season-row th {
+  text-align: left;
+  padding-top: 1rem;
+  font-size: 1.05rem;
+}
+
+/* Dialog headings (classify prompt). */
+.classify-prompt .form h2 {
+  margin-top: 0;
+  font-size: 1.15rem;
+}
+
+/* The room view's viewer URL for everyone (the outputs themselves are in Manage Room → Outputs). */
+.rv-request .room-outputs {
+  margin-top: 1rem;
+}

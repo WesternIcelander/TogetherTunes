@@ -36,6 +36,9 @@ import { itemPath, type Page, type Playlist } from "./media.js";
 import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, Selection, showBarTitle,
   tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
+import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
+import { prefs } from "./prefsclient.js";
+import { offersNextEpisode } from "./shows.js";
 import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
   playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
 import {
@@ -47,8 +50,8 @@ import {
 import type { CurrentEntry, HistoryEntry, RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
 import type { RoomListEntry } from "./roomlist.js";
 import { playlistPath, routeOf } from "./router.js";
-import { ACCOUNT_PAGE, ADMIN_PAGE, ENCODES_PAGE, isAdmin, LIBRARY_PAGE, loadMe, logout, message, PLAYLISTS_PAGE,
-  ROOMS_PAGE, type Me } from "./session.js";
+import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, LIBRARY_PAGE, loadMe, logout, message,
+  PLAYLISTS_PAGE, ROOMS_PAGE, type Me } from "./session.js";
 import { lastPressWasTouch, onLongPress, openMenu } from "./touch.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
@@ -169,6 +172,9 @@ export class Frame {
       });
     });
     window.setInterval(() => this.#tick(), 250);
+    // Debug mode (a user preference): "Send diagnostics" at the top of the page.
+    prefs.subscribe((p, changed) => { if (changed.indexOf("debug") >= 0) byId("app-debug").hidden = !p.debug; });
+    byId("app-diagnostics").addEventListener("click", () => { void this.#sendDiagnostics(); });
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && document.body.classList.contains("now-view-open")) this.#setNowView(false);
     });
@@ -342,6 +348,7 @@ export class Frame {
     const parts: HTMLElement[] = [h("p", { class: "muted", text: "Signed in as " + me.name }),
       link(ACCOUNT_PAGE, "Account settings"), link(LIBRARY_PAGE, "Manage library"), link(PLAYLISTS_PAGE, "Playlists"),
       link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
+    if (canInvite(me)) parts.push(link(INVITES_PAGE, "Invites"));
     if (isAdmin(me)) parts.push(link(ADMIN_PAGE, "Administration"));
     parts.push(out);
     byId("m-account").replaceChildren(...parts);
@@ -410,13 +417,36 @@ export class Frame {
     return this.#reloadMe();
   }
 
+  /**
+   * Debug mode's "Send diagnostics": what the room playing here did (its report, diagnostics.ts
+   * `setReportSource`), or without a room the page's own events and errors, to the server log.
+   */
+  async #sendDiagnostics(): Promise<void> {
+    const status = byId("app-diagnostics-status");
+    const ref = Math.random().toString(36).slice(2, 8);
+    status.textContent = "Sending…";
+    try {
+      recordEvent("diagnostics", { ref });
+      await api("POST", "/api/diagnostics", buildReport(ref, { userAgent: navigator.userAgent,
+        page: stripQuery(location.pathname), epochMs: Date.now(), visibility: document.visibilityState }));
+      status.textContent = "Sent (ref " + ref + ").";
+    } catch (e) {
+      status.textContent = "Not sent: " + message(e);
+    }
+  }
+
   async #reloadMe(): Promise<void> {
+    const before = this.#me;
     try {
       this.#me = await loadMe();
     } catch {
       return;
     }
     const user = this.#me.kind === "user";
+    // The user's preferences (debug mode, Web Audio, double-click): another user's are forgotten.
+    const now = this.#me;
+    if (now.kind !== "user" || before?.kind !== "user" || before.id !== now.id) prefs.reset();
+    if (user) prefs.load().catch(() => undefined);
     document.body.classList.toggle("signed-in", user);
     byId("app-sidebar").hidden = !user;
     byId("app-search").hidden = !user;
@@ -1092,8 +1122,16 @@ export class Frame {
     this.#draggableItem(li, c.item, "queue");
     out.push(h("ul", { class: "entries" }, li));
     const b = voteSkipHere ? this.#voteSkipButton(room, s) : null;
-    if (b !== null) out.push(h("div", { class: "vote-skip" }, b));
+    const next = voteSkipHere ? this.#nextEpisodeButton(room, s) : null;
+    if (b !== null || next !== null) out.push(h("div", { class: "vote-skip" }, b, next));
     return out;
+  }
+
+  /** Next episode (owner and moderators, while a show episode plays or nothing does; shows.ts). */
+  #nextEpisodeButton(room: ShellRoom, s: RoomState): HTMLButtonElement | null {
+    if (s.room.alone === true || !offersNextEpisode(s.room.you.canModerate, s.current?.item)) return null;
+    return this.#actButton(room, "Next episode", "Queue the next episode of this show to play next",
+      { type: "queue.nextEpisode" }, "small");
   }
 
   #voteSkipButton(room: ShellRoom, s: RoomState): HTMLButtonElement | null {
@@ -1231,6 +1269,9 @@ export class Frame {
     const roomParts: HTMLElement[] = [];
     if (s.room.you.canModerate && s.room.alone !== true) {
       roomParts.push(h("p", {}, h("a", { class: "button-link", href: room.path() + "/manage", text: "Manage Room" })));
+    } else if (s.room.you.role === "member" && s.room.alone !== true) {
+      // A member who doesn't moderate: the management view only offers leaving.
+      roomParts.push(h("p", {}, h("a", { class: "small", href: room.path() + "/manage", text: "Membership" })));
     }
     roomParts.push(h("p", { class: "muted small", text: presenceText(s.presence) }));
     const ul = h("ul", { class: "people" });
@@ -1362,8 +1403,10 @@ export class Frame {
     people.replaceChildren(...this.#peopleParts(room, s));
     earlier.replaceChildren(...this.#earlierParts(s));
     const b = this.#voteSkipButton(room, s);
-    voteSkipBox.replaceChildren(...(b !== null ? [b] : []));
-    voteSkipBox.hidden = b === null;
+    const next = this.#nextEpisodeButton(room, s);
+    const buttons = [b, next].filter((x): x is HTMLButtonElement => x !== null);
+    voteSkipBox.replaceChildren(...buttons);
+    voteSkipBox.hidden = buttons.length === 0;
   }
 
   #historyRow(r: HistoryEntry): HTMLLIElement {

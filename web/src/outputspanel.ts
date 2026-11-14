@@ -1,4 +1,5 @@
-// The room page's outputs panel (docs/rooms.md#outputs). Everyone sees the RTMP playback URL
+// The outputs panel (docs/rooms.md#outputs): in the room view only the viewer URL and the quick
+// buttons (`manage` false), in Manage Room → Outputs the whole of it. Everyone sees the RTMP playback URL
 // (the room setting `outputs.rtmp.playbackUrl`) while the RTMP output is active, with a copy
 // button. The owner and moderators also see every output from `GET /api/rooms/{id}/outputs`:
 // the `.ts`, HLS and MP3 URLs with copy buttons, the RTMP push status and, for the owner only, the RTMP
@@ -114,10 +115,13 @@ export class OutputsPanel {
   #drawnPlayback: string | undefined = "\u0000";
   /** The viewer URL setting the management part was drawn with. */
   #managePlayback: string | undefined;
+  /** Whether this panel draws the outputs themselves (Manage Room) or only the viewer URL and quick buttons. */
+  readonly #showManage: boolean;
 
-  constructor(el: HTMLElement, quick?: HTMLElement) {
+  constructor(el: HTMLElement, quick?: HTMLElement, manage = true) {
     this.#el = el;
     this.#quick = quick;
+    this.#showManage = manage;
     this.#playback = h("div", { class: "outputs-playback" });
     this.#manage = h("div", { class: "outputs-manage" });
     el.replaceChildren(this.#playback, this.#manage);
@@ -209,6 +213,12 @@ export class OutputsPanel {
   }
 
   #renderManage(): void {
+    if (!this.#showManage) {
+      this.#renderQuick();
+      this.#manage.replaceChildren();
+      this.#el.hidden = this.#playback.childElementCount === 0;
+      return;
+    }
     this.#managePlayback = this.#state !== undefined
       ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings) : undefined;
     const parts: Node[] = [h("h3", { text: "Stream outputs" })];
@@ -366,7 +376,7 @@ export class OutputsPanel {
       parts.push(h("p", { class: "small", text: "Viewer URL:" }), copyField(playback, "RTMP viewer URL"));
     } else {
       parts.push(h("p", { class: "muted small" }, "No viewer URL saved. Viewers need the URL the RTMP service gives "
-        + "out: save it under ", h("a", { href: manageHref, text: "Manage room" }), " → Settings → Outputs."));
+        + "out: save it under ", h("a", { href: manageHref, text: "Manage Room" }), " → Settings → Outputs."));
     }
     const buttons: Node[] = [];
     if (this.#owner && this.#rtmpForm !== "edit") {

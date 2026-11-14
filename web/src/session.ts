@@ -48,6 +48,8 @@ export const LIBRARY_PAGE = "/library/";
 export const ENCODES_PAGE = "/encodes/";
 export const PLAYLISTS_PAGE = "/playlists/";
 export const ROOMS_PAGE = "/rooms/";
+/** The user settings' Invites tab. */
+export const INVITES_PAGE = "/account/#invites";
 
 export async function loadMe(): Promise<Me> {
   return api<Me>("GET", "/api/me");
@@ -56,6 +58,11 @@ export async function loadMe(): Promise<Me> {
 /** Whether `me` may open the admin pages: any `admin.*` permission. */
 export function isAdmin(me: Me): boolean {
   return me.kind === "user" && me.permissions.some((p) => p.startsWith("admin."));
+}
+
+/** Whether `me` may create invites (`users.invite`) or sees everyone's (`admin.users`). */
+export function canInvite(me: Me): boolean {
+  return me.kind === "user" && (me.permissions.indexOf("users.invite") >= 0 || me.permissions.indexOf("admin.users") >= 0);
 }
 
 /** This page's path, query and hash: where to come back to after logging in. */
@@ -153,8 +160,9 @@ export function renderNav(me: Me): void {
     const list = document.createElement("div");
     list.className = "menu account-items";
     list.setAttribute("role", "menu");
-    const items: Node[] = [link(ACCOUNT_PAGE, "Account"), link(LIBRARY_PAGE, "Manage library"),
+    const items: Node[] = [link(ACCOUNT_PAGE, "Settings"), link(LIBRARY_PAGE, "Manage library"),
       link(PLAYLISTS_PAGE, "Playlists"), link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
+    if (canInvite(me)) items.push(link(INVITES_PAGE, "Invites"));
     if (isAdmin(me)) {
       items.push(link(ADMIN_PAGE, "Administration"));
     }

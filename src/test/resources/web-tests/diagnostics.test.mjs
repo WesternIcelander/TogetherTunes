@@ -96,3 +96,20 @@ test("health: one sample per second, the last 300 (5 minutes) kept", () => {
   }
   assert.ok(JSON.stringify(D.snapshot().health).length < 60000);
 });
+
+test("the report: the room's while it set its source, else the base with what was recorded", () => {
+  D.clearForTests();
+  D.recordEvent("x", { a: 1 });
+  const plain = D.buildReport("abc", { page: "/songs" });
+  assert.equal(plain.ref, "abc");
+  assert.equal(plain.page, "/songs");
+  assert.equal(plain.events.length, 1);
+  const drop = D.setReportSource((ref) => ({ ref, room: true }));
+  assert.deepEqual(D.buildReport("r1", { page: "/songs" }), { ref: "r1", room: true });
+  // A source replaced by another isn't taken away by the first one's remover.
+  const drop2 = D.setReportSource((ref) => ({ ref, room: 2 }));
+  drop();
+  assert.deepEqual(D.buildReport("r2", {}), { ref: "r2", room: 2 });
+  drop2();
+  assert.equal(D.buildReport("r3", {}).room, undefined);
+});

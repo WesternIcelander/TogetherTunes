@@ -168,6 +168,29 @@ export function snapshot(): Record<string, unknown> {
   };
 }
 
+/** Builds a report for "Send diagnostics" (`ref`: the short id shown to the user). */
+export type ReportSource = (ref: string) => Record<string, unknown>;
+
+let reportSource: ReportSource | undefined;
+
+/**
+ * The debug-mode "Send diagnostics" button (docs/ui.md#existing-features-in-the-new-ui) sends the
+ * report of the room playing here when there is one: the room view sets its source while it lives.
+ * Returns the function that takes it away again (only if it is still the one set).
+ */
+export function setReportSource(source: ReportSource): () => void {
+  reportSource = source;
+  return () => {
+    if (reportSource === source) reportSource = undefined;
+  };
+}
+
+/** The report to send: the room's (when a room set its source), else `base` with what was recorded. */
+export function buildReport(ref: string, base: Record<string, unknown>): Record<string, unknown> {
+  if (reportSource !== undefined) return reportSource(ref);
+  return { ref, ...base, ...snapshot() };
+}
+
 /** Drops everything recorded (tests). */
 export function clearForTests(): void {
   decisions.clear();
