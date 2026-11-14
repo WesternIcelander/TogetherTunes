@@ -219,7 +219,7 @@ table.sessions tbody tr:hover {
   }
 }
 
-/* Library, item and playlist pages (web/src/library.ts, item.ts, playlists.ts, addmedia.ts). */
+/* Shared helpers, the item page and uploads. */
 .small {
   font-size: 0.875em;
 }
@@ -238,17 +238,6 @@ table.sessions tbody tr:hover {
   padding: 0.25rem 0.5rem;
   border-left: 3px solid currentColor;
   opacity: 0.85;
-}
-
-table.library tbody tr,
-table.playlists tbody tr,
-table.entries tbody tr {
-  vertical-align: top;
-}
-
-table.library tbody tr,
-table.entries tbody tr {
-  cursor: default;
 }
 
 td.actions {
@@ -281,15 +270,6 @@ td.actions .row {
 
 .badge-purged {
   opacity: 0.7;
-}
-
-.badge-count:empty {
-  display: none;
-}
-
-.badge-count {
-  background: #c62828;
-  color: #fff;
 }
 
 button.icon {
@@ -346,10 +326,6 @@ ul.activity > li {
 
 ul.activity progress {
   width: 10rem;
-}
-
-.description {
-  white-space: pre-line;
 }
 
 /* Item page */
@@ -430,15 +406,6 @@ details.panel > summary {
 }
 
 @media (max-width: 40rem) {
-  table.library th:nth-child(2),
-  table.library td:nth-child(2),
-  table.library th:nth-child(5),
-  table.library td:nth-child(5),
-  table.entries th:nth-child(3),
-  table.entries td:nth-child(3) {
-    display: none;
-  }
-
   td.actions .row {
     flex-wrap: wrap;
   }
@@ -461,31 +428,6 @@ ul.notices {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-}
-
-.now {
-  display: flex;
-  gap: 1rem;
-  align-items: flex-start;
-}
-
-.now-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.now-info .item-title a {
-  font-size: 1.2rem;
-  font-weight: 600;
-}
-
-.cover.now-cover {
-  width: 8rem;
-  height: 8rem;
-  flex: none;
 }
 
 .cover.entry-cover {
@@ -520,19 +462,9 @@ li.entry .grow {
   min-width: 0;
 }
 
-.entry-pos {
-  min-width: 1.5em;
-  text-align: right;
-}
-
 .votes {
   flex: none;
   gap: 0.25rem;
-}
-
-.vote-count {
-  min-width: 1.5em;
-  text-align: center;
 }
 
 button.voted {
@@ -551,26 +483,20 @@ button.voted {
 }
 
 @media (max-width: 40rem) {
-  .cover.now-cover {
-    width: 5rem;
-    height: 5rem;
-  }
-
   li.entry {
     flex-wrap: wrap;
   }
 }
 
-/* Listen mode: the playing video (audio plays without a visible element) and the autoplay overlay. */
-.room-listen-controls {
-  margin: 0.5rem 0 0;
+/* Requests-only (remote) mode: the delay line with its nudge buttons, and what plays through the stream. */
+.room-now {
+  margin: 0.25rem 0 0;
 }
 
-.room-listen-controls[hidden] {
+.room-now[hidden] {
   display: none;
 }
 
-/* Requests-only (remote) mode: the delay line with its nudge buttons. */
 .room-remote-controls {
   margin: 0.5rem 0 0;
   align-items: center;
@@ -580,6 +506,7 @@ button.voted {
   display: none;
 }
 
+/* Listen mode: the playing video (audio plays without a visible element) and the autoplay overlay. */
 .room-player {
   margin: 0.5rem 0 1rem;
 }
@@ -1541,17 +1468,6 @@ body.room-view #app {
   display: flex;
   align-items: center;
   gap: 0.25rem;
-}
-
-.room-more {
-  margin-top: 2rem;
-  border-top: 1px solid rgba(128, 128, 128, 0.3);
-  padding-top: 0.5rem;
-}
-
-.room-more > summary {
-  cursor: pointer;
-  opacity: 0.8;
 }
 
 .person-more {

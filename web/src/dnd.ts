@@ -8,11 +8,6 @@ import { decodePayload, dropBefore, dropContent, DRAG_TYPE, encodePayload, linkF
 /** The drag in progress that started on this page (the drop target can't read the data before the drop). */
 let current: DragPayload | undefined;
 
-/** The drag in progress, if it started on this page. */
-export function currentDrag(): DragPayload | undefined {
-  return current;
-}
-
 /**
  * Makes `el` draggable: `payload` says what a drag starting on it carries (undefined: no drag).
  * The drag also carries the songs' links as text, for drops outside the page.

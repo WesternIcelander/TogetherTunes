@@ -27,8 +27,9 @@ test("fixed views, with and without the trailing slash and under the old page na
     "/password": view("password", {}, "/password"), "/password.html": view("password", {}, "/password"),
     "/setup": view("setup", {}, "/setup"), "/setup.html": view("setup", {}, "/setup"),
     "/rooms": view("rooms", {}, "/rooms/"), "/rooms/": view("rooms", {}, "/rooms/"),
-    "/library": view("library", {}, "/library/"), "/library/": view("library", {}, "/library/"),
-    "/playlists": view("playlists", {}, "/playlists/"), "/playlists/": view("playlists", {}, "/playlists/"),
+    // the provisional UI's library page and playlist list are gone: their old links show All My Songs
+    "/library": view("list", { list: "songs" }, "/songs"), "/library/": view("list", { list: "songs" }, "/songs"),
+    "/playlists": view("list", { list: "songs" }, "/songs"), "/playlists/": view("list", { list: "songs" }, "/songs"),
     "/encodes/": view("encodes", {}, "/encodes/"), "/account": view("account", {}, "/account/"),
     "/admin/": view("admin", {}, "/admin/"),
     // the desktop layout's middle lists (one view, the list named in its params)

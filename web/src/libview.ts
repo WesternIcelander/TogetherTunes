@@ -516,7 +516,7 @@ async function showLibrary(path: string, query: Record<string, string>, empty: s
 async function showSongs(): Promise<void> {
   setHead("All My Songs", "");
   element("list-actions").replaceChildren(addFromLinkButton(undefined, () => restart()));
-  await showLibrary("/api/library", {}, "Your library is empty. Add songs from a link, or from Manage library.");
+  await showLibrary("/api/library", {}, "Your library is empty. Add songs from a link, or drop files on a playlist.");
 }
 
 async function showUncategorized(): Promise<void> {
@@ -620,9 +620,6 @@ async function showPlaylist(p: PlaylistDetail & { owner?: { name: string } }, ow
   const actions: HTMLElement[] = [];
   if (own) actions.push(addFromLinkButton(p.id, () => restart()));
   if (own && p.entries.length > 0) actions.push(addAllButtons(p.id));
-  if (own && p.builtin === undefined) {
-    actions.push(h("a", { class: "small", href: "/playlists/?id=" + encodeURIComponent(p.id), text: "Edit playlist" }));
-  }
   element("list-actions").replaceChildren(...actions);
   if (own && !mobile()) playlistDropZone(p);
   appendRows(rows);

@@ -21,13 +21,13 @@ class ShowsJsTest {
 
     @Test
     void pagesUseIt() throws Exception {
-        String library = Files.readString(NodeTests.resource("web/js/library.js"), StandardCharsets.UTF_8);
+        String lists = Files.readString(NodeTests.resource("web/js/libview.js"), StandardCharsets.UTF_8);
         for (String s : List.of("from \"./shows.js\"", "/api/library/shows")) {
-            assertTrue(library.contains(s), s);
+            assertTrue(lists.contains(s), s);
         }
-        String room = Files.readString(NodeTests.resource("web/js/room.js"), StandardCharsets.UTF_8);
+        String frame = Files.readString(NodeTests.resource("web/js/frame.js"), StandardCharsets.UTF_8);
         for (String s : List.of("offersNextEpisode", "queue.nextEpisode")) {
-            assertTrue(room.contains(s), s);
+            assertTrue(frame.contains(s), s);
         }
     }
 }

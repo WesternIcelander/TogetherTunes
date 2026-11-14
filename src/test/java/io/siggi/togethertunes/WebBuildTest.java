@@ -3,6 +3,7 @@ package io.siggi.togethertunes;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -111,9 +112,8 @@ class WebBuildTest {
     @Test
     void libraryPagesArePackaged() throws IOException {
         Map<String, String> pages = Map.of(
-                "view-library", "library",
-                "view-playlists", "playlists",
                 "view-encodes", "encodes",
+                "view-list", "libview",
                 "view-item", "item",
                 "view-room", "room",
                 "view-rooms", "rooms");
@@ -124,25 +124,34 @@ class WebBuildTest {
             assertTrue(router.contains("template: \"" + e.getKey() + "\", module: \"" + e.getValue() + "\""), e.getKey());
             assertTrue(read("web/js/" + e.getValue() + ".js").contains("from \"./session.js\""), e.getValue());
         }
-        // Library and playlists need an account; the item page is open to anyone with the link.
-        assertTrue(read("web/js/library.js").contains("requireUser"));
-        assertTrue(read("web/js/playlists.js").contains("requireUser"));
+        // The lists (library, playlists) need an account; the item page is open to anyone with the link.
+        assertTrue(read("web/js/libview.js").contains("requireUser"));
         assertTrue(read("web/js/encodes.js").contains("requireUser"));
         assertFalse(read("web/js/item.js").contains("requireUser"));
-        assertTrue(read("web/js/library.js").contains("\"/api/library?\""));
+        assertTrue(read("web/js/libview.js").contains("\"/api/library?"));
+        // The provisional UI's library and playlist pages are gone (old links show All My Songs).
+        assertFalse(index.contains("<template id=\"view-library\""));
+        assertFalse(index.contains("<template id=\"view-playlists\""));
+        for (String gone : List.of("library.js", "playlists.js", "addmedia.js", "history.js", "searchscope.js",
+                "guestban.js")) {
+            assertNull(WebBuildTest.class.getClassLoader().getResource("web/js/" + gone), gone);
+        }
         assertTrue(read("web/js/item.js").contains("/api/items/"));
         // The room page is open to anyone with the link, and honours ?mode=remote from /r/{slug}.
         assertFalse(read("web/js/room.js").contains("requireUser"));
         assertTrue(read("web/js/room.js").contains("\"/api/rooms/\""));
         assertTrue(read("web/js/room.js").contains("\"remote\""));
-        // The room page talks to the room over /ws: every action of docs/api.md#websocket the page
-        // offers, the request search, and the guest identity flow.
+        // The room talks over /ws (room.js); the frame, the lists and the menus send the actions of
+        // docs/api.md#websocket through it. The room view keeps the request search for guests, the
+        // guest uploads, the Request Link box and the guest identity flow.
         String room = read("web/js/room.js");
+        String actions = room + read("web/js/frame.js") + read("web/js/libview.js") + read("web/js/interactions.js")
+                + read("web/js/dragdrop.js");
         for (String type : List.of("queue.add", "queue.addPlaylist", "queue.remove", "queue.move", "queue.pin",
-                "vote", "suggest.accept", "suggest.reject", "play", "pause", "seek", "next", "previous",
-                "voteSkip")) {
-            assertTrue(room.contains("type: \"" + type + "\""), type);
+                "vote", "suggest.accept", "suggest.reject", "play", "seek", "next", "previous", "voteSkip")) {
+            assertTrue(actions.contains("type: \"" + type + "\""), type);
         }
+        assertTrue(actions.contains("\"pause\" : \"play\""));
         assertTrue(room.contains("/search?"), room);
         assertTrue(room.contains("uploadId"), room);
         assertTrue(room.contains("youtubeUrl"), room);
@@ -153,15 +162,14 @@ class WebBuildTest {
         assertTrue(client.contains("\"/api/me/guest\""), client);
         assertTrue(client.contains("type: \"identity\""), client);
         assertTrue(client.contains("identity_required"), client);
-        assertTrue(index.contains("id=\"room-queue\""));
+        assertTrue(index.contains("id=\"rv-queue\""));
+        assertFalse(index.contains("id=\"room-more\""));
         assertTrue(read("web/js/media.js").contains("/job"));
         String uploads = read("web/js/uploads.js");
         assertTrue(uploads.contains("\"/api/uploads\""), uploads);
         assertTrue(uploads.contains("Content-Range"), uploads);
         assertTrue(uploads.contains("localStorage"), uploads); // resumable after a reload
-        assertTrue(read("web/js/addmedia.js").contains("\"/api/imports/youtube\""));
-        String session = read("web/js/session.js");
-        assertTrue(session.contains("\"/library/\"") && session.contains("\"/playlists/\""), session);
+        assertTrue(read("web/js/addlink.js").contains("\"/api/imports/youtube\""));
     }
 
     /**

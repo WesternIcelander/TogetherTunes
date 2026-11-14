@@ -156,6 +156,8 @@ class ListenJsTest {
         assertTrue(video > 0 && overlay > video && overlay < index.indexOf("</section>", video), index);
         assertTrue(index.contains("Click to enable sound"), index);
         assertTrue(player.contains("\"Click to enable sound\""), "the overlay's text");
-        assertTrue(html.contains("id=\"room-audio-only\""), html);
+        // The video / audio-only switch is in the player bar's menu (the room view's old checkbox is gone).
+        assertTrue(index.contains("id=\"pb-audio-only\""), index);
+        assertTrue(!html.contains("id=\"room-audio-only\""), html);
     }
 }

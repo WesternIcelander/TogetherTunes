@@ -1,7 +1,6 @@
 // The classify prompt (docs/media-types.md#media-types): asks for a media type when an add to a
 // library comes back with `409 needs_classification`: a modal dialog in the app's dialog style (type, and
 // show name, season and episode for a show); the rules and the suggestion are in the DOM-free classify.ts.
-import { api } from "./api.js";
 import { CLASSIFY_TYPES, classifyBody, classifyDefaults, needsClassification, type ClassifyBody,
   type ClassifyNeeded, type Suggestion } from "./classify.js";
 import { h } from "./dom.js";
@@ -103,13 +102,3 @@ export async function withClassification<T>(attempt: (c?: ClassifyBody) => Promi
   }
 }
 
-/**
- * After an import or upload whose library add was refused for want of a type (the item itself
- * exists): asks and adds it with `PUT /api/library/{itemId}`. Resolves with whether it was added.
- */
-export async function classifyAndAdd(needed: ClassifyNeeded, what?: string): Promise<boolean> {
-  const answer = await askClassification(needed, what);
-  if (answer === null) return false;
-  await api("PUT", "/api/library/" + encodeURIComponent(needed.itemId), answer);
-  return true;
-}

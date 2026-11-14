@@ -44,9 +44,7 @@ export const PASSWORD_PAGE = "/password";
 export const SETUP_PAGE = "/setup";
 export const ACCOUNT_PAGE = "/account/";
 export const ADMIN_PAGE = "/admin/";
-export const LIBRARY_PAGE = "/library/";
 export const ENCODES_PAGE = "/encodes/";
-export const PLAYLISTS_PAGE = "/playlists/";
 export const ROOMS_PAGE = "/rooms/";
 /** The user settings' Invites tab. */
 export const INVITES_PAGE = "/account/#invites";
@@ -136,8 +134,8 @@ function link(href: string, text: string): HTMLAnchorElement {
 
 /**
  * Fills `<nav id="site-nav">`, the header's account part (docs/ui.md#layout-desktop): for a user an
- * account button (their name) opening a menu with Account, Library (the full library page with
- * uploads), Playlists, Rooms, Encodes, Administration (any `admin.*` permission) and Log out; for
+ * account button (their name) opening a menu with Settings, Rooms, Encodes, Invites (`users.invite`),
+ * Administration (any `admin.*` permission) and Log out; for
  * everyone else Rooms, Log in and Register. Names are set as text, never parsed as HTML.
  */
 export function renderNav(me: Me): void {
@@ -160,8 +158,7 @@ export function renderNav(me: Me): void {
     const list = document.createElement("div");
     list.className = "menu account-items";
     list.setAttribute("role", "menu");
-    const items: Node[] = [link(ACCOUNT_PAGE, "Settings"), link(LIBRARY_PAGE, "Manage library"),
-      link(PLAYLISTS_PAGE, "Playlists"), link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
+    const items: Node[] = [link(ACCOUNT_PAGE, "Settings"), link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
     if (canInvite(me)) items.push(link(INVITES_PAGE, "Invites"));
     if (isAdmin(me)) {
       items.push(link(ADMIN_PAGE, "Administration"));

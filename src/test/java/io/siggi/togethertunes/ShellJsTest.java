@@ -91,7 +91,7 @@ class ShellJsTest {
         assertTrue(index.contains("<nav id=\"site-nav\""));
         assertTrue(index.contains("<main id=\"app\"></main>"));
         Map<String, String> views = views();
-        assertEquals(16, views.size(), views.toString());
+        assertEquals(14, views.size(), views.toString());
         Map<String, String> templates = templates();
         assertEquals(views.keySet(), templates.keySet());
         for (Map.Entry<String, String> e : views.entrySet()) {
@@ -150,7 +150,6 @@ class ShellJsTest {
                         view.getValue() + ": " + call);
             }
         }
-        assertTrue(read("web/js/playlists.js").contains("navigate(playlistHref(p.id))"));
         String manage = read("web/js/roommanage.js");
         assertTrue(manage.contains("reloadPage()"), manage);
         assertTrue(manage.contains("navigate(\"/\")"), manage);

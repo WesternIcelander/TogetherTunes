@@ -21,15 +21,13 @@ class ClassifyJsTest {
 
     @Test
     void everyLibraryAddAsksForATypeWhenNeeded() throws Exception {
-        for (String page : new String[] {"item.js", "library.js", "room.js"}) {
+        for (String page : new String[] {"item.js", "libview.js", "frame.js", "addlink.js", "media.js"}) {
             String js = Files.readString(NodeTests.resource("web/js/" + page), StandardCharsets.UTF_8);
             assertTrue(js.contains("withClassification("), page);
         }
-        String add = Files.readString(NodeTests.resource("web/js/addmedia.js"), StandardCharsets.UTF_8);
-        assertTrue(add.contains("needsClassification(") && add.contains("classifyAndAdd("), "addmedia.js");
-        String uploads = Files.readString(NodeTests.resource("web/js/uploads.js"), StandardCharsets.UTF_8);
-        assertTrue(uploads.contains("needsClassification("), "uploads.js");
-        String room = Files.readString(NodeTests.resource("web/js/room.js"), StandardCharsets.UTF_8);
-        assertTrue(room.contains("classifyAndAdd("), "room.js: an upload also going into the library");
+        for (String page : new String[] {"uploads.js", "filedrop.js"}) {
+            String js = Files.readString(NodeTests.resource("web/js/" + page), StandardCharsets.UTF_8);
+            assertTrue(js.contains("needsClassification("), page);
+        }
     }
 }

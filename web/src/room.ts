@@ -4,20 +4,16 @@
 // The room view (docs/ui.md#room-view-desktop): the frame (frame.ts) moves its video panel into the
 // view's video area and draws Now Playing / Requests / From Playlist, the people (⋯ moderation menus,
 // Manage Room) and Earlier from this view's room state; this module draws the header, the owner's and
-// moderators' quick output buttons, the Request Link box, Join as guest / the guest's name, and (in
-// "More", until the later UI steps place them) the old room page's parts below.
+// moderators' quick output buttons, the Request Link box, Join as guest / the guest's name, and for
+// visitors who aren't signed in the library search and uploads where the room lets them request.
 //
-// The page joins the room over the WebSocket (roomclient.ts) and shows what is playing, the
-// queue (with votes, pins, moves and removals as the control mode and the viewer's rights allow),
-// suggestions (accept/reject for the owner and moderators), the request panel (search of the
-// owner's and the viewer's libraries, or the whole server; upload, YouTube link, and a playlist for the owner and moderators), the
-// history and who is here. The server's clock is estimated with ClockSync (clocksync.ts) on the
-// same socket. In listen mode the page plays the room itself (ListenPlayer, listen.ts); in remote mode
-// (remote.ts) it loads no media and shows the timeline delayed by the active output's
-// estimatedDelayMs plus the user's nudge, as heard in VRChat. The mode is a toggle remembered per
-// room; `?mode=` wins. The owner and moderators get a link to the management view (roommanage.ts).
-// The outputs panel (outputspanel.ts) shows the RTMP viewer URL to everyone and the stream outputs
-// (URLs with copy buttons, push status, on/off, rotate) to the owner and moderators.
+// The page joins the room over the WebSocket (roomclient.ts); the server's clock is estimated with
+// ClockSync (clocksync.ts) on the same socket. In listen mode the page plays the room itself
+// (ListenPlayer, listen.ts); in requests-only (remote) mode (remote.ts) it loads no media and shows
+// what plays delayed by the active output's estimatedDelayMs plus the user's nudge, as heard through
+// the stream. The mode is a toggle remembered per room; `?mode=` wins. The owner and moderators get a
+// link to the management view (roommanage.ts). The outputs panel (outputspanel.ts) shows the RTMP
+// viewer URL to everyone; the stream outputs themselves are in Manage Room.
 // While this view lives, the debug-mode "Send diagnostics" button (frame.ts) posts what the player did
 // (diagnostics.ts, `setReportSource`) to the server log, for devices without a console; `?sync=rate|seek`
 // overrides the sync mode for testing, and the user's "Web Audio" preference (Auto / On / Off, user
@@ -25,10 +21,9 @@
 // play through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`). Auto
 // uses Web Audio only where the page can't set an element's volume (iOS; `volumeSettable`).
 // While the room plays in listen mode, the single-page app's shell (shell.ts) keeps this view
-// (hidden) when another view is shown, so playback goes on; a mini player there links back to it.
+// (hidden) when another view is shown, so playback goes on; the frame's player bar follows it.
 // When the shell takes the view away for good, its signal (pageSignal() at the module's start)
 // ends the socket, the player, the clock sync and the timers.
-import { classifyAndAdd, withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
 import {
@@ -45,17 +40,11 @@ import {
   nudgeKey, outputDelay, parseNudge, stepNudge,
   type RoomMode,
 } from "./remote.js";
-import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
-import { itemPath, myPlaylists, statusBadge, type ItemSummary, type Page } from "./media.js";
-import { canRetryEntry, ingestText, lookupText } from "./jobtext.js";
-import { banGuestConfirmed } from "./guestban.js";
+import { button, formatBytes, formatDuration, h } from "./dom.js";
+import { itemPath, statusBadge, type ItemSummary, type Page } from "./media.js";
+import { lookupText } from "./jobtext.js";
 import {
-  libraryAction, markInLibrary, mergeFirstPage, queueAction, viaText, type HistoryPage, type HistoryRow,
-  type HistoryViewer,
-} from "./history.js";
-import {
-  positionAt, RoomConnection, type CurrentEntry, type HistoryEntry, type NewRequest, type RoomItem, type RoomState,
-  type Timeline, type WaitingEntry,
+  positionAt, RoomConnection, type CurrentEntry, type NewRequest, type RoomState, type Timeline,
 } from "./roomclient.js";
 import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
@@ -64,8 +53,6 @@ import { Upload, type UploadProgress } from "./uploads.js";
 import { attachRoom, pageSignal, rememberPlaying, viewStart, type RoomHandle } from "./nav.js";
 import { shouldJoin } from "./alone.js";
 import { OutputsPanel } from "./outputspanel.js";
-import { offersNextEpisode } from "./shows.js";
-import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
@@ -264,74 +251,6 @@ function notice(text: string, node?: Node): void {
   while (list.children.length > 5) list.lastElementChild?.remove();
 }
 
-/** Sends a room action; errors are shown on the page. */
-function act(msg: Record<string, unknown>): Promise<void> {
-  showError("");
-  return conn.request(msg).then(() => undefined);
-}
-
-function actionButton(text: string, msg: () => Record<string, unknown>, className?: string): HTMLButtonElement {
-  return button(text, () => act(msg()), showError, className);
-}
-
-function itemTitle(item: RoomItem): HTMLElement {
-  const title = item.title ?? "(unknown item)";
-  return h("div", { class: "item-title" },
-    h("a", { href: itemPath(item.id), text: title }),
-    item.artist !== undefined && item.artist !== "" ? h("div", { class: "muted small", text: item.artist }) : null);
-}
-
-function cover(item: RoomItem, className: string): HTMLElement {
-  if (item.coverUrl === undefined) return h("div", { class: className + " cover-none", "aria-hidden": "true" });
-  return h("img", { class: className, src: item.coverUrl, alt: "", loading: "lazy" });
-}
-
-/**
- * An entry's status badge. While its item is being fetched or encoded (or failed) the badge says
- * what ingest is doing, from the room's `ingest` messages ("Downloading 45 %", "Failed: …"), and is
- * marked with the item id so later `ingest` messages update it in place ({@link showIngest}).
- */
-function entryStatusBadge(status: string, itemId: string): HTMLElement | null {
-  if (status === "ready") return null;
-  if (status === "processing" || status === "failed") {
-    const badge = h("span", { class: "badge badge-status badge-" + (status === "failed" ? "failed" : "processing") });
-    badge.dataset["ingestItem"] = itemId;
-    badge.dataset["entryStatus"] = status;
-    badge.textContent = ingestBadgeText(status, itemId);
-    return badge;
-  }
-  if (status === "purged") return statusBadge(status);
-  return h("span", { class: "badge badge-status", text: status });
-}
-
-function ingestBadgeText(status: string, itemId: string): string {
-  const known = conn.ingest[itemId];
-  if (status === "failed") {
-    return ingestText({ state: "failed", error: known?.state === "failed" ? known.error : undefined });
-  }
-  // Just retried: the entry waits again before the next `ingest` message says so.
-  return ingestText(known?.state === "failed" ? undefined : known);
-}
-
-/** An `ingest` message arrived: the badges of entries that wait for ingest show the news. */
-function showIngest(): void {
-  document.querySelectorAll<HTMLElement>("[data-ingest-item]").forEach((badge) => {
-    const itemId = badge.dataset["ingestItem"] ?? "";
-    const text = ingestBadgeText(badge.dataset["entryStatus"] ?? "processing", itemId);
-    if (badge.textContent !== text) badge.textContent = text;
-  });
-}
-
-function addedByLine(addedBy: ActorRef | undefined, prefix = "Added by "): HTMLElement | null {
-  if (addedBy === undefined) return null;
-  return h("span", { class: "muted small" }, prefix, actorLabel(addedBy));
-}
-
-function isMine(entry: CurrentEntry): boolean {
-  const a = conn.actor;
-  return a !== undefined && entry.addedBy !== undefined && entry.addedBy.kind === a.kind && entry.addedBy.id === a.id;
-}
-
 // ------------------------------------------------------------------ header and presence
 
 function renderHeader(s: RoomState): void {
@@ -432,14 +351,9 @@ function askGuestName(suggested: string): Promise<string> {
   });
 }
 
-// ------------------------------------------------------------------ now playing
+// ------------------------------------------------------------------ requests-only now playing
 
-let progressBar: HTMLProgressElement | undefined;
-let seekBar: HTMLInputElement | undefined;
-let seeking = false;
-let positionText: HTMLElement | undefined;
-
-/** What the now-playing panel shows: the timeline now, or in remote mode as it was `delay` ago. */
+/** What the requests-only line shows: the timeline as it was `delay` ago. */
 interface NowView {
   timeline: Timeline;
   current: CurrentEntry | undefined;
@@ -452,372 +366,59 @@ function remoteDelays(s: RoomState | undefined): { kind: string; outputMs: numbe
 }
 
 function nowView(s: RoomState): NowView {
-  if (mode === "remote") {
-    const v = delayed.atTime(serverNow() - remoteDelays(s).totalMs);
-    if (v !== undefined) return { timeline: v.timeline as Timeline, current: v.value };
-  }
+  const v = delayed.atTime(serverNow() - remoteDelays(s).totalMs);
+  if (v !== undefined) return { timeline: v.timeline as Timeline, current: v.value };
   return { timeline: s.timeline, current: s.current };
 }
 
-/** The view the panel was last drawn with, so the timer can tell when the delayed view moved on. */
+/** The view the line was last drawn with, so the timer can tell when the delayed view moved on. */
 let drawn: NowView | undefined;
+let positionText: HTMLElement | undefined;
 
+/**
+ * Requests-only mode: what plays as heard through the stream (the room's output delay plus this
+ * browser's nudge behind the timeline). The player bar and the queue show the timeline itself.
+ */
 function renderNowPlaying(s: RoomState): void {
-  const view = nowView(s);
-  drawn = view;
   const el = element("room-now");
-  progressBar = undefined;
-  seekBar = undefined;
+  el.hidden = mode !== "remote";
   positionText = undefined;
-  const you = s.room.you;
-  const controls = h("div", { class: "row now-controls" });
-  if (you.canSkip) {
-    controls.append(actionButton("Previous", () => ({ type: "previous" })));
-    if (s.timeline.state === "playing") controls.append(actionButton("Pause", () => ({ type: "pause" })));
-    else controls.append(actionButton("Play", () => ({ type: "play" })));
-    controls.append(actionButton("Skip", () => ({ type: "next" })));
-  }
-  if (offersNextEpisode(you.canModerate, s.current?.item)) {
-    controls.append(actionButton("Next episode", () => ({ type: "queue.nextEpisode" })));
-  }
-  if (s.room.controlMode === "vote" && s.skipVotes !== undefined && s.current !== undefined && you.canVote) {
-    const sv = s.skipVotes;
-    controls.append(actionButton("Vote to skip (" + sv.votes + "/" + sv.needed + ")", () => ({ type: "voteSkip" })));
-  } else if (s.skipVotes !== undefined) {
-    controls.append(h("span", { class: "muted small", text: "Skip votes: " + s.skipVotes.votes + "/" + s.skipVotes.needed }));
-  }
-
-  const c = view.current;
-  if (c === undefined) {
-    el.replaceChildren(h("h2", { text: "Now playing" }),
-      h("p", { class: "muted", text: s.queue.length > 0 ? "Nothing is playing." : "Nothing is playing. The queue is empty." }),
-      controls);
-    controls.hidden = controls.childElementCount === 0;
+  if (mode !== "remote") {
+    drawn = undefined;
+    el.replaceChildren();
     return;
   }
-  const item = c.item;
-  const st = view.timeline.state;
-  const stateText = st === "playing" ? "Playing" : st === "paused" ? "Paused" : st;
-  positionText = h("span", { class: "small num" });
-  const duration = item.durationMs ?? 0;
-  let bar: HTMLElement;
-  if (you.canSkip && duration > 0) {
-    const range = h("input", { type: "range", min: "0", max: String(duration), step: "1000", class: "grow",
-      "aria-label": "Position" });
-    range.addEventListener("input", () => { seeking = true; });
-    range.addEventListener("change", () => {
-      seeking = false;
-      act({ type: "seek", positionMs: Math.round(Number(range.value)) }).catch(showError);
-    });
-    seekBar = range;
-    bar = range;
-  } else {
-    progressBar = h("progress", { max: String(Math.max(duration, 1)), value: "0", class: "grow" });
-    bar = progressBar;
+  const view = nowView(s);
+  drawn = view;
+  const c = view.current;
+  if (c === undefined) {
+    el.replaceChildren(h("span", { class: "muted", text: "Through the stream: nothing is playing." }));
+    return;
   }
-  el.replaceChildren(h("h2", { text: "Now playing" }),
-    h("div", { class: "now" },
-      cover(item, "cover now-cover"),
-      h("div", { class: "now-info" },
-        itemTitle(item),
-        h("div", { class: "row" }, h("span", { class: "badge", text: stateText }), entryStatusBadge(c.status, c.item.id),
-          addedByLine(c.addedBy)),
-        h("div", { class: "row" }, bar, positionText),
-        controls)));
+  const st = view.timeline.state;
+  positionText = h("span", { class: "small num" });
+  el.replaceChildren(h("span", { class: "muted", text: "Through the stream: " }),
+    h("a", { href: itemPath(c.item.id), text: c.item.title ?? "(unknown item)" }),
+    h("span", { class: "muted", text: c.item.artist !== undefined && c.item.artist !== "" ? " · " + c.item.artist : "" }),
+    h("span", { class: "muted", text: st === "paused" ? " (paused) " : " " }), positionText);
   tick();
 }
 
-/** Moves the progress bar along (four times a second). */
+/** Moves the requests-only position along (four times a second). */
 function tick(): void {
   const s = shown;
-  if (s === undefined) return;
-  let view = drawn;
-  if (mode === "remote") {
-    // The delayed view reached another change: draw the panel again.
-    const v = nowView(s);
-    if (view === undefined || v.timeline !== view.timeline || v.current !== view.current) {
-      renderNowPlaying(s);
-      return; // renderNowPlaying ticks
-    }
-    view = v;
+  if (s === undefined || mode !== "remote") return;
+  // The delayed view reached another change: draw the line again.
+  const view = nowView(s);
+  if (drawn === undefined || view.timeline !== drawn.timeline || view.current !== drawn.current) {
+    renderNowPlaying(s);
+    return; // renderNowPlaying ticks
   }
-  if (view === undefined || view.current === undefined || positionText === undefined) return;
+  if (view.current === undefined || positionText === undefined) return;
   const duration = view.current.item.durationMs ?? 0;
-  const delay = mode === "remote" ? remoteDelays(s).totalMs : 0;
-  let pos = positionAt(view.timeline, serverNow() - delay);
+  let pos = positionAt(view.timeline, serverNow() - remoteDelays(s).totalMs);
   if (duration > 0) pos = Math.min(pos, duration);
   positionText.textContent = formatDuration(pos) + (duration > 0 ? " / " + formatDuration(duration) : "");
-  if (progressBar !== undefined) progressBar.value = pos;
-  if (seekBar !== undefined && !seeking) seekBar.value = String(pos);
-}
-
-// ------------------------------------------------------------------ queue and suggestions
-
-function voteControls(s: RoomState, e: WaitingEntry): HTMLElement {
-  const box = h("span", { class: "votes row" });
-  const canVote = s.room.you.canVote;
-  const up = h("button", { type: "button", class: "icon" + (e.yourVote === 1 ? " voted" : ""), text: "▲",
-    title: e.yourVote === 1 ? "Take back your vote" : "Vote up", "aria-pressed": e.yourVote === 1 ? "true" : "false" });
-  up.disabled = !canVote;
-  up.addEventListener("click", () => {
-    up.disabled = true;
-    act({ type: "vote", entryId: e.entryId, value: e.yourVote === 1 ? 0 : 1 }).catch(showError)
-      .finally(() => { up.disabled = !canVote; });
-  });
-  box.append(up, h("span", { class: "num vote-count", text: String(e.votes) }));
-  if (s.room.settings.allowDownvotes === true) {
-    const down = h("button", { type: "button", class: "icon" + (e.yourVote === -1 ? " voted" : ""), text: "▼",
-      title: e.yourVote === -1 ? "Take back your vote" : "Vote down", "aria-pressed": e.yourVote === -1 ? "true" : "false" });
-    down.disabled = !canVote;
-    down.addEventListener("click", () => {
-      down.disabled = true;
-      act({ type: "vote", entryId: e.entryId, value: e.yourVote === -1 ? 0 : -1 }).catch(showError)
-        .finally(() => { down.disabled = !canVote; });
-    });
-    box.append(down);
-  }
-  return box;
-}
-
-function canRemove(s: RoomState, e: WaitingEntry): boolean {
-  const you = s.room.you;
-  return you.canModerate || isMine(e) || (s.room.controlMode === "open" && you.canRequest && you.identified);
-}
-
-/** Whether you may fetch this failed entry again (`queue.retry`); see {@link canRetryEntry}. */
-function canRetry(s: RoomState, e: WaitingEntry): boolean {
-  const you = s.room.you;
-  return canRetryEntry(e.status, e.item.source, you.canModerate, isMine(e), you.canYoutube);
-}
-
-function retryButton(e: WaitingEntry): HTMLButtonElement {
-  return actionButton("Retry", () => ({ type: "queue.retry", entryId: e.entryId }));
-}
-
-function canMove(s: RoomState): boolean {
-  const you = s.room.you;
-  if (s.room.controlMode === "owner") return you.canModerate;
-  if (s.room.controlMode === "open") return you.canModerate || (you.canRequest && you.identified);
-  return false;
-}
-
-function queueRow(s: RoomState, e: WaitingEntry, i: number, list: WaitingEntry[]): HTMLLIElement {
-  const you = s.room.you;
-  const actions = h("span", { class: "row entry-actions" });
-  if (canRetry(s, e)) actions.append(retryButton(e));
-  if (s.room.controlMode === "vote" && you.canModerate) {
-    actions.append(actionButton(e.pinned ? "Unpin" : "Pin",
-      () => ({ type: "queue.pin", entryId: e.entryId, pinned: !e.pinned })));
-  }
-  if (canMove(s)) {
-    const prev = list[i - 1];
-    const after = list[i + 2];
-    if (prev !== undefined) {
-      actions.append(actionButton("↑", () => ({ type: "queue.move", entryId: e.entryId, beforeEntryId: prev.entryId }), "icon"));
-    }
-    if (list[i + 1] !== undefined) {
-      actions.append(actionButton("↓", () => ({ type: "queue.move", entryId: e.entryId,
-        beforeEntryId: after === undefined ? null : after.entryId }), "icon"));
-    }
-  }
-  if (canRemove(s, e)) {
-    actions.append(actionButton("Remove", () => ({ type: "queue.remove", entryId: e.entryId })));
-  }
-  return h("li", { class: "entry", "data-entry": e.entryId },
-    s.room.controlMode === "vote" ? voteControls(s, e) : h("span", { class: "num muted entry-pos", text: String(i + 1) }),
-    cover(e.item, "cover entry-cover"),
-    h("div", { class: "grow" },
-      itemTitle(e.item),
-      h("div", { class: "row" },
-        e.pinned ? h("span", { class: "badge badge-current", text: "Pinned" }) : null,
-        entryStatusBadge(e.status, e.item.id),
-        h("span", { class: "muted small num", text: formatDuration(e.item.durationMs) }),
-        addedByLine(e.addedBy))),
-    actions);
-}
-
-function renderQueue(s: RoomState): void {
-  const el = element("room-queue");
-  const heading = h("h2", { text: "Up next" + (s.queue.length > 0 ? " (" + s.queue.length + ")" : "") });
-  if (s.queue.length === 0) {
-    el.replaceChildren(heading, h("p", { class: "muted", text: "The queue is empty." }));
-    return;
-  }
-  const list = h("ol", { class: "entries" });
-  s.queue.forEach((e, i) => list.append(queueRow(s, e, i, s.queue)));
-  const hint = s.room.controlMode === "vote"
-    ? h("p", { class: "muted small", text: "The most votes play first; pinned entries before them." }) : "";
-  el.replaceChildren(heading, hint, list);
-}
-
-function renderSuggestions(s: RoomState): void {
-  const el = element("room-suggestions");
-  if (s.suggestions.length === 0) {
-    el.hidden = s.room.controlMode !== "owner";
-    el.replaceChildren(h("h2", { text: "Suggestions" }),
-      h("p", { class: "muted", text: s.room.you.canModerate
-        ? "No suggestions. Requests from listeners show up here for you to accept or reject."
-        : "In this room the owner picks the music; your requests are sent as suggestions." }));
-    return;
-  }
-  el.hidden = false;
-  const list = h("ul", { class: "entries" });
-  for (const e of s.suggestions) {
-    const actions = h("span", { class: "row entry-actions" });
-    if (canRetry(s, e)) actions.append(retryButton(e));
-    if (s.room.you.canModerate) {
-      actions.append(actionButton("Accept", () => ({ type: "suggest.accept", entryId: e.entryId })),
-        actionButton("Reject", () => ({ type: "suggest.reject", entryId: e.entryId })));
-    } else if (canRemove(s, e)) {
-      actions.append(actionButton("Withdraw", () => ({ type: "queue.remove", entryId: e.entryId })));
-    }
-    list.append(h("li", { class: "entry", "data-entry": e.entryId },
-      cover(e.item, "cover entry-cover"),
-      h("div", { class: "grow" },
-        itemTitle(e.item),
-        h("div", { class: "row" }, entryStatusBadge(e.status, e.item.id),
-          h("span", { class: "muted small num", text: formatDuration(e.item.durationMs) }),
-          addedByLine(e.addedBy, "Suggested by "))),
-      actions));
-  }
-  el.replaceChildren(h("h2", { text: "Suggestions (" + s.suggestions.length + ")" }), list);
-}
-
-// ------------------------------------------------------------------ history
-
-// The room's history (docs/rooms.md#history) comes from GET /api/rooms/{room}/history, 50 at a
-// time ("Show more"); the first page is loaded again whenever the room state's own (short) history
-// changes, so it follows what plays. What each row offers is decided in history.ts.
-
-/** The rows shown, newest first. */
-let historyRows: HistoryRow[] = [];
-let historyCursor: string | undefined;
-let historyWindow = 0;
-/** The newest history entry of the room state when the first page was last loaded. */
-let historyTop: string | undefined;
-let historyLoading = false;
-let historyAgain = false;
-/** What the list was drawn for, so it is only drawn again when that changes. */
-let historyKey = "";
-const historyStatus = h("p", { class: "muted small", role: "status" });
-
-function historyViewer(s: RoomState): HistoryViewer {
-  return { user: me.kind === "user", moderates: s.room.you.canModerate,
-    canRequestLibrary: s.room.you.canRequestLibrary === true };
-}
-
-function renderHistory(s: RoomState): void {
-  const top = s.history.length > 0 ? s.history[0]!.entryId : "";
-  if (top !== historyTop) {
-    historyTop = top;
-    void loadHistory(true);
-  }
-  drawHistory(s);
-}
-
-async function loadHistory(first: boolean): Promise<void> {
-  if (historyLoading) {
-    if (first) historyAgain = true;
-    return;
-  }
-  historyLoading = true;
-  try {
-    const params = new URLSearchParams({ limit: "50" });
-    if (!first && historyCursor !== undefined) params.set("cursor", historyCursor);
-    const page = await api<HistoryPage>("GET", "/api/rooms/" + encodeURIComponent(roomId) + "/history?" + params);
-    historyWindow = page.noRepeatWindow;
-    if (first) {
-      const more = historyRows.length > page.items.length;
-      historyRows = page.items.length === 0 ? [] : mergeFirstPage(historyRows, page.items);
-      if (!more) historyCursor = page.nextCursor;
-    } else {
-      historyRows = historyRows.concat(page.items.filter((r) => !historyRows.some((o) => o.entryId === r.entryId)));
-      historyCursor = page.nextCursor;
-    }
-    historyKey = "";
-    if (shown !== undefined) drawHistory(shown);
-  } catch (e) {
-    historyStatus.textContent = "History: " + message(e);
-  } finally {
-    historyLoading = false;
-    if (historyAgain) {
-      historyAgain = false;
-      void loadHistory(true);
-    }
-  }
-}
-
-function drawHistory(s: RoomState): void {
-  const viewer = historyViewer(s);
-  const key = [viewer.user, viewer.moderates, viewer.canRequestLibrary, s.room.controlMode].join(",");
-  if (key === historyKey) return;
-  historyKey = key;
-  const el = element("room-history");
-  if (historyRows.length === 0) {
-    el.replaceChildren(h("h2", { text: "History" }), h("p", { class: "muted", text: "Nothing has played yet." }),
-      historyStatus);
-    return;
-  }
-  // Covers come with the room state's recent history (the REST rows are metadata only).
-  const covers = new Map<string, RoomItem>();
-  for (const e of s.history as HistoryEntry[]) covers.set(e.item.id, e.item);
-  const list = h("ul", { class: "entries history" });
-  for (const r of historyRows) list.append(historyRow(r, viewer, s, covers.get(r.item.id)));
-  const more = h("button", { type: "button", text: "Show more" });
-  more.hidden = historyCursor === undefined;
-  more.addEventListener("click", () => void loadHistory(false));
-  el.replaceChildren(h("h2", { text: "History" }), historyStatus, list, more);
-}
-
-function historyRow(r: HistoryRow, viewer: HistoryViewer, s: RoomState, withCover: RoomItem | undefined): HTMLElement {
-  const actions = h("div", { class: "row entry-actions" });
-  const lib = libraryAction(r, viewer);
-  if (lib === "in-library") {
-    actions.append(h("span", { class: "badge", text: "In your library" }));
-  } else if (lib === "add") {
-    actions.append(button("Add to Library", async () => {
-      if (await withClassification((c) => api("PUT", "/api/library/" + encodeURIComponent(r.item.id), c),
-        r.item.title ?? undefined) === null) return;
-      markInLibrary(historyRows, r.item.id);
-      historyStatus.textContent = (r.item.title ?? "") + ": added to your library.";
-      historyKey = "";
-      drawHistory(shown ?? s);
-    }, (e) => { historyStatus.textContent = message(e); }, "small"));
-  }
-  const q = queueAction(r, viewer, historyWindow);
-  if (q.shown) {
-    const add = button(requestVerb(s), async () => {
-      const ack = await conn.request({ type: "queue.add", historyEntryId: r.entryId });
-      historyStatus.textContent = (r.item.title ?? "") + ": " + addedMessage(ack);
-    }, (e) => { if (e !== CANCELLED) historyStatus.textContent = message(e); }, "small");
-    if (q.disabled) {
-      add.disabled = true;
-      add.title = q.reason ?? "";
-    }
-    actions.append(add);
-    if (q.disabled && q.reason !== undefined) actions.append(h("span", { class: "muted small", text: q.reason }));
-  }
-  if (viewer.moderates && r.addedBy !== undefined && r.addedBy.isGuest) {
-    const guest = r.addedBy;
-    actions.append(button("Ban guest", async () => {
-      if (await banGuestConfirmed("/api/rooms/" + encodeURIComponent(roomId), guest)) {
-        historyStatus.textContent = guest.name + " is banned from this room.";
-      }
-    }, (e) => { historyStatus.textContent = message(e); }, "small"));
-  }
-  const item: RoomItem = withCover ?? { id: r.item.id, title: r.item.title, artist: r.item.artist };
-  const via = viaText(r.via);
-  return h("li", { class: "entry" },
-    cover(item, "cover entry-cover"),
-    h("div", { class: "grow" },
-      itemTitle({ id: r.item.id, title: r.item.title, artist: r.item.artist }),
-      h("div", { class: "row" },
-        r.state === "skipped" ? h("span", { class: "badge", text: "Skipped" }) : null,
-        r.item.status === "purged" ? h("span", { class: "badge", text: "Expired" }) : null,
-        h("span", { class: "muted small", text: formatTime(r.playedAt) }),
-        addedByLine(r.addedBy),
-        via !== "" ? h("span", { class: "muted small", text: via }) : null)),
-    actions);
 }
 
 // ------------------------------------------------------------------ requests
@@ -834,26 +435,24 @@ function addedMessage(ack: Record<string, unknown>): string {
 /** What the request panel was built for, so it is only rebuilt when that changes. */
 let requestKey = "";
 
+/**
+ * Library search and uploads for visitors who aren't signed in (guests have no library, search or file
+ * drops elsewhere), where the room lets them request that way. Signed-in users request from their lists,
+ * the header's search and file drops.
+ */
 function renderRequests(s: RoomState): void {
   const you = s.room.you;
-  const isUser = me.kind === "user";
-  // library search: off for guests without the capability and when the room's libraryRequests is off
-  const canSearch = you.canRequestLibrary === true;
-  const key = [s.room.controlMode, you.identified, canSearch, you.canUpload, you.canYoutube, you.canModerate, isUser].join(",");
+  const show = me.kind !== "user" && you.identified && you.restriction === undefined;
+  const canSearch = show && you.canRequestLibrary === true;
+  const canUpload = show && you.canUpload;
+  const key = [s.room.controlMode, canSearch, canUpload, you.canModerate].join(",");
   if (key === requestKey) return;
   requestKey = key;
   const el = element("room-request");
-  const parts: Node[] = [h("h2", { text: s.room.controlMode === "owner" && !you.canModerate ? "Suggest something" : "Request" })];
+  const parts: Node[] = [];
   if (canSearch) parts.push(searchPanel());
-  if (you.canUpload) parts.push(uploadPanel());
-  if (canSearch && isUser) parts.push(playlistPanel());
-  if (parts.length === 1 && you.canYoutube) {
-    parts.push(h("p", { class: "muted", text: "Request links with the Request Link box above." }));
-  } else if (parts.length === 1) {
-    parts.push(h("p", { class: "muted", text: me.kind === "user" ? "You can't request in this room."
-      : !you.identified ? "Join as a guest or log in to request."
-        : "Requests aren't open to guests here. Log in to request." }));
-  }
+  if (canUpload) parts.push(uploadPanel());
+  el.hidden = parts.length === 0;
   el.replaceChildren(...parts);
 }
 
@@ -867,10 +466,7 @@ function searchPanel(): HTMLElement {
   const kind = h("select", { name: "kind", "aria-label": "Kind" },
     h("option", { value: "", text: "All" }), h("option", { value: "audio", text: "Audio" }),
     h("option", { value: "video", text: "Video" }));
-  const all = h("input", { name: "all", type: "checkbox" });
-  all.checked = rememberedWholeServer();
-  const form = h("form", { class: "row" }, input, kind, h("button", { type: "submit", text: "Search" }),
-    h("label", { class: "small" }, all, " Search the whole server"));
+  const form = h("form", { class: "row" }, input, kind, h("button", { type: "submit", text: "Search" }));
   let cursor: string | undefined;
   let generation = 0;
 
@@ -897,7 +493,6 @@ function searchPanel(): HTMLElement {
     const params = new URLSearchParams();
     if (input.value.trim() !== "") params.set("q", input.value.trim());
     if (kind.value !== "") params.set("kind", kind.value);
-    if (all.checked) params.set("all", "1");
     params.set("limit", "25");
     if (cursor !== undefined) params.set("cursor", cursor);
     status.textContent = "Searching…";
@@ -919,12 +514,8 @@ function searchPanel(): HTMLElement {
     ev.preventDefault();
     void load(true);
   });
-  all.addEventListener("change", () => {
-    rememberWholeServer(all.checked);
-    if (results.childElementCount > 0 || status.textContent !== "") void load(true);
-  });
   more.addEventListener("click", () => void load(false));
-  return h("div", { class: "request-search" }, h("h3", { text: "From the library" }), form, status, results, more);
+  return h("div", { class: "request-search" }, h("h3", { text: shown !== undefined && requestVerb(shown) === "Suggest" ? "Suggest from the library" : "Request from the library" }), form, status, results, more);
 }
 
 function uploadPanel(): HTMLElement {
@@ -933,9 +524,6 @@ function uploadPanel(): HTMLElement {
     h("strong", { text: "Upload files" }),
     h("span", { class: "muted", text: " Choose or drop audio or video files to request them." }));
   const activity = h("ul", { class: "activity", "aria-live": "polite" });
-  const addToLibrary = h("input", { type: "checkbox" });
-  const libraryOption = me.kind === "user"
-    ? h("label", { class: "check" }, addToLibrary, " Also add to my library") : null;
 
   const startFile = (file: File): void => {
     const bar = h("progress", { max: "1", value: "0" });
@@ -963,16 +551,9 @@ function uploadPanel(): HTMLElement {
           queued = true;
           const uploadId = upload.uploadId;
           text.textContent = "Requesting…";
-          const classify = p.result?.classify;
           conn.request({ type: "queue.add", uploadId }).then((ack) => {
             text.textContent = addedMessage(ack) + (p.result?.deduplicated === true ? " (already on the server)" : "")
               + " It plays once it has been processed.";
-            // The request plays as it is; the library add waits for a media type.
-            if (classify !== undefined) {
-              classifyAndAdd(classify, file.name).then((added) => {
-                text.textContent += added ? " Added to your library." : " Not added to your library (no media type).";
-              }).catch((e: unknown) => { text.textContent += " " + message(e); });
-            }
           }).catch((e: unknown) => {
             text.className = "error small";
             text.textContent = e === CANCELLED ? "Cancelled" : message(e);
@@ -981,13 +562,10 @@ function uploadPanel(): HTMLElement {
         }
       }
     });
-    // Guests upload as a request in this room (their rights come from it); a user's upload
-    // rights come from `library.upload`, so theirs is a plain upload that queue.add references.
-    if (me.kind !== "user") upload.roomId = roomId;
-    upload.addToLibrary = addToLibrary.checked;
+    // A guest uploads as a request in this room (their rights come from it).
+    upload.roomId = roomId;
     cancel.addEventListener("click", () => upload.cancel());
-    const begin = me.kind === "user" ? Promise.resolve() : conn.ensureIdentity();
-    begin.then(() => upload.start()).catch((e: unknown) => {
+    conn.ensureIdentity().then(() => upload.start()).catch((e: unknown) => {
       text.className = "error small";
       text.textContent = e === CANCELLED ? "Cancelled" : message(e);
     });
@@ -1010,7 +588,7 @@ function uploadPanel(): HTMLElement {
     drop.classList.remove("dragging");
     startFiles(ev.dataTransfer?.files ?? null);
   });
-  return h("div", { class: "add-upload" }, h("h3", { text: "Upload" }), input, drop, libraryOption, activity);
+  return h("div", { class: "add-upload" }, h("h3", { text: "Upload" }), input, drop, activity);
 }
 
 /** What the Request Link box was built for, so it is only rebuilt when that changes (keeps what was typed). */
@@ -1064,30 +642,6 @@ function linkPanel(s: RoomState): HTMLElement {
   return h("div", {}, h("h2", { text: "Request Link" }), form, status);
 }
 
-function playlistPanel(): HTMLElement {
-  const select = h("select", { "aria-label": "Playlist" }, h("option", { value: "", text: "Choose a playlist…" }));
-  const shuffle = h("input", { type: "checkbox" });
-  const status = h("p", { class: "muted small", role: "status" });
-  myPlaylists().then((lists) => {
-    for (const p of lists) select.append(h("option", { value: p.id, text: p.name + " (" + p.entryCount + ")" }));
-  }).catch((e: unknown) => { status.textContent = message(e); });
-  const add = button("Add playlist", async () => {
-    if (select.value === "") return;
-    status.textContent = "Adding…";
-    const ack = await conn.request({ type: "queue.addPlaylist", playlistId: select.value, shuffle: shuffle.checked });
-    const ids = ack["entryIds"] as unknown[] | undefined;
-    const skipped = Number(ack["skipped"] ?? 0);
-    const recent = Number(ack["recentlyPlayed"] ?? 0);
-    const overLimit = Number(ack["overLimit"] ?? 0);
-    status.textContent = (ack["state"] === "suggested" ? "Suggested " : "Added ") + (ids?.length ?? 0) + " entries"
-      + (skipped > 0 ? ", " + skipped + " can't be played" : "")
-      + (recent > 0 ? ", " + recent + " played recently" : "")
-      + (overLimit > 0 ? ", " + overLimit + " over your request limit" : "") + ".";
-  }, (e) => { status.textContent = message(e); });
-  return h("div", {}, h("h3", { text: "Playlist" }),
-    h("div", { class: "row" }, select, h("label", { class: "check" }, shuffle, " Shuffle"), add), status);
-}
-
 // ------------------------------------------------------------------ wiring
 
 function render(s: RoomState): void {
@@ -1097,11 +651,8 @@ function render(s: RoomState): void {
   renderHeader(s);
   renderIdentity();
   renderNowPlaying(s);
-  renderQueue(s);
-  renderSuggestions(s);
   renderRequests(s);
   renderRequestLink(s);
-  renderHistory(s);
   // The viewer URL for everyone and the quick buttons here; the full outputs are in Manage Room.
   outputsPanel ??= new OutputsPanel(element("room-outputs"), element("rv-outputs"), false);
   outputsPanel.update(s);
@@ -1112,11 +663,6 @@ function render(s: RoomState): void {
     forced = nowForced;
     setMode(effectiveMode(chosenMode, forced));
   }
-  // An audio-only room plays every item's audio (the server gives no video URLs): no switch.
-  const audioOnlyRoom = isAudioOnlyRoom(s);
-  element("room-audio-only-label").hidden = audioOnlyRoom;
-  element("room-audio-only-room").hidden = !audioOnlyRoom;
-  element("room-main").hidden = false;
   element("rv-grid").hidden = false;
   if (mode === "listen") player?.update(s);
   shell?.update();
@@ -1151,7 +697,6 @@ function applyMode(m: RoomMode): void {
   const toggle = element("room-mode-toggle") as HTMLButtonElement;
   toggle.textContent = m === "remote" ? "Listen here instead" : "Requests only (I'm listening elsewhere)";
   toggle.hidden = forced;
-  element("room-listen-controls").hidden = m !== "listen";
   element("room-remote-controls").hidden = m !== "remote";
   if (m === "listen") {
     const p = player ?? createPlayer();
@@ -1231,9 +776,6 @@ function createPlayer(): ListenPlayer {
   });
   ROOM_SIGNAL.addEventListener("abort", unsubscribe);
   showSound();
-  const toggle = element("room-audio-only") as HTMLInputElement;
-  toggle.checked = p.audioOnly;
-  toggle.addEventListener("change", () => setAudioOnly(toggle.checked));
   every(() => { if (mode === "listen") p.tick(); }, 250);
   // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
   (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
@@ -1245,11 +787,10 @@ function isAudioOnlyRoom(s: RoomState | undefined): boolean {
   return s?.room.settings["audioOnly"] === true;
 }
 
-/** The video / audio-only switch (the checkbox here or the shell's mini player). */
+/** The video / audio-only switch (the player bar's menu). */
 function setAudioOnly(on: boolean): void {
   player?.setAudioOnly(on);
   saveAudioOnly(on);
-  (element("room-audio-only") as HTMLInputElement).checked = on;
   shell?.update();
 }
 
@@ -1463,7 +1004,6 @@ async function start(): Promise<void> {
       player?.stop();
       kickedText = KICK_TEXT[reason] ?? "You were removed from this room (" + reason + ").";
       shell?.update();
-      element("room-main").hidden = true;
       element("rv-grid").hidden = true;
       const status = element("room-status");
       status.hidden = false;
@@ -1475,7 +1015,6 @@ async function start(): Promise<void> {
     identity: () => renderIdentity(),
     chooseGuestName: (generated) => askGuestName(generated),
     time: (t0, ts, t1) => clock?.reply(t0, ts, t1),
-    ingest: () => showIngest(),
   });
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;

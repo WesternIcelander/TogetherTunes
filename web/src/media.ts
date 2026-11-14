@@ -144,14 +144,6 @@ export function ingestBadge(status: ItemStatus, job: JobView | undefined): HTMLE
   return statusBadge(status);
 }
 
-/** The item title as a link to its page, with artist and album below it. */
-export function itemTitleCell(item: ItemSummary): HTMLElement {
-  const sub = [item.artist, item.album].filter((s) => s !== undefined && s !== "").join(" · ");
-  return h("div", { class: "item-title" },
-    h("a", { href: itemPath(item.id), text: item.title }),
-    sub !== "" ? h("div", { class: "muted small", text: sub }) : null);
-}
-
 export function kindLabel(item: ItemSummary): string {
   if (item.kind === "video" && item.mediaType === "audio") return "Audio (from video)";
   if (item.kind === "audio") return "Audio";

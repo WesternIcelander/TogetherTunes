@@ -3,8 +3,6 @@
 // `GET /api/library/shows` response and when a room offers "Next episode". The server decides
 // what is queued (`queue.nextEpisode`); this mirrors its rules.
 
-import type { ShowInfo } from "./mediatypes.js";
-
 /** One season of a grouped show; `season` is absent for episodes without a season number. */
 export interface ShowSeason<E> { season?: number; episodes: E[] }
 
@@ -45,18 +43,6 @@ export function nextEpisode<E extends EpisodePlace>(candidates: readonly E[], cu
 export function seasonLabel(season: number | undefined): string {
   if (season === undefined) return "No season";
   return season === 0 ? "Specials" : "Season " + season;
-}
-
-/** "S02E05", or "E05" without a season. */
-export function episodeCode(show: ShowInfo): string {
-  const pad = (n: number): string => (n < 10 ? "0" : "") + n;
-  return (show.season !== undefined ? "S" + pad(show.season) : "") + "E" + pad(show.episode);
-}
-
-/** The shows whose name contains every word of `query` (case-insensitive); all for a blank query. */
-export function filterShows<E>(shows: readonly ShowGroup<E>[], query: string): ShowGroup<E>[] {
-  const words = showKey(query).split(/\s+/).filter((w) => w !== "");
-  return shows.filter((s) => words.every((w) => showKey(s.name).indexOf(w) >= 0));
 }
 
 /**

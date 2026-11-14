@@ -50,8 +50,8 @@ import {
 import type { CurrentEntry, HistoryEntry, RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
 import type { RoomListEntry } from "./roomlist.js";
 import { playlistPath, routeOf } from "./router.js";
-import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, LIBRARY_PAGE, loadMe, logout, message,
-  PLAYLISTS_PAGE, ROOMS_PAGE, type Me } from "./session.js";
+import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, loadMe, logout, message, ROOMS_PAGE,
+  type Me } from "./session.js";
 import { lastPressWasTouch, onLongPress, openMenu } from "./touch.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
@@ -346,8 +346,7 @@ export class Frame {
       logout().catch(() => { out.disabled = false; });
     });
     const parts: HTMLElement[] = [h("p", { class: "muted", text: "Signed in as " + me.name }),
-      link(ACCOUNT_PAGE, "Account settings"), link(LIBRARY_PAGE, "Manage library"), link(PLAYLISTS_PAGE, "Playlists"),
-      link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
+      link(ACCOUNT_PAGE, "Account settings"), link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
     if (canInvite(me)) parts.push(link(INVITES_PAGE, "Invites"));
     if (isAdmin(me)) parts.push(link(ADMIN_PAGE, "Administration"));
     parts.push(out);

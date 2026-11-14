@@ -79,24 +79,6 @@ function storeRemove(key: string): void {
   }
 }
 
-/** File names of unfinished uploads remembered in this browser, to remind the user to pick them again. */
-export function rememberedUploads(): string[] {
-  const names: string[] = [];
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key === null || !key.startsWith(STORE_PREFIX)) continue;
-      if (storeGet(key) === undefined) continue;
-      const rest = key.substring(STORE_PREFIX.length);
-      const name = rest.substring(rest.indexOf(":", rest.indexOf(":") + 1) + 1);
-      names.push(name);
-    }
-  } catch {
-    // ignore
-  }
-  return names;
-}
-
 /** Thrown inside the loop when the user paused or cancelled. */
 class Stopped extends Error {}
 

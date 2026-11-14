@@ -162,8 +162,8 @@ class MainRouterTest {
             assertEquals(index, page.body(), path);
         }
         // The shell imports each view's module under ?mount=N.
-        for (String module : List.of("app", "shell", "router", "main", "rooms", "room", "roommanage", "library",
-                "playlists", "encodes", "account", "admin", "item", "login", "register", "password", "setup")) {
+        for (String module : List.of("app", "shell", "router", "main", "rooms", "room", "roommanage", "libview",
+                "encodes", "account", "admin", "item", "login", "register", "password", "setup")) {
             HttpResponse<String> js = get("/js/" + module + ".js?mount=7");
             assertEquals(200, js.statusCode(), module);
             assertTrue(js.headers().firstValue("Content-Type").orElse("").startsWith("text/javascript"), module);

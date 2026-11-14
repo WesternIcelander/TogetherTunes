@@ -90,16 +90,6 @@ test("the lookup line counts seconds and shows the latest stage", () => {
   assert.equal(J.lookupText("Checking formats…", -5), "Checking formats… 0 s");
 });
 
-test("streamed JSON lines split across chunks", () => {
-  const lines = new J.JsonLines();
-  assert.deepEqual(lines.push('{"type":"progress","stage":"con'), []);
-  assert.deepEqual(lines.push('tacting"}\n{"type":"pro'), [{ type: "progress", stage: "contacting" }]);
-  assert.deepEqual(lines.push('gress","stage":"page"}\nnot json\n\n'), [{ type: "progress", stage: "page" }]);
-  assert.deepEqual(lines.push('{"type":"result","itemId":"x"}'), []);
-  assert.deepEqual(lines.end(), [{ type: "result", itemId: "x" }]);
-  assert.deepEqual(lines.end(), []);
-});
-
 test("who gets a Retry button on a room entry", () => {
   // owner/moderator, or the requester who may still add YouTube links
   assert.equal(J.canRetryEntry("failed", "youtube", true, false, false), true);

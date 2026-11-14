@@ -31,8 +31,6 @@ test("missing season numbers come before every season", () => {
   assert.equal(S.seasonLabel(undefined), "No season");
   assert.equal(S.seasonLabel(0), "Specials");
   assert.equal(S.seasonLabel(3), "Season 3");
-  assert.equal(S.episodeCode({ name: "X", season: 2, episode: 5 }), "S02E05");
-  assert.equal(S.episodeCode({ name: "X", episode: 12 }), "E12");
 });
 
 test("nothing next", () => {
@@ -42,10 +40,7 @@ test("nothing next", () => {
   assert.equal(S.nextEpisode([ep("dup", 1, 2)], { season: 1, episode: 2 }), undefined);
 });
 
-test("filtering shows and when a room offers Next episode", () => {
-  const shows = [{ name: "The Office", seasons: [] }, { name: "Other", seasons: [] }];
-  assert.deepEqual(S.filterShows(shows, " office the ").map((s) => s.name), ["The Office"]);
-  assert.equal(S.filterShows(shows, "").length, 2);
+test("show keys and when a room offers Next episode", () => {
   assert.equal(S.showKey("  The SHOW "), "the show");
   assert.equal(S.offersNextEpisode(true, { mediaType: "show" }), true);
   assert.equal(S.offersNextEpisode(true, undefined), true);

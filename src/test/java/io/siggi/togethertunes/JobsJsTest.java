@@ -47,16 +47,19 @@ class JobsJsTest {
         }
         assertFalse(jobs.contains("innerHTML"), "text only, never parsed as HTML");
 
-        // the room page and the Library page use the same words for ingest progress and the lookup
+        // the Request Link box and the queue use the same words for the lookup and ingest progress
         String room = read("web/js/room.js");
-        for (String s : List.of("from \"./jobtext.js\"", "lookupText(stageText, Date.now() - started)", "showIngest()",
-                "data-ingest-item", "ingestText(", "window.clearInterval(ticker)")) {
-            assertTrue(room.contains(s) || (s.equals("data-ingest-item") && room.contains("dataset[\"ingestItem\"]")), s);
-        }
-        // a failed YouTube entry has a Retry button (queue.retry); the item page retries over REST
-        for (String s : List.of("canRetryEntry(", "type: \"queue.retry\"", "actions.append(retryButton(e))")) {
+        for (String s : List.of("from \"./jobtext.js\"", "lookupText(stageText, Date.now() - started)",
+                "window.clearInterval(ticker)")) {
             assertTrue(room.contains(s), s);
         }
+        String frame = read("web/js/frame.js");
+        for (String s : List.of("from \"./jobtext.js\"", "ingestText(", "room.ingest()")) {
+            assertTrue(frame.contains(s), s);
+        }
+        // a failed YouTube entry has a Retry button (queue.retry); the item page retries over REST
+        assertTrue(read("web/js/panels.js").contains("canRetryEntry("));
+        assertTrue(frame.contains("type: \"queue.retry\""));
         String item = read("web/js/item.js");
         for (String s : List.of("item.you.canRetry === true", "\"/retry\"", "can't be retried: upload the file again")) {
             assertTrue(item.contains(s), s);
@@ -65,15 +68,13 @@ class JobsJsTest {
         for (String s : List.of("case \"request.progress\"", "case \"ingest\"", "p.progress(")) {
             assertTrue(roomclient.contains(s), s);
         }
-        String addmedia = read("web/js/addmedia.js");
-        for (String s : List.of("application/x-ndjson", "lookupText(", "new JsonLines()", "ingestText(")) {
-            assertTrue(addmedia.contains(s), s);
-        }
-        assertTrue(read("web/js/library.js").contains("ingestBadge("));
+        // The room view's Request Link box shows yt-dlp's stages; queue entries show what ingest does.
+        assertTrue(read("web/js/room.js").contains("lookupText("));
+        assertTrue(read("web/js/frame.js").contains("ingestText("));
+        assertTrue(read("web/js/item.js").contains("ingestBadge("));
         assertTrue(read("web/js/media.js").contains("ingestText("));
 
         String session = read("web/js/session.js");
         assertTrue(session.contains("\"/encodes/\"") && session.contains("\"Encodes\""), session);
-        assertTrue(NodeTests.view("view-library").contains("href=\"/encodes/\""));
     }
 }

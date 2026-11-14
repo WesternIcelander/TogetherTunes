@@ -13,7 +13,7 @@
 
 /** The views of the app. Each has a `<template id="view-…">` in index.html and (most) a module. */
 export type ViewName = "home" | "login" | "register" | "password" | "setup" | "rooms" | "room" | "roomManage"
-  | "library" | "playlists" | "encodes" | "account" | "admin" | "item" | "list" | "notFound";
+  | "encodes" | "account" | "admin" | "item" | "list" | "notFound";
 
 /**
  * The desktop layout's middle lists (docs/ui.md#layout-desktop), all shown by the `list` view:
@@ -27,7 +27,7 @@ export interface ViewRoute {
   view: ViewName;
   /** Path parameters (`ref` for rooms, `id` for items and playlists), decoded. */
   params: Record<string, string>;
-  /** The view's own spelling of the path (aliases such as `/login.html` or `/library` map to it). */
+  /** The view's own spelling of the path (aliases such as `/login.html` or `/library/` map to it). */
   path: string;
 }
 
@@ -51,8 +51,6 @@ export const VIEWS: Readonly<Record<ViewName, ViewInfo>> = {
   rooms: { template: "view-rooms", module: "rooms" },
   room: { template: "view-room", module: "room" },
   roomManage: { template: "view-room-manage", module: "roommanage" },
-  library: { template: "view-library", module: "library" },
-  playlists: { template: "view-playlists", module: "playlists" },
   encodes: { template: "view-encodes", module: "encodes" },
   account: { template: "view-account", module: "account" },
   admin: { template: "view-admin", module: "admin" },
@@ -81,10 +79,6 @@ const FIXED: Record<string, [ViewName, string]> = {
   "/setup.html": ["setup", "/setup"],
   "/rooms": ["rooms", "/rooms/"],
   "/rooms/": ["rooms", "/rooms/"],
-  "/library": ["library", "/library/"],
-  "/library/": ["library", "/library/"],
-  "/playlists": ["playlists", "/playlists/"],
-  "/playlists/": ["playlists", "/playlists/"],
   "/encodes": ["encodes", "/encodes/"],
   "/encodes/": ["encodes", "/encodes/"],
   "/account": ["account", "/account/"],
@@ -93,8 +87,15 @@ const FIXED: Record<string, [ViewName, string]> = {
   "/admin/": ["admin", "/admin/"],
 };
 
-/** The `list` view's fixed paths (a playlist is `/playlists/{id}`). */
+/**
+ * The `list` view's fixed paths (a playlist is `/playlists/{id}`). The provisional UI's library page
+ * (`/library/`) and playlist list (`/playlists/`) are gone: old links show All My Songs.
+ */
 const LISTS: Record<string, [ListName, string]> = {
+  "/library": ["songs", "/songs"],
+  "/library/": ["songs", "/songs"],
+  "/playlists": ["songs", "/songs"],
+  "/playlists/": ["songs", "/songs"],
   "/songs": ["songs", "/songs"],
   "/songs/": ["songs", "/songs"],
   "/shows": ["shows", "/shows"],
@@ -169,7 +170,7 @@ export function routeOf(pathname: string): Route {
   return { kind: "view", view: "notFound", params: {}, path: pathname };
 }
 
-/** The path of a playlist's view (the `list` view; the old `/playlists/?id=` editor stays for now). */
+/** The path of a playlist's view (the `list` view). */
 export function playlistPath(id: string): string {
   return "/playlists/" + encodeURIComponent(id);
 }
