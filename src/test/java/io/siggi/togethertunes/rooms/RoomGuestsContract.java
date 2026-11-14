@@ -340,6 +340,7 @@ abstract class RoomGuestsContract {
         assertEquals("banned_from_room", refused(() -> rooms.access(guest, roomId)).code());
         assertEquals("banned_from_room", refused(() -> rooms.get(guest, roomSlug)).code());
         assertTrue(rooms.list(guest, null, 50).items().isEmpty());
+        assertTrue(rooms.list(guest, roomSlug, null, 50).items().isEmpty(), "nor found by its exact slug");
         assertEquals(1, rooms.list(ipGuest, null, 50).items().size());
         assertEquals(1, rooms.list(Actor.ANONYMOUS, null, 50).items().size());
 

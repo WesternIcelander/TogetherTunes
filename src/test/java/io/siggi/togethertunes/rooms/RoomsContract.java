@@ -352,6 +352,128 @@ abstract class RoomsContract {
         }
     }
 
+    private List<String> searchedIds(Actor actor, String q) throws SQLException {
+        return rooms.list(actor, q, null, Rooms.LIST_MAX).items().stream().map(Rooms.RoomView::id).toList();
+    }
+
+    @Test
+    void searchFiltersAndFindsAnExactSlugFirst() throws Exception {
+        Rooms.RoomView chill = rooms.create(alice, "Chill Lounge", "chill", Rooms.Visibility.PUBLIC, null, IP);
+        clock.advance(1);
+        Rooms.RoomView hidden = rooms.create(alice, "Hidden Lounge", "hidden-lounge", Rooms.Visibility.UNLISTED,
+                null, IP);
+        clock.advance(1);
+        Rooms.RoomView secret = rooms.create(alice, "Secret Lounge", "secret-lounge", Rooms.Visibility.PRIVATE,
+                null, IP);
+        clock.advance(1);
+        Rooms.RoomView rock = rooms.create(bob, "Rock Café", "rock", Rooms.Visibility.PUBLIC, null, IP);
+        clock.advance(1);
+        Rooms.RoomView rockUnlisted = rooms.create(bob, "Más Rock", "rock-2", Rooms.Visibility.UNLISTED, null, IP);
+
+        // filtering: every word in the name or slug, ignoring case (also non-ASCII), owner sees own rooms
+        assertEquals(List.of(secret.id(), hidden.id(), chill.id()), searchedIds(alice, "lounge"));
+        assertEquals(List.of(chill.id()), searchedIds(alice, "LOUNGE chill"));
+        assertEquals(List.of(rock.id()), searchedIds(carol, "CAFÉ"));
+        assertEquals(List.of(rockUnlisted.id()), searchedIds(bob, "más"));
+        assertEquals(listedIds(carol), searchedIds(carol, "  "));
+        assertEquals(List.of(), searchedIds(carol, "100%_"));
+        expect(400, "invalid_query", () -> rooms.list(carol, "x".repeat(201), null, 10));
+
+        // others: only public rooms by words; unlisted and private ones never leak
+        assertEquals(List.of(chill.id()), searchedIds(carol, "lounge"));
+        assertEquals(List.of(chill.id()), searchedIds(guest, "lounge"));
+        assertEquals(List.of(chill.id()), searchedIds(Actor.ANONYMOUS, "lounge"));
+        assertEquals(List.of(rock.id()), searchedIds(carol, "rock"));
+        assertEquals(List.of(), searchedIds(carol, "hidden"));
+
+        // an exact slug, id or room URL of an unlisted room comes first
+        for (Actor a : List.of(carol, guest, Actor.ANONYMOUS)) {
+            assertEquals(List.of(hidden.id()), searchedIds(a, "hidden-lounge"));
+            assertEquals(List.of(hidden.id()), searchedIds(a, "Hidden-Lounge"));
+            assertEquals(List.of(hidden.id()), searchedIds(a, hidden.id()));
+            assertEquals(List.of(hidden.id()), searchedIds(a, "https://tunes.example/rooms/hidden-lounge?mode=remote"));
+            assertEquals(List.of(hidden.id()), searchedIds(a, "tunes.example/r/hidden-lounge"));
+            assertEquals(List.of(hidden.id()), searchedIds(a, "/rooms/hidden-lounge/manage#x"));
+            assertEquals(List.of(rockUnlisted.id()), searchedIds(a, "rock-2"));
+            // the exact match also when it is listed anyway, once and first
+            assertEquals(List.of(rock.id()), searchedIds(a, "https://tunes.example/r/rock"));
+        }
+        assertEquals(List.of(rock.id(), rockUnlisted.id()), searchedIds(bob, "rock"), "the exact slug first");
+        assertEquals(List.of(rockUnlisted.id(), rock.id()), searchedIds(bob, "roc"), "else newest first");
+        // a prefix or a word of an unlisted slug isn't enough
+        assertEquals(List.of(), searchedIds(carol, "hidden-loung"));
+        assertEquals(List.of(), searchedIds(carol, "https://tunes.example/hidden-lounge"));
+
+        // private rooms don't leak through an exact slug, id or URL
+        for (Actor a : List.of(carol, bob, guest, Actor.ANONYMOUS)) {
+            assertEquals(List.of(), searchedIds(a, "secret-lounge"));
+            assertEquals(List.of(), searchedIds(a, secret.id()));
+            assertEquals(List.of(), searchedIds(a, "https://tunes.example/rooms/secret-lounge"));
+        }
+        // ...but an invited member finds it, and rooms.moderateAny opens any room
+        rooms.setRole(alice, secret.id(), carol.userId(), Rooms.Role.MEMBER, IP);
+        assertEquals(List.of(secret.id()), searchedIds(carol, "secret-lounge"));
+        assertEquals(List.of(secret.id(), chill.id()), searchedIds(carol, "lounge"));
+        assertEquals(List.of(secret.id()), searchedIds(mod, "secret-lounge"));
+        assertEquals(List.of(chill.id()), searchedIds(mod, "lounge"), "moderateAny lists only what others do");
+
+        // a banned user finds nothing by the exact slug
+        rooms.setRole(alice, hidden.id(), bob.userId(), Rooms.Role.BANNED, IP);
+        assertEquals(List.of(), searchedIds(bob, "hidden-lounge"));
+        rooms.setRole(alice, chill.id(), bob.userId(), Rooms.Role.BANNED, IP);
+        assertEquals(List.of(), searchedIds(bob, "chill"));
+
+        // paging: the exact match is on the first page only, on top of the limit
+        List<String> pubs = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            clock.advance(1);
+            pubs.add(0, rooms.create(alice, "Hidden Lounge Annex " + i, null, Rooms.Visibility.PUBLIC, null, IP).id());
+        }
+        // an exact slug that also matches other rooms by words
+        Rooms.RoomView annexSlug = rooms.create(alice, "Annex", "annex", Rooms.Visibility.UNLISTED, null, IP);
+        clock.advance(1);
+        List<String> seen = new ArrayList<>();
+        String cursor = null;
+        int pagesSeen = 0;
+        do {
+            Rooms.Page page = rooms.list(carol, "annex", cursor, 2);
+            List<String> ids = page.items().stream().map(Rooms.RoomView::id).toList();
+            if (pagesSeen == 0) {
+                assertEquals(annexSlug.id(), ids.get(0));
+                assertEquals(3, ids.size());
+            } else {
+                assertFalse(ids.contains(annexSlug.id()));
+            }
+            seen.addAll(ids);
+            cursor = page.nextCursor();
+            pagesSeen++;
+        } while (cursor != null);
+        List<String> expected = new ArrayList<>();
+        expected.add(annexSlug.id());
+        expected.addAll(pubs);
+        assertEquals(expected, seen);
+    }
+
+    @Test
+    void exactKeys() {
+        assertEquals("club", Rooms.exactKey("club"));
+        assertEquals("club", Rooms.exactKey(" CLUB "));
+        assertEquals("club", Rooms.exactKey("https://tunes.example/rooms/club"));
+        assertEquals("club", Rooms.exactKey("http://tunes.example:8080/rooms/Club/?mode=remote"));
+        assertEquals("club", Rooms.exactKey("tunes.example/r/club#top"));
+        assertEquals("club", Rooms.exactKey("/rooms/club/manage"));
+        String id = UuidV7.newId();
+        assertEquals(id, Rooms.exactKey("https://tunes.example/rooms/" + id.toUpperCase()));
+        assertNull(Rooms.exactKey(null));
+        assertNull(Rooms.exactKey(""));
+        assertNull(Rooms.exactKey("two words"));
+        assertNull(Rooms.exactKey("ab"));
+        assertNull(Rooms.exactKey("https://tunes.example/"));
+        assertNull(Rooms.exactKey("https://tunes.example/club"));
+        assertNull(Rooms.exactKey("https://tunes.example/rooms/"));
+        assertNull(Rooms.exactKey("https://rooms/"));
+    }
+
     // ------------------------------------------------------------------ changing and deleting
 
     @Test

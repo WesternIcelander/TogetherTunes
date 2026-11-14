@@ -60,6 +60,8 @@ public final class RoomExecutor {
     /** The pending advance task, or {@code null}. Only touched on the executor thread. */
     private ScheduledFuture<?> advanceTask;
     private volatile boolean closed;
+    /** The presence counts after the last mutation, readable from any thread ({@link #presence}). */
+    private volatile RoomPresence.Counts presence = RoomPresence.Counts.NONE;
 
     RoomExecutor(RoomState initial, RoomStore store, Clock clock, PackagerHook packager,
                  LivePlayingItems playing, Consumer<RoomExecutor> onClosed) {
@@ -91,6 +93,14 @@ public final class RoomExecutor {
             tx.refreshAutoplay(); // fill the autoplay section (selections may have changed meanwhile)
             return null;
         });
+    }
+
+    /**
+     * Who is in the room ({@link RoomPresence#counts}) as of the last mutation that ran; any thread
+     * may call it ({@code GET /api/rooms}' listener counts).
+     */
+    public RoomPresence.Counts presence() {
+        return presence;
     }
 
     /** Whether this executor stopped taking work. */
@@ -243,6 +253,14 @@ public final class RoomExecutor {
     // ------------------------------------------------------------------ on the executor thread
 
     private <T> T run(RoomMutation<T> mutation) throws Exception {
+        try {
+            return runTx(mutation);
+        } finally {
+            presence = state.presence().counts();
+        }
+    }
+
+    private <T> T runTx(RoomMutation<T> mutation) throws Exception {
         RoomTx tx = new RoomTx(state, EpochMs.now(clock), store, packager);
         T value;
         try {

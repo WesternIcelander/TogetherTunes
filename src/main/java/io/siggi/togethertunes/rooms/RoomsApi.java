@@ -24,10 +24,13 @@ import java.util.Set;
  * {@code Cache-Control: no-store}.
  *
  * <ul>
- *   <li>{@code GET /api/rooms?cursor=&limit=} (anyone) → {@code {"items": [room], "nextCursor"?}}:
- *       public rooms plus the caller's own (owned, moderated, member of), newest first;
+ *   <li>{@code GET /api/rooms?q=&cursor=&limit=} (anyone) → {@code {"items": [room], "nextCursor"?}}:
+ *       public rooms plus the caller's own (owned, moderated, member of), newest first, each with
+ *       {@code listeners} ({@link RoomRegistry#listeners}); {@code q} filters by name and slug, and an
+ *       exact slug, id or room URL of a room the caller may open (e.g. unlisted) puts that room first
+ *       ({@link Rooms#list(io.siggi.togethertunes.auth.Actor, String, String, int)});
  *       {@code limit} 1..{@value Rooms#LIST_MAX}, default {@value Rooms#LIST_DEFAULT}.
- *       {@code 400 invalid_cursor} / {@code invalid_limit}.</li>
+ *       {@code 400 invalid_cursor} / {@code invalid_limit} / {@code invalid_query}.</li>
  *   <li>{@code POST /api/rooms} {@code {"name", "slug"?, "visibility"?, "controlMode"?}} →
  *       {@code 201 room}. Needs {@code rooms.create} ({@code 401} guests/anonymous,
  *       {@code 403 forbidden}). Defaults: a slug derived from the name, {@code unlisted},
@@ -271,9 +274,13 @@ public final class RoomsApi {
 
     private void list(Request request, Response response) throws Exception {
         int limit = limit(request);
-        Rooms.Page page = rooms.list(ActorResolver.actor(request), cursor(request), limit);
+        Rooms.Page page = rooms.list(ActorResolver.actor(request), request.query("q"), cursor(request), limit);
+        List<Rooms.RoomView> items = new ArrayList<>(page.items().size());
+        for (Rooms.RoomView room : page.items()) {
+            items.add(room.withListeners(registry.listeners(room.id())));
+        }
         response.header("Cache-Control", "no-store");
-        response.json(page);
+        response.json(new Rooms.Page(List.copyOf(items), page.nextCursor()));
     }
 
     private void search(Request request, Response response) throws Exception {

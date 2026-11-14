@@ -537,6 +537,58 @@ class RoomsApiTest {
         expectError(401, "not_authenticated", call(null, "DELETE", "/api/rooms/open/members/" + bobId, null));
     }
 
+    private static List<String> ids(JsonObject page) {
+        List<String> out = new ArrayList<>();
+        page.getAsJsonArray("items").forEach(e -> out.add(e.getAsJsonObject().get("id").getAsString()));
+        return out;
+    }
+
+    @Test
+    void listCountsListenersAndSearches() throws Exception {
+        String pub = json(call(alice, "POST", "/api/rooms",
+                "{\"name\":\"Open Lounge\",\"slug\":\"open-lounge\",\"visibility\":\"public\"}")).get("id").getAsString();
+        clock.advance(1);
+        String unl = json(call(alice, "POST", "/api/rooms",
+                "{\"name\":\"Quiet Lounge\",\"slug\":\"quiet\"}")).get("id").getAsString();
+        clock.advance(1);
+        String priv = json(call(alice, "POST", "/api/rooms",
+                "{\"name\":\"Secret Lounge\",\"slug\":\"secret\",\"visibility\":\"private\"}")).get("id").getAsString();
+
+        // listener counts: 0 while nobody is in a room (never loads it); people once each + anonymous
+        JsonObject list = json(call(alice, "GET", "/api/rooms", null));
+        assertEquals(List.of(priv, unl, pub), ids(list));
+        list.getAsJsonArray("items").forEach(e -> assertEquals(0, e.getAsJsonObject().get("listeners").getAsInt()));
+        assertNull(registry.loaded(pub), "listing doesn't load rooms");
+        String guestId = io.siggi.togethertunes.db.UuidV7.newId();
+        registry.call(pub, tx -> {
+            PresenceOps.join(tx, "c1", RoomActor.user(bobId, null), RoomPresence.Mode.LISTEN);
+            PresenceOps.join(tx, "c2", RoomActor.user(bobId, null), RoomPresence.Mode.REMOTE);
+            PresenceOps.join(tx, "c3", RoomActor.guest(guestId, true, true), RoomPresence.Mode.REMOTE);
+            PresenceOps.join(tx, "c4", RoomActor.ANONYMOUS, RoomPresence.Mode.LISTEN);
+            PresenceOps.join(tx, "c5", RoomActor.ANONYMOUS, RoomPresence.Mode.LISTEN);
+            return null;
+        });
+        JsonObject room = json(call(null, "GET", "/api/rooms", null)).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertEquals(pub, room.get("id").getAsString());
+        assertEquals(4, room.get("listeners").getAsInt());
+        registry.call(pub, tx -> PresenceOps.leave(tx, "c4"));
+        assertEquals(3, json(call(bob, "GET", "/api/rooms", null)).getAsJsonArray("items").get(0).getAsJsonObject()
+                .get("listeners").getAsInt());
+        assertFalse(json(call(bob, "GET", "/api/rooms/" + pub, null)).has("listeners"), "only the list counts");
+
+        // q: words filter; an exact unlisted slug or room URL comes first; private rooms never leak
+        assertEquals(List.of(pub), ids(json(call(bob, "GET", "/api/rooms?q=lounge", null))));
+        assertEquals(List.of(unl), ids(json(call(bob, "GET", "/api/rooms?q=quiet", null))));
+        assertEquals(List.of(unl), ids(json(call(null, "GET", "/api/rooms?q="
+                + java.net.URLEncoder.encode("https://tunes.example/rooms/quiet", java.nio.charset.StandardCharsets.UTF_8),
+                null))));
+        assertEquals(List.of(), ids(json(call(bob, "GET", "/api/rooms?q=secret", null))));
+        assertEquals(List.of(), ids(json(call(null, "GET", "/api/rooms?q=" + priv, null))));
+        assertEquals(List.of(priv), ids(json(call(alice, "GET", "/api/rooms?q=secret", null))));
+        assertEquals(List.of(priv), ids(json(call(root, "GET", "/api/rooms?q=secret", null))), "moderateAny");
+        expectError(400, "invalid_query", call(bob, "GET", "/api/rooms?q=" + "x".repeat(201), null));
+    }
+
     @Test
     void changesGoThroughTheRoomExecutor() throws Exception {
         String id = json(call(alice, "POST", "/api/rooms", "{\"name\":\"Live\"}")).get("id").getAsString();

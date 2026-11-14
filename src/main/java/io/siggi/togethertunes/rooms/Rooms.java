@@ -171,10 +171,24 @@ public final class Rooms {
      * and what they may do with the room itself.
      */
     public record RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
-                           JsonObject settings, long createdAt, You you, Boolean alone) {
+                           JsonObject settings, long createdAt, You you, Boolean alone, Integer listeners) {
+        public RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
+                        JsonObject settings, long createdAt, You you, Boolean alone) {
+            this(id, slug, name, owner, visibility, controlMode, settings, createdAt, you, alone, null);
+        }
+
         public RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
                         JsonObject settings, long createdAt, You you) {
-            this(id, slug, name, owner, visibility, controlMode, settings, createdAt, you, null);
+            this(id, slug, name, owner, visibility, controlMode, settings, createdAt, you, null, null);
+        }
+
+        /**
+         * This view with its listener count ({@code GET /api/rooms}): everyone in the room right
+         * now, identified people once each plus anonymous connections ({@link RoomPresence#counts}).
+         */
+        public RoomView withListeners(int listeners) {
+            return new RoomView(id, slug, name, owner, visibility, controlMode, settings, createdAt, you, alone,
+                    listeners);
         }
     }
 
@@ -481,6 +495,72 @@ public final class Rooms {
      *               invalid_cursor} if malformed
      */
     public Page list(Actor actor, String cursor, int limit) throws SQLException {
+        return list(actor, null, cursor, limit);
+    }
+
+    /**
+     * The key an exact room search names, or {@code null}: the query itself if it is a slug or a
+     * room id, or the room segment of a room URL ({@code …/rooms/{key}…} or the short link
+     * {@code …/r/{slug}}, with or without scheme and host; query and fragment ignored).
+     */
+    static String exactKey(String query) {
+        if (query == null) {
+            return null;
+        }
+        String s = query.strip();
+        if (s.isEmpty() || s.length() > 2048) {
+            return null;
+        }
+        String key = s;
+        if (s.indexOf('/') >= 0) {
+            int scheme = s.indexOf("://");
+            String path = s;
+            if (scheme >= 0) {
+                int slash = s.indexOf('/', scheme + 3);
+                path = slash < 0 ? "" : s.substring(slash);
+            }
+            int cut = path.length();
+            for (char ch : new char[]{'?', '#'}) {
+                int i = path.indexOf(ch);
+                if (i >= 0 && i < cut) {
+                    cut = i;
+                }
+            }
+            String[] segments = path.substring(0, cut).split("/");
+            key = null;
+            for (int i = 0; i + 1 < segments.length; i++) {
+                if (segments[i].equals("rooms") || segments[i].equals("r")) {
+                    key = segments[i + 1];
+                    break;
+                }
+            }
+            if (key == null) {
+                return null;
+            }
+        }
+        String lower = key.toLowerCase(Locale.ROOT);
+        if (UUID_SHAPE.matcher(lower).matches()) {
+            return lower;
+        }
+        try {
+            return slug(lower);
+        } catch (HttpError e) {
+            return null;
+        }
+    }
+
+    /**
+     * {@link #list(Actor, String, int)} filtered by {@code query}: every word of it
+     * ({@code Library.terms}) must occur in the room's name or slug, ignoring case. Besides, if the
+     * query is a room's exact slug or id, or a room URL ({@link #exactKey}), and the caller may open
+     * that room ({@link #access(Actor, String)}: so also an unlisted room, never a private room they
+     * aren't invited to nor one that banned them), that room comes first on the first page, in
+     * addition to the {@code limit} others, and is left out of the rest of the list.
+     *
+     * @throws HttpError {@code 400 invalid_query} (over {@value io.siggi.togethertunes.library.Library#QUERY_MAX_CHARS}
+     *                   characters), {@code 400 invalid_cursor}
+     */
+    public Page list(Actor actor, String query, String cursor, int limit) throws SQLException {
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
         }
@@ -498,29 +578,57 @@ public final class Rooms {
             }
             cursorId = cursor.substring(sep + 1);
         }
+        List<String> terms = io.siggi.togethertunes.library.Library.terms(query);
+        String exactKey = exactKey(query);
         boolean moderateAny = moderatesAny(actor);
         String uid = userId(actor);
         String gid = actor instanceof Actor.Guest g ? g.guestId() : null;
+        Dialect d = db.dialect();
+        StringBuilder filter = new StringBuilder();
+        String like = " LIKE ? ESCAPE '" + Dialect.LIKE_ESCAPE + "'";
+        for (int i = 0; i < terms.size(); i++) {
+            filter.append(" AND (").append(d.lower("r.name")).append(like).append(" OR r.slug").append(like)
+                    .append(")");
+        }
         String sql = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility, r.control_mode,"
                 + " r.created_at, r.settings_json, r.alone_user_id, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
                 + " LEFT JOIN room_members m ON m.room_id = r.id AND m.user_id = ?"
                 + " WHERE r.alone_user_id IS NULL AND (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
                 + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')"
                 + " AND NOT EXISTS (SELECT 1 FROM room_guest_bans b WHERE b.room_id = r.id AND b.guest_id = ?)))"
+                + filter + " AND r.id <> ?"
                 + (cursorId != null ? " AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "")
                 + " ORDER BY r.created_at DESC, r.id DESC LIMIT " + (limit + 1);
         long at = cursorAt;
         String afterId = cursorId;
         return db.read(c -> {
+            RoomView exact = null;
+            if (exactKey != null) {
+                try {
+                    Access a = access(c, actor, exactKey, false, moderateAny);
+                    if (!a.room().alone()) {
+                        exact = view(a.room(), a.role(), moderateAny);
+                    }
+                } catch (HttpError e) {
+                    // not a room the caller may open: no exact match
+                }
+            }
             List<RoomView> items = new ArrayList<>();
             try (PreparedStatement ps = c.prepareStatement(sql)) {
-                ps.setString(1, uid == null ? "" : uid);
-                ps.setString(2, uid == null ? "" : uid);
-                ps.setString(3, gid == null ? "" : gid);
+                int n = 1;
+                ps.setString(n++, uid == null ? "" : uid);
+                ps.setString(n++, uid == null ? "" : uid);
+                ps.setString(n++, gid == null ? "" : gid);
+                for (String term : terms) {
+                    String pattern = Dialect.containsPattern(term);
+                    ps.setString(n++, pattern);
+                    ps.setString(n++, pattern);
+                }
+                ps.setString(n++, exact == null ? "" : exact.id());
                 if (afterId != null) {
-                    ps.setLong(4, at);
-                    ps.setLong(5, at);
-                    ps.setString(6, afterId);
+                    ps.setLong(n++, at);
+                    ps.setLong(n++, at);
+                    ps.setString(n, afterId);
                 }
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
@@ -535,6 +643,9 @@ public final class Rooms {
                 items = new ArrayList<>(items.subList(0, limit));
                 RoomView last = items.get(limit - 1);
                 next = last.createdAt() + "_" + last.id();
+            }
+            if (exact != null && afterId == null) {
+                items.add(0, exact);
             }
             return new Page(List.copyOf(items), next);
         });

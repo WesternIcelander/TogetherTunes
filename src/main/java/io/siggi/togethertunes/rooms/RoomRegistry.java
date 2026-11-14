@@ -186,6 +186,20 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         return e == null || e.isClosed() ? null : e;
     }
 
+    /**
+     * The room's listener count: everyone in it right now, identified people (users, guests) once
+     * each, in listen or remote mode, plus anonymous connections ({@link RoomPresence#counts}).
+     * {@code 0} for a room that isn't loaded (nobody can be in it). Never loads the room.
+     */
+    public int listeners(String roomId) {
+        RoomExecutor e = loaded(roomId);
+        if (e == null) {
+            return 0;
+        }
+        RoomPresence.Counts c = e.presence();
+        return c.identified() + c.anonymous();
+    }
+
     /** How many rooms are loaded. */
     public int loadedCount() {
         return executors.size();
