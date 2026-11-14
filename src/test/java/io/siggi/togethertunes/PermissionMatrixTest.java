@@ -177,6 +177,8 @@ class PermissionMatrixTest {
             row("GET /auth/oidc/{slug}/start", c -> Call.get("/auth/oidc/nope/start"), 302, 302, 302, 302),
             row("GET /auth/oidc/{slug}/callback", c -> Call.get("/auth/oidc/nope/callback?state=x&code=y"),
                     302, 302, 302, 302),
+            // The page a popup login ends at: a static page for every caller.
+            row("GET /auth/popup-done", c -> Call.get("/auth/popup-done"), 200, 200, 200, 200),
 
             // Me: users and guests manage themselves; an anonymous caller only reads.
             row("GET /api/me", c -> Call.get("/api/me"), 200, 200, 200, 200),

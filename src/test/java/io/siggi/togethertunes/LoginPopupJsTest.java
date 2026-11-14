@@ -12,7 +12,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Login without reload (docs/ui.md#single-page-app): runs the unit tests of the provider and popup
  * helpers ({@code src/test/resources/web-tests/providers.test.mjs}) against the compiled
- * {@code web/js/providers.js}, and checks the wiring: the login views re-identify the page instead of
+ * {@code web/js/providers.js} and of the guest merge ({@code guestmerge.test.mjs} against
+ * {@code web/js/guestmerge.js}), and checks the wiring: the login views re-identify the page instead of
  * reloading it, provider logins open a popup from the click with a full-page fallback, the popup-done
  * page reports to its opener (same origin) and closes, the shell re-identifies the frame and the room
  * socket, the guest merge is offered in place, and logout still reloads.
@@ -31,6 +32,11 @@ class LoginPopupJsTest {
     @Test
     void providerUnitTestsPass() throws Exception {
         NodeTests.run("providers.test.mjs", Map.of("PROVIDERS_JS", "web/js/providers.js"));
+    }
+
+    @Test
+    void guestMergeUnitTestsPass() throws Exception {
+        NodeTests.run("guestmerge.test.mjs", Map.of("GUESTMERGE_JS", "web/js/guestmerge.js"));
     }
 
     @Test
