@@ -97,6 +97,25 @@ document.addEventListener("click", (ev) => {
 document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") closeMenu();
 });
+// The desktop layout scrolls the middle and the sidebars, not the window: a menu would stay behind.
+document.addEventListener("scroll", (ev) => {
+  if (openMenuEl !== undefined && ev.target instanceof Element && !openMenuEl.contains(ev.target)) closeMenu();
+}, { capture: true, passive: true });
+
+/**
+ * Puts a menu (appended to the body) under `anchor`, or above it where the window has no room below:
+ * the desktop document doesn't scroll (docs/ui.md#layout-desktop). Narrow windows show it as a sheet (main.css).
+ */
+export function placeMenu(menu: HTMLElement, anchor: HTMLElement): void {
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = String(r.bottom + window.scrollY + 4) + "px";
+  menu.style.left = String(Math.max(8, r.right + window.scrollX - 192)) + "px";
+  document.body.append(menu);
+  const height = menu.offsetHeight;
+  if (r.bottom + 4 + height > window.innerHeight && r.top - 4 - height >= 0) {
+    menu.style.top = String(r.top + window.scrollY - 4 - height) + "px";
+  }
+}
 
 /**
  * Opens a popup menu with `items` under `anchor` (on narrow windows a sheet at the bottom of the
@@ -114,10 +133,7 @@ export function openMenu(anchor: HTMLElement, items: readonly MenuItem[], label:
     });
     menu.append(b);
   }
-  const r = anchor.getBoundingClientRect();
-  menu.style.top = String(r.bottom + window.scrollY + 4) + "px";
-  menu.style.left = String(Math.max(8, r.right + window.scrollX - 192)) + "px";
-  document.body.append(menu);
+  placeMenu(menu, anchor);
   openMenuEl = menu;
   justOpened = true;
   window.setTimeout(() => { justOpened = false; }, 0);

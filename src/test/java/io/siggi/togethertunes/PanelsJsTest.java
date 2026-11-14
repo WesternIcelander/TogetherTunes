@@ -70,10 +70,11 @@ class PanelsJsTest {
         assertTrue(room.indexOf("id=\"rv-outputs\"") < room.indexOf("id=\"rv-request-link\""), "quick outputs above Request Link");
         assertTrue(room.indexOf("id=\"rv-request-link\"") < room.indexOf("id=\"room-identity\""), "Join as guest under the request section");
         assertTrue(room.indexOf("id=\"rv-people\"") < room.indexOf("id=\"rv-earlier\""), "people above Earlier");
-        assertTrue(read("web/index.html").contains("id=\"app-sidebar-toggle\""));
+        // No ☰: the left sidebar stays in the room view (docs/ui.md#room-view-desktop).
+        assertFalse(read("web/index.html").contains("app-sidebar-toggle"));
         String frame = read("web/js/frame.js");
         for (String s : List.of("rv-video-slot", "\"rv-queue\"", "\"rv-people\"", "\"rv-earlier\"", "\"rv-title\"",
-                "room-view", "sidebar-open", "\"dblclick\"", "personActions(", "parseDurationInput(", "/members?limit=200",
+                "room-view", "\"dblclick\"", "personActions(", "parseDurationInput(", "/members?limit=200",
                 "/bans", "\"/api/admin/users/\"", "release(", "room-listen-overlay")) {
             assertTrue(frame.contains(s), s);
         }

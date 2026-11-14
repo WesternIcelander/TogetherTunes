@@ -1363,27 +1363,9 @@ table.rooms td {
 
 /* ------------------------------------------------------------------ room view (docs/ui.md#room-view-desktop) */
 
-/* The left sidebar hides behind ☰ (signed-in users), pushing the page aside when shown; no right panel. */
-.sidebar-toggle {
-  display: none;
-}
-
-body.room-view.signed-in .sidebar-toggle {
-  display: block;
-  flex: none;
-  position: sticky;
-  top: 0;
-  margin: 0.5rem 0 0 0.5rem;
-  font-size: 1.25rem;
-}
-
-body.room-view .app-sidebar,
+/* The left sidebar stays (signed-in users); no right panel. */
 body.room-view .app-panel {
   display: none;
-}
-
-body.room-view.sidebar-open .app-sidebar:not([hidden]) {
-  display: block;
 }
 
 body.room-view #app {
@@ -1405,6 +1387,7 @@ body.room-view #app {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem);
   gap: 1.5rem;
+  align-items: start;
 }
 
 .rv-video-slot .app-video {
@@ -1458,6 +1441,8 @@ body.room-view #app {
 .request-link-form input {
   width: 100%;
   box-sizing: border-box;
+  /* Its .grow basis (12rem) would be its height in this column. */
+  flex: none;
 }
 
 .room-identity {
@@ -1714,16 +1699,10 @@ table.songs tbody tr {
     align-items: stretch;
   }
 
-  .sidebar-toggle,
-  body.room-view.signed-in .sidebar-toggle {
-    display: none;
-  }
-
   .app-sidebar,
   .app-panel,
   body.has-player-bar .app-sidebar,
-  body.has-player-bar .app-panel,
-  body.room-view.sidebar-open .app-sidebar:not([hidden]) {
+  body.has-player-bar .app-panel {
     display: none;
     position: static;
     max-height: none;
@@ -2054,4 +2033,71 @@ li.entry.selected {
 /* The room view's viewer URL for everyone (the outputs themselves are in Manage Room → Outputs). */
 .rv-request .room-outputs {
   margin-top: 1rem;
+}
+
+/* ------------------------------------------------------------------ window-filling desktop layout (docs/ui.md#layout-desktop) */
+
+/* The frame fills the window and the document never scrolls: header on top, the player bar (fixed) below,
+   the sidebars at the window's edges, and only the middle (#app) and each sidebar scroll on their own.
+   Not below 800 px: the mobile layout keeps scrolling the window (MOBILE_QUERY). */
+@media (min-width: 800px) {
+  html {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body,
+  body.has-player-bar,
+  body.has-mini-player {
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    height: 100%;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+
+  body.has-player-bar {
+    padding-bottom: 5rem;
+  }
+
+  .app-header {
+    flex: none;
+  }
+
+  .app-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    flex-direction: row;
+    align-items: stretch;
+  }
+
+  .app-sidebar,
+  .app-panel,
+  body.has-player-bar .app-sidebar,
+  body.has-player-bar .app-panel {
+    position: static;
+    max-height: none;
+    overflow-y: auto;
+  }
+
+  .app-sidebar {
+    flex: 0 0 15rem;
+    border-right: 1px solid rgba(128, 128, 128, 0.3);
+  }
+
+  .app-panel {
+    flex: 0 0 21rem;
+    border-left: 1px solid rgba(128, 128, 128, 0.3);
+  }
+
+  /* The middle takes all the room between the sidebars (so the right panel sits at the window's edge)
+     and is the scroll container (shell.ts / dom.ts contentScroller). */
+  #app,
+  body.room-view #app {
+    flex: 1 1 auto;
+    max-width: none;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }

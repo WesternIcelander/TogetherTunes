@@ -25,6 +25,30 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Partial<
   return el;
 }
 
+/**
+ * The element the view scrolls in: the middle (`#app`) in the window-filling desktop layout
+ * (main.css, docs/ui.md#layout-desktop), else the window (narrow windows).
+ */
+function contentScroller(): HTMLElement | undefined {
+  const app = document.getElementById("app");
+  if (app === null) return undefined;
+  const y = getComputedStyle(app).overflowY;
+  return y === "auto" || y === "scroll" ? app : undefined;
+}
+
+/** How far the view is scrolled (see {@link contentScroller}). */
+export function contentScrollTop(): number {
+  const el = contentScroller();
+  return el === undefined ? window.scrollY : el.scrollTop;
+}
+
+/** Scrolls the view to `y` (see {@link contentScroller}). */
+export function scrollContentTo(y: number): void {
+  const el = contentScroller();
+  if (el === undefined) window.scrollTo(0, y);
+  else el.scrollTop = y;
+}
+
 /** A button that runs `action` when clicked, disabled while it runs; errors go to `onError`. */
 export function button(text: string, action: () => Promise<void> | void, onError: (e: unknown) => void,
                        className?: string): HTMLButtonElement {

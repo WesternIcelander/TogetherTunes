@@ -31,7 +31,7 @@ import {
   type PlaySession,
 } from "./alone.js";
 import { api, ApiError } from "./api.js";
-import { h } from "./dom.js";
+import { contentScrollTop, h, scrollContentTo } from "./dom.js";
 import { loadMe, message, type Me } from "./session.js";
 import { Frame } from "./frame.js";
 import { recordEvent } from "./diagnostics.js";
@@ -416,7 +416,7 @@ export class Shell {
 
   #saveScroll(): void {
     const state = (history.state ?? {}) as HistoryState;
-    this.#replaceState({ ...state, scrollY: window.scrollY });
+    this.#replaceState({ ...state, scrollY: contentScrollTop() });
   }
 
   #replaceState(state: HistoryState, url?: string): void {
@@ -552,9 +552,9 @@ export class Shell {
         return;
       }
     }
-    window.scrollTo(0, scrollY);
+    scrollContentTo(scrollY);
     // Views fill in after their data loads: try once more when that's likely done.
-    if (scrollY > 0) window.setTimeout(() => window.scrollTo(0, scrollY), 300);
+    if (scrollY > 0) window.setTimeout(() => scrollContentTo(scrollY), 300);
   }
 
   /** Moves focus to the new view's first heading (or the view), as a page load would reset it. */

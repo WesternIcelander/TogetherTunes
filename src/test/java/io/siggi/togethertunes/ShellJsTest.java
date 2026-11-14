@@ -120,7 +120,7 @@ class ShellJsTest {
         shellIds.add("stopped-note");
         for (String id : List.of("site-nav", "app", "app-sidebar", "app-panel", "app-video", "room-player",
                 "player-bar", "pb-play", "pb-volume", "pb-menu", "pb-audio-only", "pb-requests-only", "pb-now-view",
-                "pb-fullscreen", "pb-mute-menu", "app-search", "room-listen-overlay", "app-sidebar-toggle")) {
+                "pb-fullscreen", "pb-mute-menu", "app-search", "room-listen-overlay")) {
             assertTrue(shellIds.contains(id), id);
         }
         for (Map.Entry<String, String> view : views().entrySet()) {

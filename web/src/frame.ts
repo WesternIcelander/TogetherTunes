@@ -52,7 +52,7 @@ import type { RoomListEntry } from "./roomlist.js";
 import { playlistPath, routeOf } from "./router.js";
 import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, loadMe, logout, message, ROOMS_PAGE,
   type Me } from "./session.js";
-import { lastPressWasTouch, onLongPress, openMenu } from "./touch.js";
+import { lastPressWasTouch, onLongPress, openMenu, placeMenu } from "./touch.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
 const VOLUME_KEY = "togethertunes.volume";
@@ -156,14 +156,7 @@ export class Frame {
     const observer = new MutationObserver(() => this.#drawVideo());
     observer.observe(container, { attributes: true, attributeFilter: ["hidden"] });
     observer.observe(byId("room-listen-overlay"), { attributes: true, attributeFilter: ["hidden"] });
-    // The room view: ☰ shows the left sidebar (pushing the page aside); double-clicking Queue, Recents
-    // or Room in the right panel opens the room view.
-    const toggle = byId("app-sidebar-toggle");
-    toggle.addEventListener("click", () => {
-      const open = !document.body.classList.contains("sidebar-open");
-      document.body.classList.toggle("sidebar-open", open);
-      toggle.setAttribute("aria-expanded", open ? "true" : "false");
-    });
+    // Double-clicking Queue, Recents or Room in the right panel opens the room view.
     byId("app-panel").querySelectorAll<HTMLButtonElement>(".tabs [data-tab]").forEach((b) => {
       b.title = "Double-click to open the room view";
       b.addEventListener("dblclick", () => {
@@ -806,14 +799,10 @@ export class Frame {
     const room = this.#host.room();
     const s = room?.state();
     const user = this.#me?.kind === "user";
-    // The room view (docs/ui.md#room-view-desktop): no right panel, the sidebar behind ☰, the video big.
+    // The room view (docs/ui.md#room-view-desktop): no right panel (the sidebar stays), the video big.
     this.#drawMobile();
     const roomView = this.#roomViewShown();
     document.body.classList.toggle("room-view", roomView);
-    if (!roomView && document.body.classList.contains("sidebar-open")) {
-      document.body.classList.remove("sidebar-open");
-      byId("app-sidebar-toggle").setAttribute("aria-expanded", "false");
-    }
     this.#placeVideo(roomView);
     byId("app-panel").hidden = room === undefined;
     byId("player-bar").hidden = room === undefined && !user;
@@ -1342,10 +1331,7 @@ export class Frame {
       });
       menu.append(item);
     }
-    const r = anchor.getBoundingClientRect();
-    menu.style.top = String(r.bottom + window.scrollY + 4) + "px";
-    menu.style.left = String(Math.max(8, r.right + window.scrollX - 192)) + "px";
-    document.body.append(menu);
+    placeMenu(menu, anchor);
     this.#personMenu = menu;
   }
 
