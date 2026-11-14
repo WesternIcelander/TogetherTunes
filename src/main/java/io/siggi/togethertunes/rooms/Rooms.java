@@ -238,6 +238,14 @@ public final class Rooms {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    Database db() {
+        return db;
+    }
+
+    Clock clock() {
+        return clock;
+    }
+
     // ------------------------------------------------------------------ validation
 
     /**
@@ -339,7 +347,7 @@ public final class Rooms {
     }
 
     /** The stored {@code room_members} role of a user, or {@code null}. */
-    private static Role memberRole(Connection c, String roomId, String userId) throws SQLException {
+    static Role memberRole(Connection c, String roomId, String userId) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("SELECT role FROM room_members WHERE room_id = ? AND user_id = ?")) {
             ps.setString(1, roomId);
             ps.setString(2, userId);
@@ -367,7 +375,7 @@ public final class Rooms {
         return actor instanceof Actor.User u ? u.userId() : null;
     }
 
-    private boolean moderatesAny(Actor actor) throws SQLException {
+    boolean moderatesAny(Actor actor) throws SQLException {
         return actor instanceof Actor.User && permissions.allowed(actor, Permission.ROOMS_MODERATE_ANY);
     }
 
@@ -388,7 +396,7 @@ public final class Rooms {
         }
     }
 
-    private Access access(Connection c, Actor actor, String idOrSlug, boolean lock, boolean moderateAny)
+    Access access(Connection c, Actor actor, String idOrSlug, boolean lock, boolean moderateAny)
             throws SQLException {
         Room room = find(c, idOrSlug, lock);
         if (room == null) {
@@ -842,6 +850,9 @@ public final class Rooms {
                         ps.executeUpdate();
                     }
                     AuditLog.write(c, EpochMs.now(clock), userId(actor), null, ip, AUDIT_UPDATED, r.id(), details);
+                    if (details.get("settings") instanceof List<?> changed && changed.contains(AutoplaySelections.SELECTORS)) {
+                        AutoplaySelections.prune(c, r.id());
+                    }
                 }
                 return new Updated(view(updated, Role.OWNER, moderateAny), List.copyOf(adjusted));
             });
@@ -1084,6 +1095,7 @@ public final class Rooms {
                     AuditLog.write(c, now, uid, null, ip, AUDIT_ROLE_SET, room.id(), details);
                 }
             }
+            AutoplaySelections.prune(c, room.id()); // a demoted, banned or former owner may have lost the right
             return new RoleSet(member(c, room.id(), targetUserId), created);
         });
     }
@@ -1165,6 +1177,7 @@ public final class Rooms {
             details.put("userId", targetUserId);
             details.put("previousRole", current.wire());
             AuditLog.write(c, EpochMs.now(clock), uid, null, ip, AUDIT_MEMBER_REMOVED, room.id(), details);
+            AutoplaySelections.prune(c, room.id()); // left (or removed) for good: their selections go
             return true;
         });
     }

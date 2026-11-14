@@ -156,6 +156,10 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.UserLibraries$UserPage",
             "io.siggi.togethertunes.library.UserLibraries$UserSummary",
             "io.siggi.togethertunes.rooms.AloneSessions$Session",
+            "io.siggi.togethertunes.rooms.AutoplaySelections$Listing",
+            "io.siggi.togethertunes.rooms.AutoplaySelections$PersonSelection",
+            "io.siggi.togethertunes.rooms.AutoplaySelections$SelectedPlaylist",
+            "io.siggi.togethertunes.rooms.AutoplaySelections$RoomPlaylist",
             "io.siggi.togethertunes.rooms.AloneSessions$DeletedRoom",
             "io.siggi.togethertunes.rooms.PlayHistory$Page",
             "io.siggi.togethertunes.rooms.PlayHistory$Row",
@@ -792,6 +796,15 @@ class DtoIpLeakTest {
         for (io.siggi.togethertunes.rooms.Rooms.RoomView r : roomPage.items()) {
             produced.add(rooms.get(Actor.ANONYMOUS, r.slug()));
             produced.add(rooms.members(aliceActor, r.id(), null, io.siggi.togethertunes.rooms.Rooms.LIST_MAX));
+            io.siggi.togethertunes.rooms.AutoplaySelections autoplay =
+                    new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists);
+            io.siggi.togethertunes.rooms.AutoplaySelections.Listing selected = autoplay.list(Actor.ANONYMOUS, r.id());
+            produced.add(selected);
+            for (io.siggi.togethertunes.rooms.AutoplaySelections.PersonSelection p : selected.selections()) {
+                for (io.siggi.togethertunes.rooms.AutoplaySelections.SelectedPlaylist pl : p.playlists()) {
+                    produced.add(autoplay.playlist(Actor.ANONYMOUS, r.id(), pl.id()));
+                }
+            }
             io.siggi.togethertunes.rooms.RoomGuests.GuestBanPage bans = roomGuests.list(aliceActor, r.id(), null,
                     io.siggi.togethertunes.rooms.RoomGuests.LIST_MAX);
             produced.add(bans);
@@ -976,7 +989,8 @@ class DtoIpLeakTest {
                 "/api/rooms/" + f.roomSlug + "/members", "/api/rooms/" + f.roomSlug + "/guest-bans",
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
-                "/api/rooms/" + f.roomSlug + "/server-switches", "/auth/oidc/nope/start",
+                "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/autoplay",
+                "/api/rooms/" + f.roomSlug + "/autoplay/playlists/" + f.playlistId, "/auth/oidc/nope/start",
                 "/auth/oidc/nope/callback?state=x&code=y");
         Set<String> getRoutes = new TreeSet<>();
         router.routes().stream().filter(r -> r.startsWith("GET ")).forEach(getRoutes::add);
@@ -1261,6 +1275,17 @@ class DtoIpLeakTest {
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug + "/search", null);
         expect(200, anon, "GET", "/api/rooms", null);
+        // autoplay selections: alice selects her playlist in her room (it stays selected for the sweep),
+        // toggles another on and off, and makes the first her only one
+        String otherList = json(expect(201, alice, "POST", "/api/playlists", "{\"name\":\"Spare\"}")).get("id")
+                .getAsString();
+        expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + playlistId, null);
+        expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + otherList, null);
+        expect(200, alice, "DELETE", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + otherList, null);
+        expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/mine",
+                "{\"playlistIds\":[\"" + playlistId + "\"]}");
+        expect(200, anon, "GET", "/api/rooms/" + roomSlug + "/autoplay", null);
+        expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + playlistId, null);
         // the alone state: alice joins her room and leaves it again
         expect(200, alice, "POST", "/api/me/play-session/join", "{\"room\":\"" + roomSlug + "\"}");
         expect(200, alice, "POST", "/api/me/play-session/leave", "{\"choice\":\"fork\"}");

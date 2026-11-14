@@ -159,6 +159,16 @@ public final class RoomsApi {
         this.playHistory = Objects.requireNonNull(playHistory);
     }
 
+    private volatile AutoplaySelections autoplay;
+
+    /**
+     * Turns on the autoplay selections ({@link AutoplaySelections}, {@link AutoplayApi}):
+     * {@code /api/rooms/{room}/autoplay*}. Set before {@link #register}.
+     */
+    public void autoplay(AutoplaySelections autoplay) {
+        this.autoplay = Objects.requireNonNull(autoplay);
+    }
+
     public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
                     RequestSearch search, RoomHistory history) {
         this.rooms = Objects.requireNonNull(rooms);
@@ -224,6 +234,9 @@ public final class RoomsApi {
         new GuestMerge(registry).register(router);
         if (alone != null) {
             new AloneApi(alone, playHistory).register(router);
+        }
+        if (autoplay != null) {
+            new AutoplayApi(autoplay).register(router);
         }
     }
 

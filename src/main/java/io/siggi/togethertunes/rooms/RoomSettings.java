@@ -48,6 +48,12 @@ import java.util.function.Function;
  *   <tr><td>{@code outputs.autoOff}</td><td>true</td><td>turn every output off automatically after {@code outputs.autoOffMinutes} with an empty queue, or (.ts, HLS, MP3) without listeners; off = always on. The server's {@code outputs.forceAutoOff} makes it on regardless</td></tr>
  *   <tr><td>{@code outputs.autoOffMinutes}</td><td>10</td><td>1..{@value #MAX_IDLE_STOP_MINUTES}; at most the server's {@code outputs.maxAutoOffMinutes} (higher values act as that)</td></tr>
  *   <tr><td>{@code outputs.ts.join}</td><td>{@code "next"}</td><td>{@code next} | {@code latest} (join point of {@code .ts} viewers)</td></tr>
+ *   <tr><td>{@code autoplay.selectors}</td><td>{@code "owner"}</td><td>{@code owner} | {@code moderators} | {@code members}:
+ *       who besides the owner may select playlists for autoplay ({@link AutoplaySelections}); by stored room role</td></tr>
+ *   <tr><td>{@code autoplay.upcoming}</td><td>5</td><td>0..{@value #MAX_AUTOPLAY_UPCOMING}: how many autoplay songs to keep queued (0: autoplay off)</td></tr>
+ *   <tr><td>{@code autoplay.mix}</td><td>{@code "random"}</td><td>{@code random} (one pool) | {@code turns} (between the selecting people)</td></tr>
+ *   <tr><td>{@code autoplay.recentPct}</td><td>50</td><td>0..100: a song's weight ramps back to full once its last play is this % of the pool ago</td></tr>
+ *   <tr><td>{@code autoplay.requestsFirst}</td><td>{@code "first"}</td><td>{@code first} (requests always first) | {@code alternate} (a request, then an autoplay song)</td></tr>
  *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls} / {@code .mp3}</td><td>5000 / 2000 / 8000 / 3000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
  * </table>
  *
@@ -75,6 +81,7 @@ public final class RoomSettings {
     public static final int MAX_URL_LENGTH = 2048;
     public static final int DEFAULT_IDLE_STOP_MINUTES = 10;
     public static final int MAX_IDLE_STOP_MINUTES = 1440;
+    public static final int MAX_AUTOPLAY_UPCOMING = 50;
 
     /**
      * Upload switch → the library-request switch it needs: an upload switch is only on while its
@@ -151,6 +158,11 @@ public final class RoomSettings {
         def("outputs.autoOff", true, RoomSettings::bool);
         def("outputs.autoOffMinutes", DEFAULT_IDLE_STOP_MINUTES, whole(1, MAX_IDLE_STOP_MINUTES));
         def("outputs.ts.join", "next", choice("next", "latest"));
+        def("autoplay.selectors", "owner", choice("owner", "moderators", "members"));
+        def("autoplay.upcoming", 5, whole(0, MAX_AUTOPLAY_UPCOMING));
+        def("autoplay.mix", "random", choice("random", "turns"));
+        def("autoplay.recentPct", 50, whole(0, 100));
+        def("autoplay.requestsFirst", "first", choice("first", "alternate"));
         def("estimatedDelayMs.rtmp", 5000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.ts", 2000, whole(0, MAX_DELAY_MS));
         def("estimatedDelayMs.hls", 8000, whole(0, MAX_DELAY_MS));
@@ -556,6 +568,40 @@ public final class RoomSettings {
     /** Whether {@code .ts} viewers get the most recent unit at once ({@code join=latest}) instead of waiting for the next. */
     public boolean tsJoinLatest() {
         return "latest".equals(values.get("outputs.ts.join"));
+    }
+
+    /** Who may select playlists for autoplay, besides the owner. */
+    public enum AutoplaySelectors {
+        OWNER, MODERATORS, MEMBERS
+    }
+
+    /** {@code autoplay.selectors}. */
+    public AutoplaySelectors autoplaySelectors() {
+        return switch ((String) values.get("autoplay.selectors")) {
+            case "moderators" -> AutoplaySelectors.MODERATORS;
+            case "members" -> AutoplaySelectors.MEMBERS;
+            default -> AutoplaySelectors.OWNER;
+        };
+    }
+
+    /** {@code autoplay.upcoming}: how many autoplay entries to keep queued (0: none). */
+    public int autoplayUpcoming() {
+        return (Integer) values.get("autoplay.upcoming");
+    }
+
+    /** {@code autoplay.mix}: whether the selecting people take turns ({@code turns}) instead of one pool. */
+    public boolean autoplayTurns() {
+        return "turns".equals(values.get("autoplay.mix"));
+    }
+
+    /** {@code autoplay.recentPct}. */
+    public int autoplayRecentPct() {
+        return (Integer) values.get("autoplay.recentPct");
+    }
+
+    /** {@code autoplay.requestsFirst}: whether requests and autoplay songs alternate ({@code alternate}). */
+    public boolean autoplayAlternate() {
+        return "alternate".equals(values.get("autoplay.requestsFirst"));
     }
 
     public int estimatedDelayMsRtmp() {

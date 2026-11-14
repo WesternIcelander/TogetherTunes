@@ -370,6 +370,21 @@ class PermissionMatrixTest {
             row("GET /api/rooms/{room}/history", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/history"),
                     200, 200, 200, 200),
 
+            // Autoplay selections (AutoplaySelectionsContract covers roles and visibility): anyone who
+            // may open the room reads them and the selected playlists; selecting needs a user the
+            // room's autoplay.selectors allows (default: the owner only, so not rooms.moderateAny);
+            // deselecting and clearing one's own never need it.
+            row("GET /api/rooms/{room}/autoplay", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/autoplay"),
+                    200, 200, 200, 200),
+            row("GET /api/rooms/{room}/autoplay/playlists/{playlistId}", c -> Call.get(c.rootSelectedPlaylistPath()),
+                    200, 200, 200, 200),
+            row("PUT /api/rooms/{room}/autoplay/playlists/{playlistId}", c -> Call.put("/api/rooms/"
+                    + c.rootRoomSlug() + "/autoplay/playlists/" + c.playlistId(), null), 401, 401, 403, 403),
+            row("DELETE /api/rooms/{room}/autoplay/playlists/{playlistId}", c -> Call.delete("/api/rooms/"
+                    + c.rootRoomSlug() + "/autoplay/playlists/0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d"), 401, 401, 200, 200),
+            row("PUT /api/rooms/{room}/autoplay/mine", c -> Call.put("/api/rooms/" + c.rootRoomSlug()
+                    + "/autoplay/mine", "{\"playlistIds\":[]}"), 401, 401, 200, 200),
+
             // The alone state and the own play history: users only (guests have none). A fresh
             // user isn't in a room, so leaving is 409 not_in_room (AloneSessionsContract covers it).
             row("GET /api/me/play-session", c -> Call.get("/api/me/play-session"), 401, 401, 200, 200),
@@ -772,6 +787,22 @@ class PermissionMatrixTest {
             try {
                 return json(ok(Call.post("/api/rooms", "{\"name\":\"Root room " + n + "\",\"visibility\":\"public\"}"))
                         .body()).get("slug").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /**
+         * {@code /api/rooms/{room}/autoplay/playlists/{id}} for a new public room of the setup admin
+         * and a playlist of the setup admin selected there.
+         */
+        String rootSelectedPlaylistPath() {
+            try {
+                String playlistId = json(ok(Call.post("/api/playlists", "{\"name\":\"Root list " + n + "\"}")).body())
+                        .get("id").getAsString();
+                String path = "/api/rooms/" + rootRoomSlug() + "/autoplay/playlists/" + playlistId;
+                ok(Call.put(path, null));
+                return path;
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);
             }

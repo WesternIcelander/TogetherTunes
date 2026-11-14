@@ -65,6 +65,7 @@ abstract class InitialSchemaContract {
         t("alone_sessions", "user_id", "room_id", "resume_playing", "deleted_room_name", "fork_json", "updated_at");
         t("play_history", "id", "user_id", "item_id", "room_id", "room_name", "played_at");
         t("room_members", "room_id", "user_id", "role", "joined_at");
+        t("room_autoplay_selections", "room_id", "playlist_id", "user_id", "selected_at");
         t("room_guest_bans", "room_id", "guest_id", "created_at");
         t("queue_entries", "id", "room_id", "item_id", "added_by_user_id", "added_by_guest_id", "added_at",
                 "state", "position", "pinned", "played_at", "via", "added_by_name", "overlay");

@@ -157,9 +157,12 @@ public final class TestUploads {
                 permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
                 new io.siggi.togethertunes.rooms.RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
         alone(api, db, rooms, registry, settings, clock);
+        io.siggi.togethertunes.library.Playlists playlists = new io.siggi.togethertunes.library.Playlists(db, youtube,
+                clock);
+        api.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists));
         io.siggi.togethertunes.rooms.RoomQueue queue = new io.siggi.togethertunes.rooms.RoomQueue(registry, db,
                 uploads(db, dir, config, Tools.from(config), clock), youtube,
-                new io.siggi.togethertunes.library.Playlists(db, youtube, clock), addMedia, new java.util.Random(1));
+                playlists, addMedia, new java.util.Random(1));
         io.siggi.togethertunes.rooms.RoomSocket socket = new io.siggi.togethertunes.rooms.RoomSocket(actors, tickets,
                 new Guests(db, settings, clock, config.secureCookies(), GuestNames.bundled()), settings, rooms, guests,
                 registry, queue, db, clock);
@@ -178,6 +181,8 @@ public final class TestUploads {
                 permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
                 new io.siggi.togethertunes.rooms.RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
         alone(api, db, rooms, registry, settings, clock);
+        api.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms,
+                new io.siggi.togethertunes.library.Playlists(db, youtube(db, config, Tools.from(config), clock), clock)));
         return api;
     }
 
