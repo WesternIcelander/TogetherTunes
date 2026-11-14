@@ -1120,6 +1120,7 @@ Design: **`docs/ui.md`** (read it whole first) and the drawings `drawings/ui_mai
 - [ ] **Gate M9:** check every step in M9 (the hold step must be gone). If all are `[x]`, run the full `mvn verify` (unit and integration tests); if it passes, tick this gate and return ok=true so the run continues with the next milestone, and if it fails, leave it unchecked, note the failing tests under it and return ok=false. If any step isn't `[x]`, list the ones that aren't (especially `[?]`) under it, leave it unchecked and return ok=false **without running the tests** (they'd be wasted: the run stops either way).
   - Checked 2026-11-14: the hold step is gone (removed in plan `09f122a`), every other M9 step is `[x]` except the two manual walkthroughs, still `[?]` awaiting Siggi's check: the *(manual)* desktop walkthrough in Chrome and Firefox, and the *(manual)* mobile walkthrough on Android Chrome and Firefox. Tests not run; the gate stays unchecked until both are `[x]`.
   - Re-checked 2026-11-14 after the desktop layout fixes step (`[x]`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
+  - Re-checked 2026-11-14 after the link/file requests step (`[x]`, main `ddd519b`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
 
 ## Before the first release
 
