@@ -31,8 +31,12 @@ import java.util.Set;
  *   <li>{@code POST /api/rooms} {@code {"name", "slug"?, "visibility"?, "controlMode"?}} →
  *       {@code 201 room}. Needs {@code rooms.create} ({@code 401} guests/anonymous,
  *       {@code 403 forbidden}). Defaults: a slug derived from the name, {@code unlisted},
- *       {@code vote}. {@code 409 slug_taken} / {@code too_many_rooms}.</li>
- *   <li>{@code GET /api/rooms/{room}} → the room (anyone who may see it).</li>
+ *       {@code vote}. {@code 409 slug_taken} / {@code too_many_rooms}. {@code "moveAloneSession": true}
+ *       moves the caller's alone state (current song and queue) into the new room and puts them in
+ *       it ({@link AloneSessions#moveIntoRoom}).</li>
+ *   <li>{@code GET /api/rooms/{room}} → the room (anyone who may see it). An alone room
+ *       ({@link AloneSessions}) is only its user's, has {@code "alone": true}, and can't be changed,
+ *       deleted or given members ({@code 409 alone_room}).</li>
  *   <li>{@code PATCH /api/rooms/{room}} {@code {"name"?, "slug"?, "visibility"?, "controlMode"?,
  *       "settings"?}} → the room; the owner only. {@code settings} is a merge patch of the room
  *       settings ({@link RoomSettings}: nested objects change only what they name, {@code null}
@@ -101,7 +105,8 @@ import java.util.Set;
  * route that changes something or lists members.
  */
 public final class RoomsApi {
-    private static final Set<String> ROOM_FIELDS = Set.of("name", "slug", "visibility", "controlMode");
+    private static final Set<String> ROOM_FIELDS = Set.of("name", "slug", "visibility", "controlMode",
+            "moveAloneSession");
     private static final Set<String> UPDATE_FIELDS = Set.of("name", "slug", "visibility", "controlMode", "settings");
     private static final Set<String> ROLE_FIELDS = Set.of("role");
     private static final Set<String> ADD_MEMBER_FIELDS = Set.of("username", "role");
@@ -139,6 +144,19 @@ public final class RoomsApi {
      */
     public void deleteListener(java.util.function.Consumer<String> listener) {
         this.deleteListener = Objects.requireNonNull(listener);
+    }
+
+    private volatile AloneSessions alone;
+    private volatile PlayHistory playHistory;
+
+    /**
+     * Turns on the alone state ({@link AloneSessions}, {@link AloneApi}): {@code /api/me/play-session*}
+     * and {@code /api/me/history}, {@code moveAloneSession} on create, and the sessions of the
+     * users in a deleted room. Set before {@link #register}.
+     */
+    public void aloneSessions(AloneSessions alone, PlayHistory playHistory) {
+        this.alone = Objects.requireNonNull(alone);
+        this.playHistory = Objects.requireNonNull(playHistory);
     }
 
     public RoomsApi(Rooms rooms, RoomRegistry registry, Permissions permissions, RoomGuests guests,
@@ -204,6 +222,9 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/server-switches", this::serverSwitches);
         // Guest -> account merge moves room data, so it lives with the rooms (GuestMerge).
         new GuestMerge(registry).register(router);
+        if (alone != null) {
+            new AloneApi(alone, playHistory).register(router);
+        }
     }
 
     private static Actor.User user(Request request) throws Exception {
@@ -298,8 +319,21 @@ public final class RoomsApi {
         if (name == null) {
             throw new HttpError(400, "invalid_name", "A name is required");
         }
+        JsonElement move = body.get("moveAloneSession");
+        if (move != null && !move.isJsonNull() && !(move instanceof JsonPrimitive p && p.isBoolean())) {
+            throw new HttpError(400, "invalid_move_alone_session", "moveAloneSession must be true or false");
+        }
+        boolean moveAlone = move != null && !move.isJsonNull() && move.getAsBoolean();
+        AloneSessions sessions = alone;
+        if (moveAlone && sessions == null) {
+            throw new HttpError(400, "unknown_field", "Unknown field: moveAloneSession");
+        }
         Rooms.RoomView room = rooms.create(user, name, string(body.get("slug"), "invalid_slug"),
                 visibility(body.get("visibility")), controlMode(body.get("controlMode")), request.clientIp());
+        if (moveAlone) {
+            // creating a room moves the current song and queue into it (docs/ui.md#alone-and-in-rooms)
+            sessions.moveIntoRoom(user, room.id());
+        }
         response.header("Cache-Control", "no-store");
         response.json(201, room);
     }
@@ -368,11 +402,19 @@ public final class RoomsApi {
     private void delete(Request request, Response response) throws Exception {
         Actor.User user = user(request);
         String id = roomId(request);
+        AloneSessions sessions = alone;
+        List<String> wereIn = new ArrayList<>();
         String deleted = registry.call(id, tx -> {
-            String roomId = rooms.delete(user, id, request.clientIp());
+            String roomId = rooms.delete(user, id, request.clientIp(), sessions == null ? null : (c, rid, now) -> {
+                wereIn.clear(); // the transaction may run again
+                wereIn.addAll(sessions.roomDeleting(c, tx.state(), now));
+            });
             tx.closeRoom();
             return roomId;
         });
+        if (sessions != null && !wereIn.isEmpty()) {
+            sessions.roomDeleted(wereIn);
+        }
         try {
             deleteListener.accept(deleted);
         } catch (RuntimeException e) {
@@ -573,7 +615,7 @@ public final class RoomsApi {
         return m;
     }
 
-    private static void fields(JsonObject body, Set<String> allowed) {
+    static void fields(JsonObject body, Set<String> allowed) {
         for (String key : body.keySet()) {
             if (!allowed.contains(key)) {
                 throw new HttpError(400, "unknown_field", "Unknown field: " + key);
@@ -582,7 +624,7 @@ public final class RoomsApi {
     }
 
     /** The string, or null for a missing field, JSON null or a blank string; else {@code 400 code}. */
-    private static String string(JsonElement e, String code) {
+    static String string(JsonElement e, String code) {
         if (e == null || e.isJsonNull()) {
             return null;
         }

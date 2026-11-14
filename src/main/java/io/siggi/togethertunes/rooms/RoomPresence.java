@@ -153,6 +153,18 @@ public final class RoomPresence {
         return new Counts(listening, listensByActor.size() - listening, anonymous);
     }
 
+    /** The ids of the users present (listen or remote), each once, in the order they came. */
+    public List<String> userIds() {
+        Set<String> out = new java.util.LinkedHashSet<>();
+        for (Connection c : connections.values()) {
+            String key = c.actorKey();
+            if (key != null && key.startsWith("u:")) {
+                out.add(key.substring(2));
+            }
+        }
+        return List.copyOf(out);
+    }
+
     /** Identified members present (distinct users and guests, listen or remote). */
     public int identified() {
         Set<String> actors = new HashSet<>();

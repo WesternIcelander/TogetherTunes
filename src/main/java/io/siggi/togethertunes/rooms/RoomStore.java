@@ -57,7 +57,9 @@ final class RoomStore {
         return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT slug, name, owner_id, visibility, control_mode,"
                     + " settings_json, playback_state, current_entry_id, anchor_server_ms, anchor_position_ms, version,"
-                    + " current_audio_only FROM rooms WHERE id = ?")) {
+                    + " current_audio_only, alone_user_id,"
+                    + " (SELECT s.room_id FROM alone_sessions s WHERE s.user_id = rooms.alone_user_id)"
+                    + " FROM rooms WHERE id = ?")) {
                 ps.setString(1, roomId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (!rs.next()) {
@@ -110,8 +112,12 @@ final class RoomStore {
                         votes.remove(current.id());
                     }
                     Set<String> skipVotes = current == null ? Set.of() : skipVotes(c, current.id());
-                    return new RoomState(roomId, slug, name, ownerId, visibility, mode, settings, timeline, version,
-                            current, queue, suggestions, votes, skipVotes);
+                    String aloneUserId = rs.getString(13);
+                    String awayIn = rs.getString(14);
+                    RoomState loaded = new RoomState(roomId, slug, name, ownerId, visibility, mode, settings, timeline,
+                            version, current, queue, suggestions, votes, skipVotes);
+                    loaded.alone(aloneUserId, awayIn);
+                    return loaded;
                 }
             }
         });

@@ -397,6 +397,59 @@ class RoomSocketTest {
         assertThrows(IOException.class, () -> connect("nonsense", null));
     }
 
+    /**
+     * The alone state over the room socket ({@link AloneSessions}): two devices of one user play the
+     * same alone room in sync, see a join elsewhere, and nobody else can open it.
+     */
+    @Test
+    void twoDevicesShareTheAloneState() throws Exception {
+        String song1 = item("Song One");
+        String song2 = item("Song Two");
+        String aliceLaptop = sessions.create(aliceId, Actor.Via.BEARER, "laptop", null).token();
+        String aloneId = json(call(alice, "GET", "/api/me/play-session", null)).get("aloneRoomId").getAsString();
+        assertEquals(aloneId, json(call(aliceLaptop, "GET", "/api/me/play-session", null)).get("aloneRoomId")
+                .getAsString());
+        Client phone = connect(alice, null);
+        phone.next("identity");
+        Client laptop = connect(aliceLaptop, null);
+        laptop.next("identity");
+        phone.ok("{\"type\":\"join\",\"room\":\"" + aloneId + "\",\"mode\":\"listen\"}");
+        JsonObject state = phone.await("state");
+        assertTrue(state.getAsJsonObject("room").get("alone").getAsBoolean());
+        assertFalse(state.getAsJsonObject("room").has("awayInRoomId"));
+        laptop.ok("{\"type\":\"join\",\"room\":\"" + aloneId + "\",\"mode\":\"listen\"}");
+        laptop.await("state");
+
+        // the phone queues two songs (the alone queue always allows it); the laptop plays the same
+        phone.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song1 + "\"}");
+        phone.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song2 + "\"}");
+        state = laptop.await(m -> m.get("type").getAsString().equals("state") && m.has("current")
+                && m.getAsJsonArray("queue").size() == 1);
+        assertEquals(song1, state.getAsJsonObject("current").getAsJsonObject("item").get("id").getAsString());
+        clock.advance(4000);
+        laptop.ok("{\"type\":\"pause\"}");
+        JsonObject timeline = phone.await(m -> m.get("type").getAsString().equals("timeline")
+                && m.getAsJsonObject("timeline").get("state").getAsString().equals("paused"));
+        assertEquals(4000, timeline.getAsJsonObject("timeline").get("anchorPositionMs").getAsLong());
+        laptop.ok("{\"type\":\"play\"}");
+        phone.await(m -> m.get("type").getAsString().equals("timeline")
+                && m.getAsJsonObject("timeline").get("state").getAsString().equals("playing"));
+
+        // the laptop joins a room: the phone hears it on the alone room (saved: paused)
+        String party = room("party", "public", "owner");
+        assertEquals(200, call(aliceLaptop, "POST", "/api/me/play-session/join", "{\"room\":\"party\"}").statusCode());
+        state = phone.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").has("awayInRoomId"));
+        assertEquals(party, state.getAsJsonObject("room").get("awayInRoomId").getAsString());
+        assertEquals("paused", state.getAsJsonObject("timeline").get("state").getAsString());
+        assertEquals(party, json(call(alice, "GET", "/api/me/play-session", null)).get("roomId").getAsString());
+
+        // nobody else opens it
+        Client other = connect(bob, null);
+        other.next("identity");
+        other.error("room_not_found", "{\"type\":\"join\",\"room\":\"" + aloneId + "\"}");
+    }
+
     @Test
     void joinSendsTheStateThenEveryChangeWithTheNextVersion() throws Exception {
         String roomId = room("party", "public", "owner");

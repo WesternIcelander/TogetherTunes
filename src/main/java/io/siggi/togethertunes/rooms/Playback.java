@@ -137,6 +137,7 @@ public final class Playback {
             return null;
         });
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
+        PlayHistory.started(tx, playing);
         s.forget(playing.id());
         s.current(playing);
         int gap = s.settings().transitionGapMs();

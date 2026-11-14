@@ -443,6 +443,11 @@ public final class Main {
         // GET /api/search: guests and anonymous visitors search what they may request in a room.
         itemsApi.roomSearch(requestSearch::requireMayRequest);
         RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests, requestSearch, roomHistory);
+        // The alone state (docs/rooms.md#alone): each user's own pseudo-room, and their play history.
+        io.siggi.togethertunes.rooms.PlayHistory playHistory = new io.siggi.togethertunes.rooms.PlayHistory(database,
+                settings::roomsRequestHistoryDays, Clock.systemUTC());
+        roomsApi.aloneSessions(new io.siggi.togethertunes.rooms.AloneSessions(database, rooms, roomRegistry,
+                Clock.systemUTC()), playHistory);
         RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
@@ -590,6 +595,7 @@ public final class Main {
                         settings.retentionPurgedEntryDays()),
                 Clock.systemUTC());
         retention.alsoRun("trimmed room history entries", roomHistory::trim);
+        retention.alsoRun("trimmed play history entries", playHistory::trim);
         retention.start();
         // Starts the enabled RTMP pushes, then re-checks every 10 s.
         outputControl.start();

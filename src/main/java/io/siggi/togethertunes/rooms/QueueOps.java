@@ -356,6 +356,7 @@ public final class QueueOps {
             return null;
         });
         tx.event(new RoomEvent.EntryStateChanged(playing.id(), QueueEntry.State.PLAYING));
+        PlayHistory.started(tx, playing);
         s.current(playing);
         // an abrupt start (docs/rooms.md#room-state): put off until the program output can play it from 0:00
         tx.timeline(paused ? Timeline.paused(playing.id(), now, 0) : Timeline.startingAt(playing.id(), tx.abruptStartAt()));

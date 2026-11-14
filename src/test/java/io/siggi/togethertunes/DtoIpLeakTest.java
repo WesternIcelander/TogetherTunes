@@ -155,6 +155,11 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.PlaylistsApi$Liked",
             "io.siggi.togethertunes.library.UserLibraries$UserPage",
             "io.siggi.togethertunes.library.UserLibraries$UserSummary",
+            "io.siggi.togethertunes.rooms.AloneSessions$Session",
+            "io.siggi.togethertunes.rooms.AloneSessions$DeletedRoom",
+            "io.siggi.togethertunes.rooms.PlayHistory$Page",
+            "io.siggi.togethertunes.rooms.PlayHistory$Row",
+            "io.siggi.togethertunes.rooms.PlayHistory$RoomRef",
             "io.siggi.togethertunes.rooms.Rooms$Member",
             "io.siggi.togethertunes.rooms.Rooms$MemberPage",
             "io.siggi.togethertunes.rooms.Rooms$Page",
@@ -381,6 +386,9 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.LivePlayingItems$Published", "a room's current/next item ids, in memory only"),
             Map.entry("io.siggi.togethertunes.auth.UserSettings$Prefs",
                     "a user's preferences; the API sends toJson() (three preference values, no IP)"),
+            Map.entry("io.siggi.togethertunes.rooms.AloneSessions$Snapshot",
+                    "what a fork or a create-room move copies (item ids, a position); stored as fork_json, never sent"),
+            Map.entry("io.siggi.togethertunes.rooms.AloneSessions$Row", "an alone_sessions row, read per call"),
             Map.entry("io.siggi.togethertunes.rooms.RoomViewers$Seat",
                     "which room a guest's or anonymous socket is in (a guest id or an IP key), in memory only for"
                     + " the media access check; never sent"),
@@ -804,6 +812,16 @@ class DtoIpLeakTest {
                 produced.add(roomGuests.get(aliceActor, r.id(), b.guest().id()));
             }
         }
+        // GET /api/me/play-session and GET /api/me/history (the alone state)
+        produced.add(new io.siggi.togethertunes.rooms.AloneSessions.Session("alone-room", "room",
+                new io.siggi.togethertunes.rooms.AloneSessions.DeletedRoom("Deleted Room")));
+        produced.add(new io.siggi.togethertunes.rooms.PlayHistory(database, settings::roomsRequestHistoryDays, clock)
+                .list(aliceId, null, io.siggi.togethertunes.rooms.PlayHistory.LIST_MAX));
+        produced.add(new io.siggi.togethertunes.rooms.PlayHistory.Page(List.of(
+                new io.siggi.togethertunes.rooms.PlayHistory.Row(io.siggi.togethertunes.db.UuidV7.newId(), 1L,
+                        library.list(aliceId, null, null, null, Library.LIST_MAX).items().get(0).item(),
+                        new io.siggi.togethertunes.rooms.PlayHistory.RoomRef(roomPage.items().get(0).id(), "Party"))),
+                null));
         produced.add(roles.list());
         io.siggi.togethertunes.auth.Providers loginProviders = new io.siggi.togethertunes.auth.Providers(database,
                 new io.siggi.togethertunes.secrets.SecretCipher(new byte[32]));
@@ -941,7 +959,7 @@ class DtoIpLeakTest {
     private void sweep(Who who, Fixture f) throws Exception {
         List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo", "/ws",
                 "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions", "/api/me/identities",
-                "/api/me/merge-guest",
+                "/api/me/merge-guest", "/api/me/play-session", "/api/me/history",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
@@ -1243,6 +1261,9 @@ class DtoIpLeakTest {
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug, null);
         expect(200, cookieGuest, "GET", "/api/rooms/" + roomSlug + "/search", null);
         expect(200, anon, "GET", "/api/rooms", null);
+        // the alone state: alice joins her room and leaves it again
+        expect(200, alice, "POST", "/api/me/play-session/join", "{\"room\":\"" + roomSlug + "\"}");
+        expect(200, alice, "POST", "/api/me/play-session/leave", "{\"choice\":\"fork\"}");
         // guest bans: alice looks at the cookie guest, bans it, lists, lifts and bans it again (it stays banned)
         String cookieGuestId = json(expect(200, cookieGuest, "GET", "/api/me", null)).get("id").getAsString();
         String banPath = "/api/rooms/" + roomSlug + "/guest-bans/" + cookieGuestId;

@@ -370,6 +370,15 @@ class PermissionMatrixTest {
             row("GET /api/rooms/{room}/history", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/history"),
                     200, 200, 200, 200),
 
+            // The alone state and the own play history: users only (guests have none). A fresh
+            // user isn't in a room, so leaving is 409 not_in_room (AloneSessionsContract covers it).
+            row("GET /api/me/play-session", c -> Call.get("/api/me/play-session"), 401, 401, 200, 200),
+            row("POST /api/me/play-session/join", c -> Call.post("/api/me/play-session/join", "{\"room\":\""
+                    + c.rootRoomSlug() + "\"}"), 401, 401, 200, 200),
+            row("POST /api/me/play-session/leave", c -> Call.post("/api/me/play-session/leave", "{\"choice\":\"restore\"}"),
+                    401, 401, 409, 409),
+            row("GET /api/me/history", c -> Call.get("/api/me/history"), 401, 401, 200, 200),
+
             // The M0 WebSocket test page: open to everyone.
             row("GET /ws/echo", c -> Call.socket("/ws/echo"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),
             row("GET /ws", c -> Call.socket("/ws"), WS_UPGRADED, WS_UPGRADED, WS_UPGRADED, WS_UPGRADED),

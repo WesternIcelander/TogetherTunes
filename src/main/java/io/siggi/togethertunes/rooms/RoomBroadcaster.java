@@ -491,6 +491,14 @@ final class RoomBroadcaster implements RoomListener {
         room.addProperty("controlMode", s.controlMode().wire());
         room.addProperty("ownerId", s.ownerId());
         room.add("settings", s.settings().deepCopy());
+        if (s.alone()) {
+            // the user's own play session (docs/rooms.md#alone); awayInRoomId: the room they are in
+            // while it is saved
+            room.addProperty("alone", true);
+            if (s.awayInRoomId() != null) {
+                room.addProperty("awayInRoomId", s.awayInRoomId());
+            }
+        }
         base.add("room", room);
         base.add("timeline", RoomViews.timeline(s.timeline()));
         if (s.current() != null) {

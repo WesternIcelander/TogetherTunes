@@ -171,7 +171,11 @@ public final class Rooms {
      * and what they may do with the room itself.
      */
     public record RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
-                           JsonObject settings, long createdAt, You you) {
+                           JsonObject settings, long createdAt, You you, Boolean alone) {
+        public RoomView(String id, String slug, String name, ActorRef owner, String visibility, String controlMode,
+                        JsonObject settings, long createdAt, You you) {
+            this(id, slug, name, owner, visibility, controlMode, settings, createdAt, you, null);
+        }
     }
 
     /**
@@ -208,9 +212,16 @@ public final class Rooms {
     public record RoleSet(Member member, boolean created) {
     }
 
-    /** A {@code rooms} row with the owner's display name. */
+    /**
+     * A {@code rooms} row with the owner's display name. {@code alone}: the owner's alone room
+     * ({@code rooms.alone_user_id}, {@link AloneSessions}).
+     */
     public record Room(String id, String slug, String name, String ownerId, String ownerName, Visibility visibility,
-                       ControlMode controlMode, RoomSettings settings, long createdAt) {
+                       ControlMode controlMode, RoomSettings settings, long createdAt, boolean alone) {
+        public Room(String id, String slug, String name, String ownerId, String ownerName, Visibility visibility,
+                    ControlMode controlMode, RoomSettings settings, long createdAt) {
+            this(id, slug, name, ownerId, ownerName, visibility, controlMode, settings, createdAt, false);
+        }
     }
 
     /** A room and the caller's effective role in it ({@code null}: none). */
@@ -296,13 +307,18 @@ public final class Rooms {
     // ------------------------------------------------------------------ reading
 
     private static final String ROOM = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility,"
-            + " r.control_mode, r.created_at, r.settings_json FROM rooms r JOIN users u ON u.id = r.owner_id";
+            + " r.control_mode, r.created_at, r.settings_json, r.alone_user_id FROM rooms r"
+            + " JOIN users u ON u.id = r.owner_id";
 
     private static Room room(ResultSet rs) throws SQLException {
         return new Room(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
                 Objects.requireNonNull(Visibility.parse(rs.getString(6)), "visibility"),
                 Objects.requireNonNull(ControlMode.parse(rs.getString(7)), "control_mode"),
-                RoomSettings.parse(rs.getString(9)), rs.getLong(8));
+                RoomSettings.parse(rs.getString(9)), rs.getLong(8), rs.getString(10) != null);
+    }
+
+    private static HttpError aloneRoom() {
+        return new HttpError(409, "alone_room", "This is your own play session, not a room");
     }
 
     /** The room with this id or slug, or {@code null}. Locks the row on PostgreSQL if {@code lock}. */
@@ -359,7 +375,10 @@ public final class Rooms {
      * Throws unless the caller may see the room: {@code 404 room_not_found} for a private room
      * they aren't invited to, {@code 403 banned_from_room} for a banned user.
      */
-    private static void requireVisible(Access a) {
+    private static void requireVisible(Access a, String userId) {
+        if (a.room().alone() && !a.room().ownerId().equals(userId)) {
+            throw roomNotFound(); // an alone room is its user's alone, whatever their permissions
+        }
         boolean invited = a.role() != null && a.role() != Role.BANNED;
         if (a.room().visibility() == Visibility.PRIVATE && !invited) {
             throw roomNotFound();
@@ -378,7 +397,7 @@ public final class Rooms {
         String uid = userId(actor);
         Role stored = uid == null ? null : memberRole(c, room.id(), uid);
         Access a = new Access(room, effective(room, uid, stored, moderateAny));
-        requireVisible(a);
+        requireVisible(a, uid);
         if (actor instanceof Actor.Guest g && guestBanned(c, room.id(), g.guestId())) {
             throw new HttpError(403, "banned_from_room", "You are banned from this room");
         }
@@ -434,7 +453,7 @@ public final class Rooms {
     private static RoomView view(Room room, Role role, boolean moderateAny) {
         return new RoomView(room.id(), room.slug(), room.name(), ActorRef.user(room.ownerId(), room.ownerName()),
                 room.visibility().wire(), room.controlMode().wire(), room.settings().toJson(), room.createdAt(),
-                you(room, role, moderateAny));
+                you(room, role, moderateAny), room.alone() ? Boolean.TRUE : null);
     }
 
     /** The room as the caller sees it. @throws HttpError as {@link #access(Actor, String)} */
@@ -475,9 +494,9 @@ public final class Rooms {
         String uid = userId(actor);
         String gid = actor instanceof Actor.Guest g ? g.guestId() : null;
         String sql = "SELECT r.id, r.slug, r.name, r.owner_id, u.display_name, r.visibility, r.control_mode,"
-                + " r.created_at, r.settings_json, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
+                + " r.created_at, r.settings_json, r.alone_user_id, m.role FROM rooms r JOIN users u ON u.id = r.owner_id"
                 + " LEFT JOIN room_members m ON m.room_id = r.id AND m.user_id = ?"
-                + " WHERE (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
+                + " WHERE r.alone_user_id IS NULL AND (r.owner_id = ? OR m.role IN ('owner', 'moderator', 'member')"
                 + " OR (r.visibility = 'public' AND (m.role IS NULL OR m.role <> 'banned')"
                 + " AND NOT EXISTS (SELECT 1 FROM room_guest_bans b WHERE b.room_id = r.id AND b.guest_id = ?)))"
                 + (cursorId != null ? " AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "")
@@ -498,7 +517,7 @@ public final class Rooms {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         Room room = room(rs);
-                        Role role = effective(room, uid, Role.parse(rs.getString(10)), moderateAny);
+                        Role role = effective(room, uid, Role.parse(rs.getString(11)), moderateAny);
                         items.add(view(room, role, moderateAny));
                     }
                 }
@@ -601,7 +620,7 @@ public final class Rooms {
             try {
                 return db.write(c -> {
                     lockSlugs(c);
-                    try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM rooms WHERE owner_id = ?")) {
+                    try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM rooms WHERE owner_id = ? AND alone_user_id IS NULL")) {
                         ps.setString(1, owner.userId());
                         try (ResultSet rs = ps.executeQuery()) {
                             rs.next();
@@ -666,6 +685,70 @@ public final class Rooms {
         }
     }
 
+    /** The name an alone room has (never shown as a room: clients show "alone"). */
+    public static final String ALONE_NAME = "Alone";
+
+    /**
+     * The id of the user's alone room ({@link AloneSessions}), made on first use: a {@code private}
+     * room in {@code owner} mode owned by the user, with {@code alone_user_id} set and the slug
+     * {@code ~<userId>} (not a valid room slug, so it never collides with one). Not counted in
+     * {@link #MAX_OWNED}, never listed, and only its user can open it.
+     *
+     * @throws HttpError {@code 401 not_authenticated} if the user is gone
+     */
+    public String aloneRoom(String userId) throws SQLException {
+        Objects.requireNonNull(userId);
+        for (int attempt = 1; ; attempt++) {
+            String existing = db.read(c -> aloneRoomOf(c, userId));
+            if (existing != null) {
+                return existing;
+            }
+            try {
+                return db.write(c -> {
+                    String again = aloneRoomOf(c, userId);
+                    if (again != null) {
+                        return again;
+                    }
+                    if (userDisabled(c, userId) == null) {
+                        throw new HttpError(401, "not_authenticated", "Log in first");
+                    }
+                    String id = UuidV7.newId();
+                    long now = EpochMs.now(clock);
+                    try (PreparedStatement ps = c.prepareStatement("INSERT INTO rooms (id, slug, name, owner_id,"
+                            + " created_at, visibility, control_mode, settings_json, playback_state, anchor_server_ms,"
+                            + " anchor_position_ms, version, alone_user_id) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', 'idle', 0, 0,"
+                            + " 0, ?)")) {
+                        ps.setString(1, id);
+                        ps.setString(2, "~" + userId);
+                        ps.setString(3, ALONE_NAME);
+                        ps.setString(4, userId);
+                        ps.setLong(5, now);
+                        ps.setString(6, Visibility.PRIVATE.wire());
+                        ps.setString(7, ControlMode.OWNER.wire());
+                        ps.setString(8, userId);
+                        ps.executeUpdate();
+                    }
+                    putMember(c, id, userId, Role.OWNER, now);
+                    return id;
+                });
+            } catch (SQLException e) {
+                if (!isUniqueViolation(e) || attempt >= 3) {
+                    throw e; // a concurrent first use made it: read it again
+                }
+            }
+        }
+    }
+
+    /** The user's alone room's id, or {@code null}. */
+    static String aloneRoomOf(Connection c, String userId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT id FROM rooms WHERE alone_user_id = ?")) {
+            ps.setString(1, userId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
+
     private static HttpError slugTakenError() {
         return new HttpError(409, "slug_taken", "Another room already uses this link");
     }
@@ -703,6 +786,9 @@ public final class Rooms {
                 Access a = access(c, actor, idOrSlug, true, moderateAny);
                 if (a.role() != Role.OWNER) {
                     throw HttpError.forbidden("Only the room's owner can change it");
+                }
+                if (a.room().alone()) {
+                    throw aloneRoom();
                 }
                 Room r = a.room();
                 Map<String, Object> details = new LinkedHashMap<>();
@@ -777,14 +863,36 @@ public final class Rooms {
      *                   forbidden}
      */
     public String delete(Actor actor, String idOrSlug, String ip) throws SQLException {
+        return delete(actor, idOrSlug, ip, null);
+    }
+
+    /** Work done in a room's delete transaction just before the row goes ({@link #delete(Actor, String, String, BeforeDelete)}). */
+    @FunctionalInterface
+    public interface BeforeDelete {
+        void run(Connection c, String roomId, long now) throws SQLException;
+    }
+
+    /**
+     * {@link #delete(Actor, String, String)}, running {@code before} (if not {@code null}) in the
+     * same transaction once every check passed, before the row is deleted (the alone sessions
+     * keep what a fork needs, {@link AloneSessions#roomDeleting}). An alone room can't be deleted
+     * ({@code 409 alone_room}).
+     */
+    public String delete(Actor actor, String idOrSlug, String ip, BeforeDelete before) throws SQLException {
         boolean moderateAny = moderatesAny(actor);
         return db.write(c -> {
             Access a = access(c, actor, idOrSlug, true, moderateAny);
             if (a.role() != Role.OWNER && !moderateAny) {
                 throw HttpError.forbidden("Only the room's owner can delete it");
             }
+            if (a.room().alone()) {
+                throw aloneRoom();
+            }
             String roomId = a.room().id();
             long now = EpochMs.now(clock);
+            if (before != null) {
+                before.run(c, roomId, now);
+            }
             References.touchRoomQueue(c, roomId, now);
             try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET current_entry_id = NULL WHERE id = ?")) {
                 ps.setString(1, roomId);
@@ -929,6 +1037,9 @@ public final class Rooms {
         return db.write(c -> {
             Access a = access(c, actor, idOrSlug, true, moderateAny);
             Room room = a.room();
+            if (room.alone()) {
+                throw aloneRoom();
+            }
             Boolean disabled = userDisabled(c, targetUserId);
             if (disabled == null) {
                 throw new HttpError(404, "user_not_found", "No such user");

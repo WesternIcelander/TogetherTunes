@@ -138,6 +138,9 @@ public final class StreamOutputsApi {
         if (a.role() != Rooms.Role.OWNER) {
             throw HttpError.forbidden("Only the room's owner changes its outputs");
         }
+        if (a.room().alone()) {
+            throw new HttpError(409, "alone_room", "Your own play session has no stream outputs");
+        }
         return a;
     }
 

@@ -41,6 +41,10 @@ public final class RoomState {
     /** Who is in the room (connections); maintained through {@link PresenceOps}, kept across reloads. */
     private RoomPresence presence = new RoomPresence();
     private long version;
+    /** The user whose alone room this is ({@link AloneSessions}), or {@code null} for an ordinary room. */
+    private String aloneUserId;
+    /** For an alone room: the room its user is in (the alone state is saved meanwhile), or {@code null}. */
+    private String awayInRoomId;
 
     RoomState(String id, String slug, String name, String ownerId, Rooms.Visibility visibility,
               Rooms.ControlMode controlMode, String settingsJson, Timeline timeline, long version) {
@@ -196,6 +200,21 @@ public final class RoomState {
     /** Takes over the presence of the state this one replaces (a reload: connections stay open). */
     void adoptPresence(RoomState previous) {
         this.presence = previous.presence;
+    }
+
+    /** The user whose alone room this is, or {@code null} for an ordinary room. */
+    public String aloneUserId() {
+        return aloneUserId;
+    }
+
+    /** For an alone room: the room its user is in now ({@code null}: alone, or an ordinary room). */
+    public String awayInRoomId() {
+        return awayInRoomId;
+    }
+
+    void alone(String aloneUserId, String awayInRoomId) {
+        this.aloneUserId = aloneUserId;
+        this.awayInRoomId = aloneUserId == null ? null : awayInRoomId;
     }
 
     /** The version of the last committed change; bumped by the executor, never by mutations. */

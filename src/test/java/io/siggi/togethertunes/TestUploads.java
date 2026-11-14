@@ -156,6 +156,7 @@ public final class TestUploads {
         io.siggi.togethertunes.rooms.RoomsApi api = new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry,
                 permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
                 new io.siggi.togethertunes.rooms.RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
+        alone(api, db, rooms, registry, settings, clock);
         io.siggi.togethertunes.rooms.RoomQueue queue = new io.siggi.togethertunes.rooms.RoomQueue(registry, db,
                 uploads(db, dir, config, Tools.from(config), clock), youtube,
                 new io.siggi.togethertunes.library.Playlists(db, youtube, clock), addMedia, new java.util.Random(1));
@@ -173,9 +174,19 @@ public final class TestUploads {
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
         io.siggi.togethertunes.rooms.RoomGuests guests = new io.siggi.togethertunes.rooms.RoomGuests(db, settings,
                 permissions, rooms, registry);
-        return new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry, permissions, guests,
-                new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
+        io.siggi.togethertunes.rooms.RoomsApi api = new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry,
+                permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
                 new io.siggi.togethertunes.rooms.RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
+        alone(api, db, rooms, registry, settings, clock);
+        return api;
+    }
+
+    /** The alone state on the rooms API, as in {@code Main}. */
+    private static void alone(io.siggi.togethertunes.rooms.RoomsApi api, Database db,
+                              io.siggi.togethertunes.rooms.Rooms rooms, io.siggi.togethertunes.rooms.RoomRegistry registry,
+                              Settings settings, Clock clock) {
+        api.aloneSessions(new io.siggi.togethertunes.rooms.AloneSessions(db, rooms, registry, clock),
+                new io.siggi.togethertunes.rooms.PlayHistory(db, settings::roomsRequestHistoryDays, clock));
     }
 
     /** An add-media policy without rooms (every room {@code 404 room_not_found}). */
