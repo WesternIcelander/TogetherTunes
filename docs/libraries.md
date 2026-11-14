@@ -36,14 +36,14 @@ Sharing items with another account (`/api/shares`, a share adding the item to th
 | `library.viewAll` | Every user's library and playlists (read-only), searchable by user (`/api/users?q=` finds users by username or display name; their library can be searched like your own) |
 | Room members (users and guests) | Inside a room: the **room owner's** library and playlists plus **their own** library, or with "Search the whole server" every item on the server (below) |
 | Anyone who may open a room | The playlists selected **for autoplay** in that room (name and entries, through `GET /api/rooms/{id}/autoplay/playlists/{playlistId}`, only while selected; [rooms.md](rooms.md#autoplay)); nothing else of their owners' |
-| Any user | On the Library page, with "Search the whole server": every item on the server |
+| Any user | With the search (`GET /api/search`, or `GET /api/items/search`): every item on the server |
 | Anyone | Any item's page, **by direct link** (`/items/{id}`), whether or not it's in their library |
 
 **Any item on the server is fair game** (Siggi, 2026-11-10: "If an item is available on the server, it's fair game. [...] Only thing that should be private about the entire server's library is which users libraries an item is in."). The only private thing is **which users' libraries (and playlists) an item is in**. Item metadata (title, artist, album, kind, length, status) is not private.
 
 **Room request search** (`GET /api/rooms/{id}/search`): always the room owner's library and playlists **and** the requester's own library (guests have none: the owner's only), each item once. A **"Search the whole server"** tickbox (`all=1`; unchecked by default, remembered per browser) widens it to every item on the server that isn't purged: all users' libraries and playlists, and items in no library yet (e.g. recent guest requests awaiting retention). Room setting `libraryRequests` off turns the search off for everyone but the owner and moderators (`403 library_requests_off`).
 
-**Library page:** the search has the same **"Search the whole server"** tickbox for signed-in users (`GET /api/items/search`), with the same results and privacy rules; each result says whether it is in the viewer's own library ("In your library") or offers **Add to Library**. Unchecked, the search is the user's own library.
+**Library page** (provisional UI, removed at the end of M9): its search had the same **"Search the whole server"** tickbox for signed-in users (`GET /api/items/search`, still served), with the same results and privacy rules. The web UI's room view uses the room request search (without the tickbox) only for visitors who aren't signed in; signed-in users use the header's search below.
 
 **Search in the new UI** (M9, `GET /api/search`): the whole server as above, with the items in the searcher's own library ranked first (each part newest first by item id). Only the searcher's own library affects the order, so it reveals nothing about anyone else's. Guests and anonymous visitors search only from a room where they may request from the library (`roomId`; the request search's rules), and find what they may request there.
 

@@ -2,21 +2,21 @@
 
 External documentation for people using a TogetherTunes server. The software itself never names third-party games or services (see `CLAUDE.md`); how to use the stream in a particular game or with a particular streaming service lives here instead. M7's deployment notes can build on this page.
 
-A room can have up to four **stream outputs** (see [program-output.md](program-output.md)): an **RTMP push** to a streaming service, a **direct MPEG-TS URL** (`.ts`), **HLS** (`.m3u8`) and **MP3 audio** (`.mp3`, for internet-radio players). The room page's **Stream outputs** panel shows their URLs with copy buttons. The first three carry the same H.264/AAC program; MP3 carries its sound.
+A room can have up to four **stream outputs** (see [program-output.md](program-output.md)): an **RTMP push** to a streaming service, a **direct MPEG-TS URL** (`.ts`), **HLS** (`.m3u8`) and **MP3 audio** (`.mp3`, for internet-radio players). **Manage Room → Outputs** shows their URLs with copy buttons (the room view has quick **Turn on** / **Copy link** buttons for the owner and moderators). The first three carry the same H.264/AAC program; MP3 carries its sound.
 
 ## In VRChat
 
-- **Where the URL goes:** paste the stream URL into the world's video player (any player that plays live streams, e.g. one based on AVPro). On the room page this is the URL under **Watch on the stream** (the RTMP service's viewer URL), or the `.ts` / HLS URL from the outputs panel.
+- **Where the URL goes:** paste the stream URL into the world's video player (any player that plays live streams, e.g. one based on AVPro). In the room view this is the URL under **Watch on the stream** (the RTMP service's viewer URL), or the `.ts` / HLS URL from Manage Room → Outputs.
 - **Allowlist:** VRChat by itself only plays URLs from its own allowlist, and a self-hosted server isn't on it. For the `.ts` and HLS URLs, every viewer must turn on **"Allow Untrusted URLs"** in VRChat's settings. In **public and group-public** instances the world must also list the server's domain in its **"Video Player Allowed Domains"**. (In the UI this is the generic note "Some players only play URLs from an allowlist…".)
-- **Remote mode:** people who hear the room in VRChat can still open the room page (or scan the QR code on the stream) and choose **"I'm listening through the stream (remote mode)"**. The page then plays nothing itself and shows the queue and progress delayed to match what the stream is showing; the −0.5 s / +0.5 s buttons fine-tune the delay.
+- **Remote mode:** people who hear the room in VRChat can still open the room (or scan the QR code on the stream, which opens it in requests-only mode) or choose **Requests-only mode** in the player bar's menu. The page then plays nothing itself and shows what plays **through the stream**, delayed to match what the stream is showing; the −0.5 s / +0.5 s buttons fine-tune the delay.
 
 ## RTMP service (e.g. VRCDN)
 
 The RTMP output pushes the program to an RTMP ingest, such as VRCDN, which then serves it to viewers from its own servers (often on a domain the game already allows).
 
 1. Create a stream at the service and note its **ingest URL**, **stream key** and the **viewer URL** it gives out.
-2. On the room page, **Set up RTMP push** with the ingest URL and the stream key.
-3. Under **Manage room → Settings → Outputs**, save the service's viewer URL as the **RTMP viewer URL**. The room page then shows it to everyone under **Watch on the stream**, and that is the URL viewers paste into the world's video player.
+2. In **Manage room → Outputs**, set up the RTMP push with the ingest URL and the stream key.
+3. Under **Manage room → Settings → Outputs**, save the service's viewer URL as the **RTMP viewer URL**. The room view then shows it to everyone under **Watch on the stream**, and that is the URL viewers paste into the world's video player.
 
 **Security note:** a plain `rtmp://` ingest URL sends your stream key unencrypted to the service, so someone on the network path could read it. If the service offers an `rtmps://` ingest address, use that instead. If you think a key has leaked, reset it at the service and paste the new one.
 
