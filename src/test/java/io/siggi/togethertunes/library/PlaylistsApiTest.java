@@ -353,7 +353,17 @@ class PlaylistsApiTest {
         expectError(409, "needs_classification", call(alice, "POST", "/api/playlists/" + a + "/entries",
                 "{\"itemId\":\"" + clip + "\"}"));
         expectError(400, "invalid_media_type", call(alice, "POST", "/api/playlists/" + a + "/entries",
-                "{\"itemId\":\"" + clip + "\",\"mediaType\":\"uncategorized\"}"));
+                "{\"itemId\":\"" + clip + "\",\"mediaType\":\"podcast\"}"));
+        // "uncategorized" leaves it so on purpose: in the playlist and the library, still uncategorized
+        String left = video("Left");
+        HttpResponse<String> leftAdd = call(alice, "POST", "/api/playlists/" + a + "/entries",
+                "{\"itemId\":\"" + left + "\",\"mediaType\":\"uncategorized\"}");
+        assertEquals(201, leftAdd.statusCode(), leftAdd.body());
+        assertEquals("uncategorized", json(leftAdd).getAsJsonObject("item").get("mediaType").getAsString());
+        assertEquals(1, json(call(alice, "GET", "/api/library/" + left + "/playlists", null))
+                .getAsJsonArray("playlists").size(), "in the playlist, so in the library");
+        assertEquals(204, call(alice, "DELETE", "/api/playlists/" + a + "/entries/"
+                + json(leftAdd).get("id").getAsString(), null).statusCode());
         HttpResponse<String> typed = call(alice, "POST", "/api/playlists/" + a + "/entries",
                 "{\"itemId\":\"" + clip + "\",\"mediaType\":\"movie\"}");
         assertEquals(201, typed.statusCode(), typed.body());

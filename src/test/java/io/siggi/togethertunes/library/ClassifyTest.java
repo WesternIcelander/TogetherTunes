@@ -51,8 +51,11 @@ class ClassifyTest {
         assertEquals(new Classify.Classification(MediaType.SHOW, new MediaType.Show("X", null, 0)),
                 Classify.of(JsonParser.parseString("{\"mediaType\":\"show\",\"show\":{\"name\":\"X\",\"episode\":0}}")
                         .getAsJsonObject()));
+        // "uncategorized": the adder leaves it so on purpose
+        assertEquals(Classify.Classification.LEAVE,
+                Classify.of(JsonParser.parseString("{\"mediaType\":\"uncategorized\"}").getAsJsonObject()));
         for (String[] bad : new String[][] {
-                {"{\"mediaType\":\"uncategorized\"}", "invalid_media_type"},
+                {"{\"mediaType\":\"uncategorized\",\"show\":{\"name\":\"X\",\"episode\":1}}", "not_a_show"},
                 {"{\"mediaType\":\"podcast\"}", "invalid_media_type"},
                 {"{\"mediaType\":3}", "invalid_media_type"},
                 {"{\"mediaType\":\"show\"}", "show_required"},

@@ -15,20 +15,31 @@
 // are "panes" the frame shows instead of the view (the sidebar's Library or Rooms tab, the right
 // panel with the video on top, the account menu); each is a history entry of the view's URL with
 // `mPane` in history.state, so the browser's back button closes it.
+//
+// Drag and drop (desktop; rules in the DOM-free dragdrop.ts, page side in dnd.ts): the user's
+// playlists drag up and down in the sidebar (PUT /api/playlists/order), each playlist takes songs,
+// files and links dropped on it; queue and Recents rows drag out (the selected ones together:
+// Shift / Ctrl / Cmd-click) and the queue's two sections take moves (queue.move, by rights, never
+// in vote mode) and songs from elsewhere (queue.add).
+import { openAddLink } from "./addlink.js";
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { withClassification } from "./classifyprompt.js";
+import { draggable, dropZone } from "./dnd.js";
+import { draggedKeys, moveIsNoop, playlistDrop, playlistOrderBody, queueDrop, queueShowsPosition, type DragPayload,
+  type QueueSection } from "./dragdrop.js";
+import { dropFiles } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
-import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, showBarTitle, tabAction,
-  type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
+import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, Selection, showBarTitle,
+  tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
-import { ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
-  playlistNameInput, type EntryAction } from "./interactions.js";
+import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
+  playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
 import {
   canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
-  parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections,
+  parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections, songCount,
   suggestionsPlace, volumeGain, voteSkip, type AutoplaySelectionLike, type PersonAction, type PersonLike,
   type PersonViewer,
 } from "./panels.js";
@@ -104,6 +115,9 @@ export class Frame {
   #selectionsRoom = "";
   #libraryLoading = false;
   readonly #likes: LikesCache = {};
+  /** The right panel's multi-select (queue and Recents rows, desktop) and its anchor. */
+  readonly #panelSel = new Selection();
+  #panelAnchor: string | undefined;
   readonly #mute = new MuteState();
   #volume = parseVolume(storageGet(VOLUME_KEY));
   #seeking = false;
@@ -155,6 +169,19 @@ export class Frame {
       if (ev.key === "Escape" && document.body.classList.contains("now-view-open")) this.#setNowView(false);
     });
     document.addEventListener("click", (ev) => this.#closeMenus(ev));
+    // A plain click (or Escape) ends the panel's multi-select.
+    const clearSelection = (): void => {
+      if (this.#panelSel.size === 0) return;
+      this.#panelSel.clear();
+      this.#panelAnchor = undefined;
+      this.#drawPanelSelection();
+    };
+    document.addEventListener("click", (ev) => {
+      if (!ev.shiftKey && !toggleKey(ev)) clearSelection();
+    });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.querySelector(".popup-menu") === null) clearSelection();
+    });
     this.#wireMobile();
   }
 
@@ -473,6 +500,19 @@ export class Frame {
       if (p.builtin === "likes") continue;
       list.append(this.#playlistRow(p, selected.has(p.id), playlistPath(p.id), "li"));
     }
+    // Drag the playlists up and down to reorder them (the built-in entries above stay in place).
+    dropZone(list, {
+      accepts: (content, payload) => content === "internal" && payload?.kind === "playlist",
+      rows: { selector: "li[data-playlist-row]", key: "data-playlist-row" },
+      onDrop: (d) => {
+        if (d.payload?.kind !== "playlist") return;
+        const order = this.#playlists.filter((p) => p.builtin === undefined).map((p) => p.id);
+        if (moveIsNoop(order, [d.payload.playlistId], d.before)) return;
+        this.#libraryError("");
+        api("PUT", "/api/playlists/order", playlistOrderBody(d.payload.playlistId, d.before))
+          .then(() => this.#loadLibrary(), (e: unknown) => this.#libraryError(e));
+      },
+    });
     const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list,
       h("p", { id: "app-library-error", class: "error small", role: "alert" })];
     const room = this.#host.room();
@@ -543,7 +583,75 @@ export class Frame {
       else menu(a);
     });
     row.append(more);
+    if (tag === "li" && p.builtin === undefined) {
+      row.setAttribute("data-playlist-row", p.id);
+      draggable(row, () => ({ kind: "playlist", playlistId: p.id }));
+    }
+    this.#playlistDropTarget(row, p, href);
     return row;
+  }
+
+  /**
+   * A playlist in the sidebar takes songs (added at its end: from other playlists, the queue,
+   * Recents, search results), files (uploaded into it) and links (Add from link for it).
+   */
+  #playlistDropTarget(row: HTMLElement, p: Playlist, href: string): void {
+    const name = p.builtin === "likes" ? "Liked Songs" : p.name;
+    const changed = (): void => {
+      if (location.pathname === href) reloadPage();
+    };
+    dropZone(row, {
+      accepts: (content, payload) => content === "files" || content === "link"
+        || (content === "internal" && playlistDrop({ playlistId: p.id, inView: false }, payload).kind !== "none"),
+      onDrop: (d) => {
+        this.#libraryError("");
+        if (d.content === "files") {
+          dropFiles(d.files, { playlistId: p.id, playlistName: name },
+            (text, error) => this.#libraryNotice(text, error === true), changed);
+          return;
+        }
+        if (d.content === "link") {
+          openAddLink({ playlistId: p.id, url: d.link, onAdded: (text) => { this.#libraryNotice(text, false); changed(); } });
+          return;
+        }
+        const what = playlistDrop({ playlistId: p.id, inView: false }, d.payload);
+        if (what.kind !== "add") return;
+        void this.#addToPlaylist(p.id, name, what.itemIds).then(changed);
+      },
+    });
+  }
+
+  /** Adds songs to the end of a playlist, in order (asking for types where needed). */
+  async #addToPlaylist(playlistId: string, name: string, itemIds: readonly string[]): Promise<void> {
+    const path = "/api/playlists/" + encodeURIComponent(playlistId) + "/entries";
+    let added = 0;
+    const failed: string[] = [];
+    for (const itemId of itemIds) {
+      try {
+        const r = await withClassification((c) => api("POST", path, c === undefined ? { itemId } : { itemId, ...c }),
+          undefined, true);
+        if (r !== null) added++;
+      } catch (e) {
+        failed.push(message(e));
+      }
+    }
+    if (failed.length > 0) this.#libraryNotice(failed.join("; "), true);
+    else if (added > 0) this.#libraryNotice(songCount(added) + " added to " + name + ".", false);
+    void this.#loadLibrary();
+  }
+
+  /** A line under the sidebar's playlists (an error, or what a drop did; the latter fades after a while). */
+  #libraryNotice(text: string, error: boolean): void {
+    const err = document.getElementById("app-library-error");
+    if (err === null) return;
+    err.textContent = text;
+    err.classList.toggle("error", error);
+    err.classList.toggle("muted", !error);
+    if (!error) {
+      window.setTimeout(() => {
+        if (err.textContent === text) err.textContent = "";
+      }, 5000);
+    }
   }
 
   #openPlaylistMenu(p: Playlist, dot: boolean, anchor: HTMLElement): void {
@@ -564,7 +672,10 @@ export class Frame {
 
   #libraryError(e: unknown): void {
     const err = document.getElementById("app-library-error");
-    if (err !== null) err.textContent = e === "" ? "" : message(e);
+    if (err === null) return;
+    err.textContent = e === "" ? "" : message(e);
+    err.classList.add("error");
+    err.classList.remove("muted");
   }
 
   async #renamePlaylist(p: Playlist): Promise<void> {
@@ -824,7 +935,105 @@ export class Frame {
       actions);
     this.#entryMenuButton(li, actions, e.item.title ?? "this entry",
       () => entryMenu(s, e, room.actor(), suggestion), (a) => this.#entryAction(room, a, e.entryId, e.item.id));
+    // Dragging out never needs queue rights; moving needs them (the drop target checks).
+    this.#draggableItem(li, e.item, "queue", suggestion ? undefined : e.entryId,
+      suggestion ? undefined : "q:" + e.entryId);
     return li;
+  }
+
+  /**
+   * Makes an entry row draggable (desktop): its song, with its queue entry id when it may move.
+   * With a `key`, the row also takes part in the panel's multi-select (Shift / Ctrl / Cmd-click,
+   * within the queue or within Recents), and a drag from a selected row carries all selected rows
+   * of its list, in order.
+   */
+  #draggableItem(li: HTMLElement, item: RoomItem, source: "queue" | "recents", entryId?: string, key?: string): void {
+    if (this.#mobile()) return;
+    li.dataset["item"] = item.id;
+    if (entryId !== undefined) li.dataset["moveEntry"] = entryId;
+    if (key !== undefined) {
+      li.dataset["sel"] = key;
+      li.classList.toggle("selected", this.#panelSel.has(key));
+      li.addEventListener("click", (ev) => {
+        if (!ev.shiftKey && !toggleKey(ev)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.#panelAnchor = clickSelect(this.#panelSel, this.#selRows(li).map((r) => r.dataset["sel"] ?? ""), key, ev,
+          this.#panelAnchor);
+        this.#drawPanelSelection();
+      });
+    }
+    draggable(li, (): DragPayload => {
+      const rows = key === undefined ? [li] : (() => {
+        const all = this.#selRows(li);
+        const keys = draggedKeys((k) => this.#panelSel.has(k), all.map((r) => r.dataset["sel"] ?? ""), key);
+        return all.filter((r) => keys.includes(r.dataset["sel"] ?? ""));
+      })();
+      const itemIds = rows.map((r) => r.dataset["item"] ?? "");
+      const entryIds = rows.map((r) => r.dataset["moveEntry"]).filter((id): id is string => id !== undefined);
+      return { kind: "items", source, itemIds, ...(entryIds.length === rows.length && entryId !== undefined ? { entryIds } : {}) };
+    }, () => [location.origin + itemPath(item.id)]);
+  }
+
+  /** The selectable rows of the list `li` is in (the queue's or Recents', in the panel or the room view). */
+  #selRows(li: HTMLElement): HTMLElement[] {
+    const box = li.closest("#app-queue, #app-recents, #rv-queue, #rv-earlier");
+    const prefix = (li.dataset["sel"] ?? "").split(":")[0] + ":";
+    return box === null ? [li] : Array.from(box.querySelectorAll<HTMLElement>("[data-sel]"))
+      .filter((r) => (r.dataset["sel"] ?? "").startsWith(prefix));
+  }
+
+  #drawPanelSelection(): void {
+    document.querySelectorAll<HTMLElement>("li[data-sel]").forEach((r) => {
+      r.classList.toggle("selected", this.#panelSel.has(r.dataset["sel"] ?? ""));
+    });
+  }
+
+  /**
+   * A queue section (Requests = manual, From Playlist = autoplay) as a drop target: queue entries
+   * move there with the rights (not in vote mode), songs from elsewhere are requested.
+   */
+  #queueDropTarget(el: HTMLElement, room: ShellRoom, section: QueueSection): void {
+    dropZone(el, {
+      accepts: (content, payload) => {
+        const s = room.state();
+        if (content !== "internal" || s === undefined) return false;
+        const what = queueDrop(s, payload, section, null).kind;
+        return what === "move" || what === "add";
+      },
+      rows: { selector: "li[data-entry]", key: "data-entry" },
+      positioned: (_content, payload) => {
+        const s = room.state();
+        return s !== undefined && queueShowsPosition(s, payload);
+      },
+      onDrop: (d) => {
+        const s = room.state();
+        if (s === undefined) return;
+        const what = queueDrop(s, d.payload, section, d.before);
+        if (what.kind === "move") {
+          const ids = Array.from(el.querySelectorAll<HTMLElement>("li[data-entry]")).map((li) => li.dataset["entry"] ?? "");
+          const moved = what.message["entryIds"] as string[];
+          if (moveIsNoop(ids, moved, d.before)) return;
+          this.#act(room, what.message);
+        } else if (what.kind === "add") {
+          void this.#requestAll(room, what.itemIds);
+        }
+      },
+    });
+  }
+
+  /** Requests songs dropped on the queue, in order (the room's request rules apply). */
+  async #requestAll(room: ShellRoom, itemIds: readonly string[]): Promise<void> {
+    this.#showError("");
+    const failed: string[] = [];
+    for (const itemId of itemIds) {
+      try {
+        await room.request({ type: "queue.add", itemId });
+      } catch (e) {
+        failed.push(message(e));
+      }
+    }
+    if (failed.length > 0) this.#showError(failed.join("; "));
   }
 
   /**
@@ -871,6 +1080,7 @@ export class Frame {
     this.#entryMenuButton(li, actions, c.item.title ?? "Now Playing",
       () => (canSkipNow(s.room.you) ? ["skip", "open"] : ["open"]) as EntryAction[],
       (a) => this.#entryAction(room, a, c.entryId, c.item.id));
+    this.#draggableItem(li, c.item, "queue");
     out.push(h("ul", { class: "entries" }, li));
     const b = voteSkipHere ? this.#voteSkipButton(room, s) : null;
     if (b !== null) out.push(h("div", { class: "vote-skip" }, b));
@@ -925,12 +1135,17 @@ export class Frame {
     const { requests, fromPlaylist } = queueSections(s.queue);
     const reqList = h("ul", { class: "entries" });
     for (const e of requests) reqList.append(this.#waitingRow(room, s, e, false));
-    parts.push(h("h3", { text: "Requests" }),
+    const reqSection = h("section", { class: "queue-section", "data-section": "manual" }, h("h3", { text: "Requests" }),
       requests.length > 0 ? reqList : h("p", { class: "muted small", text: "No requests." }));
     const apList = h("ul", { class: "entries" });
     for (const e of fromPlaylist) apList.append(this.#waitingRow(room, s, e, false));
-    parts.push(h("h3", { text: "From Playlist" }),
+    const apSection = h("section", { class: "queue-section", "data-section": "autoplay" }, h("h3", { text: "From Playlist" }),
       fromPlaylist.length > 0 ? apList : h("p", { class: "muted small", text: "Nothing from playlists." }));
+    if (!this.#mobile()) {
+      this.#queueDropTarget(reqSection, room, "manual");
+      this.#queueDropTarget(apSection, room, "autoplay");
+    }
+    parts.push(reqSection, apSection);
     if (place === "below") parts.push(this.#suggestionsBlock(room, s));
     return parts;
   }
@@ -947,9 +1162,11 @@ export class Frame {
   #recentsParts(s: RoomState): HTMLElement[] {
     const nowList = h("ul", { class: "entries" });
     if (s.current !== undefined) {
-      nowList.append(h("li", { class: "entry" }, cover(s.current.item, "cover entry-cover"),
+      const li = h("li", { class: "entry" }, cover(s.current.item, "cover entry-cover"),
         h("div", { class: "grow" }, this.#entryText(s.current.item)),
-        h("span", { class: "entry-actions" }, this.#heart(s.current.item.id))));
+        h("span", { class: "entry-actions" }, this.#heart(s.current.item.id)));
+      this.#draggableItem(li, s.current.item, "recents", undefined, "r:" + s.current.entryId);
+      nowList.append(li);
     }
     return [h("h3", { text: "Now Playing" }),
       s.current !== undefined ? nowList : h("p", { class: "muted small", text: "Nothing is playing." }),
@@ -1097,10 +1314,12 @@ export class Frame {
   }
 
   #historyRow(r: HistoryEntry): HTMLLIElement {
-    return h("li", { class: "entry" + (r.state === "skipped" ? " skipped" : "") },
+    const li = h("li", { class: "entry" + (r.state === "skipped" ? " skipped" : "") },
       cover(r.item, "cover entry-cover"),
       h("div", { class: "grow" }, this.#entryText(r.item)),
       h("span", { class: "entry-actions" }, this.#heart(r.item.id)));
+    this.#draggableItem(li, r.item, "recents", undefined, "r:" + r.entryId);
+    return li;
   }
 
   // ---------------------------------------------------------------- player bar

@@ -2030,3 +2030,62 @@ table.songs tbody tr {
     padding: 0.6rem 0.4rem;
   }
 }
+
+/* ------------------------------------------------------------------ drag and drop (dnd.ts, docs/ui.md#library-rules) */
+
+/* Where a drop lands: a line above the row it goes before, or at the end of the list; a target
+   without positions (a playlist in the sidebar) is highlighted. */
+.drop-before {
+  box-shadow: inset 0 2px 0 0 #2a7de1;
+}
+
+table.songs tr.drop-before > td {
+  box-shadow: inset 0 2px 0 0 #2a7de1;
+}
+
+.drop-end {
+  box-shadow: inset 0 -2px 0 0 #2a7de1;
+}
+
+.drop-target {
+  outline: 2px solid #2a7de1;
+  outline-offset: -2px;
+  background: rgba(42, 125, 225, 0.12);
+}
+
+/* The right panel's multi-select (queue and Recents rows; Shift / Ctrl / Cmd-click). */
+li.entry.selected {
+  background: rgba(255, 200, 0, 0.25);
+}
+
+/* Files dropped on a playlist: how each upload is doing. */
+.drop-uploads {
+  position: fixed;
+  right: 1rem;
+  bottom: 6rem;
+  z-index: 90;
+  width: min(24rem, calc(100vw - 2rem));
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #888;
+  border-radius: 0.5rem;
+  background: #fff;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.25);
+}
+
+.drop-upload-lines {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+}
+
+.drop-upload-lines li {
+  overflow-wrap: break-word;
+}
+
+@media (prefers-color-scheme: dark) {
+  .drop-uploads {
+    background: #222;
+  }
+}

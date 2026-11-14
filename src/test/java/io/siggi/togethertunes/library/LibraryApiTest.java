@@ -332,7 +332,6 @@ class LibraryApiTest {
         assertEquals(12, suggested.getAsJsonObject("show").get("episode").getAsInt());
         assertEquals(0, json(call("GET", "/api/library", true)).getAsJsonArray("items").size());
 
-        assertEquals("invalid_media_type", code(put("/api/library/" + id, "{\"mediaType\":\"uncategorized\"}")));
         assertEquals("invalid_media_type", code(put("/api/library/" + id, "{\"mediaType\":\"podcast\"}")));
         assertEquals("show_required", code(put("/api/library/" + id, "{\"mediaType\":\"show\"}")));
         assertEquals("invalid_show", code(put("/api/library/" + id, "{\"mediaType\":\"show\",\"show\":{\"episode\":1}}")));
@@ -354,6 +353,19 @@ class LibraryApiTest {
                 .getAsJsonObject("item").get("mediaType").getAsString());
         // an audio item never asks
         assertEquals(201, call("PUT", "/api/library/" + item("Song", "ready", null), true).statusCode());
+        // "uncategorized": added, left uncategorized on purpose
+        String left = item("Left", "ready", null);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video',"
+                    + " media_type = 'uncategorized' WHERE id = ?")) {
+                ps.setString(1, left);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        HttpResponse<String> leave = put("/api/library/" + left, "{\"mediaType\":\"uncategorized\"}");
+        assertEquals(201, leave.statusCode(), leave.body());
+        assertEquals("uncategorized", json(leave).getAsJsonObject("item").get("mediaType").getAsString());
     }
 
     @Test

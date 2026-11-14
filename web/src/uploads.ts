@@ -139,6 +139,11 @@ export class Upload {
   addToLibrary = true;
   /** The room this upload is a request in (`POST /api/uploads {roomId}`); needed for guests. */
   roomId: string | undefined;
+  /**
+   * Awaited once all bytes are sent, before `complete`: more fields for it (e.g. the media type
+   * a dialog asked for while the file was uploading), or null to cancel the upload instead.
+   */
+  beforeComplete: (() => Promise<Record<string, unknown> | null>) | undefined;
 
   constructor(file: File, onProgress: (p: UploadProgress) => void) {
     this.file = file;
@@ -297,9 +302,18 @@ export class Upload {
       this.#check();
     }
     this.#report("processing");
+    let extra: Record<string, unknown> = {};
+    if (this.beforeComplete !== undefined) {
+      const more = await this.beforeComplete();
+      if (more === null) {
+        this.cancel();
+        throw new Stopped();
+      }
+      extra = more;
+    }
     try {
       return await api<Completed>("POST", "/api/uploads/" + encodeURIComponent(this.#uploadId) + "/complete",
-        { addToLibrary: this.addToLibrary });
+        { ...extra, addToLibrary: this.addToLibrary });
     } catch (e) {
       const needed = needsClassification(e);
       if (needed === undefined) throw e;

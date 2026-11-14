@@ -184,7 +184,7 @@ class YoutubeImportsApiTest {
                 HttpResponse.BodyHandlers.ofString());
         assertEquals(200, room.statusCode(), room.body());
         // a bad type is refused up front
-        HttpResponse<String> bad = http.send(post("application/json", ",\"mediaType\":\"uncategorized\""),
+        HttpResponse<String> bad = http.send(post("application/json", ",\"mediaType\":\"podcast\""),
                 HttpResponse.BodyHandlers.ofString());
         assertEquals(400, bad.statusCode(), bad.body());
         HttpResponse<String> ok = http.send(post("application/json", ",\"mediaType\":\"movie\""),

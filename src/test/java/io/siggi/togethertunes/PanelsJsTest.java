@@ -46,11 +46,12 @@ class PanelsJsTest {
         }
         String list = read("web/js/libview.js");
         for (String s : List.of("\"/api/library\"", "\"/api/library/uncategorized\"", "/api/library/shows",
-                "\"/api/me/likes\"", "\"/api/playlists/\"", "/api/search?", "\"/api/imports/youtube\"",
+                "\"/api/me/likes\"", "\"/api/playlists/\"", "/api/search?", "openAddLink(",
                 "\"queue.addPlaylist\"", "In Order", "Shuffled", "+ Add from link", "/autoplay/playlists/",
                 "onReady(start)")) {
             assertTrue(list.contains(s), s);
         }
+        assertTrue(read("web/js/addlink.js").contains("\"/api/imports/youtube\""));
         // the listener's volume and mute reach the player after its meters (never mistaken for a silent path)
         String listen = read("web/js/listen.js");
         assertTrue(listen.contains("setVolume(") && listen.contains("setMuted(") && listen.contains("#output("), listen);

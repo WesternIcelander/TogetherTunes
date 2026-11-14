@@ -14,10 +14,17 @@
 // room open here, or alone does what the user setting `doubleClickAlone` says (play it now or queue
 // it); on the desktop a click selects a row, Ctrl/Cmd-click toggles one and Shift-click selects a
 // range, and the selection bar's Add to Queue adds them in list order. The title link opens the item
-// page after a moment (a double-click cancels it). Drag and drop comes with its own step; the server
-// enforces every rule.
+// page after a moment (a double-click cancels it). Drag and drop (desktop; rules in the DOM-free
+// dragdrop.ts): rows drag out (the selected rows together when the dragged one is selected) to a
+// playlist, the queue, …; an own playlist's (or Liked Songs') rows take drops at a position: its
+// own entries move, songs from elsewhere are added, files are uploaded into it (filedrop.ts) and a
+// link opens Add from link (addlink.ts). The server enforces every rule.
+import { openAddLink } from "./addlink.js";
 import { api } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
+import { draggable, dropZone } from "./dnd.js";
+import { draggedKeys, moveIsNoop, playlistDrop, type DragPayload } from "./dragdrop.js";
+import { dropFiles } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
 import { clickSelect, doubleClickAction, playNowBefore, selectionText, SONG_ACTION_LABELS, songMenu, toggleKey,
@@ -55,6 +62,9 @@ let anchor: string | undefined;
 /** Which kind of list is shown (for the song menu), and the playlist's id. */
 let songList: SongList = "library";
 let listPlaylistId: string | undefined;
+/** The own playlist shown, as a drop target, and the view its drop zone was set up for. */
+let dropPlaylist: PlaylistDetail | undefined;
+let dropZoneSignal: AbortSignal | undefined;
 /** The title link waiting to be followed (a double-click on the row cancels it). */
 let linkTimer: number | undefined;
 /** The user setting `doubleClickAlone`, read once per view when first needed. */
@@ -278,7 +288,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
   const more = h("button", { type: "button", class: "icon row-more", text: "⋯", title: "More",
     "aria-label": "More for " + item.title, "aria-haspopup": "true" });
   more.addEventListener("click", () => openRowMenu(key, more));
-  const tr = h("tr", { "data-item": item.id, "data-key": key },
+  const tr = h("tr", { "data-item": item.id, "data-key": key, "data-entry": r.entryId },
     h("td", { class: "num muted" }, h("span", { class: "row-num", text: key }), check),
     h("td", {}, coverCell(item)),
     h("td", {},
@@ -330,7 +340,99 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
   onLongPress(tr, () => {
     if (!selecting) openRowMenu(key, more);
   }, pageSignal());
+  if (!mobile()) draggable(tr, () => rowDrag(key), () => rowDragLinks(key), pageSignal());
   return tr;
+}
+
+/** The rows a drag from `key` carries: the selection when `key` is in it, else that row. */
+function dragRows(key: string): string[] {
+  return draggedKeys((k) => selection.has(k), rowKeys(), key);
+}
+
+/** What dragging the row `key` (with the rows selected along with it) carries. */
+function rowDrag(key: string): DragPayload | undefined {
+  if (selecting) return undefined;
+  const keys = dragRows(key);
+  const itemIds = keys.map((k) => rowItems[k]?.id).filter((id): id is string => id !== undefined);
+  if (itemIds.length !== keys.length || itemIds.length === 0) return undefined;
+  const entryIds = keys.map((k) => rowEntries[k]).filter((id): id is string => id !== undefined);
+  const own = listPlaylistId !== undefined && entryIds.length === keys.length;
+  return { kind: "items", source: songList, itemIds, ...(own ? { playlistId: listPlaylistId, entryIds } : {}) };
+}
+
+function rowDragLinks(key: string): string[] {
+  return dragRows(key).map((k) => rowItems[k]).filter((i): i is ItemSummary => i !== undefined)
+    .map((i) => location.origin + itemPath(i.id));
+}
+
+/** The open playlist's entry ids, in order. */
+function entryOrder(): string[] {
+  return Array.from(element("list-rows").querySelectorAll<HTMLTableRowElement>("tr[data-entry]"))
+    .map((tr) => tr.dataset["entry"] ?? "");
+}
+
+/** Adds songs to the open playlist before `before` (null: the end), in order; asks for types where needed. */
+async function addToPlaylist(playlistId: string, itemIds: readonly string[], before: string | null): Promise<void> {
+  const path = "/api/playlists/" + encodeURIComponent(playlistId) + "/entries";
+  let added = 0;
+  const failed: string[] = [];
+  for (const itemId of itemIds) {
+    const body: Record<string, unknown> = { itemId };
+    if (before !== null) body["beforeEntryId"] = before;
+    try {
+      const r = await withClassification((c) => api("POST", path, c === undefined ? body : { ...body, ...c }),
+        undefined, true);
+      if (r !== null) added++;
+    } catch (e) {
+      failed.push(message(e));
+    }
+  }
+  notice(added > 0 ? songCount(added) + " added." : "");
+  showError(failed.join("; "));
+}
+
+/**
+ * An own playlist's view takes drops at a position (docs/ui.md#library-rules): its own entries
+ * move there, songs from elsewhere are added there, files are uploaded into it, a link opens Add
+ * from link for it.
+ */
+function playlistDropZone(shown: PlaylistDetail): void {
+  dropPlaylist = shown;
+  // Once per view: a restart (after a change) shows the list again in the same view.
+  const signal = pageSignal();
+  if (dropZoneSignal === signal) return;
+  dropZoneSignal = signal;
+  signal.addEventListener("abort", () => { dropPlaylist = undefined; });
+  dropZone(element("app"), {
+    accepts: (content, payload) => dropPlaylist !== undefined && (content === "files" || content === "link"
+      || (content === "internal" && playlistDrop({ playlistId: dropPlaylist.id, inView: true }, payload).kind !== "none")),
+    rows: { selector: "#list-rows tr[data-entry]", key: "data-entry" },
+    onDrop: (d) => {
+      const p = dropPlaylist;
+      if (p === undefined) return;
+      const name = p.builtin === "likes" ? "Liked Songs" : p.name;
+      showError("");
+      if (d.content === "files") {
+        dropFiles(d.files, { playlistId: p.id, playlistName: name, beforeEntryId: d.before },
+          (text, error) => (error === true ? showError(text) : notice(text)), () => restart());
+        return;
+      }
+      if (d.content === "link") {
+        openAddLink({ playlistId: p.id, beforeEntryId: d.before ?? undefined, url: d.link,
+          onAdded: (text) => { notice(text); restart(); } });
+        return;
+      }
+      const what = playlistDrop({ playlistId: p.id, inView: true }, d.payload);
+      if (what.kind === "move") {
+        if (moveIsNoop(entryOrder(), what.entryIds, d.before)) return;
+        api("POST", "/api/playlists/" + encodeURIComponent(p.id) + "/entries/move",
+          { entryIds: what.entryIds, beforeEntryId: d.before })
+          .then(() => restart(), showError);
+      } else if (what.kind === "add") {
+        void addToPlaylist(p.id, what.itemIds, d.before).then(() => { restart(); refreshLibrary(); });
+      }
+    },
+  }, signal);
 }
 
 function appendRows(rows: Row[]): void {
@@ -361,55 +463,11 @@ function setMore(next: string | undefined, load: (() => Promise<void>) | undefin
 
 // ------------------------------------------------------------------ "+ Add from link"
 
-/** The modal "Enter a link" dialog; adds to the library and, with `playlistId`, to that playlist. */
+/** "+ Add from link": adds to the library and, with `playlistId`, to that playlist (addlink.ts). */
 function addFromLinkButton(playlistId: string | undefined, onAdded: () => void): HTMLButtonElement {
   const b = h("button", { type: "button", class: "pill", text: "+ Add from link" });
-  b.addEventListener("click", () => openAddLink(playlistId, onAdded));
+  b.addEventListener("click", () => openAddLink({ playlistId, onAdded: (text) => { notice(text); onAdded(); } }));
   return b;
-}
-
-function openAddLink(playlistId: string | undefined, onAdded: () => void): void {
-  const input = h("input", { type: "url", name: "url", required: true, placeholder: "https://…",
-    "aria-label": "Link", class: "grow" });
-  const error = h("p", { class: "error", role: "alert" });
-  const status = h("p", { class: "muted small", role: "status" });
-  const add = h("button", { type: "submit", text: "Add" });
-  const cancel = h("button", { type: "button", text: "Cancel" });
-  const form = h("form", { class: "form", role: "dialog", "aria-modal": "true", "aria-label": "Add from link" },
-    h("label", {}, "Enter a link:", input), status, error, h("div", { class: "row" }, add, cancel));
-  const overlay = h("div", { class: "classify-prompt" }, form);
-  const close = (): void => overlay.remove();
-  cancel.addEventListener("click", close);
-  overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(); });
-  form.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    const url = input.value.trim();
-    if (url === "") return;
-    add.disabled = true;
-    error.textContent = "";
-    status.textContent = "Looking up the link…";
-    const body: Record<string, unknown> = { url, addToLibrary: true };
-    if (playlistId !== undefined) body["playlistId"] = playlistId;
-    withClassification((c) => api<{ itemId: string; status: string }>("POST", "/api/imports/youtube",
-      c === undefined ? body : { ...body, ...c }), url)
-      .then((r) => {
-        if (r === null) {
-          status.textContent = "";
-          return;
-        }
-        close();
-        notice(r.status === "ready" ? "Added." : "Added; it is being fetched and will be ready shortly.");
-        onAdded();
-        refreshLibrary();
-      })
-      .catch((e: unknown) => {
-        status.textContent = "";
-        error.textContent = message(e);
-      })
-      .finally(() => { add.disabled = false; });
-  });
-  document.body.append(overlay);
-  input.focus();
 }
 
 // ------------------------------------------------------------------ "Add All: In Order / Shuffled"
@@ -538,6 +596,7 @@ async function showPlaylist(p: PlaylistDetail & { owner?: { name: string } }, ow
     actions.push(h("a", { class: "small", href: "/playlists/?id=" + encodeURIComponent(p.id), text: "Edit playlist" }));
   }
   element("list-actions").replaceChildren(...actions);
+  if (own && !mobile()) playlistDropZone(p);
   appendRows(rows);
   setEmpty(own ? "This playlist is empty. Add songs from a link." : "This playlist is empty.");
 }

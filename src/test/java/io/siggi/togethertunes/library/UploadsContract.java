@@ -834,7 +834,7 @@ abstract class UploadsContract {
         byte[] other = media("other.mp4", "-f", "lavfi", "-i", "testsrc2=s=320x240:r=25:d=1", "-f", "lavfi",
                 "-i", "sine=f=700:d=1", "-c:v", "libx264", "-c:a", "aac", "-shortest");
         String c = upload(alice, "other.mp4", other, 1_000_000);
-        assertEquals("invalid_media_type", expect(400, complete(alice, c, "{\"mediaType\":\"uncategorized\"}")).error());
+        assertEquals("invalid_media_type", expect(400, complete(alice, c, "{\"mediaType\":\"podcast\"}")).error());
         assertEquals("show_required", expect(400, complete(alice, c, "{\"mediaType\":\"show\"}")).error());
         assertEquals("not_a_show", expect(400, complete(alice, c, "{\"mediaType\":\"movie\","
                 + "\"show\":{\"name\":\"X\",\"episode\":1}}")).error());

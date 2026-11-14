@@ -32,7 +32,7 @@ import java.util.Objects;
  *   <li>{@code PUT /api/library/{itemId}} (body optional: {@code {"mediaType", "show"?}}) →
  *       {@code 201 entry} when added ({@code via: "manual"}),
  *       {@code 200 entry} when it already was there (unchanged). An {@code uncategorized} video
- *       needs {@code mediaType} (any but {@code uncategorized}; {@code show} details for
+ *       needs {@code mediaType} ({@code uncategorized} = leave it so on purpose; {@code show} details for
  *       {@code show}), else {@code 409 needs_classification} with {@code itemId} and
  *       {@code suggested} ({@link Classify}); {@code 400 invalid_media_type}, {@code invalid_show},
  *       {@code show_required}, {@code not_a_show}, {@code unknown_field}. {@code 404 item_not_found};

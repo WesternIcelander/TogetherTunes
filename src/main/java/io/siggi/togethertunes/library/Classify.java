@@ -38,13 +38,18 @@ public final class Classify {
     }
 
     /**
-     * The media type an adder gives an {@code uncategorized} video: any type but
-     * {@code uncategorized}, with show details for (and only for) {@code show}.
+     * The media type an adder gives an {@code uncategorized} video, with show details for (and only
+     * for) {@code show}. {@code uncategorized} itself is the adder's explicit choice to leave it
+     * uncategorized ({@link #LEAVE}): the add goes ahead and the item keeps its type (the
+     * Uncategorized Videos view lists it until someone classifies it).
      */
     public record Classification(MediaType type, MediaType.Show show) {
+        /** "Leave it uncategorized": the add goes ahead without classifying. */
+        public static final Classification LEAVE = new Classification(MediaType.UNCATEGORIZED, null);
+
         public Classification {
-            if (type == null || type == MediaType.UNCATEGORIZED) {
-                throw new IllegalArgumentException("A classification needs a type other than uncategorized");
+            if (type == null) {
+                throw new IllegalArgumentException("A classification needs a type");
             }
             if ((type == MediaType.SHOW) != (show != null)) {
                 throw new IllegalArgumentException("Show details go with (and only with) the type show");
@@ -70,9 +75,9 @@ public final class Classify {
         }
         MediaType type = mediaType.isJsonPrimitive() && mediaType.getAsJsonPrimitive().isString()
                 ? MediaType.of(mediaType.getAsString()) : null;
-        if (type == null || type == MediaType.UNCATEGORIZED) {
+        if (type == null) {
             throw new HttpError(400, "invalid_media_type",
-                    "mediaType must be audio, music_video, movie or show");
+                    "mediaType must be audio, music_video, movie, show or uncategorized");
         }
         MediaType.Show details = hasShow ? ItemsApi.show(show) : null;
         if (type == MediaType.SHOW && details == null) {
@@ -81,7 +86,7 @@ public final class Classify {
         if (type != MediaType.SHOW && details != null) {
             throw new HttpError(400, "not_a_show", "Show details are only for the media type show");
         }
-        return new Classification(type, details);
+        return type == MediaType.UNCATEGORIZED ? Classification.LEAVE : new Classification(type, details);
     }
 
     /** {@link #of(JsonElement, JsonElement)} from a JSON body's fields (null body: none). */
@@ -183,6 +188,9 @@ public final class Classify {
         }
         if (classification == null) {
             return false;
+        }
+        if (classification.type() == MediaType.UNCATEGORIZED) {
+            return true; // left uncategorized on purpose
         }
         MediaType.Show show = classification.show();
         int updated;
