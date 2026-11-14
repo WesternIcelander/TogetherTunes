@@ -94,5 +94,16 @@ class PanelsJsTest {
             assertTrue(css.contains(s), s);
         }
         assertTrue(css.contains("body.room-view.signed-in .rv-request {\n    order: -1;"), "Request Link above the queue");
+        // The video doesn't scroll (desktop): the video area is one box, sticky at the top of .rv-grid, which
+        // scrolls instead of #app; not in the Now Playing View (a sticky box is a stacking context).
+        int stage = room.indexOf("class=\"rv-stage\"");
+        assertTrue(stage >= 0 && stage < room.indexOf("id=\"rv-video-slot\"") && room.indexOf("id=\"rv-vote-skip\"") < room.indexOf("class=\"rv-columns\""),
+                "video slot, title line and vote to skip in .rv-stage");
+        String desktop = css.substring(css.indexOf("@media (min-width: 800px) {"));
+        for (String s : List.of("body.room-view:not(.now-view-open) .rv-stage {\n    position: sticky;\n    top: 0;",
+                "body.room-view .rv-grid {\n    flex: 1 1 auto;\n    min-height: 0;\n    overflow-y: auto;",
+                "body.room-view .rv-main {\n    display: contents;")) {
+            assertTrue(desktop.contains(s), s);
+        }
     }
 }

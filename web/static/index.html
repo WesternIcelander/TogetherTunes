@@ -322,11 +322,14 @@
       <p id="room-now" class="room-now" hidden></p>
       <div id="rv-grid" class="rv-grid">
         <div class="rv-main">
-          <!-- The video area: the video, or a card (cover, title, artist) for audio items. -->
-          <div id="rv-video-slot" class="rv-video-slot"></div>
-          <div class="rv-under-video">
-            <div id="rv-title" class="rv-title" hidden></div>
-            <div id="rv-vote-skip" class="vote-skip" hidden></div>
+          <!-- The video area (the video, or a card (cover, title, artist) for audio items), the title line and vote
+               to skip; on desktop it stays in place while the rest scrolls (main.css .rv-stage). -->
+          <div class="rv-stage">
+            <div id="rv-video-slot" class="rv-video-slot"></div>
+            <div class="rv-under-video">
+              <div id="rv-title" class="rv-title" hidden></div>
+              <div id="rv-vote-skip" class="vote-skip" hidden></div>
+            </div>
           </div>
           <div class="rv-columns">
             <section id="rv-queue" class="rv-queue" aria-label="Queue"></section>

@@ -1530,30 +1530,30 @@ body.now-view-open .app-video .video-card .card-artist {
 /* Wide windows: three columns, video (title line, vote to skip) | the request parts (quick output buttons,
    Request Link, ...) above the queue | people and Earlier. The view needs about 67rem (28rem video, 20rem queue,
    16rem people, the gaps) plus #app's padding and scrollbar, and with the left sidebar (signed-in users) 15rem
-   more. .rv-main's 1fr last row takes the request column's extra height, so the video's rows stay their own size.
+   more. One row: the video area (.rv-stage) and the request/queue column side by side, the video area at the top
+   of its cell (sticky from 800 px, below). Here the video keeps 60vh at most (the list is beside it).
    (A media query, not @container: the baseline is Safari 15.) */
 @media (min-width: 71rem) {
   body.room-view:not(.signed-in) .rv-main {
     display: grid;
     grid-template-columns: minmax(28rem, 2fr) minmax(20rem, 1fr);
-    grid-template-rows: auto auto 1fr;
     column-gap: 1.5rem;
     align-items: start;
   }
 
-  body.room-view:not(.signed-in) .rv-video-slot {
+  body.room-view:not(.signed-in) .rv-stage {
     grid-column: 1;
     grid-row: 1;
   }
 
-  body.room-view:not(.signed-in) .rv-under-video {
-    grid-column: 1;
-    grid-row: 2;
+  body.room-view:not(.signed-in):not(.now-view-open) .rv-video-slot .room-player video,
+  body.room-view:not(.signed-in):not(.now-view-open) .rv-video-slot .video-card {
+    max-height: 60vh;
   }
 
   body.room-view:not(.signed-in) .rv-columns {
     grid-column: 2;
-    grid-row: 1 / 4;
+    grid-row: 1;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -1569,24 +1569,23 @@ body.now-view-open .app-video .video-card .card-artist {
   body.room-view.signed-in .rv-main {
     display: grid;
     grid-template-columns: minmax(28rem, 2fr) minmax(20rem, 1fr);
-    grid-template-rows: auto auto 1fr;
     column-gap: 1.5rem;
     align-items: start;
   }
 
-  body.room-view.signed-in .rv-video-slot {
+  body.room-view.signed-in .rv-stage {
     grid-column: 1;
     grid-row: 1;
   }
 
-  body.room-view.signed-in .rv-under-video {
-    grid-column: 1;
-    grid-row: 2;
+  body.room-view.signed-in:not(.now-view-open) .rv-video-slot .room-player video,
+  body.room-view.signed-in:not(.now-view-open) .rv-video-slot .video-card {
+    max-height: 60vh;
   }
 
   body.room-view.signed-in .rv-columns {
     grid-column: 2;
-    grid-row: 1 / 4;
+    grid-row: 1;
     display: flex;
     flex-direction: column;
     align-items: stretch;
@@ -2166,5 +2165,82 @@ li.entry.selected {
     max-width: none;
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+
+  /* The room view: the video doesn't scroll (docs/ui.md#room-view-desktop). #app doesn't scroll here; the view
+     fills it as a flex column (room head, notices, then .rv-grid) and .rv-grid is the scroll container, with the
+     video area (.rv-stage: video slot, title line, vote to skip) sticky at its top. Three columns: the request/queue
+     column and the people/Earlier column scroll together beside the video; two columns: the queue/request part
+     scrolls under the video and the people/Earlier column beside it; one column: everything below the video
+     (.rv-main as display: contents, so the people's column is in the video area's containing block too). The
+     video panel isn't moved for this. Not in the Now Playing View: a sticky box is a stacking context, which would
+     keep the fixed, window-filling video panel under the player bar. */
+  body.room-view #app {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  body.room-view #app > .view-room:not([hidden]),
+  body.room-view .room-view-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* .rv-grid's scrollbar at #app's right edge, beside the content rather than over it. */
+  body.room-view #app {
+    padding-right: 0;
+  }
+
+  body.room-view .room-view-body > :not(.rv-grid) {
+    margin-right: 1.25rem;
+  }
+
+  /* Flex items' margins don't collapse: the empty status and notice lines above take no room. */
+  body.room-view .room-view-body > :empty {
+    margin: 0;
+  }
+
+  body.room-view .rv-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 1.25rem;
+  }
+
+  body.room-view:not(.now-view-open) .rv-stage {
+    position: sticky;
+    top: 0;
+    z-index: 3;
+    background: Canvas;
+  }
+
+  body.room-view .rv-under-video {
+    margin-bottom: 0;
+    padding-bottom: 0.75rem;
+  }
+
+  /* The list under the video (two columns, one column): the video smaller, so an 800 or 900 px tall window still
+     shows a good part of the list. */
+  body.room-view:not(.now-view-open) .rv-video-slot .room-player video,
+  body.room-view:not(.now-view-open) .rv-video-slot .video-card {
+    max-height: 38vh;
+  }
+}
+
+@media (min-width: 800px) and (max-width: 60rem) {
+  body.room-view .rv-grid:not([hidden]) {
+    display: block;
+  }
+
+  body.room-view .rv-main {
+    display: contents;
+  }
+
+  body.room-view .rv-side {
+    margin-top: 1.5rem;
   }
 }
