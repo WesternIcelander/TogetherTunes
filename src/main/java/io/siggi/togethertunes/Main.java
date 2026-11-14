@@ -449,7 +449,10 @@ public final class Main {
         roomsApi.aloneSessions(new io.siggi.togethertunes.rooms.AloneSessions(database, rooms, roomRegistry,
                 Clock.systemUTC()), playHistory);
         // Autoplay selections (docs/ui.md#autoplay-from-playlists): who selected which playlists per room.
-        roomsApi.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists));
+        // Each selection change, and each change to a selected person's playlists, refills the room's
+        // autoplay section (docs/rooms.md#autoplay).
+        roomsApi.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists, roomRegistry));
+        library.playlistsChangeListener(roomRegistry::playlistsChanged);
         RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,

@@ -74,6 +74,13 @@ public interface RoomEvent {
     record RequestAdded(String entryId, String via) implements RoomEvent {
     }
 
+    /**
+     * A waiting entry moved to another section of the queue ({@code docs/rooms.md#autoplay}), e.g.
+     * an autoplay entry turned into a request.
+     */
+    record EntrySectionChanged(String entryId, QueueEntry.Section section) implements RoomEvent {
+    }
+
     /** A queued entry was moved before {@code beforeEntryId} ({@code null}: to the end) of a manual queue. */
     record EntryMoved(String entryId, String beforeEntryId) implements RoomEvent {
     }

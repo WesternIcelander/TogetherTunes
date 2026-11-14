@@ -340,7 +340,7 @@ final class RoomViews {
 
     /**
      * A queued or suggested entry, without {@code yourVote} (added per socket):
-     * {@code entryId, status, item, addedBy?, addedAt, votes, pinned}, and {@code audioOnly: true}
+     * {@code entryId, status, item, addedBy?, addedAt, votes, pinned, section}, and {@code audioOnly: true}
      * when it plays audio-only (its {@code item} then as {@link #item(Lookup, String, boolean)}).
      */
     static JsonObject entry(Lookup l, QueueEntry e, RoomSnapshot s) {
@@ -358,11 +358,12 @@ final class RoomViews {
         o.addProperty("addedAt", e.addedAt());
         o.addProperty("votes", s.voteTotal(e.id()));
         o.addProperty("pinned", e.pinned());
+        o.addProperty("section", e.section().wire());
         return o;
     }
 
     /**
-     * The current entry: {@code entryId, status, item, addedBy?, addedAt}, and {@code audioOnly:
+     * The current entry: {@code entryId, status, item, addedBy?, addedAt, section}, and {@code audioOnly:
      * true} when it plays audio-only (the mode it started with; {@code item} as
      * {@link #item(Lookup, String, boolean)}).
      */
@@ -379,6 +380,7 @@ final class RoomViews {
             o.add("addedBy", actor(by));
         }
         o.addProperty("addedAt", e.addedAt());
+        o.addProperty("section", e.section().wire());
         return o;
     }
 

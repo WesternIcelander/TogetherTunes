@@ -377,8 +377,10 @@ public final class AloneSessions {
             Long length = current.lengthMs();
             position = length == null ? Math.max(0, t.positionAt(now)) : t.positionAt(now, length);
         }
+        // the manually added section only: autoplay entries belong to the room's own selections
+        // (the room taking the state over fills its autoplay section from its selections)
         List<String> queue = new ArrayList<>();
-        for (QueueEntry e : Playback.playOrder(state)) {
+        for (QueueEntry e : Playback.sectionOrder(state, QueueEntry.Section.MANUAL)) {
             queue.add(e.itemId());
         }
         return new Snapshot(current == null ? null : current.itemId(), position,

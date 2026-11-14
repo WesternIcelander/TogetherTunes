@@ -125,6 +125,15 @@ public final class Playlists {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /**
+     * Sets who is told when a user's playlists change in a way that matters to autoplay: the
+     * {@link Library#playlistsChangeListener} of this instance's library (the same one for the
+     * server's library and playlists).
+     */
+    public void playlistsChangeListener(java.util.function.Consumer<String> listener) {
+        library.playlistsChangeListener(listener);
+    }
+
     // ------------------------------------------------------------------ validation
 
     /**
@@ -388,7 +397,7 @@ public final class Playlists {
      */
     public boolean delete(String ownerId, String playlistId) throws SQLException {
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        return changed(ownerId, db.write(c -> {
             if (!exists(c, ownerId, playlistId, true)) {
                 return false;
             }
@@ -405,7 +414,15 @@ public final class Playlists {
                 ps.executeUpdate();
             }
             return true;
-        });
+        }));
+    }
+
+    /** Tells the library's playlist listener when {@code changed} (autoplay follows); returns it. */
+    private boolean changed(String ownerId, boolean changed) {
+        if (changed) {
+            library.playlistsChanged(ownerId);
+        }
+        return changed;
     }
 
     /**
@@ -581,7 +598,7 @@ public final class Playlists {
      */
     public boolean unlike(String ownerId, String itemId) throws SQLException {
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        return changed(ownerId, db.write(c -> {
             String id = likesId(c, ownerId);
             if (id == null) {
                 return false;
@@ -599,7 +616,7 @@ public final class Playlists {
                 touchPlaylist(c, id, now);
             }
             return n > 0;
-        });
+        }));
     }
 
     /** The owner's playlists that hold {@code itemId}, in list order (without entries). */
@@ -737,7 +754,7 @@ public final class Playlists {
         }
         String entryId = UuidV7.newId();
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        Added added = db.write(c -> {
             lock(c, ownerId, playlistId);
             if (before.builtin() != null) {
                 String existing = entryOfItem(c, playlistId, itemId);
@@ -771,6 +788,8 @@ public final class Playlists {
             touchPlaylist(c, playlistId, now);
             return new Added(entry(c, entryId), true);
         });
+        changed(ownerId, added.created());
+        return added;
     }
 
     private static HttpError playlistFull() {
@@ -919,7 +938,7 @@ public final class Playlists {
      */
     public boolean remove(String ownerId, String playlistId, String entryId) throws SQLException {
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        return changed(ownerId, db.write(c -> {
             lock(c, ownerId, playlistId);
             String itemId;
             try (PreparedStatement ps = c.prepareStatement(
@@ -940,7 +959,7 @@ public final class Playlists {
             References.touch(c, itemId, now);
             touchPlaylist(c, playlistId, now);
             return true;
-        });
+        }));
     }
 
     // ------------------------------------------------------------------ positions

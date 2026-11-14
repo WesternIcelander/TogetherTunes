@@ -401,6 +401,11 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryStateChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$VotesChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryPinned", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntrySectionChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.Autoplay$Loaded", "autoplay's pool as read, on the room executor"),
+            Map.entry("io.siggi.togethertunes.rooms.AutoplayPicker$Person", "autoplay's pool, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.AutoplayPicker$Pool", "autoplay's pool, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.AutoplayPicker$Pick", "autoplay's picks, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$QueueReordered", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$SkipVotesChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomActor", "who acts on a room queue (ids and rights), built per"

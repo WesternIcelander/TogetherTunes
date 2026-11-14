@@ -35,6 +35,7 @@ public final class QueueControl {
         RoomState s = tx.state();
         ControlPolicy.requireVote(s, a, value);
         QueueEntry e = queued(s, entryId);
+        requireManual(e, "Request this song to vote on it");
         String key = a.key();
         if (s.voteOf(e.id(), key) == value) {
             return s.voteTotal(e.id());
@@ -79,6 +80,7 @@ public final class QueueControl {
         RoomState s = tx.state();
         ControlPolicy.requirePin(s, a);
         QueueEntry e = queued(s, entryId);
+        requireManual(e, "Request this song to pin it");
         if (e.pinned() == pinned) {
             return false;
         }
@@ -250,6 +252,18 @@ public final class QueueControl {
             throw new HttpError(404, "entry_not_found", "No such entry in the queue");
         }
         return e;
+    }
+
+    /**
+     * Votes and pins are for the manually added section: an autoplay entry is turned into a
+     * request first ({@link QueueOps#request}).
+     *
+     * @throws HttpError {@code 409 autoplay_entry}
+     */
+    static void requireManual(QueueEntry e, String message) {
+        if (e.autoplay()) {
+            throw new HttpError(409, "autoplay_entry", message);
+        }
     }
 
     private static QueueEntry suggestion(RoomState s, String entryId) {

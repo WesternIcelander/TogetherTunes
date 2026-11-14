@@ -202,14 +202,16 @@ public final class QueueOps {
         QueueEntry before = null;
         if (beforeEntryId != null) {
             before = queued(s, beforeEntryId);
-            if (before == null) {
-                throw new HttpError(409, "before_entry_not_found", "The entry to move it before isn't in the queue");
+            if (before == null || before.section() != e.section()) {
+                throw new HttpError(409, "before_entry_not_found",
+                        "The entry to move it before isn't in the same part of the queue");
             }
             if (before.id().equals(e.id())) {
                 return false;
             }
         }
-        List<QueueEntry> order = Playback.playOrder(s);
+        // within its section (docs/rooms.md#autoplay); "to the end" is the end of that section
+        List<QueueEntry> order = Playback.sectionOrder(s, e.section());
         int from = order.indexOf(e);
         List<QueueEntry> others = new ArrayList<>(order);
         others.remove(from);
@@ -337,12 +339,15 @@ public final class QueueOps {
         }
         long now = tx.now();
         if (current != null) {
+            // back to the front of the manually added section, so it plays next (an autoplay
+            // entry becomes manual, keeping who it was added for)
             QueueEntry requeued = current.withState(QueueEntry.State.QUEUED, null)
-                    .withPlace(frontPosition(s), s.controlMode() == Rooms.ControlMode.VOTE);
+                    .withPlace(frontPosition(s), s.controlMode() == Rooms.ControlMode.VOTE)
+                    .withSection(QueueEntry.Section.MANUAL, current.addedByUserId(), current.addedByGuestId());
             tx.persist(c -> {
                 RoomStore.clearVotes(c, requeued.id());
                 RoomStore.setEntryState(c, roomId, requeued.id(), QueueEntry.State.QUEUED, null, now);
-                QueueControl.setPlace(c, roomId, requeued);
+                RoomStore.setSection(c, roomId, requeued);
                 return null;
             });
             s.addToQueue(requeued);
@@ -363,11 +368,65 @@ public final class QueueOps {
         return true;
     }
 
-    /** How many waiting entries (queued or suggested) {@code a} added. */
+    /**
+     * {@code queue.request} (↑ on a "From Playlist" entry, {@code docs/rooms.md#autoplay}): turns an
+     * autoplay entry into the actor's request. It is checked like a request of its item by id
+     * ({@link #checkAdd}: identity, request rights, {@code requestsPerActor}; the room setting
+     * {@code libraryRequests} and the library request right), except {@code noRepeatWindow} (it
+     * was queued already). Where a request lands, so does the entry: at the end of the manually
+     * added section ({@code queued}), or as a suggestion in {@code owner} mode for everyone but the
+     * owner and moderators. It is now added by the actor (who may remove it, and whose request it
+     * counts as). In {@code vote} mode it also gets the actor's vote when they may vote. Raises
+     * {@link RoomEvent.RequestAdded} with {@code via} {@code autoplay} when it is a request
+     * ({@link #isRequest}). Autoplay then fills its section again.
+     *
+     * @return where it landed ({@code queued} or {@code suggested})
+     * @throws HttpError {@code 404 entry_not_found} (not a waiting entry), {@code 409 not_autoplay}
+     *                   (a request or suggestion already), as {@link ControlPolicy#requireSource}
+     *                   and {@link #checkAdd}, {@code 403 library_requests_off}
+     */
+    public static QueueEntry.State request(RoomTx tx, RoomActor a, String entryId) {
+        RoomState s = tx.state();
+        ControlPolicy.requireSource(a, "library");
+        QueueEntry e = entryId == null ? null : s.waitingEntry(entryId);
+        if (e == null) {
+            throw new HttpError(404, "entry_not_found", "No such entry in the queue");
+        }
+        if (!e.autoplay()) {
+            throw new HttpError(409, "not_autoplay", "This song is already a request");
+        }
+        ControlPolicy.AddAs as = checkAdd(s, a);
+        RoomQueue.requireLibraryRequests(s.settings(), a);
+        QueueEntry.State state = as.entryState();
+        QueueEntry requested = e.withState(state, null).withPlace(QueueControl.endPosition(s), false)
+                .withSection(QueueEntry.Section.MANUAL, a.userId(), a.guestId());
+        String roomId = s.id();
+        tx.persist(c -> {
+            RoomStore.clearVotes(c, requested.id());
+            RoomStore.setSection(c, roomId, requested);
+            return null;
+        });
+        s.forget(e.id());
+        s.addToQueue(requested);
+        tx.event(new RoomEvent.EntrySectionChanged(requested.id(), QueueEntry.Section.MANUAL));
+        if (state == QueueEntry.State.SUGGESTED) {
+            tx.event(new RoomEvent.EntryStateChanged(requested.id(), state));
+        }
+        boolean voteMode = s.controlMode() == Rooms.ControlMode.VOTE;
+        if (voteMode && state == QueueEntry.State.QUEUED && a.canVote()) {
+            QueueControl.vote(tx, a, requested.id(), 1);
+        }
+        if (isRequest(s, a)) {
+            tx.event(new RoomEvent.RequestAdded(requested.id(), Autoplay.VIA_AUTOPLAY));
+        }
+        return state;
+    }
+
+    /** How many waiting entries (queued or suggested) {@code a} added; autoplay entries don't count. */
     static int waitingBy(RoomState s, RoomActor a) {
         int n = 0;
         for (QueueEntry e : s.queue()) {
-            if (a.added(e)) {
+            if (a.added(e) && !e.autoplay()) {
                 n++;
             }
         }
@@ -387,7 +446,7 @@ public final class QueueOps {
         boolean vote = s.controlMode() == Rooms.ControlMode.VOTE;
         double min = Double.NaN;
         for (QueueEntry e : s.queue()) {
-            if (vote && !e.pinned()) {
+            if (vote && !e.pinned() || e.autoplay()) {
                 continue;
             }
             min = Double.isNaN(min) ? e.position() : Math.min(min, e.position());

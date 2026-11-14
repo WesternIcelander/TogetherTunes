@@ -43,6 +43,8 @@ public final class Library {
     private final YoutubeImports youtube;
     private final Clock clock;
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
+    private volatile java.util.function.Consumer<String> playlistsListener = userId -> {
+    };
 
     /**
      * An item as lists and item pages show it: metadata and state, nothing about who has it.
@@ -376,7 +378,7 @@ public final class Library {
      */
     public boolean remove(String userId, String itemId) throws SQLException {
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        boolean removed = db.write(c -> {
             int n;
             try (PreparedStatement ps = c.prepareStatement(
                     "DELETE FROM library_entries WHERE user_id = ? AND item_id = ?")) {
@@ -402,6 +404,10 @@ public final class Library {
             }
             return n > 0;
         });
+        if (removed) {
+            playlistsChanged(userId);
+        }
+        return removed;
     }
 
     /**
@@ -519,6 +525,26 @@ public final class Library {
     @FunctionalInterface
     public interface YoutubeCheck {
         void check() throws SQLException;
+    }
+
+    /**
+     * Sets who is told when a user's playlists change in a way that matters to autoplay (entries
+     * added or removed, a playlist deleted; not reorders or renames), with the user's id. Called
+     * after the change is committed, by this class and by {@link Playlists}.
+     */
+    public void playlistsChangeListener(java.util.function.Consumer<String> listener) {
+        this.playlistsListener = listener == null ? userId -> {
+        } : listener;
+    }
+
+    /** Tells the {@link #playlistsChangeListener} (failures are logged). */
+    void playlistsChanged(String userId) {
+        try {
+            playlistsListener.accept(userId);
+        } catch (RuntimeException e) {
+            System.getLogger(Library.class.getName()).log(System.Logger.Level.WARNING,
+                    "A playlist change listener failed", e);
+        }
     }
 
     /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */

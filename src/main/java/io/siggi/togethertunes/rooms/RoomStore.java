@@ -25,6 +25,8 @@ final class RoomStore {
     private final Database db;
     /** Whether the program output can play a ready item's files (one notion for rooms and packager). */
     private volatile PlayableFiles.Check playable = PlayableFiles.Check.ANY;
+    /** Autoplay's randomness ({@link Autoplay}); seeded in tests. */
+    private volatile java.util.Random random = new java.security.SecureRandom();
 
     RoomStore(Database db) {
         this.db = Objects.requireNonNull(db);
@@ -40,6 +42,14 @@ final class RoomStore {
 
     PlayableFiles.Check playable() {
         return playable;
+    }
+
+    void random(java.util.Random random) {
+        this.random = Objects.requireNonNull(random);
+    }
+
+    java.util.Random random() {
+        return random;
     }
 
     /** Whether the program output can play this item's files (true while it isn't {@code ready}: not asked). */
@@ -126,7 +136,7 @@ final class RoomStore {
     private static final String ENTRY_COLUMNS = "q.id, q.item_id, q.added_by_user_id, q.added_by_guest_id,"
             + " q.added_at, q.state, q.position, q.pinned, q.played_at, i.status, i.duration_ms,"
             + " i.kind, i.output_profile, i.media_version,"
-            + " CASE WHEN i.kind = 'video' THEN i.audio_only_ms ELSE NULL END";
+            + " CASE WHEN i.kind = 'video' THEN i.audio_only_ms ELSE NULL END, q.section";
 
     /** Votes on the room's queued and suggested entries: entryId -> voter key -> value. */
     private static Map<String, Map<String, Integer>> votes(Connection c, String roomId) throws SQLException {
@@ -207,10 +217,15 @@ final class RoomStore {
         boolean usable = filesUsable(check, rs.getString(2), status, rs.getString(12), rs.getString(13), rs.getInt(14));
         long audioOnly = rs.getLong(15);
         Long audioOnlyMs = rs.wasNull() ? null : audioOnly;
+        QueueEntry.Section section = QueueEntry.Section.parse(rs.getString(16));
+        if (section == null) {
+            // written by a newer version: treat it as manually added (it stays where it is)
+            section = QueueEntry.Section.MANUAL;
+        }
         // audio-only mode (false here) is the room's business: RoomState sets it
         return new QueueEntry(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4),
                 rs.getLong(5), state, rs.getDouble(7), rs.getInt(8) != 0, played, status, durationMs, usable,
-                audioOnlyMs, false);
+                audioOnlyMs, false, section);
     }
 
     /**
@@ -297,9 +312,10 @@ final class RoomStore {
     static void insertEntry(Connection c, String roomId, QueueEntry e, String via) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO queue_entries (id, room_id, item_id,"
                 + " added_by_user_id, added_by_guest_id, added_at, state, position, pinned, played_at, via,"
-                + " added_by_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?,"
+                + " added_by_name, section) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?,"
                 + " COALESCE((SELECT display_name FROM users WHERE id = ?),"
-                + " (SELECT display_name FROM guests WHERE id = ?)))")) {
+                + " (SELECT display_name FROM guests WHERE id = ?)), ?)")) {
+            ps.setString(13, e.section().wire());
             ps.setString(10, via);
             ps.setString(11, e.addedByUserId());
             ps.setString(12, e.addedByGuestId());
@@ -312,6 +328,30 @@ final class RoomStore {
             ps.setString(7, e.state().wire());
             ps.setDouble(8, e.position());
             ps.setInt(9, e.pinned() ? 1 : 0);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Moves a waiting entry to another section, now added by {@code e}'s adder (an autoplay entry
+     * turned into someone's request), with its state, position and pin from {@code e}. The adder's
+     * display name now is kept with it ({@code added_by_name}).
+     */
+    static void setSection(Connection c, String roomId, QueueEntry e) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("UPDATE queue_entries SET section = ?, added_by_user_id = ?,"
+                + " added_by_guest_id = ?, added_by_name = COALESCE((SELECT display_name FROM users WHERE id = ?),"
+                + " (SELECT display_name FROM guests WHERE id = ?)), state = ?, position = ?, pinned = ?"
+                + " WHERE id = ? AND room_id = ?")) {
+            ps.setString(1, e.section().wire());
+            ps.setString(2, e.addedByUserId());
+            ps.setString(3, e.addedByGuestId());
+            ps.setString(4, e.addedByUserId());
+            ps.setString(5, e.addedByGuestId());
+            ps.setString(6, e.state().wire());
+            ps.setDouble(7, e.position());
+            ps.setInt(8, e.pinned() ? 1 : 0);
+            ps.setString(9, e.id());
+            ps.setString(10, roomId);
             ps.executeUpdate();
         }
     }

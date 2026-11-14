@@ -63,10 +63,54 @@ public final class Playback {
         };
     }
 
-    /** The queued entries in the order they will play (a new list). */
+    /**
+     * The queued entries in the order they will play (a new list): the manually added section in
+     * the control mode's order ({@link #order}) and the autoplay section by position, combined by
+     * the room setting {@code autoplay.requestsFirst} ({@code docs/rooms.md#autoplay}):
+     * {@code first} plays every manual entry before the autoplay ones; {@code alternate} takes
+     * turns, one from each section, starting with the section the current entry isn't from (a
+     * manual entry first when nothing plays or an autoplay entry plays), and once one section runs
+     * out the rest of the other follows.
+     */
     public static List<QueueEntry> playOrder(RoomState state) {
-        List<QueueEntry> out = new ArrayList<>(state.queue());
-        out.sort(order(state));
+        List<QueueEntry> manual = sectionOrder(state, QueueEntry.Section.MANUAL);
+        List<QueueEntry> autoplay = sectionOrder(state, QueueEntry.Section.AUTOPLAY);
+        if (autoplay.isEmpty()) {
+            return manual;
+        }
+        List<QueueEntry> out = new ArrayList<>(manual.size() + autoplay.size());
+        if (manual.isEmpty() || !state.settings().autoplayAlternate()) {
+            out.addAll(manual);
+            out.addAll(autoplay);
+            return out;
+        }
+        QueueEntry current = state.current();
+        boolean autoplayNext = current != null && !current.autoplay();
+        int m = 0;
+        int a = 0;
+        while (m < manual.size() || a < autoplay.size()) {
+            if (autoplayNext ? a < autoplay.size() : m >= manual.size()) {
+                out.add(autoplay.get(a++));
+            } else {
+                out.add(manual.get(m++));
+            }
+            autoplayNext = !autoplayNext;
+        }
+        return out;
+    }
+
+    /**
+     * The queued entries of one section in their order (a new list): the manual section in the
+     * control mode's order ({@link #order}), the autoplay section by position.
+     */
+    public static List<QueueEntry> sectionOrder(RoomState state, QueueEntry.Section section) {
+        List<QueueEntry> out = new ArrayList<>();
+        for (QueueEntry e : state.queue()) {
+            if (e.section() == section) {
+                out.add(e);
+            }
+        }
+        out.sort(section == QueueEntry.Section.MANUAL ? order(state) : MANUAL_ORDER);
         return out;
     }
 

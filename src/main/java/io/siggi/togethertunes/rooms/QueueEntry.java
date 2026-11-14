@@ -22,15 +22,56 @@ import java.util.Objects;
  * @param audioOnly   whether the entry plays audio-only ({@code docs/rooms.md#audio-only-rooms}):
  *                    waiting entries follow the room's {@code audioOnly} setting; the current entry
  *                    keeps the mode it started with until it ends ({@link RoomState} keeps both)
+ * @param section     the part of the queue it waits in ({@code queue_entries.section},
+ *                    {@code docs/rooms.md#autoplay}): {@link Section#MANUAL} (added by someone) or
+ *                    {@link Section#AUTOPLAY} (added by autoplay; {@code addedByUserId} is then the
+ *                    person whose selected playlist it came from)
  */
 public record QueueEntry(String id, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
                          State state, double position, boolean pinned, Long playedAt, String itemStatus,
-                         Long durationMs, boolean filesUsable, Long audioOnlyMs, boolean audioOnly) {
+                         Long durationMs, boolean filesUsable, Long audioOnlyMs, boolean audioOnly,
+                         Section section) {
     public QueueEntry {
         Objects.requireNonNull(id, "id");
         Objects.requireNonNull(itemId, "itemId");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(itemStatus, "itemStatus");
+        Objects.requireNonNull(section, "section");
+    }
+
+    /** A manually added entry ({@link Section#MANUAL}). */
+    public QueueEntry(String id, String itemId, String addedByUserId, String addedByGuestId, long addedAt,
+                      State state, double position, boolean pinned, Long playedAt, String itemStatus,
+                      Long durationMs, boolean filesUsable, Long audioOnlyMs, boolean audioOnly) {
+        this(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt, itemStatus,
+                durationMs, filesUsable, audioOnlyMs, audioOnly, Section.MANUAL);
+    }
+
+    /** {@code queue_entries.section}: which part of the queue an entry waits in. */
+    public enum Section {
+        /** Added by someone (a request, a playlist added to the queue, …). */
+        MANUAL,
+        /** Added by autoplay from the selected playlists ("From Playlist"). */
+        AUTOPLAY;
+
+        public String wire() {
+            return name().toLowerCase(Locale.ROOT);
+        }
+
+        /** The section with this wire name, or {@code null} if there is none. */
+        public static Section parse(String s) {
+            for (Section v : values()) {
+                if (v.wire().equals(s)) {
+                    return v;
+                }
+            }
+            return null;
+        }
+    }
+
+    /** Whether autoplay added it (and it hasn't been turned into a request since). */
+    public boolean autoplay() {
+        return section == Section.AUTOPLAY;
     }
 
     /** An entry that doesn't play audio-only (or whose item has no separate audio-only file). */
@@ -95,12 +136,12 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
 
     public QueueEntry withState(State newState, Long newPlayedAt) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, newState, position, pinned,
-                newPlayedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
+                newPlayedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly, section);
     }
 
     public QueueEntry withPlace(double newPosition, boolean newPinned) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, newPosition, newPinned,
-                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
+                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly, section);
     }
 
     public QueueEntry withItem(String newStatus, Long newDurationMs, boolean newFilesUsable) {
@@ -109,13 +150,13 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
 
     public QueueEntry withItem(String newStatus, Long newDurationMs, boolean newFilesUsable, Long newAudioOnlyMs) {
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt,
-                newStatus, newDurationMs, newFilesUsable, newAudioOnlyMs, audioOnly);
+                newStatus, newDurationMs, newFilesUsable, newAudioOnlyMs, audioOnly, section);
     }
 
     /** This entry as added by the user {@code userId} (a guest merged into that account). */
     public QueueEntry withAddedByUser(String userId) {
         return new QueueEntry(id, itemId, Objects.requireNonNull(userId), null, addedAt, state, position, pinned,
-                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly);
+                playedAt, itemStatus, durationMs, filesUsable, audioOnlyMs, audioOnly, section);
     }
 
     /** This entry playing audio-only, or not. */
@@ -124,6 +165,15 @@ public record QueueEntry(String id, String itemId, String addedByUserId, String 
             return this;
         }
         return new QueueEntry(id, itemId, addedByUserId, addedByGuestId, addedAt, state, position, pinned, playedAt,
-                itemStatus, durationMs, filesUsable, audioOnlyMs, newAudioOnly);
+                itemStatus, durationMs, filesUsable, audioOnlyMs, newAudioOnly, section);
+    }
+
+    /**
+     * This entry in {@code newSection}, added by the user {@code userId} or the guest
+     * {@code guestId} (exactly one; an autoplay entry turned into someone's request).
+     */
+    public QueueEntry withSection(Section newSection, String userId, String guestId) {
+        return new QueueEntry(id, itemId, userId, guestId, addedAt, state, position, pinned, playedAt, itemStatus,
+                durationMs, filesUsable, audioOnlyMs, audioOnly, Objects.requireNonNull(newSection));
     }
 }

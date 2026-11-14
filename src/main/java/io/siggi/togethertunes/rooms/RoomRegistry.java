@@ -236,6 +236,77 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         store.playable(check);
     }
 
+    /** Autoplay's randomness ({@code docs/rooms.md#autoplay}); a seeded one in tests. Set before rooms load. */
+    public void autoplayRandom(java.util.Random random) {
+        store.random(random);
+    }
+
+    /**
+     * The autoplay selections of a room changed, or someone there lost the right to select
+     * ({@code docs/rooms.md#autoplay}): the room (loaded if needed) drops autoplay entries whose
+     * song is no longer selected and fills its autoplay section again. Waits for it; failures are
+     * logged, never thrown (the change itself is already committed).
+     */
+    public void autoplayChanged(String roomId) {
+        if (closed || roomId == null) {
+            return;
+        }
+        try {
+            call(roomId, tx -> {
+                tx.refreshAutoplay();
+                return null;
+            });
+        } catch (Exception e) {
+            if (!(e instanceof RoomClosedException) && !(e instanceof HttpError)) {
+                LOG.log(System.Logger.Level.WARNING, "Room " + roomId + " could not refresh its autoplay", e);
+            }
+        }
+    }
+
+    /**
+     * A user's playlists changed (an entry added or removed, a playlist deleted, a like, an item
+     * removed from their library): every room where they selected playlists for autoplay, or have
+     * autoplay entries waiting, refreshes its autoplay ({@link #autoplayChanged}). Waits for them.
+     */
+    public void playlistsChanged(String userId) {
+        if (closed || userId == null) {
+            return;
+        }
+        List<String> roomIds;
+        try {
+            roomIds = store.db().read(c -> {
+                java.util.Set<String> out = new java.util.TreeSet<>();
+                try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT DISTINCT room_id"
+                        + " FROM room_autoplay_selections WHERE user_id = ?")) {
+                    ps.setString(1, userId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            out.add(rs.getString(1));
+                        }
+                    }
+                }
+                try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT DISTINCT room_id FROM queue_entries"
+                        + " WHERE added_by_user_id = ? AND section = ? AND state = ?")) {
+                    ps.setString(1, userId);
+                    ps.setString(2, QueueEntry.Section.AUTOPLAY.wire());
+                    ps.setString(3, QueueEntry.State.QUEUED.wire());
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            out.add(rs.getString(1));
+                        }
+                    }
+                }
+                return new ArrayList<>(out);
+            });
+        } catch (SQLException e) {
+            LOG.log(System.Logger.Level.WARNING, "Could not find the rooms autoplaying the playlists of " + userId, e);
+            return;
+        }
+        for (String roomId : roomIds) {
+            autoplayChanged(roomId);
+        }
+    }
+
     /**
      * Every item's playability may have changed (the output encoding was switched, so items of the
      * old one wait for their re-encodes): every loaded room refreshes its entries

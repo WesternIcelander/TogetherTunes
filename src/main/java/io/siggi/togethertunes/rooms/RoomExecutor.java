@@ -88,6 +88,7 @@ public final class RoomExecutor {
     CompletableFuture<Void> start() {
         return submit(tx -> {
             Playback.resume(tx);
+            tx.refreshAutoplay(); // fill the autoplay section (selections may have changed meanwhile)
             return null;
         });
     }
@@ -255,6 +256,10 @@ public final class RoomExecutor {
         if (tx.closesRoom()) {
             closeNow(true);
             return value;
+        }
+        if (tx.changed() || tx.refreshesAutoplay()) {
+            // keep the autoplay section filled (docs/rooms.md#autoplay), in the same commit
+            Autoplay.maintain(tx, store.random());
         }
         if (!tx.changed()) {
             if (tx.reschedulesAdvance()) {

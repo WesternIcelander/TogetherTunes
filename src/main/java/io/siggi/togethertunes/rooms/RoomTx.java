@@ -17,6 +17,7 @@ public final class RoomTx {
     private boolean touched;
     private boolean closeRoom;
     private boolean rescheduleAdvance;
+    private boolean refreshAutoplay;
     private final RoomStore store;
     private final PackagerHook packager;
 
@@ -108,6 +109,19 @@ public final class RoomTx {
      */
     void rescheduleAdvance() {
         rescheduleAdvance = true;
+    }
+
+    /**
+     * Asks {@link Autoplay} to look at the room's selections again after this mutation, even if
+     * nothing else changed, and to drop autoplay entries whose song is no longer selected (the room
+     * loaded, selections or playlists changed, someone lost the right to select).
+     */
+    void refreshAutoplay() {
+        refreshAutoplay = true;
+    }
+
+    boolean refreshesAutoplay() {
+        return refreshAutoplay;
     }
 
     boolean reschedulesAdvance() {

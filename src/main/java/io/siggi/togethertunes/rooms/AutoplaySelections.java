@@ -72,12 +72,21 @@ public final class AutoplaySelections {
     private final Database db;
     private final Playlists playlists;
     private final Clock clock;
+    /** The live rooms, told about every change ({@link RoomRegistry#autoplayChanged}), or {@code null}. */
+    private final RoomRegistry registry;
 
+    /** Without live rooms: changes are only stored (a room reads them when it loads). */
     public AutoplaySelections(Rooms rooms, Playlists playlists) {
+        this(rooms, playlists, null);
+    }
+
+    /** @param registry the live rooms; each change makes the room fill its autoplay section again */
+    public AutoplaySelections(Rooms rooms, Playlists playlists, RoomRegistry registry) {
         this.rooms = Objects.requireNonNull(rooms);
         this.db = rooms.db();
         this.playlists = Objects.requireNonNull(playlists);
         this.clock = rooms.clock();
+        this.registry = registry;
     }
 
     // ------------------------------------------------------------------ rights
@@ -240,7 +249,7 @@ public final class AutoplaySelections {
         }
         boolean moderateAny = rooms.moderatesAny(actor);
         long now = EpochMs.now(clock);
-        return db.write(c -> {
+        Listing listing = db.write(c -> {
             Rooms.Access a = rooms.access(c, actor, idOrSlug, true, moderateAny);
             Rooms.Room room = a.room();
             if (requireRight && !maySelect(room, user.userId(), Rooms.memberRole(c, room.id(), user.userId()))) {
@@ -249,6 +258,10 @@ public final class AutoplaySelections {
             change.apply(c, room.id(), user.userId(), now);
             return listing(c, a, actor);
         });
+        if (registry != null) {
+            registry.autoplayChanged(listing.roomId()); // the room's autoplay section follows
+        }
+        return listing;
     }
 
     /** Throws {@code 404 playlist_not_found} unless the user owns the playlist; locks it on PostgreSQL. */

@@ -259,6 +259,11 @@ public final class RoomQueue {
         return registry.call(roomId, tx -> QueueOps.move(tx, a, entryId, beforeEntryId));
     }
 
+    /** {@code queue.request} (↑ on an autoplay entry): see {@link QueueOps#request}. */
+    public QueueEntry.State request(String roomId, RoomActor a, String entryId) throws Exception {
+        return registry.call(roomId, tx -> QueueOps.request(tx, a, entryId));
+    }
+
     /** {@code queue.pin}: see {@link QueueControl#pin}. */
     public boolean pin(String roomId, RoomActor a, String entryId, boolean pinned) throws Exception {
         return registry.call(roomId, tx -> QueueControl.pin(tx, a, entryId, pinned));

@@ -392,6 +392,7 @@ public final class RoomsApi {
             records[0] = rooms.record(id);
             Rooms.Updated v = rooms.updateAdjusting(user, id, edit, request.clientIp());
             syncRecord(tx);
+            tx.refreshAutoplay(); // autoplay.selectors may have pruned selections
             records[1] = rooms.record(id);
             return v;
         });
@@ -463,6 +464,7 @@ public final class RoomsApi {
         Rooms.RoleSet set = registry.call(id, tx -> {
             Rooms.RoleSet r = rooms.setRole(user, id, target, role, request.clientIp());
             syncRecord(tx);
+            tx.refreshAutoplay(); // the role change may have pruned selections
             // The WebSocket layer re-checks that user's sockets (role, capabilities, a ban).
             tx.event(new RoomEvent.MemberChanged(target));
             return r;
@@ -535,6 +537,7 @@ public final class RoomsApi {
             if (!rooms.removeMember(user, id, target, request.clientIp())) {
                 return false;
             }
+            tx.refreshAutoplay(); // their selections went
             tx.event(new RoomEvent.MemberChanged(target));
             return true;
         });

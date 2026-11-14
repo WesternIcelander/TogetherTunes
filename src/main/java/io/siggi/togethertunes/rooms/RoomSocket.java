@@ -376,6 +376,11 @@ public final class RoomSocket {
                 }));
                 case "queue.move" -> handle(rid, () -> room((j, a) -> result("moved",
                         queue.move(j.roomId(), a, string(msg, "entryId"), optionalString(msg, "beforeEntryId")))));
+                case "queue.request" -> handle(rid, () -> room((j, a) -> {
+                    JsonObject o = new JsonObject();
+                    o.addProperty("state", queue.request(j.roomId(), a, string(msg, "entryId")).wire());
+                    return o;
+                }));
                 case "queue.pin" -> handle(rid, () -> room((j, a) -> result("changed",
                         queue.pin(j.roomId(), a, string(msg, "entryId"), optionalBoolean(msg, "pinned", true)))));
                 case "vote" -> handle(rid, () -> room((j, a) -> result("votes",

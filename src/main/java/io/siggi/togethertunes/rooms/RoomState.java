@@ -45,6 +45,11 @@ public final class RoomState {
     private String aloneUserId;
     /** For an alone room: the room its user is in (the alone state is saved meanwhile), or {@code null}. */
     private String awayInRoomId;
+    /**
+     * The queue {@link Autoplay} last couldn't fill its section for (its memo key), or
+     * {@code null}; in memory only.
+     */
+    private String autoplayStuck;
 
     RoomState(String id, String slug, String name, String ownerId, Rooms.Visibility visibility,
               Rooms.ControlMode controlMode, String settingsJson, Timeline timeline, long version) {
@@ -215,6 +220,14 @@ public final class RoomState {
     void alone(String aloneUserId, String awayInRoomId) {
         this.aloneUserId = aloneUserId;
         this.awayInRoomId = aloneUserId == null ? null : awayInRoomId;
+    }
+
+    String autoplayStuck() {
+        return autoplayStuck;
+    }
+
+    void autoplayStuck(String key) {
+        this.autoplayStuck = key;
     }
 
     /** The version of the last committed change; bumped by the executor, never by mutations. */
