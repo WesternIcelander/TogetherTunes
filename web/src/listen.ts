@@ -20,6 +20,17 @@
 // video download). A video comes into view when its crossfade starts; in audio-only mode the cover
 // art in the now-playing panel stands in for it.
 //
+// Sound blocked by the browser (docs/rooms.md#listen-mode): when `play()` is refused with
+// `NotAllowedError` for a video element, the element is muted and played anyway (muted autoplay is
+// allowed), so the video runs silently and in sync (the same loop) behind "Click to enable sound";
+// while sound stays blocked every video element that starts is muted first (the preloaded next
+// entry, the incoming element of a switch). This "blocked mute" is the element's `muted` flag and
+// nothing else uses it: the listener's own mute and volume are the master gain / the element's
+// `volume`, so unlocking never lifts the listener's mute and that mute never counts as unlocked.
+// The overlay's click unmutes inside the gesture (no seek when in sync). Where muted play is refused
+// too (Firefox's "Block audio and video"), or a muted element doesn't advance (a suspended Web Audio
+// context holding it), the player stops trying muted and waits paused for the click, as for audio items.
+//
 // Sync loop (every 250 ms, on every state change and on the elements' playing/seeked events): the
 // target position comes from the timeline and the server clock; drift above 750 ms → hard seek.
 // Below that, in "rate" mode (Chromium, Gecko) a drift above 40 ms starts a rate nudge of ±3 %
@@ -90,6 +101,11 @@ const PAUSED_SEEK_MS = 100;
 const SEEK_STUCK_MS = 5000;
 /** While autoplay is blocked, a paused element is moved and `play()` retried at most this often (ms). */
 const BLOCKED_RETRY_MS = 2000;
+/**
+ * A video playing muted because sound is blocked that hasn't advanced for this long (ms) is given
+ * up (paused, unmuted, waiting for the click as without the muted fallback).
+ */
+const BLOCK_MUTE_STALL_MS = 8000;
 /** How often (ms) a health sample is recorded. */
 const HEALTH_INTERVAL_MS = 1000;
 /** A context that stopped running is asked to resume at most this often (ms). */
@@ -184,6 +200,10 @@ interface Deck {
   lastPosMs: number;
   /** When `play()` was last tried while autoplay was blocked. */
   lastBlockedTry: number;
+  /** Muted (`el.muted`) because the browser blocks sound; lifted by the "Click to enable sound" gesture. */
+  blockMuted: boolean;
+  /** Since when a blocked-muted element hasn't advanced (performance.now()). */
+  blockStillAt: number | undefined;
   gain: GainNode | undefined;
   /** After the gain, for the output level (Web Audio only). */
   analyser: AnalyserNode | undefined;
@@ -297,8 +317,10 @@ export class ListenPlayer {
   /** Items whose original was given up this session (they play `audio.m4a`). */
   readonly #fallback = new Set<string>();
   #state: RoomState | undefined;
-  /** `play()` was refused for want of a user gesture. */
+  /** `play()` was refused for want of a user gesture (also while videos play blocked-muted). */
   #blocked = false;
+  /** Muted play was refused too, or didn't advance: no more muted fallback on this page. */
+  #mutedRefused = false;
   /** The deck for the current entry in the current mode (incoming during a switch). */
   #active: Deck | undefined;
   #switch: Switch | undefined;
@@ -527,6 +549,7 @@ export class ListenPlayer {
     }
     const deck: Deck = { el, video, name, ctl: new DriftController(this.#mode), lead: new SeekLead(), landing: undefined,
       seekAt: 0, seeks: 0, lostSeeks: 0, reloads: 0, lastPosMs: -1, lastBlockedTry: Number.NEGATIVE_INFINITY,
+      blockMuted: false, blockStillAt: undefined,
       gain, analyser, samples: analyser !== undefined ? new Float32Array(analyser.fftSize) : undefined,
       meter: new LevelMeter(), mute: new MuteDetector(), counters: {}, healthPosMs: -1,
       entryId: undefined, itemId: undefined, src: undefined, started: false,
@@ -644,6 +667,8 @@ export class ListenPlayer {
       needsRestore: this.#needsRestore,
       audio: this.#contextInfo(),
       blocked: this.#blocked,
+      blockMuted: this.#decks.filter((x) => x.blockMuted).map((x) => x.name),
+      mutedRefused: this.#mutedRefused,
       audioOnly: this.#audioOnly,
       switching: sw === undefined ? undefined : {
         from: sw.from.src?.url,
@@ -707,6 +732,8 @@ export class ListenPlayer {
    */
   unlock(): void {
     this.#blocked = false;
+    // Unmute inside the gesture (an element unmuted without one may be paused by the browser).
+    for (const d of this.#decks) this.#liftBlockMute(d);
     this.#ctx?.resume().then(() => this.#updateOverlay(), () => undefined);
     this.#fillReserve();
     const sw = this.#switch;
@@ -986,6 +1013,7 @@ export class ListenPlayer {
     deck.started = false;
     deck.playPending = false;
     deck.landing = undefined;
+    this.#liftBlockMute(deck);
     if (deck === this.#active) this.#active = undefined;
     if (deck === this.#switch?.from || deck === this.#switch?.to) this.#switch = undefined;
   }
@@ -1103,7 +1131,8 @@ export class ListenPlayer {
     if (el.paused) {
       // Not playing yet (or the browser refused): its position says nothing about the file, so
       // move it to the timeline without counting that as a hard seek, then start it.
-      if (this.#blocked) {
+      // (A video that may play muted starts at once; only a play that would be refused waits.)
+      if (this.#blocked && !(deck.video && !this.#mutedRefused)) {
         if (now - deck.lastBlockedTry < BLOCKED_RETRY_MS) return "blocked";
         deck.lastBlockedTry = now;
       }
@@ -1115,6 +1144,18 @@ export class ListenPlayer {
       return "play";
     }
     if (deck.playPending) return "play-pending";
+    if (deck.blockMuted && !el.seeking) {
+      // A muted video that doesn't advance (e.g. held by a suspended context): stop trying muted.
+      if (advancing) deck.blockStillAt = undefined;
+      else if (deck.blockStillAt === undefined) deck.blockStillAt = now;
+      else if (now - deck.blockStillAt > BLOCK_MUTE_STALL_MS) {
+        recordEvent("muted-stalled", { el: deck.name, forMs: round(now - deck.blockStillAt) });
+        this.#mutedRefused = true;
+        el.pause();
+        this.#liftBlockMute(deck);
+        return "muted-stalled";
+      }
+    }
     if (el.seeking) {
       if (now - deck.seekAt > SEEK_STUCK_MS) {
         recordEvent("seek-stuck", { el: deck.name, forMs: round(now - deck.seekAt) });
@@ -1202,13 +1243,15 @@ export class ListenPlayer {
 
   #play(deck: Deck): void {
     if (deck.playPending) return;
+    // Sound is blocked and videos play muted: so does this one (a preload, a switch's incoming one).
+    if (this.#blocked && deck.video && !this.#mutedRefused && !deck.blockMuted) this.#blockMute(deck);
     deck.playPending = true;
     let p: Promise<void> | undefined;
     try {
       p = deck.el.play();
     } catch (e) {
       deck.playPending = false;
-      this.#playFailed(e);
+      this.#playFailed(deck, e);
       return;
     }
     // Very old browsers return nothing; Safari 15 returns a promise.
@@ -1218,23 +1261,53 @@ export class ListenPlayer {
     }
     p.then(() => {
       deck.playPending = false;
-      this.#blocked = false;
+      if (!deck.blockMuted) {
+        // Played with sound: the browser allows it now, so nothing needs to stay muted.
+        this.#blocked = false;
+        for (const d of this.#decks) this.#liftBlockMute(d);
+      }
       this.#updateOverlay();
       this.tick();
     }, (e: unknown) => {
       deck.playPending = false;
-      this.#playFailed(e);
+      this.#playFailed(deck, e);
     });
   }
 
-  #playFailed(e: unknown): void {
+  #playFailed(deck: Deck, e: unknown): void {
     const name = typeof e === "object" && e !== null && "name" in e ? String((e as { name: unknown }).name) : String(e);
-    recordEvent("play-failed", { name });
+    recordEvent("play-failed", { el: deck.name, name, muted: deck.blockMuted });
     if (name === "NotAllowedError") {
       this.#blocked = true;
+      if (deck.blockMuted) {
+        // Muted play is refused too (e.g. "Block audio and video"): wait for the click, as for audio.
+        recordEvent("muted-refused", { el: deck.name });
+        this.#mutedRefused = true;
+        this.#liftBlockMute(deck);
+      } else if (deck.video && !this.#mutedRefused && deck.src !== undefined) {
+        // Play the video muted meanwhile; the loop keeps it in sync and the click unmutes it.
+        this.#blockMute(deck);
+        recordEvent("muted-fallback", { el: deck.name, url: deck.src.url });
+        this.#play(deck);
+      }
       this.#updateOverlay();
     }
     // AbortError (the source changed meanwhile) needs nothing; the next tick tries again.
+  }
+
+  /** Mutes the element because sound is blocked (separate from the listener's own mute). */
+  #blockMute(deck: Deck): void {
+    deck.blockMuted = true;
+    deck.blockStillAt = undefined;
+    deck.el.muted = true;
+  }
+
+  /** Undoes #blockMute (in the unlock gesture, or when the element is emptied or given up). */
+  #liftBlockMute(deck: Deck): void {
+    if (!deck.blockMuted) return;
+    deck.blockMuted = false;
+    deck.blockStillAt = undefined;
+    deck.el.muted = false;
   }
 
   #onError(deck: Deck): void {

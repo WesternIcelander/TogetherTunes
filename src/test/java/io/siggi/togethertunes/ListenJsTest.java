@@ -31,6 +31,21 @@ class ListenJsTest {
         NodeTests.run("diagnostics.test.mjs", Map.of("DIAGNOSTICS_JS", "web/js/diagnostics.js"));
     }
 
+    /**
+     * The muted fallback while the browser blocks sound ({@code listenplayer.test.mjs}, the player
+     * with fake media elements): a refused video plays muted and in sync behind the overlay, the
+     * click unmutes without a seek, the listener's own mute is kept, the next video and a switch's
+     * incoming one start muted, audio items and a refused muted play wait for the click as before.
+     */
+    @Test
+    void blockedVideoPlaysMutedUntilTheClick() throws Exception {
+        NodeTests.run("listenplayer.test.mjs", Map.of("LISTEN_JS", "web/js/listen.js"));
+        String player = read("web/js/listen.js");
+        for (String s : List.of("\"muted-fallback\"", "\"muted-refused\"", "\"muted-stalled\"")) {
+            assertTrue(player.contains(s), s);
+        }
+    }
+
     @Test
     void audioHealthUnitTestsPass() throws Exception {
         NodeTests.run("audiohealth.test.mjs", Map.of("AUDIOHEALTH_JS", "web/js/audiohealth.js"));
