@@ -574,9 +574,10 @@ class DtoIpLeakTest {
                 permissions, actors, new IdentityTickets(), clock);
         router = Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
-                new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
+                invitingAuth(new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
+                        permissions, config),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
-                new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
+                withUserSettings(new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets())),
                 new AdminApi(database, accounts, users, roles, permissions, settings),
                 TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
@@ -992,11 +993,23 @@ class DtoIpLeakTest {
                 controlHits.toString());
     }
 
+    private MeApi withUserSettings(MeApi me) {
+        me.userSettings(new io.siggi.togethertunes.auth.UserSettingsApi(
+                new io.siggi.togethertunes.auth.UserSettings(database, clock)));
+        return me;
+    }
+
+    private AuthApi invitingAuth(AuthApi auth, Permissions permissions, Config config) {
+        io.siggi.togethertunes.auth.Invites invites = new io.siggi.togethertunes.auth.Invites(database, clock);
+        auth.invites(invites, new io.siggi.togethertunes.auth.InvitesApi(invites, permissions, config.publicBaseUrl()));
+        return auth;
+    }
+
     /** GETs every GET route as {@code who} (whatever the status) and scans the answers. */
     private void sweep(Who who, Fixture f) throws Exception {
         List<String> paths = List.of("/", "/test/ws-echo.html", "/js/test/ws-echo.js", "/ws/echo", "/ws",
                 "/test/ws-echo/closes?tag=dto-leak", "/api/setup", "/api/me", "/api/me/sessions", "/api/me/identities",
-                "/api/me/merge-guest", "/api/me/play-session", "/api/me/history",
+                "/api/me/merge-guest", "/api/me/play-session", "/api/me/history", "/api/me/settings", "/api/invites",
                 "/api/admin/users", "/api/admin/users?q=ali", "/api/admin/users/" + f.aliceId,
                 "/api/admin/users/" + f.aliceId + "/roles", "/api/admin/roles", "/api/admin/roles/" + f.roleId,
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
@@ -1278,7 +1291,16 @@ class DtoIpLeakTest {
         expect(204, alice, "DELETE", "/api/me/likes/" + itemId, null);
         expect(200, alice, "GET", "/api/me/likes", null);
         expect(200, alice, "GET", "/api/playlists", null);
+        // her preferences
+        expect(200, alice, "PATCH", "/api/me/settings", "{\"doubleClickAlone\":\"queue\",\"debug\":true}");
+        expect(200, alice, "GET", "/api/me/settings", null);
         expect(200, alice, "GET", "/api/playlists/" + playlistId, null);
+
+        // the admin (users.invite, admin.users) creates, lists and revokes invites
+        String invite = json(expect(201, admin, "POST", "/api/invites", "{\"note\":\"for a friend\"}"))
+                .getAsJsonObject("invite").get("id").getAsString();
+        expect(200, admin, "GET", "/api/invites", null);
+        expect(200, admin, "DELETE", "/api/invites/" + invite, null);
 
         // the admin (library.viewAll) browses users, alice's library and her playlists
         expect(200, admin, "GET", "/api/users?q=ali", null);

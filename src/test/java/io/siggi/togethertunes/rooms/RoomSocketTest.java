@@ -606,6 +606,44 @@ class RoomSocketTest {
     }
 
     @Test
+    void queueRequestTurnsAnAutoplayEntryIntoARequest() throws Exception {
+        room("uparrow", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.next("identity");
+        owner.ok("{\"type\":\"join\",\"room\":\"uparrow\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Playing") + "\"}");
+        String e1 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("One") + "\"}").get("entryId").getAsString();
+        String e2 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Two") + "\"}").get("entryId").getAsString();
+        owner.ok("{\"type\":\"queue.move\",\"entryIds\":[\"" + e1 + "\"],\"section\":\"autoplay\"}");
+        owner.await(m -> m.get("type").getAsString().equals("state") && m.getAsJsonArray("queue").size() == 2
+                && m.getAsJsonArray("queue").get(1).getAsJsonObject().get("section").getAsString().equals("autoplay"));
+        // a manual entry is a request already
+        owner.error("not_autoplay", "{\"type\":\"queue.request\",\"entryId\":\"" + e2 + "\"}");
+        owner.error("entry_not_found", "{\"type\":\"queue.request\",\"entryId\":\"nope\"}");
+        // ↑ on the autoplay entry: back to the end of the manual section, queued (the owner)
+        assertEquals("queued", owner.ok("{\"type\":\"queue.request\",\"entryId\":\"" + e1 + "\"}")
+                .get("state").getAsString());
+        // (earlier states had both entries manual too: wait for the one with ↑'s entry last)
+        JsonObject state = owner.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonArray("queue").size() == 2
+                && m.getAsJsonArray("queue").get(1).getAsJsonObject().get("entryId").getAsString().equals(e1)
+                && m.getAsJsonArray("queue").get(1).getAsJsonObject().get("section").getAsString().equals("manual"));
+        List<String> order = new ArrayList<>();
+        for (JsonElement e : state.getAsJsonArray("queue")) {
+            order.add(e.getAsJsonObject().get("entryId").getAsString());
+        }
+        assertEquals(List.of(e2, e1), order);
+        owner.error("not_autoplay", "{\"type\":\"queue.request\",\"entryId\":\"" + e1 + "\"}");
+
+        // an anonymous visitor can't
+        Client anon = connect(null, null);
+        anon.ok("{\"type\":\"join\",\"room\":\"uparrow\",\"mode\":\"remote\"}");
+        anon.await("state");
+        anon.error("identity_required", "{\"type\":\"queue.request\",\"entryId\":\"" + e1 + "\"}");
+    }
+
+    @Test
     void anonymousSocketsBecomeGuestsWithATicket() throws Exception {
         room("votes", "public", "vote");
         String song = item("Song");

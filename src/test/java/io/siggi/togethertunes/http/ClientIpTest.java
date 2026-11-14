@@ -30,7 +30,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * Client IP resolution: {@code http.trustedProxies} fed into SiggiHTTP's
  * {@link HTTPServer#isIPTrusted} via {@link WebServer#setTrustedProxies} (CIDR matching for IPv4
- * and IPv6, SiggiHTTP's default private ranges dropped), and end to end through
+ * and IPv6, SiggiHTTP's default private ranges dropped, loopback always kept), and end to end through
  * {@code X-Forwarded-For} to {@link Request#clientIp()}.
  */
 class ClientIpTest {
@@ -46,10 +46,13 @@ class ClientIpTest {
     @Nested
     class CidrMatching {
         @Test
-        void emptyListTrustsNothingNotEvenSiggiHttpsPrivateRangeDefaults() {
+        void emptyListTrustsOnlyLoopbackNotSiggiHttpsPrivateRangeDefaults() {
             HTTPServer server = serverTrusting();
-            assertEquals(List.of(), server.getTrustedIPs());
-            for (String ip : List.of("10.1.2.3", "172.16.0.1", "192.168.1.1", "127.0.0.1", "8.8.8.8", "::1",
+            assertEquals(2, server.getTrustedIPs().size());
+            for (String ip : List.of("127.0.0.1", "127.0.0.2", "127.255.255.255", "::1", "0:0:0:0:0:0:0:1")) {
+                assertTrue(server.isIPTrusted(ip), ip);
+            }
+            for (String ip : List.of("10.1.2.3", "172.16.0.1", "192.168.1.1", "8.8.8.8", "128.0.0.1", "::2",
                     "2001:db8::1")) {
                 assertFalse(server.isIPTrusted(ip), ip);
             }
@@ -98,7 +101,7 @@ class ClientIpTest {
             assertFalse(server.isIPTrusted("100.64.0.8"));
             assertTrue(server.isIPTrusted("128.0.0.0"));
             assertTrue(server.isIPTrusted("255.255.255.255"));
-            assertFalse(server.isIPTrusted("127.255.255.255"));
+            assertFalse(server.isIPTrusted("126.255.255.255"));
         }
 
         @Test
@@ -110,7 +113,7 @@ class ClientIpTest {
             assertTrue(server.isIPTrusted("2001:db8:0:0:0:0:0:7")); // the form getHostAddress() gives
             assertFalse(server.isIPTrusted("2001:db9::"));
             assertFalse(server.isIPTrusted("2001:db7:ffff:ffff:ffff:ffff:ffff:ffff"));
-            assertFalse(server.isIPTrusted("::1"));
+            assertFalse(server.isIPTrusted("::2"));
         }
 
         @Test
@@ -141,6 +144,7 @@ class ClientIpTest {
             assertTrue(v4.isIPTrusted("1.2.3.4"));
             assertTrue(v4.isIPTrusted("255.255.255.255"));
             assertFalse(v4.isIPTrusted("2001:db8::1"));
+            assertFalse(serverTrusting("10.0.0.0/8").isIPTrusted("1.2.3.4"));
             HTTPServer v6 = serverTrusting("0:0:0:0:0:0:0:0/0");
             assertTrue(v6.isIPTrusted("2001:db8::1"));
             assertTrue(v6.isIPTrusted("ffff::1"));
@@ -162,7 +166,8 @@ class ClientIpTest {
             WebServer.setTrustedProxies(server, List.of("2001:db8:0:0:0:0:0:0/32"));
             assertFalse(server.isIPTrusted("10.0.0.1"));
             assertTrue(server.isIPTrusted("2001:db8::1"));
-            assertEquals(1, server.getTrustedIPs().size());
+            assertEquals(3, server.getTrustedIPs().size()); // + loopback
+            assertTrue(server.isIPTrusted("127.0.0.1"));
         }
 
         @Test
@@ -191,7 +196,7 @@ class ClientIpTest {
     }
 
     /**
-     * End to end: the test connects from loopback, which SiggiHTTP always trusts, so the rightmost
+     * End to end: the test connects from loopback, which is always trusted, so the rightmost
      * {@code X-Forwarded-For} entry is taken; further entries to its left are only followed past
      * hops in the trusted list.
      */
@@ -208,6 +213,9 @@ class ClientIpTest {
         }
 
         private void start(String... trusted) throws IOException {
+            if (web != null) {
+                web.close();
+            }
             Router router = new Router();
             router.get("/ip", (rq, rs) -> rs.text(200, rq.clientIp()));
             File tmp = Files.createDirectories(dir.resolve("tmp")).toFile();
@@ -243,6 +251,15 @@ class ClientIpTest {
             // 10.0.0.5 would be trusted by SiggiHTTP's defaults; with an empty list it isn't
             assertEquals("10.0.0.5", ip("203.0.113.7, 10.0.0.5"));
             assertEquals("192.168.1.1", ip("203.0.113.7, 192.168.1.1"));
+        }
+
+        @Test
+        void loopbackPeerIsTrustedWithoutBeingListed() throws Exception {
+            // since SiggiHTTP trusts loopback only through its list (1.11-SNAPSHOT, 2026-11-14)
+            start();
+            assertEquals("203.0.113.7", ip("203.0.113.7"));
+            start("10.0.0.0/8");
+            assertEquals("2001:db8:0:0:0:0:0:7", ip("2001:db8::7"));
         }
 
         @Test

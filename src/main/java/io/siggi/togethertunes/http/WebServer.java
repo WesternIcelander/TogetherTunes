@@ -25,12 +25,17 @@ import java.util.concurrent.TimeUnit;
  *
  * <p>Client IPs: SiggiHTTP resolves them itself ({@link Request#clientIp()}). It takes
  * {@code X-Forwarded-For} (walking the list from the right past trusted hops) when the peer is
- * loopback, a Cloudflare address or {@link HTTPServer#isIPTrusted}; {@link #setTrustedProxies}
- * makes the latter exactly {@code http.trustedProxies}.
+ * a Cloudflare address or {@link HTTPServer#isIPTrusted}; {@link #setTrustedProxies} makes the
+ * latter exactly loopback plus {@code http.trustedProxies}.
  */
 public final class WebServer implements AutoCloseable {
     private static final System.Logger LOG = System.getLogger(WebServer.class.getName());
     private static final int BACKLOG = 256;
+    /**
+     * Always trusted as proxies (a reverse proxy on the same host). SiggiHTTP used to trust
+     * loopback peers on its own; since 1.11-SNAPSHOT of 2026-11-14 only through its trusted list.
+     */
+    static final List<String> LOOPBACK = List.of("127.0.0.0/8", "::1");
 
     private final HTTPServer server;
     private final ServerSocket serverSocket;
@@ -128,11 +133,11 @@ public final class WebServer implements AutoCloseable {
 
     /**
      * Makes {@code server}'s trusted-IP list ({@link HTTPServer#isIPTrusted}) exactly
-     * {@code trustedProxies}. SiggiHTTP trusts the private ranges {@code 10.0.0.0/8},
-     * {@code 172.16.0.0/12}, {@code 192.168.0.0/16} and {@code 127.0.0.1} by default; those are
+     * {@link #LOOPBACK} plus {@code trustedProxies}. SiggiHTTP trusts the private ranges
+     * {@code 10.0.0.0/8}, {@code 172.16.0.0/12} and {@code 192.168.0.0/16} by default; those are
      * removed, so anyone on the LAN can't spoof their IP with {@code X-Forwarded-For} unless
-     * configured ({@code docs/auth.md}). Loopback peers and Cloudflare's ranges stay trusted by
-     * SiggiHTTP itself regardless of this list.
+     * configured ({@code docs/auth.md}). Loopback is always trusted (kept in the list here);
+     * Cloudflare's ranges stay trusted by SiggiHTTP itself regardless of this list.
      *
      * @param trustedProxies IPv4/IPv6 addresses or CIDRs ({@code 10.0.0.0/8},
      *                       {@code 2001:db8::/32}, {@code 192.168.1.1}); the config loader has
@@ -141,7 +146,10 @@ public final class WebServer implements AutoCloseable {
      *                                  left unchanged)
      */
     public static void setTrustedProxies(HTTPServer server, List<String> trustedProxies) {
-        List<IP> parsed = new ArrayList<>(trustedProxies.size());
+        List<IP> parsed = new ArrayList<>(LOOPBACK.size() + trustedProxies.size());
+        for (String cidr : LOOPBACK) {
+            parsed.add(IP.getIP(cidr));
+        }
         for (String cidr : trustedProxies) {
             try {
                 parsed.add(IP.getIP(cidr));

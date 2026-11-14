@@ -13,6 +13,8 @@ import io.siggi.simplewebsocket.WebsocketHeaders;
 import io.siggi.togethertunes.auth.Accounts;
 import io.siggi.togethertunes.auth.Invites;
 import io.siggi.togethertunes.auth.InvitesApi;
+import io.siggi.togethertunes.auth.UserSettings;
+import io.siggi.togethertunes.auth.UserSettingsApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AdminActivityApi;
 import io.siggi.togethertunes.auth.AdminApi;
@@ -186,6 +188,10 @@ class PermissionMatrixTest {
             row("DELETE /api/me/sessions", c -> Call.delete("/api/me/sessions"), 401, 401, 200, 200),
             row("DELETE /api/me/sessions/{id}", c -> Call.delete("/api/me/sessions/" + c.spareSessionId()),
                     401, 401, 204, 204),
+            // Preferences (UserSettingsApi): users only.
+            row("GET /api/me/settings", c -> Call.get("/api/me/settings"), 401, 401, 200, 200),
+            row("PATCH /api/me/settings", c -> Call.patch("/api/me/settings", "{\"doubleClickAlone\":\"queue\"}"),
+                    401, 401, 200, 200),
             row("GET /api/me/identities", c -> Call.get("/api/me/identities"), 401, 401, 200, 200),
             row("DELETE /api/me/identities/{id}", c -> Call.delete("/api/me/identities/" + c.spareIdentityId()),
                     401, 401, 204, 204),
@@ -477,7 +483,7 @@ class PermissionMatrixTest {
                 invitingAuth(new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
                         permissions, config),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
-                new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
+                withUserSettings(new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets())),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
                 TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
@@ -502,6 +508,11 @@ class PermissionMatrixTest {
             }
         }
         assertTrue(adminRoleId != null, "the admin role exists");
+    }
+
+    private MeApi withUserSettings(MeApi me) {
+        me.userSettings(new UserSettingsApi(new UserSettings(database, clock)));
+        return me;
     }
 
     private AuthApi invitingAuth(AuthApi auth, Permissions permissions, Config config) {
