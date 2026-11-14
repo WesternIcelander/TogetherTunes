@@ -28,6 +28,8 @@ import io.siggi.togethertunes.library.YoutubeLookupStage;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
@@ -375,7 +377,8 @@ public final class RoomSocket {
                     return o;
                 }));
                 case "queue.move" -> handle(rid, () -> room((j, a) -> result("moved",
-                        queue.move(j.roomId(), a, string(msg, "entryId"), optionalString(msg, "beforeEntryId")))));
+                        queue.move(j.roomId(), a, moveEntryIds(msg), optionalString(msg, "beforeEntryId"),
+                                section(msg)))));
                 case "queue.request" -> handle(rid, () -> room((j, a) -> {
                     JsonObject o = new JsonObject();
                     o.addProperty("state", queue.request(j.roomId(), a, string(msg, "entryId")).wire());
@@ -662,7 +665,10 @@ public final class RoomSocket {
                 JsonArray ids = new JsonArray();
                 added.entryIds().forEach(ids::add);
                 o.add("entryIds", ids);
+                o.addProperty("state", added.state().wire());
                 o.addProperty("skipped", added.skipped());
+                o.addProperty("recentlyPlayed", added.recentlyPlayed());
+                o.addProperty("overLimit", added.overLimit());
                 return o;
             });
         }
@@ -811,6 +817,42 @@ public final class RoomSocket {
             throw new HttpError(400, "invalid_message", name + " must be a string");
         }
         return e.getAsString();
+    }
+
+    /** {@code queue.move}'s entries: {@code entryIds} (an array of strings) or {@code entryId} (exactly one of them). */
+    private static List<String> moveEntryIds(JsonObject msg) {
+        JsonElement e = msg.get("entryIds");
+        String one = optionalString(msg, "entryId");
+        if (e == null || e.isJsonNull()) {
+            if (one == null) {
+                throw new HttpError(400, "invalid_message", "entryIds or entryId is required");
+            }
+            return List.of(one);
+        }
+        if (one != null || !e.isJsonArray()) {
+            throw new HttpError(400, "invalid_message", "entryIds must be an array of entry ids (without entryId)");
+        }
+        List<String> out = new ArrayList<>();
+        for (JsonElement id : e.getAsJsonArray()) {
+            if (!id.isJsonPrimitive() || !id.getAsJsonPrimitive().isString()) {
+                throw new HttpError(400, "invalid_message", "entryIds must be an array of entry ids");
+            }
+            out.add(id.getAsString());
+        }
+        return out;
+    }
+
+    /** {@code queue.move}'s optional {@code section} ({@code manual} or {@code autoplay}). */
+    private static QueueEntry.Section section(JsonObject msg) {
+        String s = optionalString(msg, "section");
+        if (s == null) {
+            return null;
+        }
+        QueueEntry.Section section = QueueEntry.Section.parse(s);
+        if (section == null) {
+            throw new HttpError(400, "invalid_message", "section must be manual or autoplay");
+        }
+        return section;
     }
 
     private static boolean optionalBoolean(JsonObject msg, String name, boolean dflt) {

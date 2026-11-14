@@ -356,6 +356,22 @@ final class RoomStore {
         }
     }
 
+    /**
+     * Moves a queued entry to {@code e}'s section, position and pin (a {@code queue.move} between
+     * sections), keeping its adder and {@code via}.
+     */
+    static void setSectionAndPlace(Connection c, String roomId, QueueEntry e) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("UPDATE queue_entries SET section = ?, position = ?, pinned = ?"
+                + " WHERE id = ? AND room_id = ?")) {
+            ps.setString(1, e.section().wire());
+            ps.setDouble(2, e.position());
+            ps.setInt(3, e.pinned() ? 1 : 0);
+            ps.setString(4, e.id());
+            ps.setString(5, roomId);
+            ps.executeUpdate();
+        }
+    }
+
     /** Deletes the votes and skip votes on an entry (it is becoming current, or going back to the queue). */
     static void clearVotes(Connection c, String entryId) throws SQLException {
         for (String table : new String[] {"votes", "skip_votes"}) {

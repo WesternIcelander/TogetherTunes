@@ -462,12 +462,16 @@ abstract class QueueOpsContract {
         });
         sql("UPDATE items SET status = 'failed' WHERE id = ?", failed);
 
-        assertEquals("forbidden", refused(() -> queue.addPlaylist(roomId, bobActor, bob, playlistId, false)));
+        assertEquals("playlist_not_found", refused(() -> queue.addPlaylist(roomId, bobActor, bob, playlistId, false)),
+                "only one's own playlists");
+        assertEquals("forbidden", refused(() -> queue.addPlaylist(roomId, guestActor, guest, playlistId, false)),
+                "guests have no playlists");
         assertEquals("playlist_not_found", refused(() -> queue.addPlaylist(roomId, aliceActor, owner,
                 UuidV7.newId(), false)));
 
         QueueOps.PlaylistAdded added = queue.addPlaylist(roomId, aliceActor, owner, playlistId, false);
         assertEquals(8, added.entryIds().size());
+        assertEquals(QueueEntry.State.QUEUED, added.state());
         assertEquals(1, added.skipped(), "the failed item is left out");
         assertEquals(added.entryIds().get(0), current());
         List<String> playedItems = new ArrayList<>();
@@ -488,6 +492,71 @@ abstract class QueueOpsContract {
         assertFalse(items.equals(shuffledItems), "shuffled (seeded)");
         List<String> tail = order().subList(order().size() - 8, order().size());
         assertEquals(shuffled.entryIds(), tail, "at the end of the queue, in the shuffled order");
+    }
+
+    @Test
+    void addAllOfAPlaylistByTheRequestRulesPerControlMode() throws Exception {
+        String bobsList = playlists.create(bobId, "Bob's", null).id();
+        List<String> items = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            String item = ready();
+            items.add(item);
+            playlists.add(bobActor, bobsList, item, null, () -> {
+            });
+        }
+        add(owner, items.get(0)); // playing now: within noRepeatWindow
+        assertEquals(items.get(0), call(tx -> tx.state().current().itemId()));
+        for (String m : List.of("owner", "vote", "open")) {
+            mode(m);
+            settings("{\"requestsPerActor\":3,\"noRepeatWindow\":5}");
+            QueueOps.PlaylistAdded added = queue.addPlaylist(roomId, bobActor, bob, bobsList, false);
+            QueueEntry.State expected = m.equals("owner") ? QueueEntry.State.SUGGESTED : QueueEntry.State.QUEUED;
+            assertEquals(expected, added.state(), m);
+            assertEquals(3, added.entryIds().size(), m + ": up to Bob's request limit");
+            assertEquals(1, added.recentlyPlayed(), m + ": the song playing now");
+            assertEquals(1, added.overLimit(), m);
+            assertEquals(0, added.skipped(), m);
+            List<String> addedItems = call(tx -> added.entryIds().stream()
+                    .map(id -> tx.state().waitingEntry(id)).map(e -> {
+                        assertEquals(expected, e.state());
+                        assertEquals(bobId, e.addedByUserId());
+                        return e.itemId();
+                    }).toList());
+            assertEquals(items.subList(1, 4), addedItems, m + ": in playlist order");
+            assertEquals(List.of("playlist"), row("SELECT DISTINCT via FROM queue_entries WHERE id = ?",
+                    added.entryIds().get(0)));
+            assertEquals("request_limit", refused(() -> queue.addPlaylist(roomId, bobActor, bob, bobsList, true)),
+                    m + ": no place left");
+            for (String id : added.entryIds()) {
+                queue.remove(roomId, bob, id);
+            }
+            // shuffled: the same rules, the order shuffled
+            QueueOps.PlaylistAdded shuffled = queue.addPlaylist(roomId, bobActor, bob, bobsList, true);
+            assertEquals(3, shuffled.entryIds().size(), m);
+            assertEquals(1, shuffled.recentlyPlayed(), m);
+            assertEquals(1, shuffled.overLimit(), m);
+            for (String id : shuffled.entryIds()) {
+                queue.remove(roomId, bob, id);
+            }
+        }
+        // the room settings and rights of a request
+        settings("{\"libraryRequests\":false}");
+        assertEquals("library_requests_off", refused(() -> queue.addPlaylist(roomId, bobActor, bob, bobsList, false)));
+        settings("{}");
+        assertEquals("cannot_request", refused(() -> queue.addPlaylist(roomId, bobActor,
+                RoomActor.user(bobId, Rooms.Role.BANNED), bobsList, false)));
+        assertEquals("identity_required", refused(() -> queue.addPlaylist(roomId, new Actor.Anonymous(),
+                RoomActor.ANONYMOUS, bobsList, false)));
+        // the owner and moderators: no limits
+        String alicesList = playlists.create(aliceId, "Alice's", null).id();
+        for (String item : items) {
+            playlists.add(aliceActor, alicesList, item, null, () -> {
+            });
+        }
+        settings("{\"requestsPerActor\":1,\"noRepeatWindow\":5}");
+        QueueOps.PlaylistAdded all = queue.addPlaylist(roomId, aliceActor, owner, alicesList, false);
+        assertEquals(5, all.entryIds().size());
+        assertEquals(0, all.recentlyPlayed() + all.overLimit());
     }
 
     @Test

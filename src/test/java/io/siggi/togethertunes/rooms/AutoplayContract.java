@@ -486,7 +486,7 @@ abstract class AutoplayContract {
     }
 
     @Test
-    void movesStayInTheirSectionAndALoweredUpcomingTrims() throws Exception {
+    void movesWithinASectionAndALoweredUpcomingTrims() throws Exception {
         mode("owner");
         List<String> songs = new ArrayList<>();
         String list = playlist(aliceActor, "Mix", 8, songs);
@@ -504,7 +504,9 @@ abstract class AutoplayContract {
                 auto.get(3).id()), moved);
         assertTrue(queue.move(roomId, owner, auto.get(1).id(), null));
         assertEquals(auto.get(1).id(), section(QueueEntry.Section.AUTOPLAY).get(4).id(), "to the end of its section");
-        assertEquals("before_entry_not_found", refused(() -> queue.move(roomId, owner, m2, auto.get(0).id())));
+        assertEquals("before_entry_not_found", refused(() -> queue.move(roomId, owner, m2, UuidV7.newId())));
+        assertEquals("before_entry_not_found", refused(() -> queue.move(roomId, owner, List.of(m2), auto.get(0).id(),
+                QueueEntry.Section.MANUAL)), "the entry to move before isn't in the section asked for");
         assertEquals(m2, order().get(0).id());
 
         settings("{\"autoplay\":{\"upcoming\":2}}");
@@ -514,5 +516,157 @@ abstract class AutoplayContract {
         settings("{\"autoplay\":{\"upcoming\":0}}");
         assertEquals(List.of(), section(QueueEntry.Section.AUTOPLAY), "0: autoplay adds nothing");
         assertEquals(List.of(m2), order().stream().map(QueueEntry::id).toList());
+    }
+
+    private static List<String> ids(List<QueueEntry> entries) {
+        return entries.stream().map(QueueEntry::id).toList();
+    }
+
+    @Test
+    void movingBetweenSectionsInOwnerMode() throws Exception {
+        mode("owner");
+        settings("{\"autoplay\":{\"upcoming\":3}}");
+        List<String> songs = new ArrayList<>();
+        String list = playlist(aliceActor, "Mix", 10, songs);
+        String playing = queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song())).entryId();
+        assertEquals(playing, current().id());
+        String m1 = queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song())).entryId();
+        String m2 = queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song())).entryId();
+        String m3 = queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song())).entryId();
+        selections.select(aliceActor, roomId, list);
+        List<QueueEntry> auto = section(QueueEntry.Section.AUTOPLAY);
+        assertEquals(3, auto.size());
+
+        // only the owner and moderators edit the queue in owner mode
+        assertEquals("forbidden", refused(() -> queue.move(roomId, bob, List.of(m3), m1, null)));
+        assertEquals("identity_required", refused(() -> queue.move(roomId, RoomActor.ANONYMOUS, List.of(m3), m1,
+                null)));
+        assertEquals("entry_not_found", refused(() -> queue.move(roomId, owner, List.of(playing), m1, null)),
+                "the current entry doesn't move");
+        assertEquals("invalid_entry_ids", refused(() -> queue.move(roomId, owner, List.of(m1, m1), null, null)));
+        assertEquals("invalid_entry_ids", refused(() -> queue.move(roomId, owner, List.of(), null, null)));
+
+        // several entries at once, in the given order, before one of them = before the next that stays
+        assertTrue(queue.move(roomId, owner, List.of(m3, m2), m1, null));
+        assertEquals(List.of(m3, m2, m1), ids(section(QueueEntry.Section.MANUAL)));
+        assertTrue(queue.move(roomId, owner, List.of(m1, m3), m3, null));
+        assertEquals(List.of(m1, m3, m2), ids(section(QueueEntry.Section.MANUAL)));
+        assertFalse(queue.move(roomId, owner, List.of(m1, m3), m2, null), "already there");
+
+        // an autoplay entry into the requests: a manual entry now, still the selecting person's
+        String a0 = auto.get(0).id();
+        assertTrue(queue.move(roomId, owner, List.of(a0), m3, null));
+        assertEquals(List.of(m1, a0, m3, m2), ids(section(QueueEntry.Section.MANUAL)));
+        QueueEntry nowManual = call(tx -> tx.state().waitingEntry(a0));
+        assertEquals(QueueEntry.Section.MANUAL, nowManual.section());
+        assertEquals(aliceId, nowManual.addedByUserId());
+        assertEquals(List.of("manual", "autoplay"), column("SELECT section FROM queue_entries WHERE id = ?"
+                + " UNION ALL SELECT via FROM queue_entries WHERE id = ?", a0, a0));
+        assertEquals(3, section(QueueEntry.Section.AUTOPLAY).size(), "autoplay filled its section again");
+
+        // a request into From Playlist (to the end of the section): it stays there for good
+        assertTrue(queue.move(roomId, owner, List.of(m2), null, QueueEntry.Section.AUTOPLAY));
+        List<QueueEntry> fromPlaylist = section(QueueEntry.Section.AUTOPLAY);
+        assertEquals(3, fromPlaylist.size(), "it counts: the last autoplay song made room");
+        assertEquals(m2, fromPlaylist.get(2).id(), "not trimmed although it is last");
+        assertEquals("autoplay", column("SELECT section FROM queue_entries WHERE id = ?", m2).get(0));
+        // and before an entry of the other section
+        assertTrue(queue.move(roomId, owner, List.of(m1), fromPlaylist.get(0).id(), null));
+        assertEquals(m1, section(QueueEntry.Section.AUTOPLAY).get(0).id());
+        assertEquals(List.of(a0, m3), ids(section(QueueEntry.Section.MANUAL)));
+        assertEquals(List.of(m1, fromPlaylist.get(0).id(), m2), ids(section(QueueEntry.Section.AUTOPLAY)),
+                "over upcoming only by moved-in entries: autoplay songs make room");
+
+        // survives a restart; deselecting removes autoplay's songs, not the moved-in ones
+        restart();
+        assertEquals(List.of(m1, fromPlaylist.get(0).id(), m2), ids(section(QueueEntry.Section.AUTOPLAY)));
+        selections.deselect(aliceActor, roomId, list);
+        assertEquals(List.of(m1, m2), ids(section(QueueEntry.Section.AUTOPLAY)));
+        assertEquals(List.of(a0, m3, m1, m2), ids(order()), "requests first, then From Playlist");
+        // and back into the requests
+        assertTrue(queue.move(roomId, owner, List.of(m2, m1), a0, QueueEntry.Section.MANUAL));
+        assertEquals(List.of(m2, m1, a0, m3), ids(section(QueueEntry.Section.MANUAL)));
+        assertEquals(List.of(), section(QueueEntry.Section.AUTOPLAY));
+    }
+
+    @Test
+    void queueEditingPerControlMode() throws Exception {
+        settings("{\"autoplay\":{\"upcoming\":2,\"selectors\":\"members\"}}");
+        List<String> songs = new ArrayList<>();
+        String list = playlist(bobActor, "B", 8, songs);
+        RoomActor banned = RoomActor.user(carolId, Rooms.Role.BANNED);
+        for (String m : List.of("owner", "vote", "open")) {
+            mode(m);
+            call(tx -> null);
+            if (current() == null) {
+                queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song()));
+            }
+            String byAlice = queue.add(roomId, aliceActor, owner, RoomQueue.Source.item(song())).entryId();
+            String byBob = queue.add(roomId, bobActor, bob, RoomQueue.Source.item(song())).entryId();
+            if (m.equals("owner")) {
+                queue.accept(roomId, owner, byBob); // a suggestion first
+            }
+            selections.select(bobActor, roomId, list);
+            List<QueueEntry> auto = section(QueueEntry.Section.AUTOPLAY);
+            assertEquals(2, auto.size(), m);
+
+            // moves (and moves between sections): owner mode the owner and moderators, open mode
+            // anyone with request rights, never in vote mode
+            switch (m) {
+                case "owner" -> {
+                    assertTrue(queue.move(roomId, owner, List.of(byBob), byAlice, null));
+                    assertEquals("forbidden", refused(() -> queue.move(roomId, bob, List.of(byAlice), byBob, null)));
+                    assertEquals("forbidden", refused(() -> queue.move(roomId, bob, List.of(auto.get(1).id()),
+                            byBob, null)));
+                }
+                case "vote" -> {
+                    for (RoomActor a : List.of(owner, bob)) {
+                        assertEquals("wrong_control_mode", refused(() -> queue.move(roomId, a, List.of(byBob), byAlice,
+                                null)), m);
+                        assertEquals("wrong_control_mode", refused(() -> queue.move(roomId, a,
+                                List.of(auto.get(0).id()), null, QueueEntry.Section.MANUAL)), m);
+                    }
+                    // pin to top stays (requests only)
+                    assertTrue(queue.pin(roomId, owner, byBob, true));
+                    assertEquals(byBob, order().get(0).id());
+                    assertEquals("forbidden", refused(() -> queue.pin(roomId, bob, byAlice, true)));
+                    assertEquals("autoplay_entry", refused(() -> queue.pin(roomId, owner, auto.get(0).id(), true)));
+                }
+                case "open" -> {
+                    assertTrue(queue.move(roomId, bob, List.of(auto.get(1).id(), byAlice), null,
+                            QueueEntry.Section.MANUAL), "a member with request rights");
+                    assertEquals(QueueEntry.Section.MANUAL, call(tx -> tx.state().waitingEntry(auto.get(1).id()))
+                            .section());
+                    assertTrue(queue.move(roomId, bob, List.of(byBob), auto.get(0).id(), null));
+                    assertEquals(byBob, section(QueueEntry.Section.AUTOPLAY).get(0).id());
+                    assertEquals("cannot_request", refused(() -> queue.move(roomId, banned, List.of(byBob), null,
+                            null)));
+                }
+                default -> throw new AssertionError(m);
+            }
+
+            // × : the owner, a moderator or the adder (for autoplay entries the selecting person);
+            // in open mode anyone with request rights
+            List<QueueEntry> fromPlaylist = section(QueueEntry.Section.AUTOPLAY);
+            QueueEntry autoEntry = fromPlaylist.stream().filter(e -> e.itemId() != null && songs.contains(e.itemId()))
+                    .findFirst().orElseThrow();
+            if (m.equals("open")) {
+                queue.remove(roomId, carol, byAlice); // anyone with request rights
+                assertEquals("forbidden", refused(() -> queue.remove(roomId, banned, autoEntry.id())));
+            } else {
+                assertEquals("forbidden", refused(() -> queue.remove(roomId, carol, byAlice)), m);
+                assertEquals("forbidden", refused(() -> queue.remove(roomId, bob, byAlice)), m);
+                queue.remove(roomId, owner, byAlice);
+            }
+            assertEquals("removed", column("SELECT state FROM queue_entries WHERE id = ?", byAlice).get(0), m);
+            queue.remove(roomId, bob, autoEntry.id()); // Bob selected it
+            queue.remove(roomId, bob, byBob); // his own request
+            assertEquals("removed", column("SELECT state FROM queue_entries WHERE id = ?", autoEntry.id()).get(0));
+            assertEquals("removed", column("SELECT state FROM queue_entries WHERE id = ?", byBob).get(0));
+            selections.deselect(bobActor, roomId, list);
+            for (QueueEntry e : call(tx -> List.copyOf(tx.state().queue()))) {
+                queue.remove(roomId, owner, e.id());
+            }
+        }
     }
 }

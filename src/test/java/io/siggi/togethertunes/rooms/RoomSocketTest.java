@@ -574,6 +574,38 @@ class RoomSocketTest {
     }
 
     @Test
+    void queueMoveTakesSeveralEntriesAndASection() throws Exception {
+        room("moves", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.next("identity");
+        owner.ok("{\"type\":\"join\",\"room\":\"moves\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Playing") + "\"}");
+        String e1 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("One") + "\"}").get("entryId").getAsString();
+        String e2 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Two") + "\"}").get("entryId").getAsString();
+        String e3 = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + item("Three") + "\"}").get("entryId").getAsString();
+        assertTrue(owner.ok("{\"type\":\"queue.move\",\"entryIds\":[\"" + e3 + "\",\"" + e2 + "\"],\"beforeEntryId\":\""
+                + e1 + "\"}").get("moved").getAsBoolean());
+        JsonObject state = owner.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonArray("queue").size() == 3
+                && m.getAsJsonArray("queue").get(0).getAsJsonObject().get("entryId").getAsString().equals(e3));
+        List<String> order = new ArrayList<>();
+        for (JsonElement e : state.getAsJsonArray("queue")) {
+            order.add(e.getAsJsonObject().get("entryId").getAsString());
+        }
+        assertEquals(List.of(e3, e2, e1), order);
+        assertTrue(owner.ok("{\"type\":\"queue.move\",\"entryIds\":[\"" + e1 + "\"],\"section\":\"autoplay\"}")
+                .get("moved").getAsBoolean());
+        owner.await(m -> m.get("type").getAsString().equals("state") && m.getAsJsonArray("queue").size() == 3
+                && m.getAsJsonArray("queue").get(2).getAsJsonObject().get("section").getAsString().equals("autoplay"));
+        owner.error("invalid_message", "{\"type\":\"queue.move\",\"entryIds\":[\"" + e1 + "\"],\"section\":\"x\"}");
+        owner.error("invalid_message", "{\"type\":\"queue.move\",\"entryIds\":\"" + e1 + "\"}");
+        owner.error("invalid_message", "{\"type\":\"queue.move\",\"entryId\":\"" + e1 + "\",\"entryIds\":[]}");
+        owner.error("invalid_message", "{\"type\":\"queue.move\"}");
+        owner.error("invalid_entry_ids", "{\"type\":\"queue.move\",\"entryIds\":[]}");
+    }
+
+    @Test
     void anonymousSocketsBecomeGuestsWithATicket() throws Exception {
         room("votes", "public", "vote");
         String song = item("Song");

@@ -79,18 +79,23 @@ class ControlPolicyTest {
     }
 
     @Test
-    void addPlaylistAndSuggestionsAreForOwnerAndModerators() {
+    void addPlaylistFollowsTheRequestRulesAndSuggestionsAreForOwnerAndModerators() {
         for (Rooms.ControlMode mode : Rooms.ControlMode.values()) {
             RoomState s = room(mode);
             for (RoomActor a : List.of(OWNER, MOD)) {
-                allowed(() -> ControlPolicy.requireAddPlaylist(s, a));
+                assertEquals(ControlPolicy.AddAs.QUEUE, ControlPolicy.addPlaylist(s, a));
                 allowed(() -> ControlPolicy.requireDecideSuggestion(s, a));
             }
+            for (RoomActor a : List.of(MEMBER, USER, GUEST)) {
+                assertEquals(mode == Rooms.ControlMode.OWNER ? ControlPolicy.AddAs.SUGGESTION : ControlPolicy.AddAs.QUEUE,
+                        ControlPolicy.addPlaylist(s, a), mode + " " + a);
+            }
             for (RoomActor a : List.of(MEMBER, USER, GUEST, BANNED)) {
-                refused(403, "forbidden", () -> ControlPolicy.requireAddPlaylist(s, a));
                 refused(403, "forbidden", () -> ControlPolicy.requireDecideSuggestion(s, a));
             }
-            refused(401, "identity_required", () -> ControlPolicy.requireAddPlaylist(s, ANON));
+            refused(403, "cannot_request", () -> ControlPolicy.addPlaylist(s, BANNED));
+            refused(403, "cannot_request", () -> ControlPolicy.addPlaylist(s, GUEST_NO_RIGHTS));
+            refused(401, "identity_required", () -> ControlPolicy.addPlaylist(s, ANON));
             refused(401, "identity_required", () -> ControlPolicy.requireDecideSuggestion(s, ANON));
         }
     }

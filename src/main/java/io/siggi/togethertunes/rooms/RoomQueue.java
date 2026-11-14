@@ -152,21 +152,28 @@ public final class RoomQueue {
     }
 
     /**
-     * {@code queue.addPlaylist}: the owner and moderators add one of their own playlists, in its
-     * order or shuffled. Purged or failed YouTube items in it are fetched again when allowed (and
-     * left out when not); see {@link QueueOps#addPlaylist}.
+     * {@code queue.addPlaylist} ("Add All", In Order or Shuffled): a signed-in user adds one of
+     * their own playlists, in its order or shuffled, by the request rules
+     * ({@link QueueOps#addPlaylist}: like a request by id of each item). Purged or failed YouTube
+     * items in it are fetched again when allowed (and left out when not).
      *
-     * @throws HttpError as {@link ControlPolicy#requireAddPlaylist}, {@code 404 playlist_not_found}
+     * @throws HttpError {@code 403 forbidden} (a guest or anonymous visitor: no playlists), as
+     *                   {@link ControlPolicy#requireSource} ({@code library}) and
+     *                   {@link QueueOps#checkAdd}, {@code 403 library_requests_off},
+     *                   {@code 404 playlist_not_found}
      */
     public QueueOps.PlaylistAdded addPlaylist(String roomId, Actor actor, RoomActor a, String playlistId,
                                               boolean shuffle) throws Exception {
+        if (!(actor instanceof Actor.User user)) {
+            a.requireIdentity();
+            throw HttpError.forbidden("Only signed-in users have playlists to add");
+        }
+        ControlPolicy.requireSource(a, "library");
         registry.call(roomId, tx -> {
-            ControlPolicy.requireAddPlaylist(tx.state(), a);
+            QueueOps.checkAdd(tx.state(), a);
+            requireLibraryRequests(tx.state().settings(), a);
             return null;
         });
-        if (!(actor instanceof Actor.User user)) {
-            throw HttpError.forbidden("Only the owner and moderators can add a playlist");
-        }
         Playlists.PlaylistPage page = playlists.get(user.userId(), playlistId);
         List<String> itemIds = new ArrayList<>();
         for (Playlists.Entry e : page.entries()) {
@@ -254,9 +261,15 @@ public final class RoomQueue {
         return youtube.retry(itemId, actor, clientIp, roomId);
     }
 
-    /** {@code queue.move}: see {@link QueueOps#move}. */
+    /** {@code queue.move} of one entry: see {@link QueueOps#move(RoomTx, RoomActor, String, String)}. */
     public boolean move(String roomId, RoomActor a, String entryId, String beforeEntryId) throws Exception {
         return registry.call(roomId, tx -> QueueOps.move(tx, a, entryId, beforeEntryId));
+    }
+
+    /** {@code queue.move} of several entries, maybe into another section: see {@link QueueOps#move(RoomTx, RoomActor, List, String, QueueEntry.Section)}. */
+    public boolean move(String roomId, RoomActor a, List<String> entryIds, String beforeEntryId,
+                        QueueEntry.Section section) throws Exception {
+        return registry.call(roomId, tx -> QueueOps.move(tx, a, entryIds, beforeEntryId, section));
     }
 
     /** {@code queue.request} (↑ on an autoplay entry): see {@link QueueOps#request}. */

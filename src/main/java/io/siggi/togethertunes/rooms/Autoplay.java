@@ -30,11 +30,13 @@ import java.util.TreeSet;
  *       playlists (deselected, removed from the playlist, the playlist deleted, the person lost the
  *       right, the item isn't {@code ready} any more) are removed.</li>
  *   <li>Entries beyond {@code autoplay.upcoming} are removed from the end (the setting was
- *       lowered).</li>
+ *       lowered, or entries were moved in).</li>
  *   <li>Missing entries are added at the end of the section, each added by the person whose
  *       playlist it came from. Only {@code ready} items are picked. Adding never starts an idle
  *       room (play does, or a request).</li>
  * </ol>
+ * Entries moved into the section by hand ({@code queue.move}: their {@code via} isn't
+ * {@code autoplay}) count towards {@code autoplay.upcoming} but are never removed by it.
  * A room without selections, or whose pool couldn't fill the section, remembers the queue it
  * failed on and doesn't read the database again until the queue changes or a refresh comes.
  */
@@ -67,12 +69,16 @@ final class Autoplay {
         int upcoming = settings.autoplayUpcoming();
         boolean refresh = tx.refreshesAutoplay();
         List<QueueEntry> section = Playback.sectionOrder(s, QueueEntry.Section.AUTOPLAY);
+        String roomId = s.id();
         if (!refresh) {
-            if (section.size() > upcoming) {
-                trim(tx, section, upcoming);
+            if (section.size() == upcoming || fingerprint(s).equals(s.autoplayStuck())) {
                 return;
             }
-            if (section.size() == upcoming || fingerprint(s).equals(s.autoplayStuck())) {
+            if (section.size() > upcoming) {
+                Set<String> movedIn = tx.store().db().read(c -> movedIn(c, section));
+                List<QueueEntry> left = trim(tx, section, upcoming, movedIn);
+                // over only by entries moved in by hand: nothing to do until the queue changes
+                s.autoplayStuck(left.size() > upcoming ? fingerprint(s) : null);
                 return;
             }
         }
@@ -82,21 +88,20 @@ final class Autoplay {
         }
         boolean turns = settings.autoplayTurns();
         int recentPct = settings.autoplayRecentPct();
-        String roomId = s.id();
         // Read everything first: nothing below throws once the state starts changing.
         Loaded loaded = tx.store().db().read(c -> load(c, roomId, turns, recentPct));
+        Set<String> movedIn = tx.store().db().read(c -> movedIn(c, section));
         List<QueueEntry> kept = new ArrayList<>();
         for (QueueEntry e : section) {
             Set<String> items = e.addedByUserId() == null ? null : loaded.byUser().get(e.addedByUserId());
-            if (refresh && (items == null || !items.contains(e.itemId()))) {
+            if (refresh && !movedIn.contains(e.id()) && (items == null || !items.contains(e.itemId()))) {
                 remove(tx, e);
             } else {
                 kept.add(e);
             }
         }
         if (kept.size() > upcoming) {
-            trim(tx, kept, upcoming);
-            kept = kept.subList(0, upcoming);
+            kept = trim(tx, kept, upcoming, movedIn);
         }
         int need = upcoming - kept.size();
         List<QueueEntry> added = new ArrayList<>();
@@ -178,7 +183,7 @@ final class Autoplay {
                 ages.putIfAbsent(recent.get(i), i);
             }
             try (PreparedStatement ps = c.prepareStatement("SELECT added_by_user_id FROM queue_entries"
-                    + " WHERE room_id = ? AND section = ? ORDER BY added_at DESC, position DESC, id DESC LIMIT 1")) {
+                    + " WHERE room_id = ? AND section = ? AND via = 'autoplay' ORDER BY added_at DESC, position DESC, id DESC LIMIT 1")) {
                 ps.setString(1, roomId);
                 ps.setString(2, QueueEntry.Section.AUTOPLAY.wire());
                 try (ResultSet rs = ps.executeQuery()) {
@@ -189,11 +194,48 @@ final class Autoplay {
         return new Loaded(pool, byUser, ages, last);
     }
 
-    /** Removes the entries of {@code section} (in order) after the first {@code keep}. */
-    private static void trim(RoomTx tx, List<QueueEntry> section, int keep) {
-        for (int i = section.size() - 1; i >= keep; i--) {
-            remove(tx, section.get(i));
+    /**
+     * Removes entries of {@code section} (in order) from the end until {@code keep} are left,
+     * passing over the ones moved in by hand ({@code movedIn}).
+     *
+     * @return the entries left, in order
+     */
+    private static List<QueueEntry> trim(RoomTx tx, List<QueueEntry> section, int keep, Set<String> movedIn) {
+        List<QueueEntry> left = new ArrayList<>(section);
+        for (int i = left.size() - 1; i >= 0 && left.size() > keep; i--) {
+            if (!movedIn.contains(left.get(i).id())) {
+                remove(tx, left.remove(i));
+            }
         }
+        return left;
+    }
+
+    /**
+     * The entries of {@code section} that autoplay didn't add (a manual entry moved there with
+     * {@code queue.move}: {@code via} isn't {@code autoplay}): autoplay counts them but never
+     * removes them. Read by id ({@code via} never changes; the section may not be written yet).
+     */
+    private static Set<String> movedIn(Connection c, List<QueueEntry> section) throws SQLException {
+        Set<String> out = new HashSet<>();
+        if (section.isEmpty()) {
+            return out;
+        }
+        StringBuilder sql = new StringBuilder("SELECT id FROM queue_entries WHERE (via IS NULL OR via <> ?) AND id IN (");
+        for (int i = 0; i < section.size(); i++) {
+            sql.append(i == 0 ? "?" : ", ?");
+        }
+        try (PreparedStatement ps = c.prepareStatement(sql.append(')').toString())) {
+            ps.setString(1, VIA_AUTOPLAY);
+            for (int i = 0; i < section.size(); i++) {
+                ps.setString(i + 2, section.get(i).id());
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    out.add(rs.getString(1));
+                }
+            }
+        }
+        return out;
     }
 
     private static void remove(RoomTx tx, QueueEntry e) {

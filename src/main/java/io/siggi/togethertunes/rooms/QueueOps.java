@@ -50,9 +50,18 @@ public final class QueueOps {
     public record Added(String entryId, String itemId, QueueEntry.State state) {
     }
 
-    /** What {@link #addPlaylist} did: the new entries in queue order, and the items left out (not playable). */
-    public record PlaylistAdded(List<String> entryIds, int skipped) {
+    /**
+     * What {@link #addPlaylist} did: the new entries in queue order, where they landed
+     * ({@code queued} or {@code suggested}), and the items left out: {@code skipped} (not
+     * playable any more: failed, purged, gone), {@code recentlyPlayed} ({@code noRepeatWindow})
+     * and {@code overLimit} (beyond the caller's {@code requestsPerActor}).
+     */
+    public record PlaylistAdded(List<String> entryIds, QueueEntry.State state, int skipped, int recentlyPlayed,
+                                int overLimit) {
     }
+
+    /** The most entries one {@link #move} takes. */
+    public static final int MAX_MOVE = 500;
 
     /**
      * The checks of {@link #add} that don't depend on the item: identity, request rights and
@@ -124,15 +133,26 @@ public final class QueueOps {
     }
 
     /**
-     * Adds items (a playlist's, in its order, shuffled by the caller if asked) to the end of the
-     * queue: owner and moderators only, so no request limits apply. Items that can't be played
-     * any more (failed, purged, gone) are left out. An idle room starts the first ready one.
+     * "Add All" of a playlist ({@code queue.addPlaylist}): its items (in its order, shuffled by the
+     * caller if asked) are added to the end of the queue by the request rules, as if each was
+     * requested by id ({@link ControlPolicy#addPlaylist}): the owner and moderators add them all
+     * (no limits); anyone else with request rights adds them as requests (suggestions in
+     * {@code owner} mode), leaving out items played in the last {@code noRepeatWindow} entries and
+     * the ones beyond their {@code requestsPerActor} (at least one free place is needed:
+     * {@code 409 request_limit}), each raising {@link RoomEvent.RequestAdded} ({@code via}
+     * {@code playlist}). Items that can't be played any more (failed, purged, gone) are left out.
+     * An idle room starts the first ready queued one. The caller checks the request path
+     * ({@link ControlPolicy#requireSource} {@code library}) and {@code libraryRequests}.
      *
-     * @throws HttpError as {@link ControlPolicy#requireAddPlaylist}
+     * @throws HttpError as {@link #checkAdd}
      */
     public static PlaylistAdded addPlaylist(RoomTx tx, RoomActor a, List<String> itemIds) throws SQLException {
         RoomState s = tx.state();
-        ControlPolicy.requireAddPlaylist(s, a);
+        ControlPolicy.AddAs as = checkAdd(s, a);
+        RoomQueue.requireLibraryRequests(s.settings(), a);
+        boolean limited = !a.moderates();
+        int window = limited ? s.controlSettings().noRepeatWindow() : 0;
+        String roomId = s.id();
         List<RoomStore.ItemRow> items = tx.store().db().read(c -> {
             List<RoomStore.ItemRow> out = new ArrayList<>();
             for (String id : itemIds) {
@@ -141,20 +161,34 @@ public final class QueueOps {
             }
             return out;
         });
+        List<String> recent = window <= 0 ? List.of()
+                : tx.store().db().read(c -> RoomStore.recentlyPlayedItems(c, roomId, window));
+        int room = limited ? s.controlSettings().requestsPerActor() - waitingBy(s, a) : Integer.MAX_VALUE;
+        boolean request = isRequest(s, a);
         double position = QueueControl.endPosition(s);
         List<String> added = new ArrayList<>();
         int skipped = 0;
+        int recentlyPlayed = 0;
+        int overLimit = 0;
         for (RoomStore.ItemRow item : items) {
             if (item == null || !playable(item.status())) {
                 skipped++;
-                continue;
+            } else if (recent.contains(item.id())) {
+                recentlyPlayed++;
+            } else if (added.size() >= room) {
+                overLimit++;
+            } else {
+                QueueEntry e = insert(tx, a, item, as.entryState(), position++, VIA_PLAYLIST);
+                added.add(e.id());
+                if (request) {
+                    tx.event(new RoomEvent.RequestAdded(e.id(), VIA_PLAYLIST));
+                }
             }
-            added.add(insert(tx, a, item, QueueEntry.State.QUEUED, position++, VIA_PLAYLIST).id());
         }
-        if (!added.isEmpty()) {
+        if (!added.isEmpty() && as == ControlPolicy.AddAs.QUEUE) {
             Playback.startIfIdle(tx);
         }
-        return new PlaylistAdded(List.copyOf(added), skipped);
+        return new PlaylistAdded(List.copyOf(added), as.entryState(), skipped, recentlyPlayed, overLimit);
     }
 
     /**
@@ -183,77 +217,165 @@ public final class QueueOps {
     }
 
     /**
-     * Moves a queued entry before {@code beforeEntryId}, or to the end ({@code null}), in a manual
-     * queue ({@code owner} and {@code open} modes; see {@link ControlPolicy#requireMove}). The new
-     * position lies between its neighbours; when there is no room left between them, the queue's
-     * positions are rewritten to {@code 1, 2, 3, …}.
-     *
-     * @return whether the order changed
-     * @throws HttpError {@code 404 entry_not_found}, {@code 409 before_entry_not_found}, as
-     *                   {@link ControlPolicy#requireMove}
+     * Moves a queued entry before {@code beforeEntryId}, or to the end of its section
+     * ({@code null}); {@link #move(RoomTx, RoomActor, List, String, QueueEntry.Section)} with one
+     * entry.
      */
     public static boolean move(RoomTx tx, RoomActor a, String entryId, String beforeEntryId) {
+        return move(tx, a, entryId == null ? null : List.of(entryId), beforeEntryId, null);
+    }
+
+    /**
+     * Moves queued entries ({@code queue.move}, dragging in the queue; {@code docs/rooms.md#queue-editing}):
+     * they go, in the given order, before {@code beforeEntryId}, or to the end of
+     * {@code section} ({@code beforeEntryId} {@code null}; without a section, the end of the first
+     * entry's section). The target section is {@code beforeEntryId}'s. Entries may come from both
+     * sections: an autoplay entry moved into the manually added section becomes a manual entry
+     * (keeping its adder, the selecting person), a manual one moved into the autoplay section
+     * becomes part of it (its votes go; autoplay never removes it, see {@link Autoplay}). When
+     * {@code beforeEntryId} is one of the moved entries, they go before the next entry after it
+     * that stays. Only in a manual queue ({@code owner} and {@code open} modes; see
+     * {@link ControlPolicy#requireMove}); suggestions and the current entry don't move. The new
+     * positions are spread between the neighbours; when there is no room left between them, the
+     * section's positions are rewritten to {@code 1, 2, 3, …}.
+     *
+     * @return whether the order or a section changed
+     * @throws HttpError {@code 400 invalid_entry_ids} (none, more than {@link #MAX_MOVE}, or one
+     *                   twice), {@code 404 entry_not_found}, {@code 409 before_entry_not_found}
+     *                   (not a queued entry, or not in {@code section}), as
+     *                   {@link ControlPolicy#requireMove}
+     */
+    public static boolean move(RoomTx tx, RoomActor a, List<String> entryIds, String beforeEntryId,
+                               QueueEntry.Section section) {
         RoomState s = tx.state();
         ControlPolicy.requireMove(s, a);
-        QueueEntry e = queued(s, entryId);
-        if (e == null) {
-            throw new HttpError(404, "entry_not_found", "No such entry in the queue");
+        if (entryIds == null || entryIds.isEmpty() || entryIds.size() > MAX_MOVE) {
+            throw new HttpError(400, "invalid_entry_ids", "Give 1 to " + MAX_MOVE + " entries to move");
+        }
+        java.util.LinkedHashMap<String, QueueEntry> moving = new java.util.LinkedHashMap<>();
+        for (String id : entryIds) {
+            QueueEntry e = queued(s, id);
+            if (e == null) {
+                throw new HttpError(404, "entry_not_found", "No such entry in the queue");
+            }
+            if (moving.put(e.id(), e) != null) {
+                throw new HttpError(400, "invalid_entry_ids", "An entry is listed twice");
+            }
         }
         QueueEntry before = null;
         if (beforeEntryId != null) {
             before = queued(s, beforeEntryId);
-            if (before == null || before.section() != e.section()) {
+            if (before == null || section != null && before.section() != section) {
                 throw new HttpError(409, "before_entry_not_found",
-                        "The entry to move it before isn't in the same part of the queue");
-            }
-            if (before.id().equals(e.id())) {
-                return false;
+                        "The entry to move them before isn't in that part of the queue");
             }
         }
-        // within its section (docs/rooms.md#autoplay); "to the end" is the end of that section
-        List<QueueEntry> order = Playback.sectionOrder(s, e.section());
-        int from = order.indexOf(e);
-        List<QueueEntry> others = new ArrayList<>(order);
-        others.remove(from);
-        int to = before == null ? others.size() : others.indexOf(before);
-        if (to == from) {
+        QueueEntry.Section target = before != null ? before.section()
+                : section != null ? section : moving.values().iterator().next().section();
+        List<QueueEntry> old = Playback.sectionOrder(s, target);
+        List<QueueEntry> others = new ArrayList<>();
+        for (QueueEntry e : old) {
+            if (!moving.containsKey(e.id())) {
+                others.add(e);
+            }
+        }
+        int to = others.size();
+        if (before != null) {
+            int from = old.indexOf(before);
+            for (int i = from; i < old.size(); i++) {
+                if (!moving.containsKey(old.get(i).id())) {
+                    to = others.indexOf(old.get(i));
+                    break;
+                }
+            }
+        }
+        List<QueueEntry> placed = new ArrayList<>(others);
+        placed.addAll(to, moving.values());
+        boolean sectionChange = false;
+        for (QueueEntry e : moving.values()) {
+            sectionChange |= e.section() != target;
+        }
+        if (!sectionChange && ids(placed).equals(ids(old))) {
             return false;
         }
+        int k = moving.size();
         double prev = to == 0 ? Double.NaN : others.get(to - 1).position();
         double next = to == others.size() ? Double.NaN : others.get(to).position();
-        double position;
-        if (Double.isNaN(prev) && Double.isNaN(next)) {
-            return false;
-        } else if (Double.isNaN(prev)) {
-            position = next - 1;
-        } else if (Double.isNaN(next)) {
-            position = Math.floor(prev) + 1;
-        } else {
-            position = (prev + next) / 2;
+        double[] positions = new double[k];
+        for (int i = 0; i < k; i++) {
+            if (Double.isNaN(prev) && Double.isNaN(next)) {
+                positions[i] = i + 1;
+            } else if (Double.isNaN(prev)) {
+                positions[i] = Math.floor(next) - k + i;
+            } else if (Double.isNaN(next)) {
+                positions[i] = Math.floor(prev) + 1 + i;
+            } else {
+                positions[i] = prev + (next - prev) * (i + 1) / (k + 1);
+            }
         }
+        boolean between = true;
+        double last = prev;
+        for (double p : positions) {
+            between &= Double.isNaN(last) || last < p;
+            last = p;
+        }
+        between &= Double.isNaN(next) || last < next;
         String roomId = s.id();
-        boolean between = (Double.isNaN(prev) || prev < position) && (Double.isNaN(next) || position < next);
-        if (between) {
+        int i = 0;
+        for (QueueEntry e : placed) {
+            boolean moved = moving.containsKey(e.id());
+            double position;
+            if (between) {
+                if (!moved) {
+                    continue;
+                }
+                position = positions[i++];
+            } else {
+                // No room left between the neighbours: number the whole section again.
+                position = placed.indexOf(e) + 1;
+            }
+            place(tx, roomId, e, position, target);
+        }
+        for (QueueEntry e : moving.values()) {
+            tx.event(new RoomEvent.EntryMoved(e.id(), before == null ? null : before.id()));
+        }
+        return true;
+    }
+
+    /** Puts a queued entry at {@code position} in {@code section} (unpinned), in the state and the database. */
+    private static void place(RoomTx tx, String roomId, QueueEntry e, double position, QueueEntry.Section section) {
+        RoomState s = tx.state();
+        if (e.section() == section) {
             QueueEntry moved = e.withPlace(position, e.pinned());
             tx.persist(c -> {
                 QueueControl.setPlace(c, roomId, moved);
                 return null;
             });
             s.addToQueue(moved);
-        } else {
-            // No room left between the neighbours: number the whole queue again.
-            others.add(to, e);
-            for (int i = 0; i < others.size(); i++) {
-                QueueEntry placed = others.get(i).withPlace(i + 1, others.get(i).pinned());
-                tx.persist(c -> {
-                    QueueControl.setPlace(c, roomId, placed);
-                    return null;
-                });
-                s.addToQueue(placed);
-            }
+            return;
         }
-        tx.event(new RoomEvent.EntryMoved(e.id(), before == null ? null : before.id()));
-        return true;
+        QueueEntry moved = e.withPlace(position, false).withSection(section, e.addedByUserId(), e.addedByGuestId());
+        boolean toAutoplay = section == QueueEntry.Section.AUTOPLAY;
+        tx.persist(c -> {
+            if (toAutoplay) {
+                RoomStore.clearVotes(c, moved.id());
+            }
+            RoomStore.setSectionAndPlace(c, roomId, moved);
+            return null;
+        });
+        if (toAutoplay) {
+            s.forget(e.id());
+        }
+        s.addToQueue(moved);
+        tx.event(new RoomEvent.EntrySectionChanged(moved.id(), section));
+    }
+
+    private static List<String> ids(List<QueueEntry> entries) {
+        List<String> out = new ArrayList<>(entries.size());
+        for (QueueEntry e : entries) {
+            out.add(e.id());
+        }
+        return out;
     }
 
     /**

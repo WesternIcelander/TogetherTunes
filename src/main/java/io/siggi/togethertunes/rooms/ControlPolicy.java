@@ -12,10 +12,10 @@ import io.siggi.togethertunes.http.HttpError;
  * <tr><th>Operation</th><th>{@code owner}</th><th>{@code vote}</th><th>{@code open}</th></tr>
  * <tr><td>add</td><td>mods add; others with request rights suggest</td><td>request rights</td>
  *     <td>request rights</td></tr>
- * <tr><td>addPlaylist</td><td colspan="3">owner and moderators</td></tr>
+ * <tr><td>addPlaylist</td><td colspan="3">as add (one request per playlist entry)</td></tr>
  * <tr><td>remove</td><td colspan="2">mods; the requester while the entry is queued or suggested</td>
  *     <td>mods; the requester; anyone with request rights</td></tr>
- * <tr><td>move</td><td>mods</td><td>(not in this mode)</td><td>request rights</td></tr>
+ * <tr><td>move (also between sections)</td><td>mods</td><td>(not in this mode)</td><td>request rights</td></tr>
  * <tr><td>pin</td><td>(not in this mode)</td><td>mods</td><td>(not in this mode)</td></tr>
  * <tr><td>vote</td><td>(not in this mode)</td><td>vote rights</td><td>(not in this mode)</td></tr>
  * <tr><td>accept/reject suggestion</td><td colspan="3">owner and moderators</td></tr>
@@ -113,9 +113,13 @@ public final class ControlPolicy {
         };
     }
 
-    /** {@code addPlaylist}: owner and moderators only, in every mode. */
-    public static void requireAddPlaylist(RoomState s, RoomActor a) {
-        requireModerator(a, "Only the owner and moderators can add a playlist");
+    /**
+     * {@code addPlaylist} ("Add All", In Order or Shuffled): by the request rules, like {@link #add}
+     * for each of its entries (owner and moderators add to the queue; others need request rights,
+     * and their entries become suggestions in {@code owner} mode).
+     */
+    public static AddAs addPlaylist(RoomState s, RoomActor a) {
+        return add(s, a);
     }
 
     /** {@code queue.nextEpisode} ({@code docs/media-types.md#next-episode}): owner and moderators. */

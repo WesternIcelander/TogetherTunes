@@ -788,7 +788,7 @@ function renderRequests(s: RoomState): void {
   if (canSearch) parts.push(searchPanel());
   if (you.canUpload) parts.push(uploadPanel());
   if (you.canYoutube) parts.push(youtubePanel());
-  if (you.canModerate && isUser) parts.push(playlistPanel());
+  if (canSearch && isUser) parts.push(playlistPanel());
   if (parts.length === 1) {
     parts.push(h("p", { class: "muted", text: me.kind === "user" ? "You can't request in this room."
       : !you.identified ? "Join as a guest or log in to request."
@@ -1003,7 +1003,12 @@ function playlistPanel(): HTMLElement {
     const ack = await conn.request({ type: "queue.addPlaylist", playlistId: select.value, shuffle: shuffle.checked });
     const ids = ack["entryIds"] as unknown[] | undefined;
     const skipped = Number(ack["skipped"] ?? 0);
-    status.textContent = "Added " + (ids?.length ?? 0) + " entries" + (skipped > 0 ? ", skipped " + skipped : "") + ".";
+    const recent = Number(ack["recentlyPlayed"] ?? 0);
+    const overLimit = Number(ack["overLimit"] ?? 0);
+    status.textContent = (ack["state"] === "suggested" ? "Suggested " : "Added ") + (ids?.length ?? 0) + " entries"
+      + (skipped > 0 ? ", " + skipped + " can't be played" : "")
+      + (recent > 0 ? ", " + recent + " played recently" : "")
+      + (overLimit > 0 ? ", " + overLimit + " over your request limit" : "") + ".";
   }, (e) => { status.textContent = message(e); });
   return h("div", {}, h("h3", { text: "Playlist" }),
     h("div", { class: "row" }, select, h("label", { class: "check" }, shuffle, " Shuffle"), add), status);
