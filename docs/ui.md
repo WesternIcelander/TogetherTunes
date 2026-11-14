@@ -48,6 +48,7 @@ From [`drawings/room_view.png`](../drawings/room_view.png) (2026-11-14):
 - On the right: the **people** in the room, each with a **⋯** button that opens the moderation menu, and below them **Earlier** (the room's history, with hearts).
 - **Who gets it:** unauthenticated visitors (guests, anonymous) have no library and only ever get the room view, when they open a room by its link. Logged-in users enter it by **double-clicking Queue, Recents or Room** at the top of the right panel, and leave it by clicking a playlist in the left sidebar.
 - The **right panel is hidden** in the room view.
+- **Wide windows** (Siggi, 2026-11-14): when the room view is wide enough for three columns, the queue moves out from under the video into a column **between the video and the people/Earlier column**: video (title line, vote to skip under it) | quick output buttons, **Request Link** (and the other request and identity parts) **above the Queue** | people and Earlier. Narrower windows keep the layout above (queue under the video, Request Link beside it), and narrower still everything stacks.
 - The **player bar stays** at the bottom (not drawn).
 - **During an audio item** the video area shows the cover and title like the stream's item card, and the title line under the video collapses away.
 
