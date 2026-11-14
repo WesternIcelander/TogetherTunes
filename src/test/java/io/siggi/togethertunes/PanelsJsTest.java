@@ -88,5 +88,11 @@ class PanelsJsTest {
         String css = read("web/css/main.css");
         assertTrue(css.contains("body.room-view .app-panel"), "the right panel hides in the room view");
         assertTrue(css.contains(".app-video .listen-overlay"), "the sound layer covers the video area only");
+        // Wide windows: three columns, the request parts above the queue (docs/ui.md#room-view-desktop).
+        for (String s : List.of("@media (min-width: 86rem)", "body.room-view.signed-in .rv-main", "@media (min-width: 71rem)",
+                "body.room-view:not(.signed-in) .rv-main", "grid-template-columns: minmax(28rem, 2fr) minmax(20rem, 1fr)")) {
+            assertTrue(css.contains(s), s);
+        }
+        assertTrue(css.contains("body.room-view.signed-in .rv-request {\n    order: -1;"), "Request Link above the queue");
     }
 }

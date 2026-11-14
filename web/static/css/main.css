@@ -1368,10 +1368,6 @@ body.room-view .app-panel {
   display: none;
 }
 
-body.room-view #app {
-  max-width: 90rem;
-}
-
 .rv-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 16rem;
@@ -1528,6 +1524,77 @@ body.now-view-open .app-video .video-card .card-artist {
   .rv-grid,
   .rv-columns {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Wide windows: three columns, video (title line, vote to skip) | the request parts (quick output buttons,
+   Request Link, ...) above the queue | people and Earlier. The view needs about 67rem (28rem video, 20rem queue,
+   16rem people, the gaps) plus #app's padding and scrollbar, and with the left sidebar (signed-in users) 15rem
+   more. .rv-main's 1fr last row takes the request column's extra height, so the video's rows stay their own size.
+   (A media query, not @container: the baseline is Safari 15.) */
+@media (min-width: 71rem) {
+  body.room-view:not(.signed-in) .rv-main {
+    display: grid;
+    grid-template-columns: minmax(28rem, 2fr) minmax(20rem, 1fr);
+    grid-template-rows: auto auto 1fr;
+    column-gap: 1.5rem;
+    align-items: start;
+  }
+
+  body.room-view:not(.signed-in) .rv-video-slot {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.room-view:not(.signed-in) .rv-under-video {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  body.room-view:not(.signed-in) .rv-columns {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  body.room-view:not(.signed-in) .rv-request {
+    order: -1;
+  }
+}
+
+@media (min-width: 86rem) {
+  body.room-view.signed-in .rv-main {
+    display: grid;
+    grid-template-columns: minmax(28rem, 2fr) minmax(20rem, 1fr);
+    grid-template-rows: auto auto 1fr;
+    column-gap: 1.5rem;
+    align-items: start;
+  }
+
+  body.room-view.signed-in .rv-video-slot {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  body.room-view.signed-in .rv-under-video {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  body.room-view.signed-in .rv-columns {
+    grid-column: 2;
+    grid-row: 1 / 4;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0;
+  }
+
+  body.room-view.signed-in .rv-request {
+    order: -1;
   }
 }
 
