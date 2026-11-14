@@ -136,6 +136,9 @@ async function startDetail(id: string): Promise<void> {
   renderDetail();
 
   const form = element<HTMLFormElement>("playlist-edit");
+  // Liked Songs can't be renamed or deleted.
+  const edit = form.closest("details");
+  if (current.builtin !== undefined && edit !== null) edit.hidden = true;
   (form.elements.namedItem("name") as HTMLInputElement).value = current.name;
   (form.elements.namedItem("description") as HTMLTextAreaElement).value = current.description ?? "";
   form.addEventListener("submit", (ev) => {

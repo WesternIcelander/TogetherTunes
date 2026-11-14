@@ -434,6 +434,60 @@ abstract class MigrationContract {
         assertThrows(SQLException.class, () -> exec("SELECT shared_by_user_id FROM library_entries"));
     }
 
+    /**
+     * Migration {@code 0028_playlists_v2}: playlists keep the order they were listed in (most
+     * recently changed first, per owner) as positions 1..n, none is built in, and every item in a
+     * playlist ends up in its owner's library (added when it first went into one of their
+     * playlists; existing entries untouched, other users' libraries untouched).
+     */
+    @Test
+    void playlistsV2KeepsTheOrderAndFillsTheLibraries() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration v2 = files.stream().filter(m -> m.name().contains("playlists_v2")).findFirst().orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < v2.version()).toList()).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u1', 'U1', 1), ('u2', 'u2', 'U2', 1)");
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ('i1', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1),"
+                + " ('i2', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1),"
+                + " ('i3', 'video', 't', 'upload', 'u1', 1, 'purged', '720p30', 1)");
+        exec("INSERT INTO playlists (id, owner_id, name, created_at, updated_at) VALUES"
+                + " ('p1', 'u1', 'a', 1, 10), ('p2', 'u1', 'b', 1, 30), ('p3', 'u1', 'c', 1, 10), ('p4', 'u2', 'd', 1, 5)");
+        exec("INSERT INTO playlist_entries (id, playlist_id, item_id, position, added_at) VALUES"
+                + " ('e1', 'p1', 'i1', 1, 50), ('e2', 'p2', 'i1', 1, 40), ('e3', 'p1', 'i2', 2, 60),"
+                + " ('e4', 'p3', 'i3', 1, 70), ('e5', 'p4', 'i1', 1, 80)");
+        exec("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES ('u1', 'i2', 5, 'upload')");
+        new MigrationRunner(db, files).migrate();
+        Map<String, String> playlists = new java.util.HashMap<>();
+        Map<String, String> entries = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement()) {
+                try (ResultSet rs = st.executeQuery("SELECT id, position, builtin FROM playlists")) {
+                    while (rs.next()) {
+                        playlists.put(rs.getString(1), rs.getLong(2) + " " + rs.getString(3));
+                    }
+                }
+                try (ResultSet rs = st.executeQuery("SELECT user_id, item_id, added_at, via FROM library_entries")) {
+                    while (rs.next()) {
+                        entries.put(rs.getString(1) + "/" + rs.getString(2), rs.getLong(3) + " " + rs.getString(4));
+                    }
+                }
+            }
+            return null;
+        });
+        // u1: p2 (updated 30) first, then p3 and p1 (both 10: the larger id first)
+        assertEquals(Map.of("p2", "1 null", "p3", "2 null", "p1", "3 null", "p4", "1 null"), playlists);
+        assertEquals(Map.of("u1/i1", "40 manual", "u1/i2", "5 upload", "u1/i3", "70 manual", "u2/i1", "80 manual"),
+                entries);
+        // at most one Liked Songs per user
+        exec("INSERT INTO playlists (id, owner_id, name, created_at, updated_at, builtin) VALUES"
+                + " ('l1', 'u1', 'Liked Songs', 1, 1, 'likes'), ('l2', 'u2', 'Liked Songs', 1, 1, 'likes')");
+        assertThrows(SQLException.class, () -> exec("INSERT INTO playlists (id, owner_id, name, created_at,"
+                + " updated_at, builtin) VALUES ('l3', 'u1', 'Liked Songs', 1, 1, 'likes')"));
+        assertThrows(SQLException.class, () -> exec("INSERT INTO playlists (id, owner_id, name, created_at,"
+                + " updated_at, builtin) VALUES ('l4', 'u1', 'x', 1, 1, 'other')"));
+    }
+
     /** Runs {@code sql} on the write connection. */
     protected void exec(String sql) throws SQLException {
         db.write((Connection c) -> {

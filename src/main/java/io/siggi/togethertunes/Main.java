@@ -408,7 +408,7 @@ public final class Main {
         // retention.purgedEntryDays = 0: a purge also removes the item's library and playlist entries.
         items.purgedEntryDays(settings::retentionPurgedEntryDays);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
-        Playlists playlists = new Playlists(database, youtubeImports, Clock.systemUTC());
+        Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);

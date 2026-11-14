@@ -150,6 +150,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Playlists$Page",
             "io.siggi.togethertunes.library.Playlists$Playlist",
             "io.siggi.togethertunes.library.Playlists$PlaylistPage",
+            "io.siggi.togethertunes.library.PlaylistsApi$Containing",
+            "io.siggi.togethertunes.library.PlaylistsApi$Liked",
             "io.siggi.togethertunes.library.UserLibraries$UserPage",
             "io.siggi.togethertunes.library.UserLibraries$UserSummary",
             "io.siggi.togethertunes.rooms.Rooms$Member",
@@ -350,7 +352,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
-            Map.entry("io.siggi.togethertunes.library.Playlists$ItemRow", "item lookup"),
+            Map.entry("io.siggi.togethertunes.library.Playlists$Before", "item and playlist lookup before an add"),
+            Map.entry("io.siggi.togethertunes.library.Playlists$Added", "an add's result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
@@ -750,6 +753,15 @@ class DtoIpLeakTest {
         for (Playlists.Playlist p : playlistPage.items()) {
             produced.add(playlists.get(aliceId, p.id()));
         }
+        produced.add(playlists.likes(aliceId));
+        // GET /api/library/{itemId}/playlists and GET /api/me/likes/{itemId}
+        var containingCtor = Class.forName("io.siggi.togethertunes.library.PlaylistsApi$Containing")
+                .getDeclaredConstructors()[0];
+        containingCtor.setAccessible(true);
+        produced.add(containingCtor.newInstance(playlistPage.items()));
+        var likedCtor = Class.forName("io.siggi.togethertunes.library.PlaylistsApi$Liked").getDeclaredConstructors()[0];
+        likedCtor.setAccessible(true);
+        produced.add(likedCtor.newInstance(true));
         UserLibraries userLibraries = new UserLibraries(database, library, playlists);
         UserLibraries.UserPage browse = userLibraries.users(null, null, UserLibraries.LIST_MAX);
         produced.add(browse);
@@ -930,7 +942,8 @@ class DtoIpLeakTest {
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
-                "/api/playlists", "/api/playlists/" + f.playlistId,
+                "/api/playlists", "/api/playlists/" + f.playlistId, "/api/me/likes", "/api/me/likes/" + f.itemId,
+                "/api/library/" + f.itemId + "/playlists",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
@@ -1188,6 +1201,17 @@ class DtoIpLeakTest {
         String doomed = json(expect(201, alice, "POST", "/api/playlists", "{\"name\":\"Doomed\"}"))
                 .get("id").getAsString();
         expect(204, alice, "DELETE", "/api/playlists/" + doomed, null);
+        String other = json(expect(201, alice, "POST", "/api/playlists", "{\"name\":\"Other\"}"))
+                .get("id").getAsString();
+        expect(204, alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + other + "\"],\"beforePlaylistId\":null}");
+        expect(200, alice, "POST", "/api/playlists/" + playlistId + "/entries/move",
+                "{\"entryIds\":[\"" + second + "\"],\"beforeEntryId\":null}");
+        // and likes one item (Liked Songs)
+        expect(201, alice, "PUT", "/api/me/likes/" + kept, null);
+        expect(201, alice, "PUT", "/api/me/likes/" + itemId, null);
+        expect(204, alice, "DELETE", "/api/me/likes/" + itemId, null);
+        expect(200, alice, "GET", "/api/me/likes", null);
         expect(200, alice, "GET", "/api/playlists", null);
         expect(200, alice, "GET", "/api/playlists/" + playlistId, null);
 

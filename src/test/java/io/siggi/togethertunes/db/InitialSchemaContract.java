@@ -57,7 +57,7 @@ abstract class InitialSchemaContract {
         t("ingest_jobs", "id", "item_id", "kind", "state", "attempts", "progress", "created_at", "started_at",
                 "finished_at", "log", "tier", "edit_json");
         t("library_entries", "user_id", "item_id", "added_at", "via");
-        t("playlists", "id", "owner_id", "name", "description", "created_at", "updated_at");
+        t("playlists", "id", "owner_id", "name", "description", "created_at", "updated_at", "builtin", "position");
         t("playlist_entries", "id", "playlist_id", "item_id", "position", "added_at");
         t("rooms", "id", "slug", "name", "owner_id", "created_at", "visibility", "control_mode", "settings_json",
                 "playback_state", "current_entry_id", "anchor_server_ms", "anchor_position_ms", "version",

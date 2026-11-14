@@ -7,7 +7,8 @@ import { api, ApiError } from "./api.js";
 import { allowedTypes, mediaTypeBody, mediaTypeLabel, stillImageWarning } from "./mediatypes.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
-  ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, watchItem, type ItemPage, type JobView,
+  ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, removeFromLibrary, watchItem, type ItemPage,
+  type JobView,
 } from "./media.js";
 import { checkPasswordChange, element, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
@@ -357,7 +358,7 @@ function render(item: ItemPage, job: JobView | undefined): void {
   if (me.kind === "user") {
     if (item.you.inLibrary) {
       actions.append(button("Remove from my library", async () => {
-        await api("DELETE", "/api/library/" + encodeURIComponent(item.id));
+        if (!await removeFromLibrary(item.id)) return;
         showNotice("Removed from your library.");
         await refresh();
       }, showError));

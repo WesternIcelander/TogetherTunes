@@ -351,9 +351,11 @@ public final class Library {
     }
 
     /**
-     * Removes {@code itemId} from the user's library and marks the item referenced until now.
+     * Removes {@code itemId} from the user's library, and from all of the user's playlists (an item
+     * in a playlist is always in its owner's library; the UI asks first), and marks the item
+     * referenced until now. Playlists that lose entries get {@code updated_at = now}.
      *
-     * @return whether there was an entry
+     * @return whether there was an entry (in the library or one of the playlists)
      */
     public boolean remove(String userId, String itemId) throws SQLException {
         long now = EpochMs.now(clock);
@@ -365,11 +367,48 @@ public final class Library {
                 ps.setString(2, itemId);
                 n = ps.executeUpdate();
             }
+            try (PreparedStatement ps = c.prepareStatement("UPDATE playlists SET updated_at = ? WHERE owner_id = ?"
+                    + " AND id IN (SELECT pe.playlist_id FROM playlist_entries pe WHERE pe.item_id = ?)")) {
+                ps.setLong(1, now);
+                ps.setString(2, userId);
+                ps.setString(3, itemId);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("DELETE FROM playlist_entries WHERE item_id = ?"
+                    + " AND playlist_id IN (SELECT p.id FROM playlists p WHERE p.owner_id = ?)")) {
+                ps.setString(1, itemId);
+                ps.setString(2, userId);
+                n += ps.executeUpdate();
+            }
             if (n > 0) {
                 References.touch(c, itemId, now);
             }
             return n > 0;
         });
+    }
+
+    /**
+     * In a write transaction: makes sure {@code itemId} is in {@code userId}'s library (a playlist
+     * add, {@link Playlists}), adding a {@link #VIA_MANUAL} entry if it isn't.
+     *
+     * @throws Classify.NeedsClassification when it isn't there and needs a classification
+     */
+    void ensureEntry(Connection c, String userId, String itemId, long now) throws SQLException {
+        if (get(c, userId, itemId) != null) {
+            return;
+        }
+        if (Classify.needs(c, userId, itemId)) {
+            throw new Classify.NeedsClassification(itemId, Classify.suggest(c, itemId));
+        }
+        try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
+                List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
+            ps.setString(1, userId);
+            ps.setString(2, itemId);
+            ps.setLong(3, now);
+            ps.setString(4, VIA_MANUAL);
+            ps.executeUpdate();
+        }
+        libraryAddListener.addedToLibrary(itemId);
     }
 
 

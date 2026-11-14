@@ -8,7 +8,8 @@ import { api } from "./api.js";
 import { renderAddMedia } from "./addmedia.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
-  ingestBadge, inProgress, itemTitleCell, kindLabel, playlistPicker, watchItem, type JobView, type LibraryEntry,
+  ingestBadge, inProgress, itemTitleCell, kindLabel, playlistPicker, removeFromLibrary, watchItem, type JobView,
+  type LibraryEntry,
   type Page, type ItemSummary,
 } from "./media.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
@@ -53,8 +54,7 @@ function entryRow(entry: LibraryEntry): HTMLTableRowElement {
 
   const tr = h("tr");
   const remove = button("Remove", async () => {
-    await api("DELETE", "/api/library/" + encodeURIComponent(item.id));
-    tr.remove();
+    if (await removeFromLibrary(item.id)) tr.remove();
   }, showError);
   remove.title = "Remove from my library";
   const picker = playlistPicker(item.id, (text, e) => {

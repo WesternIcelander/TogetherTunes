@@ -2,6 +2,7 @@
 // plus the pieces several pages share: the item status badge, job polling and the
 // "add to playlist" picker.
 import { api } from "./api.js";
+import { withClassification } from "./classifyprompt.js";
 import { h } from "./dom.js";
 import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
 import { mediaTypeLabel, type MediaType, type ShowInfo } from "./mediatypes.js";
@@ -85,6 +86,8 @@ export interface Playlist {
   entryCount: number;
   createdAt: number;
   updatedAt: number;
+  /** "likes" for Liked Songs (can't be renamed or deleted). */
+  builtin?: "likes";
 }
 
 export interface PlaylistEntry { id: string; item: ItemSummary; addedAt: number }
@@ -219,7 +222,7 @@ export function jobSummary(job: JobView): string {
 
 let playlistCache: Promise<Playlist[]> | undefined;
 
-/** The caller's playlists (first 200, most recently changed first), fetched once per page load. */
+/** The caller's playlists (first 200: Liked Songs, then the caller's order), fetched once per page load. */
 export function myPlaylists(refresh = false): Promise<Playlist[]> {
   if (playlistCache === undefined || refresh) {
     playlistCache = api<Page<Playlist>>("GET", "/api/playlists?limit=200").then((p) => p.items);
@@ -245,10 +248,28 @@ export function playlistPicker(itemId: string, onDone: (message: string, error?:
     if (id === "") return;
     const name = select.selectedOptions[0]?.textContent ?? "";
     select.disabled = true;
-    api("POST", "/api/playlists/" + encodeURIComponent(id) + "/entries", { itemId })
-      .then(() => { onDone("Added to " + name + "."); myPlaylists(true).catch(() => undefined); })
+    // Adding to a playlist adds to the library too, so an uncategorized video asks for its type.
+    withClassification((c) => api("POST", "/api/playlists/" + encodeURIComponent(id) + "/entries", { itemId, ...c }))
+      .then((added) => {
+        if (added === null) return;
+        onDone("Added to " + name + " (and your library).");
+        myPlaylists(true).catch(() => undefined);
+      })
       .catch((e: unknown) => onDone("", e))
       .finally(() => { select.disabled = false; select.value = ""; });
   });
   return select;
+}
+
+/**
+ * Removes an item from the caller's library after asking, when it is in any of their playlists
+ * (removing it from the library removes it from those too). Resolves with whether it was removed.
+ */
+export async function removeFromLibrary(itemId: string): Promise<boolean> {
+  const path = "/api/library/" + encodeURIComponent(itemId);
+  const { playlists } = await api<{ playlists: Playlist[] }>("GET", path + "/playlists");
+  if (playlists.length > 0 && !confirm("This also removes it from " + playlists.map((p) => "\"" + p.name + "\"")
+    .join(", ") + ". Remove it from your library?")) return false;
+  await api("DELETE", path);
+  return true;
 }

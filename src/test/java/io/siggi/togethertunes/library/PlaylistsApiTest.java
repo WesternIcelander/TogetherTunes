@@ -295,4 +295,133 @@ class PlaylistsApiTest {
         assertEquals("pending", json(refetch).getAsJsonObject("item").get("status").getAsString());
         assertTrue(entryIds(id).size() == 2);
     }
+
+    private String video(String title) throws Exception {
+        String id = item(title, "ready", null);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "UPDATE items SET kind = 'video', media_type = 'uncategorized' WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    private List<String> playlistIds(String token) throws Exception {
+        List<String> ids = new ArrayList<>();
+        for (JsonElement e : json(call(token, "GET", "/api/playlists", null)).getAsJsonArray("items")) {
+            ids.add(e.getAsJsonObject().get("id").getAsString());
+        }
+        return ids;
+    }
+
+    @Test
+    void likedSongsOrderAndMoves() throws Exception {
+        String song = item("Song", "ready", null);
+        String other = item("Other", "ready", null);
+        // likes
+        assertEquals("{\"liked\":false}", call(alice, "GET", "/api/me/likes/" + song, null).body());
+        HttpResponse<String> liked = call(alice, "PUT", "/api/me/likes/" + song, null);
+        assertEquals(201, liked.statusCode(), liked.body());
+        String likedEntry = json(liked).get("id").getAsString();
+        assertEquals(200, call(alice, "PUT", "/api/me/likes/" + song, null).statusCode());
+        assertEquals(201, call(alice, "PUT", "/api/me/likes/" + other, "{}").statusCode());
+        assertEquals("{\"liked\":true}", call(alice, "GET", "/api/me/likes/" + song, null).body());
+        JsonObject likes = json(call(alice, "GET", "/api/me/likes", null));
+        String likesId = likes.get("id").getAsString();
+        assertEquals("likes", likes.get("builtin").getAsString());
+        assertEquals("Liked Songs", likes.get("name").getAsString());
+        assertEquals(2, likes.get("entryCount").getAsInt());
+        assertEquals(List.of(json(call(alice, "PUT", "/api/me/likes/" + other, null)).get("id").getAsString(),
+                likedEntry), entryIds(likesId));
+        expectError(409, "builtin_playlist", call(alice, "PATCH", "/api/playlists/" + likesId, "{\"name\":\"x\"}"));
+        expectError(409, "builtin_playlist", call(alice, "DELETE", "/api/playlists/" + likesId, null));
+        assertEquals(204, call(alice, "DELETE", "/api/me/likes/" + song, null).statusCode());
+        assertEquals(204, call(alice, "DELETE", "/api/me/likes/" + song, null).statusCode());
+        assertEquals("{\"liked\":false}", call(alice, "GET", "/api/me/likes/" + song, null).body());
+        expectError(400, "unknown_field", call(alice, "PUT", "/api/me/likes/" + song, "{\"x\":1}"));
+        expectError(404, "item_not_found", call(alice, "PUT", "/api/me/likes/" + UuidV7.newId(), null));
+
+        // an uncategorized video needs a type, in a playlist and in Liked Songs
+        String clip = video("Clip");
+        HttpResponse<String> needs = call(alice, "PUT", "/api/me/likes/" + clip, null);
+        expectError(409, "needs_classification", needs);
+        assertEquals(clip, json(needs).getAsJsonObject("error").get("itemId").getAsString());
+        String a = json(call(alice, "POST", "/api/playlists", "{\"name\":\"A\"}")).get("id").getAsString();
+        expectError(409, "needs_classification", call(alice, "POST", "/api/playlists/" + a + "/entries",
+                "{\"itemId\":\"" + clip + "\"}"));
+        expectError(400, "invalid_media_type", call(alice, "POST", "/api/playlists/" + a + "/entries",
+                "{\"itemId\":\"" + clip + "\",\"mediaType\":\"uncategorized\"}"));
+        HttpResponse<String> typed = call(alice, "POST", "/api/playlists/" + a + "/entries",
+                "{\"itemId\":\"" + clip + "\",\"mediaType\":\"movie\"}");
+        assertEquals(201, typed.statusCode(), typed.body());
+        assertEquals("movie", json(typed).getAsJsonObject("item").get("mediaType").getAsString());
+        assertEquals(201, call(alice, "PUT", "/api/me/likes/" + clip, null).statusCode());
+        JsonArray holding = json(call(alice, "GET", "/api/library/" + clip + "/playlists", null))
+                .getAsJsonArray("playlists");
+        assertEquals(2, holding.size());
+        assertEquals(likesId, holding.get(0).getAsJsonObject().get("id").getAsString());
+        assertEquals(a, holding.get(1).getAsJsonObject().get("id").getAsString());
+        assertEquals(0, json(call(bob, "GET", "/api/library/" + clip + "/playlists", null))
+                .getAsJsonArray("playlists").size());
+
+        // playlist order
+        String b = json(call(alice, "POST", "/api/playlists", "{\"name\":\"B\"}")).get("id").getAsString();
+        String c = json(call(alice, "POST", "/api/playlists", "{\"name\":\"C\"}")).get("id").getAsString();
+        assertEquals(List.of(likesId, c, b, a), playlistIds(alice));
+        assertEquals(204, call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + a + "\",\"" + b + "\"],\"beforePlaylistId\":\"" + c + "\"}").statusCode());
+        assertEquals(List.of(likesId, a, b, c), playlistIds(alice));
+        assertEquals(204, call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + a + "\"],\"beforePlaylistId\":null}").statusCode());
+        assertEquals(List.of(likesId, b, c, a), playlistIds(alice));
+        expectError(400, "invalid_playlist_ids", call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[],\"beforePlaylistId\":null}"));
+        expectError(400, "invalid_playlist_ids", call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + a + "\",\"" + a + "\"],\"beforePlaylistId\":null}"));
+        expectError(400, "invalid_before_playlist_id", call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + a + "\"]}"));
+        expectError(409, "builtin_playlist", call(alice, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + likesId + "\"],\"beforePlaylistId\":null}"));
+        expectError(404, "playlist_not_found", call(bob, "PUT", "/api/playlists/order",
+                "{\"playlistIds\":[\"" + a + "\"],\"beforePlaylistId\":null}"));
+
+        // several entries at once
+        List<String> e = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            e.add(json(call(alice, "POST", "/api/playlists/" + b + "/entries", "{\"itemId\":\"" + song + "\"}"))
+                    .get("id").getAsString());
+        }
+        HttpResponse<String> moved = call(alice, "POST", "/api/playlists/" + b + "/entries/move",
+                "{\"entryIds\":[\"" + e.get(3) + "\",\"" + e.get(2) + "\"],\"beforeEntryId\":\"" + e.get(0) + "\"}");
+        assertEquals(200, moved.statusCode(), moved.body());
+        List<String> order = List.of(e.get(3), e.get(2), e.get(0), e.get(1));
+        assertEquals(order, entryIds(b));
+        assertEquals(4, json(moved).getAsJsonArray("entries").size());
+        assertEquals(e.get(3), json(moved).getAsJsonArray("entries").get(0).getAsJsonObject().get("id").getAsString());
+        expectError(400, "invalid_entry_ids", call(alice, "POST", "/api/playlists/" + b + "/entries/move",
+                "{\"entryIds\":\"x\",\"beforeEntryId\":null}"));
+        expectError(400, "invalid_before_entry_id", call(alice, "POST", "/api/playlists/" + b + "/entries/move",
+                "{\"entryIds\":[\"" + e.get(0) + "\"]}"));
+        expectError(404, "entry_not_found", call(alice, "POST", "/api/playlists/" + b + "/entries/move",
+                "{\"entryIds\":[\"" + UuidV7.newId() + "\"],\"beforeEntryId\":null}"));
+        expectError(404, "playlist_not_found", call(bob, "POST", "/api/playlists/" + b + "/entries/move",
+                "{\"entryIds\":[\"" + e.get(0) + "\"],\"beforeEntryId\":null}"));
+        assertEquals(order, entryIds(b));
+
+        // guests and anonymous callers have none of it
+        for (String[] call : List.of(new String[]{"GET", "/api/me/likes", null},
+                new String[]{"GET", "/api/me/likes/" + song, null},
+                new String[]{"PUT", "/api/me/likes/" + song, null},
+                new String[]{"DELETE", "/api/me/likes/" + song, null},
+                new String[]{"GET", "/api/library/" + song + "/playlists", null},
+                new String[]{"PUT", "/api/playlists/order", "{\"playlistIds\":[\"" + a + "\"],\"beforePlaylistId\":null}"},
+                new String[]{"POST", "/api/playlists/" + b + "/entries/move",
+                        "{\"entryIds\":[\"" + e.get(0) + "\"],\"beforeEntryId\":null}"})) {
+            expectError(401, "not_authenticated", call(null, call[0], call[1], call[2]));
+        }
+        assertEquals(List.of(likesId, b, c, a), playlistIds(alice));
+    }
 }

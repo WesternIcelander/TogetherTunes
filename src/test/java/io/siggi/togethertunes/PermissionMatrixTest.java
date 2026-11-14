@@ -298,6 +298,21 @@ class PermissionMatrixTest {
                     "{\"beforeEntryId\":null}"), 401, 401, 200, 200),
             row("DELETE /api/playlists/{id}/entries/{entryId}", c -> Call.delete(c.playlistEntryPath()),
                     401, 401, 204, 204),
+            row("POST /api/playlists/{id}/entries/move", c -> {
+                String path = c.playlistEntryPath();
+                int at = path.lastIndexOf("/entries/");
+                return Call.post(path.substring(0, at) + "/entries/move", "{\"entryIds\":[\""
+                        + path.substring(at + "/entries/".length()) + "\"],\"beforeEntryId\":null}");
+            }, 401, 401, 200, 200),
+            row("PUT /api/playlists/order", c -> Call.put("/api/playlists/order", "{\"playlistIds\":[\""
+                    + c.playlistId() + "\"],\"beforePlaylistId\":null}"), 401, 401, 204, 204),
+            row("GET /api/library/{itemId}/playlists", c -> Call.get("/api/library/" + c.itemId() + "/playlists"),
+                    401, 401, 200, 200),
+            // Liked Songs: users only (guests can't like).
+            row("GET /api/me/likes", c -> Call.get("/api/me/likes"), 401, 401, 200, 200),
+            row("GET /api/me/likes/{itemId}", c -> Call.get("/api/me/likes/" + c.itemId()), 401, 401, 200, 200),
+            row("PUT /api/me/likes/{itemId}", c -> Call.put("/api/me/likes/" + c.itemId(), null), 401, 401, 201, 201),
+            row("DELETE /api/me/likes/{itemId}", c -> Call.delete("/api/me/likes/" + c.itemId()), 401, 401, 204, 204),
 
             // Other users' libraries and playlists, read-only: library.viewAll (admins only by
             // default). UserLibrariesContract covers the contents.
