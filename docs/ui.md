@@ -111,6 +111,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
   - **Playlists:** items in a playlist can be dragged into a new order.
   - **Queue:** entries can be dragged into a new order, and between the **manually added** (Requests) section and the **From Playlist** section, **when the room isn't in vote mode** (vote mode orders by votes). Who may do it follows the room's control mode, like other queue edits; alone, the user's own queue always allows it. Dragging an autoplay entry into the manually added section makes it a manual entry; dragging a manual entry into From Playlist makes it part of the autoplay section.
   - **Recents** can't be reordered, but items can be dragged **out** of it (to a playlist, the queue, …), with multi-select.
+  - **Dragging out never needs queue rights:** someone who can't edit the queue can still drag items from the queue or Recents to their own playlists (and anywhere else they may add to). Only reordering or changing the queue itself needs the rights.
 
 ## Requests-only mode
 
