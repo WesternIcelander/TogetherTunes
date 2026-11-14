@@ -118,6 +118,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 
 - **Remote mode** is renamed **Requests-only mode**: the page plays nothing and is used for requests and votes (e.g. for people hearing the room through a stream).
 - The room owner can **force** everyone into it (e.g. a party where the room plays on one speaker). Then the room's pages play nothing. **Authenticated users are never refused media.** Only **unauthenticated** visitors (guests, anonymous) get `403` for the room's media when they have no other reason to access the file.
+- As built (M9 backend step): the room setting `requestsOnly` (off by default; Manage Room → Playback, "Requests-only room"). **API names stay `remote`** (`?mode=remote`, the socket's `mode`, `presence.remote`); only user-visible text says requests-only. "No other reason" = another room they are in, not forcing it, where the item is current or next. Details in [rooms.md](rooms.md#remote-mode) and [libraries.md](libraries.md#media-access-rules).
 
 ## Existing features in the new UI
 

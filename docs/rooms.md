@@ -102,6 +102,7 @@ Details (as implemented):
 | `noRepeatWindow` | 10 | Refuse an item that was played in the last N entries |
 | `transitionCard`, `gapMs` | off, 0 | [Transitions](#transitions): a pause between items, with the next item's card in the stream outputs |
 | `audioOnly` | off | [Audio-only room](#audio-only-rooms): only audio plays, for listeners and in the stream outputs (cards at a lower constant rate). A change applies from the next item |
+| `requestsOnly` | off | Forces [requests-only mode](#remote-mode) on every page in the room ([ui.md](ui.md#requests-only-mode)): pages play nothing; guests and anonymous visitors get no media through this room ([libraries.md](libraries.md#media-access-rules)); logged-in users are never refused |
 | `guests.*` | see below | |
 | `outputs.rtmp`, `outputs.ts`, `outputs.hls`, `outputs.mp3` | off | Each one available only if the server enables it |
 | `overlay.*` | off | See [overlay.md](overlay.md) |
@@ -120,6 +121,7 @@ As implemented (`RoomSettings`): on the wire and in storage, dotted names are ne
 | `transitionCard` | false | the gap between items is then at least 2 s ([transitions](#transitions)) |
 | `gapMs` | 0 | 0–10000 |
 | `audioOnly` | false | Manage room → Settings → Playback ("Audio-only room") |
+| `requestsOnly` | false | Manage room → Settings → Playback ("Requests-only room") |
 | `guests.canVote`, `guests.canRequestLibrary` | true | |
 | `guests.canUpload`, `guests.canYoutube` | false | |
 | `overlay.mode` | `off` | `off` \| `always` \| `idleOnly` ([media-types.md](media-types.md#qr-overlay-modes)); replaced `overlay.enabled` (migration 0025: true → `always`) |
@@ -305,15 +307,19 @@ As implemented (web, `ListenPlayer` + `SwitchGate` in `listensync.ts`): the togg
 
 ### Remote mode
 
-For users who hear the room in VRChat. The client:
+**Shown to users as "Requests-only mode"** (M9, [ui.md](ui.md#requests-only-mode); Siggi, 2026-11-14). Only the user-visible name changed: the API keeps `remote` (`?mode=remote`, the socket's `mode` field and `presence.remote`, the `/r/{slug}` short link's target, the `remoteNudge` storage key, `remote.ts`), and these docs keep calling it remote mode.
+
+For users who hear the room in VRChat (or anywhere else, e.g. a party speaker playing the room). The client:
 
 - loads **no media** at all;
 - shows now-playing info, the queue, votes and request controls;
 - shows a progress bar delayed by `estimatedDelayMs` for the room's active output. Defaults: `.ts` 2 s, HLS 8 s, RTMP 5 s, MP3 3 s; the owner can override them. Each user can nudge the delay by ±0.5 s, stored locally.
 
-Remote members count as present for vote-skip and presence. The UI shows them separately ("3 listening, 5 in VRChat").
+Remote members count as present for vote-skip and presence. The UI shows them separately ("3 listening · 5 requests-only").
 
-As implemented (web, `web/src/remote.ts` + `room.ts`): the mode is a link-style toggle in the room header ("I'm listening through the stream (remote mode)" / "Listen here instead"), sent to the server as `{type:"mode"}` and remembered per room (`localStorage` `togethertunes.mode.<roomId>`, explicit choices only). `?mode=` in the URL wins over the remembered mode; toggling removes it from the address (`history.replaceState`) so a reload keeps the choice. Remote mode creates no player at all (no `AudioContext`, no media elements); switching from listen to remote stops and empties the player's elements. Only cover art (`cover.jpg`) is loaded. **Active output:** the most preferred of RTMP, `.ts`, HLS, MP3 among `state.outputs` that isn't `error`/`disabled`/`stopped`/`off` (all failing: still the most preferred); its delay is the output's own `estimatedDelayMs`, else the room setting `estimatedDelayMs.<kind>`, else the default. With no outputs listed (M3) RTMP is assumed. **Nudge:** −0.5 s / +0.5 s buttons and Reset, stored per room (`togethertunes.remoteNudge.<roomId>`, whole 0.5 s steps); output delay + nudge stays within 0–120 s. **Delayed view:** every timeline change (another entry, anchor or state) is recorded with the server time it happened (its `anchorServerMs` if that is at most 10 s before arrival, else the arrival time); the now-playing panel shows the entry and position that were in effect at `serverNow − delay`, so a skip appears there `delay` later. The state received on joining counts as always in effect. Controls (skip, pause, vote, seek) act on the live room at once.
+**Forced by the room** (`requestsOnly`, M9): the owner can make every page in the room run in this mode. The page switches to it as soon as the room state says so (on joining and on a settings change), hides the toggle, labels the mode "Requests-only mode (set by the room)" and tells the server (`{type:"mode", mode:"remote"}`), so presence counts it as remote. The user's own choice (URL or toggle) is kept and comes back when the owner turns the setting off. Enforced on the server only where it matters: guests and anonymous visitors get `403` for the room's media ([libraries.md](libraries.md#media-access-rules)); logged-in users are never refused media, and the socket still accepts `mode: "listen"` (a user may fetch anything anyway). As built: `RoomSettings.requestsOnly()`, published per room with its playing items (`LivePlayingItems.requestsOnly`) and checked in `RoomViewers.allowed`; web: `forcedRequestsOnly` / `effectiveMode` / `modeLabel` in `remote.ts`.
+
+As implemented (web, `web/src/remote.ts` + `room.ts`): the mode is a link-style toggle in the room header ("Requests only (I'm listening elsewhere)" / "Listen here instead"; before M9 "I'm listening through the stream (remote mode)"), sent to the server as `{type:"mode"}` and remembered per room (`localStorage` `togethertunes.mode.<roomId>`, explicit choices only). `?mode=` in the URL wins over the remembered mode; toggling removes it from the address (`history.replaceState`) so a reload keeps the choice. Remote mode creates no player at all (no `AudioContext`, no media elements); switching from listen to remote stops and empties the player's elements. Only cover art (`cover.jpg`) is loaded. **Active output:** the most preferred of RTMP, `.ts`, HLS, MP3 among `state.outputs` that isn't `error`/`disabled`/`stopped`/`off` (all failing: still the most preferred); its delay is the output's own `estimatedDelayMs`, else the room setting `estimatedDelayMs.<kind>`, else the default. With no outputs listed (M3) RTMP is assumed. **Nudge:** −0.5 s / +0.5 s buttons and Reset, stored per room (`togethertunes.remoteNudge.<roomId>`, whole 0.5 s steps); output delay + nudge stays within 0–120 s. **Delayed view:** every timeline change (another entry, anchor or state) is recorded with the server time it happened (its `anchorServerMs` if that is at most 10 s before arrival, else the arrival time); the now-playing panel shows the entry and position that were in effect at `serverNow − delay`, so a skip appears there `delay` later. The state received on joining counts as always in effect. Controls (skip, pause, vote, seek) act on the live room at once.
 
 ### Playback across pages (web)
 
