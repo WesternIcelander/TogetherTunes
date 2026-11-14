@@ -6,16 +6,21 @@
 //   (own playlists) and "Add All: In Order / Shuffled" into the current room's queue;
 // - Uncategorized Videos (/uncategorized) and the search results (/search?q=, the whole server,
 //   the caller's own library first).
-// Rows: #, cover, title and artist, album, date added, time. Double-click, multi-select, drag and
-// drop and the ⋯ menus come with the interaction steps; the server enforces every rule.
+// Rows: #, cover, title and artist, album, date added, time and a ⋯ menu (also on right-click and
+// long press). On narrow windows (docs/ui.md#mobile-narrow-windows) only #, cover, title and artist
+// show, and **Select** turns on the Select mode: checkboxes on the rows and a bar with Add to Queue
+// (the selected songs, in the list's order). Double-click, the desktop's multi-select and drag and
+// drop come with the interaction steps; the server enforces every rule.
 import { api } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
 import { formatDuration, h } from "./dom.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
-import { currentRoom, refreshLibrary } from "./nav.js";
+import { Selection, selectedText } from "./mobile.js";
+import { currentRoom, navigate, pageSignal, refreshLibrary } from "./nav.js";
 import { formatTotal, songCount, totalDuration } from "./panels.js";
 import { routeOf, type ListName } from "./router.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
+import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 
 /** A row of the table: the item, and when it was added here (absent for search results). */
 interface Row {
@@ -28,6 +33,11 @@ const PAGE_SIZE = 100;
 let cursor: string | undefined;
 let loadMore: (() => Promise<void>) | undefined;
 let shownRows = 0;
+/** The items of the rows shown, by row key (its number). */
+const rowItems: Record<string, ItemSummary> = {};
+/** The Select mode: on, and what is selected (row keys). */
+let selecting = false;
+const selection = new Selection();
 
 function showError(e: unknown): void {
   element("list-error").textContent = e === "" ? "" : message(e);
@@ -53,25 +63,127 @@ function coverCell(item: ItemSummary, className = "cover row-cover", id?: string
   return img;
 }
 
+// ------------------------------------------------------------------ queueing, the row menu, Select mode
+
+/** Adds items to the current room's queue, in order; says how it went. */
+async function addToQueue(items: readonly ItemSummary[]): Promise<boolean> {
+  const room = currentRoom();
+  if (room === undefined) {
+    showError("Open a room first: Add to Queue adds the songs to the room's queue.");
+    return false;
+  }
+  showError("");
+  let added = 0;
+  let suggested = 0;
+  const failed: string[] = [];
+  for (const item of items) {
+    try {
+      const ack = await room.request({ type: "queue.add", itemId: item.id });
+      if (ack["state"] === "suggested") suggested++;
+      else added++;
+    } catch (e) {
+      failed.push(item.title + ": " + message(e));
+    }
+  }
+  const parts: string[] = [];
+  if (added > 0) parts.push(songCount(added) + " added to " + room.name());
+  if (suggested > 0) parts.push(songCount(suggested) + " suggested to " + room.name());
+  notice(parts.length > 0 ? parts.join("; ") + "." : "");
+  if (failed.length > 0) showError(failed.join("; "));
+  return failed.length === 0;
+}
+
+/** The row's ⋯ menu (also on right-click and long press). */
+function openRowMenu(key: string, anchor: HTMLElement): void {
+  const item = rowItems[key];
+  if (item === undefined) return;
+  const items: MenuItem[] = [];
+  if (currentRoom() !== undefined) items.push({ label: "Add to Queue", action: () => { void addToQueue([item]); } });
+  items.push({ label: "Open", action: () => navigate(itemPath(item.id)) });
+  items.push({ label: "Select", action: () => {
+    setSelecting(true);
+    toggleSelected(key);
+  } });
+  openMenu(anchor, items, item.title);
+}
+
+function rowKeys(): string[] {
+  return Array.from(element("list-rows").querySelectorAll<HTMLTableRowElement>("tr[data-key]"))
+    .map((tr) => tr.dataset["key"] ?? "");
+}
+
+function drawSelection(): void {
+  element("list-select-count").textContent = selectedText(selection.size);
+  element<HTMLButtonElement>("list-select-queue").disabled = selection.size === 0;
+  element("list-rows").querySelectorAll<HTMLTableRowElement>("tr[data-key]").forEach((tr) => {
+    const on = selection.has(tr.dataset["key"] ?? "");
+    tr.classList.toggle("selected", on);
+    const box = tr.querySelector<HTMLInputElement>("input.row-check");
+    if (box !== null) box.checked = on;
+  });
+}
+
+function setSelecting(on: boolean): void {
+  selecting = on;
+  if (!on) selection.clear();
+  element("list-table").classList.toggle("selecting", on);
+  element("list-select-bar").hidden = !on;
+  document.body.classList.toggle("has-select-bar", on);
+  const b = document.getElementById("list-select");
+  if (b !== null) b.setAttribute("aria-pressed", on ? "true" : "false");
+  drawSelection();
+}
+
+function toggleSelected(key: string): void {
+  selection.toggle(key);
+  drawSelection();
+}
+
+function selectButton(): HTMLButtonElement {
+  const b = h("button", { type: "button", id: "list-select", class: "pill m-only", text: "Select",
+    "aria-pressed": "false", title: "Select several songs" });
+  b.addEventListener("click", () => setSelecting(!selecting));
+  return b;
+}
+
 function rowElement(r: Row, n: number): HTMLTableRowElement {
   const item = r.item;
+  const key = String(n);
+  rowItems[key] = item;
   const status = item.status === "ready" ? null
     : h("span", { class: "muted small", text: " · " + (item.status === "failed" ? "Failed" : item.status) });
-  return h("tr", { "data-item": item.id },
-    h("td", { class: "num muted", text: String(n) }),
+  const check = h("input", { type: "checkbox", class: "row-check", "aria-label": "Select " + item.title, tabindex: "-1" });
+  const more = h("button", { type: "button", class: "icon row-more", text: "⋯", title: "More",
+    "aria-label": "More for " + item.title, "aria-haspopup": "true" });
+  more.addEventListener("click", () => openRowMenu(key, more));
+  const tr = h("tr", { "data-item": item.id, "data-key": key },
+    h("td", { class: "num muted" }, h("span", { class: "row-num", text: key }), check),
     h("td", {}, coverCell(item)),
     h("td", {},
       h("a", { href: itemPath(item.id), class: "row-title", text: item.title }),
       h("div", { class: "muted small" }, item.artist ?? "", status)),
-    h("td", { class: "small", text: item.album ?? "" }),
-    h("td", { class: "small muted", text: dateText(r.addedAt) }),
-    h("td", { class: "num small", text: formatDuration(item.durationMs) }));
+    h("td", { class: "small col-album", text: item.album ?? "" }),
+    h("td", { class: "small muted col-added", text: dateText(r.addedAt) }),
+    h("td", { class: "num small col-time", text: formatDuration(item.durationMs) }),
+    h("td", { class: "col-more" }, more));
+  // Select mode: a tap anywhere on the row toggles it (and doesn't follow the title link).
+  tr.addEventListener("click", (ev) => {
+    if (!selecting || (ev.target as Element).closest(".row-more") !== null) return;
+    ev.preventDefault();
+    toggleSelected(key);
+  });
+  onLongPress(tr, () => {
+    if (!selecting) openRowMenu(key, more);
+  }, pageSignal());
+  return tr;
 }
 
 function appendRows(rows: Row[]): void {
   const tbody = element("list-rows");
   for (const r of rows) tbody.append(rowElement(r, ++shownRows));
   element("list-table").hidden = shownRows === 0;
+  if (shownRows > 0 && document.getElementById("list-select") === null) element("list-actions").append(selectButton());
+  drawSelection();
 }
 
 function setHead(title: string, summary: string): void {
@@ -311,6 +423,7 @@ async function show(): Promise<void> {
 /** Shows the list again from the top (after an add). */
 function restart(): void {
   shownRows = 0;
+  setSelecting(false);
   cursor = undefined;
   element("list-rows").replaceChildren();
   element("list-table").hidden = true;
@@ -321,6 +434,13 @@ async function start(): Promise<void> {
   const me = await requireUser();
   if (me === null) return;
   renderNav(me);
+  element("list-select-cancel").addEventListener("click", () => setSelecting(false));
+  element("list-select-queue").addEventListener("click", () => {
+    const items = selection.inOrder(rowKeys()).map((k) => rowItems[k]).filter((i): i is ItemSummary => i !== undefined);
+    if (items.length === 0) return;
+    void addToQueue(items).then((ok) => { if (ok) setSelecting(false); });
+  });
+  pageSignal().addEventListener("abort", () => document.body.classList.remove("has-select-bar"));
   element("list-more").addEventListener("click", () => {
     const more = loadMore;
     if (more !== undefined) more().catch(showError);

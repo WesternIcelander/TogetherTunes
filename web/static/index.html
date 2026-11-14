@@ -14,6 +14,10 @@
        the view in the middle (#app), the right panel (Queue | Recents | Room, and the video panel) and the
        player bar. The sidebars and the player bar show for signed-in users and while a room is open. -->
   <header class="app-header">
+    <!-- Mobile (docs/ui.md#mobile-narrow-windows): the header is the top bar, with a back button and the page's
+         title once its own large title has scrolled away (frame.ts). -->
+    <button type="button" id="m-back" class="m-back link" hidden>‹ <span id="m-back-label">Back</span></button>
+    <span id="m-title" class="m-title" aria-hidden="true"></span>
     <a class="app-logo" href="/" aria-label="TogetherTunes home"><span class="app-logo-mark" aria-hidden="true">♫</span>
       <span class="app-logo-text">TogetherTunes</span></a>
     <form id="app-search" class="app-search" action="/search" method="get" role="search" hidden>
@@ -22,6 +26,15 @@
     <nav id="site-nav" class="site-nav"></nav>
   </header>
   <div class="app-body">
+    <!-- Mobile: the large title of a screen the frame shows instead of the view (Library, Now Playing, Rooms,
+         Account), the Room tab's sub-tabs, Now Playing without a room, and the account menu. -->
+    <h1 id="m-pane-title" class="m-pane-title" hidden></h1>
+    <div id="m-room-tabs" class="tabs m-subtabs" role="tablist" aria-label="Room" hidden>
+      <button type="button" role="tab" id="m-tab-rooms" aria-selected="true">Rooms</button>
+      <button type="button" role="tab" id="m-tab-this-room" aria-selected="false">This Room</button>
+    </div>
+    <p id="m-now-empty" class="muted m-now-empty" hidden>Not in a room. Join one from the Room tab.</p>
+    <nav id="m-account" class="m-account side-links" aria-label="Account" hidden></nav>
     <!-- The room view hides the left sidebar behind this button (signed-in users); it pushes the page aside. -->
     <button type="button" id="app-sidebar-toggle" class="icon sidebar-toggle" title="Show the library"
             aria-label="Show the library" aria-controls="app-sidebar" aria-expanded="false">☰</button>
@@ -42,7 +55,7 @@
     <main id="app"></main>
     <aside id="app-panel" class="app-panel" aria-label="Room" hidden>
       <div class="tabs" role="tablist">
-        <button type="button" role="tab" id="app-tab-queue" data-tab="queue" aria-selected="true">Queue</button>
+        <button type="button" role="tab" id="app-tab-queue" data-tab="queue" aria-selected="true"><span class="d-only">Queue</span><span class="m-only">Up Next</span></button>
         <button type="button" role="tab" id="app-tab-recents" data-tab="recents" aria-selected="false">Recents</button>
         <button type="button" role="tab" id="app-tab-room" data-tab="room" aria-selected="false">Room</button>
       </div>
@@ -101,11 +114,16 @@
       <div id="pb-menu" class="menu" role="menu" hidden>
         <label role="menuitemcheckbox"><input type="checkbox" id="pb-audio-only"> Audio Only</label>
         <label role="menuitemcheckbox"><input type="checkbox" id="pb-requests-only"> Requests-only mode</label>
+        <!-- Mobile: the mute choices (right-click on the desktop mute button) are here instead. -->
+        <button type="button" role="menuitem" id="pb-m-mute" class="m-only">Mute</button>
+        <button type="button" role="menuitem" id="pb-m-mute-song" class="m-only">Mute only until end of song</button>
         <button type="button" role="menuitem" id="pb-now-view">Now Playing View</button>
         <button type="button" role="menuitem" id="pb-fullscreen">Fullscreen</button>
       </div>
     </div>
   </footer>
+  <!-- Mobile: the bottom tabs (frame.ts draws the buttons; mobile.ts MOBILE_TABS). -->
+  <nav id="m-tabs" class="m-tabs" aria-label="Sections" hidden></nav>
 
   <template id="view-home" data-title="TogetherTunes">
 
@@ -759,12 +777,18 @@
     <p id="list-error" class="error" role="alert"></p>
     <p id="list-notice" class="notice" role="status" hidden></p>
     <table id="list-table" class="list songs" hidden>
-      <thead><tr><th class="num">#</th><th></th><th>Title</th><th>Album</th><th>Date added</th><th class="num">Time</th></tr></thead>
+      <thead><tr><th class="num">#</th><th></th><th>Title</th><th class="col-album">Album</th><th class="col-added">Date added</th><th class="num col-time">Time</th><th class="col-more"><span class="visually-hidden">Menu</span></th></tr></thead>
       <tbody id="list-rows"></tbody>
     </table>
     <div id="list-groups" hidden></div>
     <p id="list-empty" class="muted" hidden></p>
     <button id="list-more" type="button" hidden>Load more</button>
+    <!-- Select mode (touch multi-select): checkboxes on the rows and this bar above the mini player. -->
+    <div id="list-select-bar" class="select-bar" role="toolbar" aria-label="Selection" hidden>
+      <span id="list-select-count" class="grow" role="status"></span>
+      <button type="button" id="list-select-queue">Add to Queue</button>
+      <button type="button" id="list-select-cancel">Cancel</button>
+    </div>
   </template>
 
   <template id="view-not-found" data-title="Not found · TogetherTunes">

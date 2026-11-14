@@ -7,12 +7,22 @@
 // (nav.ts `ShellRoom`); it has no socket of its own. Without a room the right panel is hidden and
 // the player bar says so. The rules (who gets which button) are in the DOM-free panels.ts; the
 // server enforces them all.
+//
+// Below 800 px it is the mobile layout (docs/ui.md#mobile-narrow-windows; rules in the DOM-free
+// mobile.ts, layout in main.css): the header becomes a top bar with a back button and the page's title
+// once its own large title scrolled away, bottom tabs (Library, Now Playing, Room, Search, Account)
+// and the player bar as a mini now-playing bar above them. Library, Now Playing, Rooms and Account
+// are "panes" the frame shows instead of the view (the sidebar's Library or Rooms tab, the right
+// panel with the video on top, the account menu); each is a history entry of the view's URL with
+// `mPane` in history.state, so the browser's back button closes it.
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { withClassification } from "./classifyprompt.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
+import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, showBarTitle, tabAction,
+  type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
 import { navigate, setFrame, type ShellRoom } from "./nav.js";
 import {
   canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
@@ -22,8 +32,10 @@ import {
 } from "./panels.js";
 import type { CurrentEntry, HistoryEntry, RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
 import type { RoomListEntry } from "./roomlist.js";
-import { playlistPath } from "./router.js";
-import { loadMe, message, type Me } from "./session.js";
+import { playlistPath, routeOf } from "./router.js";
+import { ACCOUNT_PAGE, ADMIN_PAGE, ENCODES_PAGE, isAdmin, LIBRARY_PAGE, loadMe, logout, message, PLAYLISTS_PAGE,
+  ROOMS_PAGE, type Me } from "./session.js";
+import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
 const VOLUME_KEY = "togethertunes.volume";
@@ -57,6 +69,15 @@ function cover(item: { id: string; coverUrl?: string } | undefined, className: s
   return h("img", { class: className, src: item.coverUrl, alt: "", loading: "lazy" });
 }
 
+/** The bottom tabs' icons (mobile). */
+const TAB_ICONS: Readonly<Record<MobileTab, string>> = {
+  library: "♫",
+  now: "▶",
+  room: "👥",
+  search: "🔍",
+  account: "👤",
+};
+
 /** What the shell offers the frame. */
 export interface FrameHost {
   /** The room the room view has open (shown or in the background), if any. */
@@ -88,6 +109,11 @@ export class Frame {
   #roomId = "";
   #roomsTimer: number | undefined;
   #roomsQuery = "";
+  /** The mobile layout's media query (below 800 px). */
+  readonly #mobileQuery: MediaQueryList | undefined = typeof window.matchMedia === "function"
+    ? window.matchMedia(MOBILE_QUERY) : undefined;
+  /** The mobile pane shown instead of the view ("" = the view); always "" in the desktop layout. */
+  #pane: MobilePane = "";
 
   constructor(host: FrameHost) {
     this.#host = host;
@@ -127,6 +153,189 @@ export class Frame {
       if (ev.key === "Escape" && document.body.classList.contains("now-view-open")) this.#setNowView(false);
     });
     document.addEventListener("click", (ev) => this.#closeMenus(ev));
+    this.#wireMobile();
+  }
+
+  // ---------------------------------------------------------------- mobile layout
+
+  #mobile(): boolean {
+    return this.#mobileQuery?.matches === true;
+  }
+
+  /** Where the user is, for the mobile rules. */
+  #placeNow(): MobilePlace {
+    const r = routeOf(location.pathname);
+    return r.kind === "view" ? { pane: this.#pane, view: r.view, list: r.params["list"] }
+      : { pane: this.#pane, view: "notFound" };
+  }
+
+  #wireMobile(): void {
+    const tabs = byId("m-tabs");
+    for (const t of MOBILE_TABS) {
+      const b = h("button", { type: "button", "data-m-tab": t.tab },
+        h("span", { class: "m-tab-icon", "aria-hidden": "true", text: TAB_ICONS[t.tab] }),
+        h("span", { class: "m-tab-label", text: t.label }));
+      b.addEventListener("click", () => this.#tapTab(t.tab));
+      tabs.append(b);
+    }
+    byId("m-back").addEventListener("click", () => {
+      const back = mobileBack(this.#placeNow());
+      if (back === undefined) return;
+      if (back.pane !== undefined) this.#openPane(back.pane);
+      else history.back();
+    });
+    byId("m-tab-rooms").addEventListener("click", () => this.#openPane("rooms"));
+    byId("m-tab-this-room").addEventListener("click", () => {
+      const room = this.#host.room();
+      if (room === undefined) return;
+      navigate(room.path());
+      // The room view may be the view under the pane already (the shell then shows nothing new).
+      this.#paneFromHistory();
+    });
+    // The mini bar: tapping the song opens Now Playing (on the desktop the title links to the item).
+    byId("player-bar").querySelector(".pb-now")?.addEventListener("click", (ev) => {
+      if (!this.#mobile() || this.#me?.kind !== "user") return;
+      ev.preventDefault();
+      this.#openPane("now");
+    });
+    // A pane is a history entry of the view's URL with mPane in its state (the shell ignores a
+    // popstate that keeps the view's URL; one that changes it calls navigated(), which reads the state too).
+    window.addEventListener("popstate", () => this.#paneFromHistory());
+    const onChange = (): void => {
+      if (!this.#mobile()) this.#pane = "";
+      this.update();
+    };
+    if (this.#mobileQuery !== undefined) {
+      if (typeof this.#mobileQuery.addEventListener === "function") this.#mobileQuery.addEventListener("change", onChange);
+      else this.#mobileQuery.addListener(onChange);
+    }
+    window.addEventListener("scroll", () => this.#drawBarTitle(), { passive: true });
+    window.addEventListener("resize", () => this.#drawBarTitle(), { passive: true });
+  }
+
+  #paneFromHistory(): void {
+    const state = (history.state ?? {}) as { mPane?: unknown };
+    const pane = isPane(state.mPane) && this.#mobile() ? state.mPane : "";
+    if (pane === this.#pane) return;
+    this.#pane = pane;
+    this.update();
+  }
+
+  /** Shows a pane instead of the view: a new history entry (same URL), so Back closes it. */
+  #openPane(pane: Exclude<MobilePane, "">): void {
+    if (this.#pane === pane) {
+      window.scrollTo(0, 0);
+      return;
+    }
+    const state = (history.state ?? {}) as Record<string, unknown>;
+    try {
+      history.replaceState({ ...state, scrollY: window.scrollY }, "");
+      history.pushState({ mPane: pane }, "");
+    } catch {
+      // Not allowed (a file:// page): the pane shows, Back doesn't close it.
+    }
+    this.#pane = pane;
+    if (pane === "rooms") void this.#loadRooms();
+    this.update();
+    window.scrollTo(0, 0);
+  }
+
+  #tapTab(tab: MobileTab): void {
+    const room = this.#host.room();
+    const a = tabAction(tab, this.#placeNow(), room?.path());
+    if (a.pane !== undefined) this.#openPane(a.pane);
+    else if (a.path !== undefined) {
+      navigate(a.path);
+      this.#paneFromHistory();
+    }
+    if (tab === "search") document.querySelector<HTMLInputElement>("#app-search input[name=q]")?.focus();
+  }
+
+  /** The mobile parts: tabs, top bar, panes. In the desktop layout they are all hidden (main.css). */
+  #drawMobile(): void {
+    const mobile = this.#mobile();
+    const user = this.#me?.kind === "user";
+    if (!mobile) this.#pane = "";
+    const pane = this.#pane;
+    const place = this.#placeNow();
+    document.body.classList.toggle("mobile", mobile);
+    document.body.classList.toggle("m-tabs-on", mobile && user);
+    document.body.dataset["mPane"] = pane;
+    document.body.dataset["mTab"] = mobile ? mobileTab(place) : "";
+    byId("m-tabs").hidden = !user;
+    const current = mobileTab(place);
+    byId("m-tabs").querySelectorAll<HTMLButtonElement>("[data-m-tab]").forEach((b) => {
+      const on = b.dataset["mTab"] === current;
+      if (on) b.setAttribute("aria-current", "page");
+      else b.removeAttribute("aria-current");
+    });
+    const back = user && mobile ? mobileBack(place) : undefined;
+    byId("m-back").hidden = back === undefined;
+    byId("m-back-label").textContent = back?.label ?? "";
+    const paneTitle = byId("m-pane-title");
+    // Now Playing starts with the video; its title is in the top bar from the start.
+    paneTitle.hidden = pane === "" || pane === "now";
+    paneTitle.textContent = pane === "" ? "" : PANE_TITLES[pane];
+    // The Room tab's sub-tabs: Rooms | This Room.
+    const sub = user ? roomSubTab(place) : undefined;
+    byId("m-room-tabs").hidden = sub === undefined;
+    byId("m-tab-rooms").setAttribute("aria-selected", sub === "rooms" ? "true" : "false");
+    const thisRoom = byId<HTMLButtonElement>("m-tab-this-room");
+    thisRoom.setAttribute("aria-selected", sub === "this" ? "true" : "false");
+    thisRoom.disabled = this.#host.room() === undefined;
+    byId("m-now-empty").hidden = pane !== "now" || this.#host.room() !== undefined;
+    // The sidebar's tab follows the pane (Library or Rooms); Now Playing has no Room tab (This Room has the people).
+    const sideTab = pane === "rooms" ? "rooms" : pane === "library" ? "library" : "";
+    if (sideTab !== "") {
+      const b = byId("app-tab-" + sideTab);
+      if (b.getAttribute("aria-selected") !== "true") b.click();
+    }
+    if (pane === "now" && byId("app-tab-room").getAttribute("aria-selected") === "true") byId("app-tab-queue").click();
+    const account = byId("m-account");
+    account.hidden = pane !== "account";
+    if (pane === "account" && account.childElementCount === 0) this.#drawAccount();
+    this.#drawBarTitle();
+  }
+
+  #drawAccount(): void {
+    const me = this.#me;
+    if (me?.kind !== "user") return;
+    const link = (href: string, text: string): HTMLAnchorElement => h("a", { class: "side-link", href, text });
+    const out = h("button", { type: "button", class: "side-link", text: "Log out" });
+    out.addEventListener("click", () => {
+      out.disabled = true;
+      logout().catch(() => { out.disabled = false; });
+    });
+    const parts: HTMLElement[] = [h("p", { class: "muted", text: "Signed in as " + me.name }),
+      link(ACCOUNT_PAGE, "Account settings"), link(LIBRARY_PAGE, "Manage library"), link(PLAYLISTS_PAGE, "Playlists"),
+      link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
+    if (isAdmin(me)) parts.push(link(ADMIN_PAGE, "Administration"));
+    parts.push(out);
+    byId("m-account").replaceChildren(...parts);
+  }
+
+  /** The top bar's title: the page's title once its own large title has scrolled under the bar. */
+  #drawBarTitle(): void {
+    const title = byId("m-title");
+    if (!this.#mobile()) {
+      title.textContent = "";
+      return;
+    }
+    const pane = this.#pane;
+    let large: HTMLElement | null;
+    let text: string;
+    if (pane !== "") {
+      large = pane === "now" ? null : byId("m-pane-title");
+      text = PANE_TITLES[pane];
+    } else {
+      large = document.querySelector<HTMLElement>("#app > .view:not([hidden]) h1");
+      text = large?.textContent?.trim() ?? document.title.replace(/ · TogetherTunes$/, "");
+    }
+    const bar = document.querySelector(".app-header");
+    const barBottom = bar !== null ? bar.getBoundingClientRect().bottom : 0;
+    const show = showBarTitle(large !== null ? large.getBoundingClientRect().bottom : undefined, barBottom);
+    title.textContent = text;
+    title.classList.toggle("shown", show);
   }
 
   /**
@@ -153,6 +362,12 @@ export class Frame {
 
   /** The shell showed another view (`path`): mark it in the sidebar; pick up a login or logout. */
   navigated(path: string): void {
+    const state = (history.state ?? {}) as { mPane?: unknown };
+    const pane = isPane(state.mPane) && this.#mobile() ? state.mPane : "";
+    if (pane !== this.#pane) {
+      this.#pane = pane;
+      this.update();
+    }
     this.#markCurrent(path);
     if (this.#me?.kind !== "user") void this.#reloadMe();
   }
@@ -252,12 +467,31 @@ export class Frame {
     for (const p of this.#playlists) {
       if (p.builtin === "likes") continue;
       const dot = selected.has(p.id);
-      list.append(h("li", {},
-        h("a", { class: "side-link", href: playlistPath(p.id), title: dot ? "Selected for autoplay in this room" : "" },
-          h("span", { class: "autoplay-dot" + (dot ? " on" : ""), "aria-hidden": "true", text: dot ? "●" : "" }),
-          p.name)));
+      const a = h("a", { class: "side-link grow", href: playlistPath(p.id),
+        title: dot ? "Selected for autoplay in this room" : "" },
+        h("span", { class: "autoplay-dot" + (dot ? " on" : ""), "aria-hidden": "true", text: dot ? "●" : "" }),
+        p.name);
+      const li = h("li", { class: "playlist-row" }, a);
+      // Touch (docs/ui.md#interaction-rules-all-layouts): a long press toggles the playlist for
+      // autoplay in the current room; its ⋯ menu has "Use only this one for autoplay".
+      if (this.#host.room() !== undefined) {
+        onLongPress(a, () => { void this.#autoplay(p.id, dot ? "off" : "on"); });
+        const more = h("button", { type: "button", class: "icon playlist-more m-only", text: "⋯",
+          title: "More for " + p.name, "aria-label": "More for " + p.name, "aria-haspopup": "true" });
+        more.addEventListener("click", () => {
+          const items: MenuItem[] = [
+            { label: dot ? "Stop using for autoplay" : "Use for autoplay", action: () => { void this.#autoplay(p.id, dot ? "off" : "on"); } },
+            { label: "Use only this one for autoplay", action: () => { void this.#autoplay(p.id, "only"); } },
+            { label: "Open", action: () => navigate(playlistPath(p.id)) },
+          ];
+          openMenu(more, items, p.name);
+        });
+        li.append(more);
+      }
+      list.append(li);
     }
-    const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list];
+    const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list,
+      h("p", { id: "app-library-error", class: "error small", role: "alert" })];
     const room = this.#host.room();
     const others = othersAutoplay(this.#selections, me.id);
     if (room !== undefined && others.length > 0) {
@@ -272,6 +506,24 @@ export class Frame {
     }
     pane.replaceChildren(...parts);
     this.#markCurrent(location.pathname + location.search);
+  }
+
+  /** Autoplay selection of one of the user's playlists in the current room: on, off, or the only one. */
+  async #autoplay(playlistId: string, how: "on" | "off" | "only"): Promise<void> {
+    const room = this.#host.room();
+    if (room === undefined) return;
+    const base = "/api/rooms/" + encodeURIComponent(room.id()) + "/autoplay";
+    try {
+      const r = how === "only"
+        ? await api<{ selections: AutoplaySelectionLike[] }>("PUT", base + "/mine", { playlistIds: [playlistId] })
+        : await api<{ selections: AutoplaySelectionLike[] }>(how === "on" ? "PUT" : "DELETE",
+          base + "/playlists/" + encodeURIComponent(playlistId));
+      this.#selections = r.selections;
+      this.#drawLibrary();
+    } catch (e) {
+      const err = document.getElementById("app-library-error");
+      if (err !== null) err.textContent = message(e);
+    }
   }
 
   async #newPlaylist(): Promise<void> {
@@ -325,7 +577,8 @@ export class Frame {
     const s = room?.state();
     const user = this.#me?.kind === "user";
     // The room view (docs/ui.md#room-view-desktop): no right panel, the sidebar behind ☰, the video big.
-    const roomView = this.#host.roomShown();
+    this.#drawMobile();
+    const roomView = this.#roomViewShown();
     document.body.classList.toggle("room-view", roomView);
     if (!roomView && document.body.classList.contains("sidebar-open")) {
       document.body.classList.remove("sidebar-open");
@@ -347,9 +600,14 @@ export class Frame {
       room.setVolume(gain, muted);
     }
     this.#drawPanel(room, s);
-    if (roomView) this.#drawRoomView(room, s);
+    if (this.#host.roomShown()) this.#drawRoomView(room, s);
     this.#drawPlayerBar(room, s);
     this.#drawVideo();
+  }
+
+  /** The room view is what's on screen (shown, and no mobile pane over it). */
+  #roomViewShown(): boolean {
+    return this.#host.roomShown() && this.#pane === "";
   }
 
   #showError(e: unknown): void {
@@ -766,12 +1024,20 @@ export class Frame {
         this.#mute.toggle();
         this.update();
       });
-      // Right-click: Mute player / Mute only until end of song.
-      b.addEventListener("contextmenu", (ev) => {
-        ev.preventDefault();
-        muteMenu.hidden = false;
-      });
+      // Right-click (long press on touch): Mute player / Mute only until end of song.
+      onLongPress(b, () => { muteMenu.hidden = false; });
     }
+    // Mobile: the same choices in the mini bar's ⋯ menu.
+    byId("pb-m-mute").addEventListener("click", () => {
+      menu.hidden = true;
+      this.#mute.toggle();
+      this.update();
+    });
+    byId("pb-m-mute-song").addEventListener("click", () => {
+      menu.hidden = true;
+      this.#mute.muteUntilEndOf(this.#host.room()?.state()?.current?.entryId);
+      this.update();
+    });
     byId("pb-mute-player").addEventListener("click", () => {
       this.#mute.mute();
       muteMenu.hidden = true;
@@ -876,6 +1142,8 @@ export class Frame {
         : "Mute (right-click for more)";
       b.setAttribute("aria-label", muted ? "Unmute" : "Mute");
     }
+    byId("pb-m-mute").textContent = muted ? "Unmute" : "Mute";
+    byId("pb-m-mute-song").hidden = muted;
     byId<HTMLInputElement>("pb-volume").value = String(this.#volume);
     // The menu: Audio Only (not in an audio-only room, not in requests-only mode), Requests-only mode.
     const audioOnly = byId<HTMLInputElement>("pb-audio-only");
@@ -893,6 +1161,8 @@ export class Frame {
 
   /** Moves the seek bar and the times along. */
   #tick(): void {
+    // The view's title can change after its data loads (mobile top bar).
+    this.#drawBarTitle();
     const room = this.#host.room();
     const s = room?.state();
     const c = s?.current;
@@ -928,7 +1198,7 @@ export class Frame {
     const panel = byId("app-video");
     const card = byId("app-video-card");
     const nowView = document.body.classList.contains("now-view-open");
-    const roomView = this.#host.roomShown();
+    const roomView = this.#roomViewShown() || this.#pane === "now";
     const blocked = !byId("room-listen-overlay").hidden;
     const video = room !== undefined && room.mode() === "listen" && !container.hidden;
     // In the right panel: collapsed for audio items (and Audio Only), unless the "Click to enable

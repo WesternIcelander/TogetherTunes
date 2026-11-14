@@ -1629,3 +1629,383 @@ body.now-view-open .app-video .video-card .card-artist {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ------------------------------------------------------------------ mobile layout (docs/ui.md#mobile-narrow-windows) */
+
+/* Parts only the mobile layout shows (frame.ts draws them; their own rules below the 800 px query). */
+.m-back,
+.m-title,
+.m-pane-title,
+.m-subtabs,
+.m-now-empty,
+.m-account,
+.m-tabs,
+.m-only {
+  display: none;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* The list rows' ⋯ menu, and the Select mode (touch multi-select). */
+table.songs .col-more {
+  width: 2rem;
+  text-align: right;
+}
+
+button.row-more,
+button.playlist-more {
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+table.songs .row-check {
+  display: none;
+}
+
+table.songs.selecting .row-check {
+  display: inline-block;
+}
+
+table.songs.selecting .row-num {
+  display: none;
+}
+
+table.songs tr.selected {
+  background: rgba(255, 200, 0, 0.25);
+}
+
+.select-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 5rem;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: Canvas;
+  color: CanvasText;
+  border-top: 1px solid rgba(128, 128, 128, 0.4);
+}
+
+.select-bar[hidden] {
+  display: none;
+}
+
+li.playlist-row {
+  display: flex;
+  align-items: center;
+}
+
+@media (max-width: 799.98px) {
+  .m-only {
+    display: revert;
+  }
+
+  .m-only[hidden],
+  .d-only {
+    display: none;
+  }
+
+  /* The header is the top bar: back button, the title once the page's own scrolled away. */
+  .app-header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: Canvas;
+    min-height: 2.75rem;
+    box-sizing: border-box;
+    padding: 0.4rem 0.75rem;
+    gap: 0.5rem;
+  }
+
+  body.m-tabs-on .app-logo,
+  body.m-tabs-on .app-header .site-nav,
+  body.m-tabs-on .app-search {
+    display: none;
+  }
+
+  /* The Search tab: the search box in the top bar. */
+  body.m-tabs-on[data-m-tab="search"] .app-search:not([hidden]) {
+    display: block;
+    flex: 1 1 auto;
+    width: 100%;
+  }
+
+  body[data-m-tab="search"] .m-title {
+    display: none;
+  }
+
+  .m-back:not([hidden]) {
+    display: inline-flex;
+    flex: none;
+    gap: 0.2rem;
+    font-size: 1rem;
+  }
+
+  body.m-tabs-on .m-title {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+    font-weight: bold;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  body.m-tabs-on .m-title.shown {
+    opacity: 1;
+  }
+
+  /* One column; the sidebars only as panes (Library, Rooms, Now Playing), shown instead of the view. */
+  .app-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sidebar-toggle,
+  body.room-view.signed-in .sidebar-toggle {
+    display: none;
+  }
+
+  .app-sidebar,
+  .app-panel,
+  body.has-player-bar .app-sidebar,
+  body.has-player-bar .app-panel,
+  body.room-view.sidebar-open .app-sidebar:not([hidden]) {
+    display: none;
+    position: static;
+    max-height: none;
+    flex: none;
+    border: none;
+  }
+
+  body[data-m-pane="library"] .app-sidebar:not([hidden]),
+  body[data-m-pane="rooms"] .app-sidebar:not([hidden]) {
+    display: block;
+  }
+
+  body[data-m-pane="now"] .app-panel:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    padding-top: 0;
+  }
+
+  body[data-m-pane]:not([data-m-pane=""]) #app {
+    display: none;
+  }
+
+  .app-sidebar .tabs {
+    display: none;
+  }
+
+  /* Now Playing: the video (or the card) on top, Up Next | Recents below; scrolling moves the video away. */
+  body[data-m-pane="now"] .app-video {
+    order: -1;
+    margin: 0 -0.75rem 0.5rem;
+  }
+
+  body[data-m-pane="now"] .app-video .video-card,
+  body[data-m-pane="now"] .app-video .room-player video {
+    border-radius: 0;
+  }
+
+  .app-panel .tabs [data-tab="room"] {
+    display: none;
+  }
+
+  .m-pane-title:not([hidden]) {
+    display: block;
+    margin: 0.75rem 0.75rem 0.25rem;
+    font-size: 2rem;
+  }
+
+  .m-subtabs:not([hidden]) {
+    display: flex;
+    gap: 0.75rem;
+    margin: 0.5rem 0.75rem 0;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+  }
+
+  .m-now-empty:not([hidden]) {
+    display: block;
+    margin: 0.75rem;
+  }
+
+  .m-account:not([hidden]) {
+    display: flex;
+    padding: 0 0.75rem;
+  }
+
+  #app,
+  body.room-view #app {
+    max-width: none;
+    padding: 0.75rem;
+  }
+
+  /* The bottom tabs. */
+  .m-tabs:not([hidden]) {
+    display: flex;
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 7;
+    height: 3.5rem;
+    padding-bottom: env(safe-area-inset-bottom);
+    background: Canvas;
+    color: CanvasText;
+    border-top: 1px solid rgba(128, 128, 128, 0.4);
+  }
+
+  .m-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.1rem;
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    font-size: 0.7rem;
+    cursor: pointer;
+  }
+
+  .m-tabs button[aria-current="page"] {
+    font-weight: bold;
+    color: var(--link-current);
+  }
+
+  .m-tab-icon {
+    font-size: 1.2rem;
+  }
+
+  .m-tab-label {
+    white-space: nowrap;
+  }
+
+  /* The mini now-playing bar above the tabs: song, play/pause (or mute), heart, ⋯. */
+  .player-bar {
+    height: 3.5rem;
+    padding: 0.25rem 0.75rem;
+    gap: 0.5rem;
+  }
+
+  body.m-tabs-on .player-bar {
+    bottom: 3.5rem;
+  }
+
+  .cover.pb-cover {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .pb-middle,
+  .pb-right {
+    flex: none;
+  }
+
+  .player-bar .pb-seek,
+  .player-bar #pb-prev,
+  .player-bar #pb-next,
+  .player-bar #pb-volume,
+  .player-bar #pb-mute {
+    display: none;
+  }
+
+  .pb-play {
+    width: 2.2rem;
+    height: 2.2rem;
+  }
+
+  body.has-player-bar,
+  body.m-tabs-on {
+    padding-bottom: 4rem;
+  }
+
+  body.m-tabs-on.has-player-bar {
+    padding-bottom: 7.5rem;
+  }
+
+  .select-bar {
+    bottom: 3.5rem;
+  }
+
+  body.m-tabs-on .select-bar {
+    bottom: 7rem;
+  }
+
+  body.has-select-bar {
+    padding-bottom: 11rem;
+  }
+
+  /* Lists: number, cover, title and artist (and the ⋯). */
+  table.songs thead,
+  table.songs .col-album,
+  table.songs .col-added,
+  table.songs .col-time {
+    display: none;
+  }
+
+  .list-head {
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .cover.list-cover {
+    width: 5rem;
+    height: 5rem;
+  }
+
+  .list-head h1 {
+    font-size: 1.75rem;
+  }
+
+  .list-actions {
+    flex-wrap: wrap;
+  }
+
+  /* Long press is the right-click here: no text selection or link callout while holding. */
+  table.songs tr,
+  li.playlist-row a,
+  .player-bar button {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+
+  /* ⋯ menus as a sheet at the bottom of the screen. */
+  .popup-menu,
+  .person-menu {
+    position: fixed;
+    top: auto !important;
+    left: 0 !important;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    border-radius: 0.75rem 0.75rem 0 0;
+    padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
+  }
+
+  .popup-menu > button,
+  .person-menu > button {
+    padding: 0.6rem 0.4rem;
+  }
+}
