@@ -1,11 +1,12 @@
-// Entry point of the web UI (the front page). Until the first account exists, every visit goes
-// to the setup page; a user with a temporary password goes to the change-password page.
+// The front page's view (/). Until the first account exists, every visit goes to the setup view;
+// a user with a temporary password goes to the change-password view.
 import { setupNeeded } from "./api.js";
 import { actorLabel } from "./actor.js";
 import {
   ACCOUNT_PAGE, ADMIN_PAGE, checkPasswordChange, isAdmin, LIBRARY_PAGE, loadMe, LOGIN_PAGE, message, onReady,
-  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav, ROOMS_PAGE,
+  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav, ROOMS_PAGE, SETUP_PAGE,
 } from "./session.js";
+import { navigate } from "./nav.js";
 import { describeVersion } from "./version.js";
 
 function link(href: string, text: string): HTMLAnchorElement {
@@ -20,7 +21,7 @@ async function start(): Promise<void> {
   const links = document.getElementById("links");
   try {
     if (await setupNeeded()) {
-      location.replace("/setup.html");
+      navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();

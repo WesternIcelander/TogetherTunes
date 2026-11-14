@@ -381,7 +381,7 @@ class IdentityResolutionTest {
         // The same email from b with an unknown subject is not this account: b has sign-up off.
         Browser stranger = new Browser();
         String url = loginAs(stranger, "b", "?next=%2Frooms%2Fx", "mallory");
-        assertEquals("/login.html?error=signup_disabled&next=%2Frooms%2Fx", url);
+        assertEquals("/login?error=signup_disabled&next=%2Frooms%2Fx", url);
         assertNull(stranger.sid());
     }
 
@@ -416,7 +416,7 @@ class IdentityResolutionTest {
             }
             return null;
         });
-        assertEquals("/login.html?error=account_disabled", loginAs(new Browser(), "a", "", "alice"));
+        assertEquals("/login?error=account_disabled", loginAs(new Browser(), "a", "", "alice"));
     }
 
     @Test
@@ -526,15 +526,15 @@ class IdentityResolutionTest {
         };
         for (String[] c : cases) {
             Browser b = new Browser();
-            assertEquals("/login.html?error=userinfo_failed", oauthLoginAs(b, "gh", "", Integer.parseInt(c[0]), c[1]),
+            assertEquals("/login?error=userinfo_failed", oauthLoginAs(b, "gh", "", Integer.parseInt(c[0]), c[1]),
                     c[0] + " " + c[1]);
             assertNull(b.sid());
         }
         for (String body : new String[]{"{\"data\":[]}", "{\"data\":{\"0\":{\"x\":1}}}", "[]"}) {
-            assertEquals("/login.html?error=userinfo_failed", oauthLoginAs(new Browser(), "tw", "", 200, body), body);
+            assertEquals("/login?error=userinfo_failed", oauthLoginAs(new Browser(), "tw", "", 200, body), body);
         }
         // A good answer from a provider with sign-up off is still refused like any other.
-        assertEquals("/login.html?error=signup_disabled",
+        assertEquals("/login?error=signup_disabled",
                 oauthLoginAs(new Browser(), "tw", "", 200, "{\"data\":[{\"id\":\"7\"}]}"));
         // Changing the userinfo URL or subject path between the userinfo request and the identity
         // being stored is caught: the callback's provider no longer matches the stored one.

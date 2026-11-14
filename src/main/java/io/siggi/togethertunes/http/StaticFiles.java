@@ -19,6 +19,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.Enumeration;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.StringJoiner;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -38,9 +39,14 @@ import java.util.jar.JarFile;
  *       which write and delete files on {@code PUT} / {@code DELETE} (see CLAUDE.md).</li>
  *   <li><b>Paths:</b> {@link #resolve} refuses {@code .} / {@code ..} segments, empty segments,
  *       backslashes, NUL, and dot-files, then checks that the normalised path, and after
- *       resolving symlinks the real path, is still inside the root. Anything else is a
- *       {@code 404}. A directory is served as its {@code index.html}; without the trailing slash
- *       it redirects ({@code 308}) to it, so relative URLs in the page work.</li>
+ *       resolving symlinks the real path, is still inside the root. A directory is served as its
+ *       {@code index.html}; without the trailing slash it redirects ({@code 308}) to it, so
+ *       relative URLs in the page work.</li>
+ *   <li><b>Single-page app</b> ({@code docs/ui.md#single-page-app}): a path with no file that
+ *       {@link #isAppPath} accepts gets the root {@code index.html}, the app's one document,
+ *       whose client router ({@code web/src/router.ts}, same rules) picks the view: {@code /library/},
+ *       {@code /rooms/{ref}}, {@code /items/{id}}, {@code /playlists/{id}}, an unknown path (the app's
+ *       "Not found" view), …. Anything else is a {@code 404}.</li>
  *   <li><b>Content types:</b> by extension ({@link #contentType}), {@code charset=utf-8} on text,
  *       {@code application/octet-stream} for unknown ones, plus
  *       {@code X-Content-Type-Options: nosniff}.</li>
@@ -59,6 +65,14 @@ public final class StaticFiles implements Handler, AutoCloseable {
     public static final String CLASSPATH_DIR = "web";
 
     private static final String INDEX = "index.html";
+
+    /**
+     * First path segments that are never the app (their own routes, the test pages and the static
+     * files): {@code /api/}, {@code /media/}, {@code /live/}, {@code /auth/}, {@code /r/},
+     * {@code /ws}, {@code /test/}, {@code /js/}, {@code /css/}. Same list as {@code SERVER_PREFIXES}
+     * in {@code web/src/router.ts}.
+     */
+    public static final Set<String> SERVER_PREFIXES = Set.of("api", "media", "live", "auth", "r", "ws", "test", "js", "css");
     private static final String CACHE_CONTROL = "no-cache";
 
     private static final Map<String, String> TYPES = Map.ofEntries(
@@ -191,29 +205,34 @@ public final class StaticFiles implements Handler, AutoCloseable {
         return this;
     }
 
-    /**
-     * A handler that serves one fixed file of the web UI for any path it is mounted on, e.g. the
-     * item page {@code item.html} for {@code GET /items/{id}} (the page reads the id from the
-     * URL). Same headers and method check as {@link #handle}; {@code 404} if the file is missing.
-     */
-    public Handler page(String file) {
-        return (request, response) -> {
-            String method = request.method();
-            if (!method.equals("GET") && !method.equals("HEAD")) {
-                response.header("Allow", "GET, HEAD, OPTIONS");
-                throw new HttpError(405, "method_not_allowed", "Method " + method + " is not allowed here");
-            }
-            Path resolved = resolve("/" + file);
-            if (resolved == null || !Files.isRegularFile(resolved)) {
-                throw HttpError.notFound();
-            }
-            serve(resolved, response);
-        };
-    }
-
     /** The directory files are served from. */
     public Path root() {
         return root;
+    }
+
+    /**
+     * Whether {@code path} (decoded) is a path of the single-page app, answered with
+     * {@code index.html} when no file is there: not under one of {@link #SERVER_PREFIXES}, no
+     * empty, dot or dot-file segments (only the last may be empty: a trailing slash), no backslash
+     * or NUL, and not file-like (its last segment has no dot, or ends in {@code .html}, for the old
+     * page names such as {@code /login.html}).
+     */
+    public static boolean isAppPath(String path) {
+        if (path == null || !path.startsWith("/") || path.indexOf('\\') >= 0 || path.indexOf('\0') >= 0) {
+            return false;
+        }
+        String[] segments = path.substring(1).split("/", -1);
+        if (SERVER_PREFIXES.contains(segments[0])) {
+            return false;
+        }
+        for (int i = 0; i < segments.length; i++) {
+            String segment = segments[i];
+            if (segment.isEmpty() ? i < segments.length - 1 : segment.startsWith(".")) {
+                return false;
+            }
+        }
+        String last = segments[segments.length - 1];
+        return last.indexOf('.') < 0 || last.endsWith(".html");
     }
 
     @Override
@@ -227,15 +246,18 @@ public final class StaticFiles implements Handler, AutoCloseable {
         }
         String path = request.path();
         Path file = resolve(path);
-        if (file == null) {
-            throw HttpError.notFound();
-        }
-        if (Files.isDirectory(file)) {
+        if (file != null && Files.isDirectory(file)) {
             if (!path.endsWith("/") && Files.isRegularFile(file.resolve(INDEX))) {
                 response.header("Location", encodePath(path) + "/");
                 response.empty(308);
                 return;
             }
+            file = null;
+        }
+        if (file == null && isAppPath(path)) {
+            file = resolve("/" + INDEX);
+        }
+        if (file == null) {
             throw HttpError.notFound();
         }
         serve(file, response);

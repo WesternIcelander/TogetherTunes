@@ -37,7 +37,7 @@ class RemoteJsTest {
                 "outputDelay(", "stepNudge(", "type: \"mode\"", "player?.stop()", "history.replaceState(")) {
             assertTrue(room.contains(s), s);
         }
-        String html = read("web/room.html");
+        String html = NodeTests.view("view-room");
         for (String s : List.of("id=\"room-mode-toggle\"", "id=\"room-remote-controls\"", "id=\"room-delay-less\"",
                 "id=\"room-delay-more\"", "id=\"room-delay-total\"")) {
             assertTrue(html.contains(s), s);

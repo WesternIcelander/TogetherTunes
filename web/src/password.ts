@@ -1,9 +1,10 @@
-// The change-password page (/password.html), `POST /api/me/password`. Users with a temporary
+// The change-password view (/password), `POST /api/me/password`. Users with a temporary
 // password (`mustChangePassword`, set by an admin) are sent here before any other page.
 import { api } from "./api.js";
 import {
   element, formValue, LOGIN_PAGE, loadMe, message, nextPath, onReady, onSubmit, renderNav, withNext, type Me,
 } from "./session.js";
+import { navigate } from "./nav.js";
 
 async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("password-status");
@@ -19,7 +20,7 @@ async function start(): Promise<void> {
     return;
   }
   if (me.kind !== "user") {
-    location.replace(withNext(LOGIN_PAGE, location.pathname + location.search));
+    navigate(withNext(LOGIN_PAGE, location.pathname + location.search), true);
     return;
   }
   // While the password is temporary, the navigation would only lead back here.
@@ -39,7 +40,7 @@ async function start(): Promise<void> {
       currentPassword: formValue(form, "currentPassword"),
       newPassword: formValue(form, "newPassword"),
     });
-    location.assign(next);
+    navigate(next);
   });
 }
 

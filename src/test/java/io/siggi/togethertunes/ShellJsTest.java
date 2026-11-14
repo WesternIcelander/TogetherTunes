@@ -2,11 +2,13 @@ package io.siggi.togethertunes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -15,27 +17,19 @@ import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 
 /**
- * The room page's shell, which keeps listen-mode playback going while other pages of the site are
- * shown in place: runs the unit tests of its navigation rules
- * ({@code src/test/resources/web-tests/router.test.mjs}) against the compiled {@code web/js/router.js},
- * and checks that the pages it shows can be mounted into the room page (they start when imported
- * after the load, their ids don't clash with the room page's, their window listeners end with the
- * page, and their own navigations go through {@code navigate()}).
+ * The single-page app's shell (docs/ui.md#single-page-app): runs the unit tests of its routes and
+ * navigation rules ({@code src/test/resources/web-tests/router.test.mjs}) against the compiled
+ * {@code web/js/router.js}, and checks that index.html holds every view the router names, and that
+ * the views can be mounted in place (they start when imported after the load, their ids don't
+ * clash with the room view's, which may stay in the document, their window listeners end with the
+ * view, and their own navigations go through {@code navigate()}).
  */
 class ShellJsTest {
-    /** The pages the shell shows in place: HTML file → module. */
-    private static final Map<String, String> PAGES = Map.of(
-            "web/index.html", "web/js/main.js",
-            "web/rooms/index.html", "web/js/rooms.js",
-            "web/library/index.html", "web/js/library.js",
-            "web/playlists/index.html", "web/js/playlists.js",
-            "web/encodes/index.html", "web/js/encodes.js",
-            "web/account/index.html", "web/js/account.js",
-            "web/admin/index.html", "web/js/admin.js",
-            "web/item.html", "web/js/item.js",
-            "web/room-manage.html", "web/js/roommanage.js");
-
     private static final Pattern ID = Pattern.compile("\\bid=\"([^\"]+)\"");
+    private static final Pattern VIEW = Pattern.compile(
+            "(\\w+): \\{ template: \"(view-[a-z-]+)\"(?:, module: \"(\\w+)\")?");
+    private static final Pattern TEMPLATE = Pattern.compile(
+            "<template id=\"(view-[a-z-]+)\" data-title=\"[^\"]+\">(.*?)</template>", Pattern.DOTALL);
 
     private static String read(String path) throws Exception {
         return Files.readString(NodeTests.resource(path), StandardCharsets.UTF_8);
@@ -46,6 +40,33 @@ class ShellJsTest {
         Matcher m = ID.matcher(html);
         while (m.find()) ids.add(m.group(1));
         return ids;
+    }
+
+    /** index.html's templates: id → markup. */
+    private static Map<String, String> templates() throws Exception {
+        Map<String, String> out = new LinkedHashMap<>();
+        Matcher m = TEMPLATE.matcher(read("web/index.html"));
+        while (m.find()) out.put(m.group(1), m.group(2));
+        return out;
+    }
+
+    /** The router's views: template → module (null for none). */
+    private static Map<String, String> views() throws Exception {
+        Map<String, String> out = new LinkedHashMap<>();
+        Matcher m = VIEW.matcher(read("web/js/router.js"));
+        while (m.find()) out.put(m.group(2), m.group(3));
+        return out;
+    }
+
+    /** The argument list starting at the {@code (} at {@code open}, up to its matching {@code )}. */
+    private static String callAt(String code, int open) {
+        int depth = 0;
+        for (int i = open; i < code.length(); i++) {
+            char c = code.charAt(i);
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return code.substring(open, i + 1);
+        }
+        return code.substring(open);
     }
 
     @Test
@@ -63,53 +84,96 @@ class ShellJsTest {
     }
 
     @Test
-    void pagesCanBeShownInsideTheRoomPage() throws Exception {
-        Set<String> roomIds = ids(read("web/room.html"));
-        for (Map.Entry<String, String> e : PAGES.entrySet()) {
-            String html = read(e.getKey());
-            Set<String> clash = ids(html);
-            clash.retainAll(roomIds);
-            assertEquals(Set.of("site-nav"), clash, e.getKey());
-            for (String id : ids(html)) {
-                assertFalse(id.equals("shell-page") || id.startsWith("mini-"), e.getKey() + ": " + id);
+    void indexHtmlIsTheOneDocumentWithEveryView() throws Exception {
+        String index = read("web/index.html");
+        assertEquals(1, index.split("<script", -1).length - 1, index);
+        assertTrue(index.contains("<script type=\"module\" src=\"/js/app.js\"></script>"));
+        assertTrue(index.contains("<nav id=\"site-nav\""));
+        assertTrue(index.contains("<main id=\"app\"></main>"));
+        Map<String, String> views = views();
+        assertEquals(15, views.size(), views.toString());
+        Map<String, String> templates = templates();
+        assertEquals(views.keySet(), templates.keySet());
+        for (Map.Entry<String, String> e : views.entrySet()) {
+            if (e.getValue() != null) {
+                assertNotNull(NodeTests.resource("web/js/" + e.getValue() + ".js"), e.getValue());
             }
-            String module = read(e.getValue());
-            // Imported again after the load: must not wait for a DOMContentLoaded that already fired.
-            assertTrue(module.contains("onReady(start)"), e.getValue());
-            assertFalse(module.contains("addEventListener(\"DOMContentLoaded\""), e.getValue());
-            // Listeners on window/document outlive the page unless they end with its signal.
-            Matcher m = Pattern.compile("(window|document)\\.addEventListener\\(([^;]*)\\);").matcher(module);
+            assertFalse(templates.get(e.getKey()).contains("<script"), e.getKey());
+        }
+        // The old multi-page documents are gone; /test/ keeps its own pages.
+        for (String old : List.of("web/room.html", "web/item.html", "web/login.html", "web/rooms/index.html",
+                "web/library/index.html", "web/admin/index.html")) {
+            assertTrue(getClass().getClassLoader().getResource(old) == null, old);
+        }
+        assertNotNull(getClass().getClassLoader().getResource("web/test/ws-echo.html"));
+    }
+
+    @Test
+    void viewsCanBeMountedNextToTheRoomView() throws Exception {
+        Map<String, String> templates = templates();
+        Set<String> roomIds = ids(templates.get("view-room"));
+        assertTrue(roomIds.contains("room-body") && roomIds.contains("room-listen-overlay"), roomIds.toString());
+        Set<String> shellIds = Set.of("site-nav", "app", "mini-player", "mini-leave", "mini-audio-only", "stopped-note");
+        for (Map.Entry<String, String> view : views().entrySet()) {
+            Set<String> ids = ids(templates.get(view.getKey()));
+            for (String id : ids) {
+                assertFalse(shellIds.contains(id) || id.startsWith("mini-") || id.startsWith("view-"),
+                        view.getKey() + ": " + id);
+            }
+            if (view.getValue() == null) continue;
+            String module = read("web/js/" + view.getValue() + ".js");
+            if (!view.getKey().equals("view-room")) {
+                Set<String> clash = new HashSet<>(ids);
+                clash.retainAll(roomIds);
+                assertEquals(Set.of(), clash, view.getKey());
+                // Their own navigations go through navigate(), so they don't unload a playing room.
+                assertFalse(module.contains("location.reload("), view.getValue());
+            }
+            // Imported after the load: must not wait for a DOMContentLoaded that already fired.
+            assertTrue(module.contains("onReady(start)"), view.getValue());
+            assertFalse(module.contains("addEventListener(\"DOMContentLoaded\""), view.getValue());
+            assertFalse(module.contains("location.href ="), view.getValue());
+            // Listeners on window/document outlive the view unless they end with its signal.
+            Matcher m = Pattern.compile("(window|document)\\.addEventListener\\(").matcher(module);
             while (m.find()) {
-                assertTrue(m.group(2).contains("signal: pageSignal()"), e.getValue() + ": " + m.group());
+                String call = callAt(module, m.end() - 1);
+                assertTrue(call.contains("signal: pageSignal()") || call.contains("signal: ROOM_SIGNAL"),
+                        view.getValue() + ": " + call);
             }
-            // Their own navigations go through navigate(), so they don't unload a playing room.
-            assertFalse(module.contains("location.href ="), e.getValue());
-            assertFalse(module.contains("location.reload("), e.getValue());
         }
         assertTrue(read("web/js/playlists.js").contains("navigate(playlistHref(p.id))"));
         String manage = read("web/js/roommanage.js");
         assertTrue(manage.contains("reloadPage()"), manage);
         assertTrue(manage.contains("navigate(\"/\")"), manage);
+        String session = read("web/js/session.js");
+        assertTrue(session.contains("navigate(withNext(LOGIN_PAGE, here()), true)"), session);
+        assertTrue(session.contains("navigate(withNext(PASSWORD_PAGE, here()), true)"), session);
     }
 
     @Test
-    void roomPageRunsTheShell() throws Exception {
+    void shellMountsViewsAndKeepsThePlayingRoom() throws Exception {
         String room = read("web/js/room.js");
-        for (String s : List.of("from \"./shell.js\"", "new Shell(", "shell?.update()", "rememberPlaying(null)",
-                "new URLSearchParams(PAGE_SEARCH)", "shell?.away !== true")) {
+        for (String s : List.of("attachRoom(", "const ROOM_SIGNAL = pageSignal()", "shell?.update()",
+                "rememberPlaying(null)", "new URLSearchParams(PAGE_SEARCH)", "shell?.away !== true",
+                "player?.dispose()", "conn.stop()", "clock?.stop()")) {
             assertTrue(room.contains(s), s);
         }
         assertFalse(room.contains("new URLSearchParams(location.search)"), room);
+        assertFalse(room.contains("window.setInterval(tick"), room);
         String shell = read("web/js/shell.js");
-        for (String s : List.of("history.pushState(", "\"popstate\"", "DOMParser", "searchParams.set(\"mount\"",
-                "import(moduleUrl.href)", "nextPageSignal()", "setNavigator(", "\"mini-player\"", "\"mini-leave\"",
-                "\"mini-audio-only\"", "scrollRestoration", "id === \"room-listen-overlay\"")) {
+        for (String s : List.of("history.pushState(", "\"popstate\"", "searchParams.set(\"mount\"",
+                "import(moduleUrl.href)", "startPageSignal()", "setNavigator(", "setRoomHost(", "\"mini-player\"",
+                "\"mini-leave\"", "\"mini-audio-only\"", "scrollRestoration", "HTMLTemplateElement",
+                "controller.abort()")) {
             assertTrue(shell.contains(s), s);
         }
+        assertFalse(shell.contains("DOMParser"), shell);
+        assertTrue(read("web/js/app.js").contains("new Shell("));
         String nav = read("web/js/nav.js");
         assertTrue(nav.contains("sessionStorage"), nav);
         String session = read("web/js/session.js");
         assertTrue(session.contains("showStoppedNote()"), session);
+        assertTrue(read("web/js/listen.js").contains("dispose()"));
         assertTrue(read("web/css/main.css").contains(".mini-player {"));
     }
 }

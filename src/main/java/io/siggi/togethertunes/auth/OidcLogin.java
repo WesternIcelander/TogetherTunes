@@ -76,7 +76,7 @@ import java.util.Objects;
  * limits as the token request; the {@link ClaimMapping} paths are resolved against it by
  * {@link IdentityResolution#identityOf}.
  *
- * <p><b>Failures</b> redirect ({@code 302}) to the login page {@code /login.html?error=<code>}
+ * <p><b>Failures</b> redirect ({@code 302}) to the login page {@code /login?error=<code>}
  * (with {@code next}), or for a link to the account page {@code /account/?error=<code>}. Codes:
  * {@code provider_unavailable} (unknown or disabled provider, or changed while logging in),
  * {@code provider_unreachable} (discovery failed), {@code provider_unsupported} (no PKCE S256),
@@ -103,7 +103,7 @@ public final class OidcLogin {
     public static final String COOKIE_PATH = "/auth/oidc/";
     public static final int MAX_BODY_BYTES = 512 * 1024;
     static final int NEXT_MAX = 2048;
-    static final String LOGIN_PAGE = "/login.html";
+    static final String LOGIN_PAGE = "/login";
     static final String ACCOUNT_PAGE = "/account/";
     static final String USER_AGENT = "TogetherTunes";
 
@@ -614,7 +614,7 @@ public final class OidcLogin {
     }
 
     /**
-     * Ends a failed login: redirects to the login page ({@code /login.html?error=<code>&next=…}), or
+     * Ends a failed login: redirects to the login page ({@code /login?error=<code>&next=…}), or
      * for a link to the account page ({@code /account/?error=<code>}).
      */
     public static void failRedirect(Response response, Intent intent, String next, String code) throws IOException {

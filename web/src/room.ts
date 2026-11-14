@@ -17,8 +17,10 @@
 // The "Web Audio" setting (Auto / On / Off, per browser) decides whether the media elements play
 // through Web Audio; `?webaudio=0/1` overrides it for testing (audiohealth.ts `webAudioPlan`). Auto
 // uses Web Audio only where the page can't set an element's volume (iOS; `volumeSettable`).
-// While the room plays in listen mode, the shell (shell.ts) shows the site's other pages in place,
-// so playback goes on; a mini player there links back to this view.
+// While the room plays in listen mode, the single-page app's shell (shell.ts) keeps this view
+// (hidden) when another view is shown, so playback goes on; a mini player there links back to it.
+// When the shell takes the view away for good, its signal (pageSignal() at the module's start)
+// ends the socket, the player, the clock sync and the timers.
 import { classifyAndAdd, withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
 import { actorLabel, type ActorRef } from "./actor.js";
@@ -51,20 +53,30 @@ import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
-import { rememberPlaying } from "./nav.js";
+import { attachRoom, pageSignal, rememberPlaying, type RoomHandle } from "./nav.js";
 import { OutputsPanel } from "./outputspanel.js";
-import { Shell } from "./shell.js";
 import { offersNextEpisode } from "./shows.js";
 import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
 
+/** This view's signal: aborted when the shell takes the room view away (leaving the room). */
+const ROOM_SIGNAL = pageSignal();
+
+/** `setInterval` until the room view is taken away. */
+function every(f: () => void, ms: number): void {
+  const id = window.setInterval(f, ms);
+  ROOM_SIGNAL.addEventListener("abort", () => window.clearInterval(id));
+}
+
 /**
  * The room page's own query (`?mode=`, `?sync=`, `?webaudio=`), kept from the load: while the
  * shell shows another page, `location` is that page's.
  */
 const PAGE_SEARCH = location.search;
+/** The room view's path, kept from its start for the same reason. */
+const PAGE_PATH = location.pathname;
 
 interface RoomResponse {
   id: string;
@@ -75,7 +87,7 @@ interface RoomResponse {
 
 /** The room from `/rooms/{idOrSlug}` (or `?room=` when the page is opened as a plain file). */
 function roomFromLocation(): string {
-  const m = /^\/rooms\/([^/]+)\/?$/.exec(location.pathname);
+  const m = /^\/rooms\/([^/]+)\/?$/.exec(PAGE_PATH);
   if (m !== null && m[1] !== undefined) {
     try {
       return decodeURIComponent(m[1]);
@@ -204,8 +216,8 @@ let roomRef = "";
 let roomName = "";
 /** Why the room stopped playing here (kicked), shown in the mini player. */
 let kickedText: string | undefined;
-/** Shows the site's other pages in place while the room plays (shell.ts). */
-let shell: Shell | undefined;
+/** The shell's side: whether another view is shown, and the mini player (shell.ts). */
+let shell: RoomHandle | undefined;
 /** The outputs panel (RTMP viewer URL; stream URLs and controls for the owner and moderators). */
 let outputsPanel: OutputsPanel | undefined;
 
@@ -1167,7 +1179,7 @@ function createPlayer(): ListenPlayer {
   const toggle = element("room-audio-only") as HTMLInputElement;
   toggle.checked = p.audioOnly;
   toggle.addEventListener("change", () => setAudioOnly(toggle.checked));
-  window.setInterval(() => { if (mode === "listen") p.tick(); }, 250);
+  every(() => { if (mode === "listen") p.tick(); }, 250);
   // For checking by hand: togetherTunesPlayer.debug() shows source, gain, rate and drift.
   (window as unknown as { togetherTunesPlayer: ListenPlayer }).togetherTunesPlayer = p;
   return p;
@@ -1191,8 +1203,8 @@ function isThisRoom(ref: string): boolean {
   return ref === roomId || ref === roomRef || (roomSlug !== "" && ref.toLowerCase() === roomSlug.toLowerCase());
 }
 
-function createShell(): Shell {
-  return new Shell({
+function createShell(): RoomHandle {
+  return attachRoom({
     active: () => mode === "listen" && player !== undefined && kickedText === undefined,
     isRoom: isThisRoom,
     path: () => "/rooms/" + encodeURIComponent(roomSlug !== "" ? roomSlug : roomId),
@@ -1204,7 +1216,7 @@ function createShell(): Shell {
     audioOnlyRoom: () => isAudioOnlyRoom(shown),
     setAudioOnly,
     shown: () => renderNav(me),
-  }, element("room-body"));
+  });
 }
 
 /** The engine's features that decide the sync mode (the user agent may lie). */
@@ -1295,8 +1307,9 @@ function notFound(): void {
 }
 
 async function start(): Promise<void> {
-  // A room page loaded from scratch: whatever played before has stopped (no "stopped" note here).
+  // A room view started: whatever played before has stopped (no "stopped" note here).
   rememberPlaying(null);
+  if (ROOM_SIGNAL.aborted) return;
   try {
     me = await loadMe();
   } catch (e) {
@@ -1378,7 +1391,7 @@ async function start(): Promise<void> {
   // The client's clock may have stepped while the device slept: measure again at once.
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") c.syncNow();
-  });
+  }, { signal: ROOM_SIGNAL });
   // For checking sync by hand (two browsers within ~50 ms): the estimate is in the console.
   (window as unknown as { togetherTunesClock: ClockSync }).togetherTunesClock = c;
   conn.actor = me.kind === "anonymous" ? undefined : { kind: me.kind, id: me.id, name: me.name, isGuest: me.isGuest };
@@ -1390,11 +1403,19 @@ async function start(): Promise<void> {
   window.addEventListener("pagehide", () => {
     conn.stop();
     player?.stop();
-  });
+  }, { signal: ROOM_SIGNAL });
   window.addEventListener("pageshow", (ev) => {
     if (ev.persisted) location.reload();
-  });
-  window.setInterval(tick, 250);
+  }, { signal: ROOM_SIGNAL });
+  every(tick, 250);
+  // Taken away by the shell (another room, Leave, a view shown while not playing): leave the room.
+  const leave = (): void => {
+    conn.stop();
+    clock?.stop();
+    player?.dispose();
+  };
+  if (ROOM_SIGNAL.aborted) leave();
+  else ROOM_SIGNAL.addEventListener("abort", leave);
 }
 
 onReady(start);

@@ -75,7 +75,7 @@ class ListenJsTest {
                 "\"togethertunes.webAudioAuto\"", "Sound: direct (no volume control)", "setWebAudioPlan(")) {
             assertTrue(room.contains(s), s);
         }
-        String html = read("web/room.html");
+        String html = NodeTests.view("view-room");
         for (String s : List.of("id=\"room-webaudio\"", "value=\"auto\"", "value=\"on\"", "value=\"off\"",
                 "id=\"room-webaudio-note\"", "no crossfade")) {
             assertTrue(html.contains(s), s);
@@ -111,7 +111,7 @@ class ListenJsTest {
                 "togetherTunesClock")) {
             assertTrue(room.contains(s), s);
         }
-        String html = read("web/room.html");
+        String html = NodeTests.view("view-room");
         assertTrue(html.contains("id=\"room-diagnostics\""), html);
         assertTrue(html.contains("Send diagnostics"), html);
     }
@@ -136,7 +136,7 @@ class ListenJsTest {
         assertTrue(room.contains("from \"./listen.js\""), room);
         assertTrue(room.contains("new ListenPlayer("), room);
         assertTrue(room.contains("setAudioOnly("), room);
-        String html = read("web/room.html");
+        String html = NodeTests.view("view-room");
         assertTrue(html.contains("id=\"room-listen-overlay\""), html);
         assertTrue(html.contains("Click to listen"), html);
         assertTrue(html.contains("id=\"room-player\""), html);

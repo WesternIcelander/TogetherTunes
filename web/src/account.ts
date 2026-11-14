@@ -71,6 +71,7 @@ function sessionRow(s: SessionItem): HTMLTableRowElement {
     element("session-error").textContent = "";
     api("DELETE", "/api/me/sessions/" + encodeURIComponent(s.id)).then(() => {
       if (s.current) {
+        // Logging this device out reloads the document, like logging out.
         location.assign(LOGIN_PAGE);
       } else {
         tr.remove();

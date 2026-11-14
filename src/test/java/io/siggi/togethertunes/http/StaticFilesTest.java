@@ -81,10 +81,6 @@ class StaticFilesTest {
 
         Router router = new Router();
         StaticFiles files = StaticFiles.of(root);
-        router.get("/items/{id}", files.page("index.html"));
-        router.get("/gone/{id}", files.page("missing.html"));
-        router.get("/out/{id}", files.page("../secret.txt"));
-        router.get("/hidden/{id}", files.page(".hidden"));
         files.register(router);
         router.get("/api/ping", (rq, rs) -> rs.text(200, "pong"));
         server = WebServer.start("127.0.0.1", 0, router, tmp.toFile());
@@ -237,9 +233,10 @@ class StaticFilesTest {
         r = request("GET", "/my%20dir");
         assertEquals(308, r.status());
         assertEquals("/my%20dir/", r.header("Location"));
-        // A directory without index.html is just not found (no listings).
-        assertNotServed("/nodir");
-        assertNotServed("/nodir/");
+        // A directory without index.html has no listing: like any path without a file, it is the
+        // single-page app's document.
+        assertServed("/nodir", "text/html; charset=utf-8", INDEX);
+        assertServed("/nodir/", "text/html; charset=utf-8", INDEX);
     }
 
     @Test
@@ -248,7 +245,8 @@ class StaticFilesTest {
         assertEquals(404, r.status());
         assertEquals(Response.JSON, r.header("Content-Type"));
         assertNotServed("/css/nope.css");
-        assertNotServed("/index.html/extra");
+        assertNotServed("/js/nope");
+        assertNotServed("/favicon.ico");
     }
 
     @Test
@@ -350,23 +348,40 @@ class StaticFilesTest {
     }
 
     @Test
-    void pageServesOneFixedFileForEveryPathItIsMountedOn() throws IOException {
-        Reply page = request("GET", "/items/0190abcd-ef01-7000-8000-000000000001");
-        assertEquals(200, page.status());
-        assertEquals(INDEX, page.text());
-        assertEquals("text/html; charset=utf-8", page.header("Content-Type"));
+    void appPathsWithoutAFileGetTheAppDocument() throws IOException {
+        for (String target : List.of("/items/0190abcd-ef01-7000-8000-000000000001", "/rooms/lounge",
+                "/rooms/lounge/manage", "/rooms/", "/library/", "/playlists/0190abcd", "/login", "/login.html",
+                "/some/unknown/view", "/rooms/caf%C3%A9?mode=remote")) {
+            assertServed(target, "text/html; charset=utf-8", INDEX);
+        }
+        Reply page = request("GET", "/items/x");
         assertEquals("no-cache", page.header("Cache-Control"));
-        assertEquals("nosniff", page.header("X-Content-Type-Options"));
         assertEquals(200, request("HEAD", "/items/x").status());
         assertEquals(304, request("GET", "/items/y", "If-None-Match: " + page.header("ETag")).status());
         // Only GET/HEAD reach it; the file is never written.
         assertEquals(405, request("PUT", "/items/x", "data".getBytes(StandardCharsets.UTF_8)).status());
         assertEquals(405, request("DELETE", "/items/x").status());
         assertEquals(INDEX, Files.readString(root.resolve("index.html")));
-        // Missing files, paths out of the root and hidden files are 404s, as for any static file.
-        assertEquals(404, request("GET", "/gone/x").status());
-        assertEquals(404, request("GET", "/out/x").status());
-        assertEquals(404, request("GET", "/hidden/x").status());
+        // The server's own prefixes, file-like paths and odd segments are never the app.
+        for (String target : List.of("/api/nope", "/media/x/audio", "/live/x", "/auth/x", "/r/x", "/ws",
+                "/test/", "/test/nope", "/js/nope", "/css/nope", "/nope.txt", "/rooms/x/cover.jpg", "/.hidden",
+                "/a/.b/c")) {
+            assertNotServed(target);
+        }
+    }
+
+    @Test
+    void appPathRules() {
+        for (String path : List.of("/", "/library/", "/library", "/rooms/lounge", "/items/x", "/login.html",
+                "/a/b/c/")) {
+            assertTrue(StaticFiles.isAppPath(path), path);
+        }
+        for (String path : List.of("", "x", "/api/me", "/api", "/media/a", "/live/a", "/auth/oidc/x/start", "/r/x",
+                "/ws", "/test/ws-echo.html", "/js/app.js", "/css/main.css", "/favicon.ico", "/robots.txt",
+                "//etc", "/a//b", "/./x", "/../x", "/.hidden", "/a\\b", "/a\0b")) {
+            assertFalse(StaticFiles.isAppPath(path), path);
+        }
+        assertFalse(StaticFiles.isAppPath(null));
     }
 
     @Test

@@ -1,12 +1,13 @@
-// The playlists page (/playlists/): the caller's playlists with "New playlist", and one playlist
-// (/playlists/?id=…) with its entries: reorder (move up/down, which the API does with
-// `beforeEntryId`), remove, rename, change the description, delete.
+// The playlists view (/playlists/): the caller's playlists with "New playlist", and one playlist
+// (/playlists/{id}; the old /playlists/?id=… still works) with its entries: reorder (move up/down,
+// which the API does with `beforeEntryId`), remove, rename, change the description, delete.
 import { api } from "./api.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
   itemTitleCell, kindLabel, statusBadge, type Page, type Playlist, type PlaylistDetail, type PlaylistEntry,
 } from "./media.js";
 import { navigate } from "./nav.js";
+import { playlistPath, routeOf } from "./router.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 
 let cursor: string | undefined;
@@ -16,7 +17,14 @@ function showError(e: unknown): void {
 }
 
 function playlistHref(id: string): string {
-  return "/playlists/?id=" + encodeURIComponent(id);
+  return playlistPath(id);
+}
+
+/** The playlist this view shows (`/playlists/{id}`, or the old `?id=`), or null for the list. */
+function playlistFromLocation(): string | null {
+  const route = routeOf(location.pathname);
+  if (route.kind === "view" && route.view === "playlists" && route.params["id"] !== undefined) return route.params["id"];
+  return new URLSearchParams(location.search).get("id");
 }
 
 // ------------------------------------------------------------------ list
@@ -171,7 +179,7 @@ async function start(): Promise<void> {
   if (me === null) return;
   renderNav(me);
   status.hidden = true;
-  const id = new URLSearchParams(location.search).get("id");
+  const id = playlistFromLocation();
   if (id === null || id === "") {
     startList();
   } else {

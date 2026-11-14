@@ -1,5 +1,6 @@
-// The first-run setup page (/setup.html): creates the first account, which becomes admin.
+// The first-run setup view (/setup): creates the first account, which becomes admin.
 import { api, ApiError, setupNeeded } from "./api.js";
+import { onReady } from "./session.js";
 
 interface SetupResponse {
   user: { id: string; username: string; displayName: string; roles: string[] };
@@ -76,8 +77,4 @@ function link(href: string, text: string): HTMLAnchorElement {
   return a;
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => void start());
-} else {
-  void start();
-}
+onReady(start);

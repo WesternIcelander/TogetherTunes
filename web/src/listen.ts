@@ -304,6 +304,8 @@ export class ListenPlayer {
   #switch: Switch | undefined;
   #audioOnly: boolean;
   readonly #mode: SyncMode;
+  /** Aborted by dispose(). */
+  readonly #disposed = new AbortController();
 
   /**
    * @param container where the elements live (the video one is shown there while it plays)
@@ -335,18 +337,48 @@ export class ListenPlayer {
     this.#ctx?.resume().catch(() => undefined);
     recordEvent("player", { mode, webAudio: this.#ctx !== undefined, webAudioOff: this.#webAudioOff, audioOnly,
       plan, ...this.#contextInfo() });
-    window.setInterval(() => this.#readMeters(), METER_INTERVAL_MS);
-    window.setInterval(() => this.#sampleHealth(), HEALTH_INTERVAL_MS);
+    const signal = this.#disposed.signal;
+    const meters = window.setInterval(() => this.#readMeters(), METER_INTERVAL_MS);
+    const health = window.setInterval(() => this.#sampleHealth(), HEALTH_INTERVAL_MS);
+    signal.addEventListener("abort", () => {
+      window.clearInterval(meters);
+      window.clearInterval(health);
+    });
     // Interruptions show up here (iOS: a call, Siri, the lock screen); record them, and resume.
     document.addEventListener("visibilitychange", () => {
       recordEvent("page", { type: "visibilitychange", visibility: document.visibilityState });
       if (document.visibilityState === "visible") this.#resumeContext("visible");
-    });
+    }, { signal });
     for (const type of ["pagehide", "pageshow"]) {
       window.addEventListener(type, (ev) => {
         recordEvent("page", { type, persisted: (ev as PageTransitionEvent).persisted });
-      });
+      }, { signal });
     }
+  }
+
+  /**
+   * Stops for good (the room view was taken away in the single-page app): every element stopped,
+   * emptied and removed, the audio context closed, the timers and listeners gone.
+   */
+  dispose(): void {
+    if (this.#disposed.signal.aborted) return;
+    this.stop();
+    this.#disposed.abort();
+    if (this.#startTimer !== undefined) window.clearTimeout(this.#startTimer);
+    for (const d of this.#decks.splice(0)) {
+      try {
+        d.gain?.disconnect();
+        d.analyser?.disconnect();
+      } catch {
+        // already disconnected
+      }
+      d.el.remove();
+    }
+    for (const el of this.#reserve.splice(0)) el.remove();
+    this.#active = undefined;
+    const ctx = this.#ctx;
+    this.#ctx = undefined;
+    ctx?.close().catch(() => undefined);
   }
 
   /**
@@ -649,6 +681,7 @@ export class ListenPlayer {
 
   /** One pass of the sync loop. Never throws: an error is recorded and the next tick runs as usual. */
   tick(): void {
+    if (this.#disposed.signal.aborted) return;
     try {
       this.#tick();
       const stuck = this.#handOffPending;

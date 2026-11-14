@@ -30,7 +30,7 @@ class AdminToolsJsTest {
                 "\"/api/admin/ytdlp/update\"", "auditPath(", "\"audit\"", "actorLabel(")) {
             assertTrue(admin.contains(s), s);
         }
-        String page = read("web/admin/index.html");
+        String page = NodeTests.view("view-admin");
         for (String s : List.of("data-tab=\"audit\"", "id=\"tab-audit\"", "id=\"audit-rows\"", "id=\"audit-filter\"",
                 "id=\"audit-more\"", "id=\"ytdlp-update\"", "id=\"ytdlp-version\"", "id=\"ytdlp-log\"")) {
             assertTrue(page.contains(s), s);

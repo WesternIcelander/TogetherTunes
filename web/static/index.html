@@ -5,13 +5,628 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TogetherTunes</title>
   <link rel="stylesheet" href="/css/main.css">
-  <script type="module" src="/js/main.js"></script>
+  <!-- The single-page app's one document, served for every UI path (docs/ui.md#single-page-app).
+       The shell (/js/app.js, shell.ts) shows the URL's view: a template below plus its module. -->
+  <script type="module" src="/js/app.js"></script>
 </head>
 <body>
   <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
-  <h1>TogetherTunes</h1>
-  <p id="status">Loading...</p>
-  <p id="links" hidden></p>
-  <p class="muted">Test pages: <a href="/test/ws-echo.html">WebSocket echo</a></p>
+  <main id="app"></main>
+
+  <template id="view-home" data-title="TogetherTunes">
+
+    <h1>TogetherTunes</h1>
+    <p id="status">Loading...</p>
+    <p id="links" hidden></p>
+    <p class="muted">Test pages: <a href="/test/ws-echo.html">WebSocket echo</a></p>
+  </template>
+
+  <template id="view-login" data-title="Log in · TogetherTunes">
+
+    <h1>Log in</h1>
+    <p id="login-status" role="status" hidden></p>
+    <p id="provider-error" class="error" role="alert" hidden></p>
+    <form id="login-form" class="form">
+      <label>Username
+        <input name="username" autocomplete="username" required maxlength="32" autofocus>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required maxlength="1024">
+      </label>
+      <button type="submit">Log in</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+    <div id="login-providers" hidden>
+      <p>Or log in with:</p>
+      <ul id="login-provider-list"></ul>
+    </div>
+    <p>No account yet? <a id="register-link" href="/register">Register</a></p>
+  </template>
+
+  <template id="view-register" data-title="Register · TogetherTunes">
+
+    <h1>Create an account</h1>
+    <p id="register-status" role="status" hidden></p>
+    <form id="register-form" class="form">
+      <label>Username
+        <input name="username" autocomplete="username" required minlength="3" maxlength="32"
+               pattern="[A-Za-z0-9][A-Za-z0-9._\-]*" autofocus>
+      </label>
+      <small>3 to 32 characters: letters, digits, '.', '_' and '-'.</small>
+      <label>Display name (optional)
+        <input name="displayName" autocomplete="nickname" maxlength="64">
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <small>At least 10 characters.</small>
+      <label>Repeat password
+        <input name="password2" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <label>Invite code (if registration is by invitation)
+        <input name="invite" autocomplete="off" maxlength="64">
+      </label>
+      <button type="submit">Create account</button>
+      <p id="register-error" class="error" role="alert"></p>
+    </form>
+    <p>Already have an account? <a id="login-link" href="/login">Log in</a></p>
+  </template>
+
+  <template id="view-password" data-title="Change password · TogetherTunes">
+
+    <h1>Change password</h1>
+    <p id="password-status" role="status">Loading...</p>
+    <form id="password-form" class="form" hidden>
+      <p id="password-temporary" hidden>Your password is a temporary one set by an administrator.
+        Choose your own password to continue.</p>
+      <input name="username" autocomplete="username" hidden>
+      <label>Current password
+        <input name="currentPassword" type="password" autocomplete="current-password" required maxlength="1024">
+      </label>
+      <label>New password
+        <input name="newPassword" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <small>At least 10 characters.</small>
+      <label>Repeat new password
+        <input name="newPassword2" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <small>Changing your password logs you out on every other device.</small>
+      <button type="submit">Change password</button>
+      <p id="password-error" class="error" role="alert"></p>
+    </form>
+  </template>
+
+  <template id="view-setup" data-title="TogetherTunes setup">
+    <h1>Welcome to TogetherTunes</h1>
+    <p id="setup-status">Checking setup...</p>
+    <form id="setup-form" class="form" hidden>
+      <p>Create the administrator account. This is the first account on this server; it gets the <code>admin</code> role.</p>
+      <label>Username
+        <input name="username" autocomplete="username" required minlength="3" maxlength="32"
+               pattern="[A-Za-z0-9][A-Za-z0-9._\-]*">
+      </label>
+      <small>3 to 32 characters: letters, digits, '.', '_' and '-'.</small>
+      <label>Display name (optional)
+        <input name="displayName" autocomplete="nickname" maxlength="64">
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <small>At least 10 characters.</small>
+      <label>Repeat password
+        <input name="password2" type="password" autocomplete="new-password" required minlength="10" maxlength="1024">
+      </label>
+      <button type="submit">Create administrator</button>
+      <p id="setup-error" class="error" role="alert"></p>
+    </form>
+  </template>
+
+  <template id="view-rooms" data-title="Rooms · TogetherTunes">
+
+    <h1>Rooms</h1>
+    <p id="rooms-status" role="status">Loading...</p>
+
+    <div id="rooms-body" hidden>
+      <p id="rooms-intro" class="muted"></p>
+
+      <section id="create-panel" class="panel" hidden>
+        <h2>Create room</h2>
+        <form id="create-room" class="form" novalidate>
+          <label>Name
+            <input id="create-name" name="name" required maxlength="100" autocomplete="off">
+          </label>
+          <span id="create-name-error" class="error small" role="alert"></span>
+          <label>Link name (optional)
+            <input id="create-slug" name="slug" maxlength="40" placeholder="made from the name"
+                   autocapitalize="off" autocomplete="off" spellcheck="false">
+          </label>
+          <small>3–40 characters of a–z, 0–9 and -. The room's address is /rooms/&lt;link name&gt;.</small>
+          <span id="create-slug-error" class="error small" role="alert"></span>
+          <label>Visibility
+            <select id="create-visibility" name="visibility">
+              <option value="public">Public (listed here)</option>
+              <option value="unlisted" selected>Unlisted (anyone with the link)</option>
+              <option value="private">Private (invited users only, no guests)</option>
+            </select>
+          </label>
+          <span id="create-visibility-error" class="error small" role="alert"></span>
+          <label>Control
+            <select id="create-controlMode" name="controlMode">
+              <option value="owner">Owner picks (others suggest)</option>
+              <option value="vote" selected>Vote</option>
+              <option value="open">Open (everyone with request rights controls)</option>
+            </select>
+          </label>
+          <span id="create-controlMode-error" class="error small" role="alert"></span>
+          <button type="submit">Create room</button>
+          <p id="create-error" class="error" role="alert"></p>
+        </form>
+      </section>
+
+      <p id="rooms-error" class="error" role="alert"></p>
+      <table id="rooms-table" class="list rooms">
+        <thead><tr><th>Room</th><th>Owner</th><th>Visibility</th><th>Control</th><th>Your role</th></tr></thead>
+        <tbody id="rooms-rows"></tbody>
+      </table>
+      <p id="rooms-empty" class="muted" hidden>No rooms to show yet.</p>
+      <button id="rooms-more" type="button" hidden>Load more</button>
+    </div>
+  </template>
+
+  <template id="view-room" data-title="Room · TogetherTunes">
+
+    <div id="room-body">
+      <header class="room-head">
+        <h1 id="room-name">Room</h1>
+        <p class="muted small"><span id="room-mode"></span> · <span id="room-meta"></span>
+          <button type="button" id="room-mode-toggle" class="link"></button>
+          <a id="room-manage-link" href="#" hidden>Manage room</a></p>
+        <p id="room-presence" class="small" aria-live="polite"></p>
+        <p id="room-identity"></p>
+        <div id="room-guest-name" class="panel" hidden></div>
+      </header>
+      <p id="room-status" role="status">Loading...</p>
+      <p id="room-error" class="error" role="alert"></p>
+      <ul id="room-notices" class="notices" aria-live="polite"></ul>
+      <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
+      <div id="room-listen-controls" class="row room-listen-controls" hidden>
+        <label id="room-audio-only-label"><input type="checkbox" id="room-audio-only"> Audio only</label>
+        <span id="room-audio-only-room" class="muted small" hidden>Audio-only room</span>
+        <label class="small" title="How this browser plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by itself if Web Audio stutters here. On: always Web Audio. Off: straight from the media element, which costs the crossfade on the audio-only switch and the loudness adjustment for originals where the browser can't set the volume (iOS).">Web Audio
+          <select id="room-webaudio">
+            <option value="auto">Auto</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+          </select></label>
+        <span id="room-webaudio-note" class="muted small" role="status"></span>
+        <span id="room-webaudio-hint" class="muted small" hidden>Off plays straight from the media element. Where
+          the browser can't set the volume (iOS), that means no crossfade when switching audio only, and originals
+          play without their loudness adjustment.</span>
+        <button type="button" id="room-diagnostics" class="link small"
+                title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
+        <span id="room-diagnostics-status" class="muted small" role="status"></span>
+      </div>
+      <!-- Requests-only (remote) mode: no media; the now-playing panel runs this much behind the timeline (the room's
+           output delay plus this browser's nudge for the room). -->
+      <div id="room-remote-controls" class="row room-remote-controls" hidden>
+        <span class="small">Delay <span id="room-delay-total" class="num"></span>
+          <span id="room-delay-detail" class="muted"></span></span>
+        <button type="button" id="room-delay-less" class="small" title="Show the room 0.5 s earlier">−0.5 s</button>
+        <button type="button" id="room-delay-more" class="small" title="Show the room 0.5 s later">+0.5 s</button>
+        <button type="button" id="room-delay-reset" class="link small" hidden>Reset</button>
+      </div>
+      <!-- Listen mode: the video plays here; audio needs no visible element. -->
+      <div id="room-player" class="room-player" hidden></div>
+      <div id="room-main" class="room-main" hidden>
+        <section id="room-now" class="panel room-now"></section>
+        <section id="room-queue" class="room-queue"></section>
+        <section id="room-suggestions" class="room-suggestions" hidden></section>
+        <section id="room-request" class="panel room-request"></section>
+        <!-- The program outputs: the RTMP viewer URL for everyone; stream URLs, push status and controls
+             for the owner and moderators (outputspanel.ts). -->
+        <section id="room-outputs" class="panel room-outputs" hidden></section>
+        <section id="room-history" class="room-history"></section>
+      </div>
+    </div>
+    <!-- Shown in listen mode while the browser doesn't let the page play sound without a click. -->
+    <div id="room-listen-overlay" class="listen-overlay" hidden>
+      <button type="button">Click to listen</button>
+    </div>
+  </template>
+
+  <template id="view-room-manage" data-title="Manage room · TogetherTunes">
+
+    <div id="manage-body">
+      <header class="room-head">
+        <h1 id="manage-name">Manage room</h1>
+        <p class="muted small"><a id="manage-back" href="/">Back to the room</a> · <span id="manage-role"></span></p>
+      </header>
+      <p id="manage-status" role="status">Loading...</p>
+      <nav class="tabs" id="manage-tabs" hidden>
+        <a href="#settings" data-tab="settings">Settings</a>
+        <a href="#members" data-tab="members">Members</a>
+        <a href="#bans" data-tab="bans">Guest bans</a>
+        <a href="#cards" data-tab="cards">Card images</a>
+      </nav>
+
+      <section id="tab-settings" hidden>
+        <h2>Settings</h2>
+        <p id="settings-readonly" class="muted" hidden>Only the room's owner changes its settings.</p>
+        <form id="settings-form" class="room-settings">
+          <fieldset class="panel">
+            <legend>Room</legend>
+            <div class="setting"><label for="room-field-name">Name</label>
+              <input id="room-field-name" name="name" required maxlength="100"></div>
+            <div class="setting"><label for="room-field-slug">Link name</label>
+              <input id="room-field-slug" name="slug" required minlength="3" maxlength="40"
+                     autocapitalize="off" autocomplete="off" spellcheck="false">
+              <span class="muted small">/r/<span id="room-field-slug-preview"></span></span></div>
+            <div class="setting"><label for="room-field-visibility">Visibility</label>
+              <select id="room-field-visibility" name="visibility">
+                <option value="public">Public (listed)</option>
+                <option value="unlisted">Unlisted (anyone with the link)</option>
+                <option value="private">Private (invited users only, no guests)</option>
+              </select></div>
+            <div class="setting"><label for="room-field-control">Control</label>
+              <select id="room-field-control" name="controlMode">
+                <option value="owner">Owner picks (others suggest)</option>
+                <option value="vote">Vote</option>
+                <option value="open">Open (everyone with request rights controls)</option>
+              </select></div>
+          </fieldset>
+          <div id="settings-groups"></div>
+          <div class="row">
+            <button type="submit" id="settings-save">Save settings</button>
+            <span id="settings-saved" class="muted small" role="status"></span>
+          </div>
+          <p id="settings-error" class="error" role="alert"></p>
+        </form>
+        <div id="room-delete" class="panel" hidden>
+          <h3>Delete the room</h3>
+          <p class="muted small">Deletes the room, its queue, members and history. This can't be undone.</p>
+          <button type="button" id="room-delete-button" class="danger">Delete room</button>
+          <p id="room-delete-error" class="error" role="alert"></p>
+        </div>
+      </section>
+
+      <section id="tab-cards" hidden>
+        <h2>Card images</h2>
+        <p class="muted small">The room's own images for the stream's paused, queue-empty, loading and gap screens.
+          They replace the server's; delete one to go back. The QR code is drawn on top as the room's overlay
+          setting says.</p>
+        <div id="cards-root"></div>
+      </section>
+
+      <section id="tab-members" hidden>
+        <h2>Members</h2>
+        <table class="list members">
+          <thead><tr><th>User</th><th>Role</th><th>Since</th><th></th></tr></thead>
+          <tbody id="member-rows"></tbody>
+        </table>
+        <button id="member-more" type="button" hidden>Load more</button>
+        <p id="member-error" class="error" role="alert"></p>
+        <form id="member-add" class="row panel">
+          <label>Username <input name="username" required autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+          <label>Role <select name="role" id="member-add-role"></select></label>
+          <button type="submit">Add</button>
+        </form>
+        <p id="member-add-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="tab-bans" hidden>
+        <h2>Guest bans</h2>
+        <p class="muted small">Ban a guest from the history on the room page. Banning a guest identified by IP address bans
+          everyone sharing that address.</p>
+        <table class="list bans">
+          <thead><tr><th>Guest</th><th>Identified by</th><th>Banned</th><th></th></tr></thead>
+          <tbody id="ban-rows"></tbody>
+        </table>
+        <p id="ban-empty" class="muted" hidden>No guests are banned from this room.</p>
+        <button id="ban-more" type="button" hidden>Load more</button>
+        <p id="ban-error" class="error" role="alert"></p>
+      </section>
+
+    </div>
+  </template>
+
+  <template id="view-library" data-title="Library · TogetherTunes">
+
+    <h1>Your library</h1>
+    <p class="muted small"><a href="/encodes/">Encodes</a>: what is encoding or queued for the items in your library.</p>
+    <p id="library-status" role="status">Loading...</p>
+
+    <div id="library-body" hidden>
+      <form id="library-search" class="row">
+        <input name="q" type="search" maxlength="200" placeholder="Search title, artist or album" aria-label="Search" class="grow">
+        <select id="library-kind" name="kind" aria-label="Kind">
+          <option value="">Audio and video</option>
+          <option value="audio">Audio</option>
+          <option value="video">Video</option>
+          <option value="shows">Shows (grouped)</option>
+        </select>
+        <button type="submit">Search</button>
+        <label class="small"><input id="library-all" name="all" type="checkbox"> Search the whole server</label>
+      </form>
+      <p id="library-notice" class="notice" role="status" hidden></p>
+      <p id="library-error" class="error" role="alert"></p>
+      <table class="list library">
+        <thead><tr><th>Title</th><th>Kind</th><th>Length</th><th>Status</th><th>Added</th><th></th></tr></thead>
+        <tbody id="library-rows"></tbody>
+      </table>
+      <p id="library-empty" class="muted" hidden></p>
+      <button id="library-more" type="button" hidden>Load more</button>
+
+      <section class="panel">
+        <h2>Add media</h2>
+        <div id="add-media"></div>
+      </section>
+    </div>
+  </template>
+
+  <template id="view-playlists" data-title="Playlists · TogetherTunes">
+
+    <p id="playlists-status" role="status">Loading...</p>
+    <p id="playlists-error" class="error" role="alert"></p>
+
+    <div id="playlist-list" hidden>
+      <h1>Your playlists</h1>
+      <table class="list playlists">
+        <thead><tr><th>Name</th><th>Entries</th><th>Changed</th></tr></thead>
+        <tbody id="playlist-rows"></tbody>
+      </table>
+      <p id="playlist-empty" class="muted" hidden>No playlists yet.</p>
+      <button id="playlist-more" type="button" hidden>Load more</button>
+
+      <section class="panel">
+        <h2>New playlist</h2>
+        <form id="playlist-create" class="form">
+          <label>Name <input name="name" required maxlength="100"></label>
+          <label>Description <textarea name="description" maxlength="2000" rows="2"></textarea></label>
+          <button type="submit">Create</button>
+        </form>
+      </section>
+    </div>
+
+    <div id="playlist-detail" hidden>
+      <p><a href="/playlists/">← All playlists</a></p>
+      <h1 id="playlist-name"></h1>
+      <p id="playlist-description" class="description" hidden></p>
+      <p id="playlist-summary" class="muted"></p>
+      <p class="muted small">Add items from <a href="/library/">your library</a> or an item's page.</p>
+      <table class="list entries">
+        <thead><tr><th>#</th><th>Title</th><th>Kind</th><th>Length</th><th>Status</th><th></th></tr></thead>
+        <tbody id="entry-rows"></tbody>
+      </table>
+      <p id="entry-empty" class="muted" hidden>This playlist is empty.</p>
+
+      <details class="panel">
+        <summary>Edit playlist</summary>
+        <form id="playlist-edit" class="form">
+          <label>Name <input name="name" required maxlength="100"></label>
+          <label>Description <textarea name="description" maxlength="2000" rows="3"></textarea></label>
+          <button type="submit">Save</button>
+        </form>
+        <p><button id="playlist-delete" type="button" class="danger">Delete playlist</button></p>
+      </details>
+    </div>
+  </template>
+
+  <template id="view-encodes" data-title="Encodes · TogetherTunes">
+
+    <h1>Encodes</h1>
+    <p>The encode jobs of the items in <a href="/library/">your library</a>: what is encoding now, what is
+      queued (and how many jobs are ahead of it), what failed and what finished in the last 24 hours.
+      The lists update every few seconds.</p>
+    <p id="encodes-status" role="status"></p>
+    <div id="encodes-root"></div>
+  </template>
+
+  <template id="view-account" data-title="Account · TogetherTunes">
+
+    <h1>Your account</h1>
+    <p id="account-status" role="status">Loading...</p>
+
+    <div id="account-body" hidden>
+      <section>
+        <h2>Profile</h2>
+        <p>Username: <strong id="account-username"></strong></p>
+        <p>Roles: <span id="account-roles"></span></p>
+        <form id="profile-form" class="row">
+          <label>Display name
+            <input name="displayName" autocomplete="nickname" maxlength="64">
+          </label>
+          <button type="submit">Save</button>
+          <p id="profile-error" class="error" role="alert"></p>
+        </form>
+        <p><a href="/password?next=%2Faccount%2F">Change password</a></p>
+      </section>
+
+      <section id="guest-merge" hidden>
+        <h2>Guest activity</h2>
+        <p id="guest-merge-question"></p>
+        <button id="guest-merge-button" type="button">Move to my account</button>
+        <p id="guest-merge-error" class="error" role="alert"></p>
+      </section>
+      <p id="guest-merge-notice" class="notice" role="status" hidden></p>
+
+      <section>
+        <h2>Linked logins</h2>
+        <p id="identity-notice" class="notice" role="status" hidden></p>
+        <p id="identity-error" class="error" role="alert"></p>
+        <p id="identity-none" class="muted" hidden>No logins are linked.</p>
+        <table id="identity-table" class="list identities" hidden>
+          <thead><tr><th>Provider</th><th>Email</th><th>Linked</th><th>Last login</th><th></th></tr></thead>
+          <tbody id="identity-rows"></tbody>
+        </table>
+        <div id="identity-link" hidden>
+          <p>Link another login:</p>
+          <ul id="identity-link-list"></ul>
+        </div>
+      </section>
+
+      <section>
+        <h2>Sessions</h2>
+        <p class="muted">Where you are logged in: browsers, and bearer tokens for apps.</p>
+        <table class="list sessions">
+          <thead><tr><th>Device</th><th>Kind</th><th>Logged in</th><th>Last seen</th><th>Expires</th><th></th></tr></thead>
+          <tbody id="session-rows"></tbody>
+        </table>
+        <div class="row">
+          <button id="session-more" type="button" hidden>Load more</button>
+          <button id="session-revoke-others" type="button">Log out everywhere else</button>
+        </div>
+        <p id="session-error" class="error" role="alert"></p>
+      </section>
+    </div>
+  </template>
+
+  <template id="view-admin" data-title="TogetherTunes admin">
+
+    <h1>Administration</h1>
+    <nav class="tabs" id="admin-tabs">
+      <a href="#users" data-tab="users">Users</a>
+      <a href="#roles" data-tab="roles">Roles</a>
+      <a href="#providers" data-tab="providers">Login providers</a>
+      <a href="#settings" data-tab="settings">Settings</a>
+      <a href="#fonts" data-tab="fonts">Fonts</a>
+      <a href="#cards" data-tab="cards">Card images</a>
+      <a href="#jobs" data-tab="jobs">Jobs</a>
+      <a href="#audit" data-tab="audit">Audit log</a>
+    </nav>
+    <p id="admin-status" role="status"></p>
+
+    <section id="tab-users" hidden>
+      <h2>Users</h2>
+      <form id="user-search" class="row">
+        <input name="q" type="search" placeholder="Search username or display name" aria-label="Search">
+        <button type="submit">Search</button>
+      </form>
+      <table class="list">
+        <thead><tr><th>Username</th><th>Display name</th><th>Roles</th><th>Status</th></tr></thead>
+        <tbody id="user-rows"></tbody>
+      </table>
+      <button id="user-more" type="button" hidden>Load more</button>
+
+      <div id="user-detail" class="panel" hidden></div>
+
+      <h3>Create a user</h3>
+      <form id="user-create" class="form">
+        <label>Username
+          <input name="username" autocomplete="off" required minlength="3" maxlength="32"
+                 pattern="[A-Za-z0-9][A-Za-z0-9._\-]*">
+        </label>
+        <label>Display name (optional)
+          <input name="displayName" autocomplete="off" maxlength="64">
+        </label>
+        <label>Temporary password
+          <input name="password" type="text" autocomplete="off" required minlength="10" maxlength="1024">
+        </label>
+        <small>At least 10 characters. Give it to the user; they choose their own after logging in.</small>
+        <button type="submit">Create user</button>
+        <p class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="tab-roles" hidden>
+      <h2>Roles</h2>
+      <p>A user's permissions are the union of their roles' permissions. <code>admin</code> holds every
+        permission and can't be edited. Default roles are given to every new account.</p>
+      <div id="role-list"></div>
+      <h3>Create a role</h3>
+      <form id="role-create" class="form">
+        <label>Name
+          <input name="name" required maxlength="32">
+        </label>
+        <button type="submit">Create role</button>
+        <p class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="tab-providers" hidden>
+      <h2>Login providers</h2>
+      <p>Any number of OpenID Connect and OAuth providers, each with its own login button. A provider with
+        linked accounts can't change its issuer (OAuth: userinfo URL and subject) or be deleted; disable it instead.</p>
+      <div id="provider-list"></div>
+    </section>
+
+    <section id="tab-settings" hidden>
+      <h2>Server settings</h2>
+      <section id="storage-status" aria-live="polite">
+        <h3>Storage</h3>
+        <p id="storage-line"></p>
+        <p id="storage-warning" class="notice error" role="alert" hidden></p>
+      </section>
+      <section id="ytdlp-box" aria-live="polite">
+        <h3>yt-dlp</h3>
+        <p>YouTube changes often, and old yt-dlp versions stop working. The button runs <code>yt-dlp -U</code>
+          on the server (this works for yt-dlp's own release files; a package-manager install says how to update it
+          instead).</p>
+        <p id="ytdlp-version"></p>
+        <button id="ytdlp-update" type="button">Update yt-dlp</button>
+        <p id="ytdlp-status" hidden></p>
+        <pre id="ytdlp-log" class="job-log small" hidden></pre>
+        <p id="ytdlp-error" class="error" role="alert"></p>
+      </section>
+      <form id="settings-form">
+        <div id="settings-fields"></div>
+        <button type="submit">Save settings</button>
+        <p class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="tab-fonts" hidden>
+      <h2>Card fonts</h2>
+      <div id="fonts-root"></div>
+    </section>
+
+    <section id="tab-cards" hidden>
+      <h2>Card images</h2>
+      <p class="muted small">Server-wide images that replace the built-in cards in every room's stream. A room's
+        owner with a role that allows it can set the room's own, which replace these.</p>
+      <div id="cards-root"></div>
+    </section>
+
+    <section id="tab-jobs" hidden>
+      <h2>Encode jobs</h2>
+      <p>Every ingest job: uploads, YouTube downloads, re-encodes for a new output profile and quality
+        re-encodes. The queue is listed in the order the workers take it. A failed job can be retried; a queued
+        one can be cancelled (a new item's ingest then leaves the item failed, a re-encode is only dropped).
+        The lists update every few seconds.</p>
+      <div id="jobs-root"></div>
+    </section>
+
+    <section id="tab-audit" hidden>
+      <h2>Audit log</h2>
+      <p>Logins, account and admin changes, room and item actions, newest first. Click an actor or an action to
+        show only theirs. IP addresses show only with the IP address permission.</p>
+      <form id="audit-filter" class="row">
+        <input name="action" list="audit-actions" placeholder="Action, e.g. auth.login" aria-label="Action">
+        <datalist id="audit-actions"></datalist>
+        <input name="actor" placeholder="User or guest id" aria-label="Actor id">
+        <button type="submit">Filter</button>
+        <button type="reset">Clear</button>
+      </form>
+      <table class="list">
+        <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Details</th><th>IP</th></tr></thead>
+        <tbody id="audit-rows"></tbody>
+      </table>
+      <p id="audit-empty" class="muted" hidden>No entries.</p>
+      <button id="audit-more" type="button" hidden>Load more</button>
+    </section>
+  </template>
+
+  <template id="view-item" data-title="Item · TogetherTunes">
+
+    <p id="item-status" role="status">Loading...</p>
+    <p id="item-notice" class="notice" role="status" hidden></p>
+    <p id="item-error" class="error" role="alert"></p>
+    <div id="item-body"></div>
+    <div id="item-forms"></div>
+  </template>
+
+  <template id="view-not-found" data-title="Not found · TogetherTunes">
+    <h1>Not found</h1>
+    <p>There is no page at this address. <a href="/">Go to the front page</a>.</p>
+  </template>
 </body>
 </html>

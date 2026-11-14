@@ -10,6 +10,7 @@ import {
   canCreateRooms, controlModeLabel, createBody, fieldForError, roleLabel, roomPagePath, slugProblem, visibilityLabel,
   type CreateField, type RoomListEntry,
 } from "./roomlist.js";
+import { navigate } from "./nav.js";
 import { checkPasswordChange, element, formValue, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 
 let cursor: string | undefined;
@@ -80,7 +81,7 @@ function setupCreateForm(): void {
     const buttons = Array.from(form.querySelectorAll("button"));
     buttons.forEach((b) => { b.disabled = true; });
     api<RoomListEntry>("POST", "/api/rooms", body).then((room) => {
-      location.assign(roomPagePath(room));
+      navigate(roomPagePath(room));
     }).catch((e: unknown) => {
       buttons.forEach((b) => { b.disabled = false; });
       const field = e instanceof ApiError ? fieldForError(e.code) : null;

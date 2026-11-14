@@ -33,15 +33,15 @@ class RoomsPageJsTest {
         }
         String page = read("web/js/rooms.js");
         for (String s : List.of("from \"./session.js\"", "from \"./roomlist.js\"", "\"/api/rooms?\"",
-                "\"POST\", \"/api/rooms\"", "nextCursor", "canCreateRooms(", "fieldForError(", "location.assign(",
+                "\"POST\", \"/api/rooms\"", "nextCursor", "canCreateRooms(", "fieldForError(", "navigate(roomPagePath(room))",
                 "renderNav(")) {
             assertTrue(page.contains(s), s);
         }
         // Open to everyone: guests and anonymous visitors see the public rooms.
         assertFalse(page.contains("requireUser"), page);
         assertTrue(logic.contains("\"rooms.create\""), logic);
-        String html = read("web/rooms/index.html");
-        for (String s : List.of("src=\"/js/rooms.js\"", "id=\"site-nav\"", "id=\"rooms-rows\"", "id=\"rooms-more\"",
+        String html = NodeTests.view("view-rooms");
+        for (String s : List.of("id=\"rooms-rows\"", "id=\"rooms-more\"",
                 "id=\"create-panel\" class=\"panel\" hidden", "id=\"create-room\"", "name=\"name\"", "name=\"slug\"",
                 "name=\"visibility\"", "name=\"controlMode\"", "id=\"create-slug-error\"")) {
             assertTrue(html.contains(s), s);

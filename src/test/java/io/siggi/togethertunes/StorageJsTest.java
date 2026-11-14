@@ -32,7 +32,7 @@ class StorageJsTest {
                 "parseGib(", "formatGib(")) {
             assertTrue(admin.contains(s), s);
         }
-        String page = read("web/admin/index.html");
+        String page = NodeTests.view("view-admin");
         for (String s : List.of("id=\"storage-line\"", "id=\"storage-warning\"")) {
             assertTrue(page.contains(s), s);
         }

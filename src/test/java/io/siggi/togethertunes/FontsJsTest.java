@@ -26,7 +26,7 @@ class FontsJsTest {
                 "/api/admin/fonts/uploads", "\"cards.font\"", "\"fonts.autoDownload\"", "\"fonts.cjkVariant\"")) {
             assertTrue(admin.contains(s), s);
         }
-        String page = Files.readString(NodeTests.resource("web/admin/index.html"), StandardCharsets.UTF_8);
+        String page = NodeTests.view("view-admin");
         assertTrue(page.contains("data-tab=\"fonts\"") && page.contains("id=\"fonts-root\""));
     }
 }

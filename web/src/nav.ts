@@ -1,10 +1,13 @@
-// Navigation hooks shared by every page, for the room page's shell (shell.ts):
-// - `navigate()`: what pages call instead of `location.assign`, so that a script's own navigation
-//   (after saving a form, say) also keeps playback going while a room plays;
-// - `pageSignal()`: aborted when the shell takes the page away, for listeners a page adds to
-//   `window` or `document` (its own elements simply go away with it);
+// Navigation hooks shared by every view, for the single-page app's shell (shell.ts):
+// - `navigate()`: what views call instead of `location.assign`, so that a script's own navigation
+//   (after saving a form, say) shows the next view in place (and keeps a playing room going);
+// - `pageSignal()`: aborted when the shell takes the view away, for listeners a view adds to
+//   `window` or `document` (its own elements simply go away with it), and for the room view's
+//   socket and player;
+// - `attachRoom()`: how the room view tells the shell about itself, so it can keep playing while
+//   other views are shown (mini player);
 // - the note shown after a reload stopped playback ("say so in the mini player").
-// Without a playing room (a plain page load) navigate() is location.assign and the signal never fires.
+// Without the shell (a module loaded on its own) navigate() is location.assign.
 
 /** Handles a navigation in place; returns false to leave it to the browser. */
 export type Navigator = (href: string, replace: boolean) => boolean;
@@ -12,34 +15,84 @@ export type Navigator = (href: string, replace: boolean) => boolean;
 let navigator: Navigator | undefined;
 let controller = new AbortController();
 
-/** Installed by the shell while a room page is loaded (undefined removes it). */
+/** Installed by the shell (undefined removes it). */
 export function setNavigator(n: Navigator | undefined): void {
   navigator = n;
 }
 
-/** Goes to `href` (a page on this site): in place while a room plays, otherwise a normal page load. */
+/** Goes to `href` (a view of this site): in place where the shell can, otherwise a normal page load. */
 export function navigate(href: string, replace = false): void {
   if (navigator !== undefined && navigator(href, replace)) return;
   if (replace) location.replace(href);
   else location.assign(href);
 }
 
-/** Loads this page again: in place while a room plays (the page's module starts over), otherwise a reload. */
+/** Shows this view again: in place (the view's module starts over), otherwise a reload. */
 export function reloadPage(): void {
   if (navigator !== undefined && navigator(location.href, true)) return;
   location.reload();
 }
 
-/** Aborted when the shell takes this page away (pass it as `{ signal }` to window/document listeners). */
+/**
+ * The signal of the view being shown (the last one the shell started): aborted when the shell takes
+ * it away. Pass it as `{ signal }` to window/document listeners. Call it while the view starts
+ * (the room view keeps the one it got at its start).
+ */
 export function pageSignal(): AbortSignal {
   return controller.signal;
 }
 
-/** For the shell: ends the current page's signal and starts a new one for the next page. */
-export function nextPageSignal(): AbortSignal {
-  controller.abort();
+/**
+ * For the shell: starts the signal of the next view and returns its controller (the shell aborts
+ * it when it takes the view away; the room view's may outlive the views shown after it).
+ */
+export function startPageSignal(): AbortController {
   controller = new AbortController();
-  return controller.signal;
+  return controller;
+}
+
+/** What the shell needs from the room view, to keep it playing while other views are shown. */
+export interface ShellRoom {
+  /** Whether the room plays here now (listen mode, not kicked): only then the shell keeps it. */
+  active(): boolean;
+  /** Whether `ref` (id or slug) is this room. */
+  isRoom(ref: string): boolean;
+  /** The room view's path (`/rooms/{slug}`). */
+  path(): string;
+  name(): string;
+  /** The title of the room view. */
+  title(): string;
+  /** What plays: title (empty when nothing) and the timeline state. */
+  nowPlaying(): { title: string; state: string };
+  /** Why the room stopped playing here (kicked), or undefined. */
+  stopped(): string | undefined;
+  audioOnly(): boolean;
+  /** Whether the room is audio-only: then there is no video / audio-only switch. */
+  audioOnlyRoom?(): boolean;
+  setAudioOnly(on: boolean): void;
+  /** The room view is shown again (re-render the navigation etc.). */
+  shown(): void;
+}
+
+/** The shell's side, for the room view. */
+export interface RoomHandle {
+  /** Whether another view is shown (the room's is hidden). */
+  readonly away: boolean;
+  /** Refreshes the mini player (call on every room state). */
+  update(): void;
+}
+
+let roomHost: ((room: ShellRoom) => RoomHandle) | undefined;
+
+/** Installed by the shell: what `attachRoom()` calls. */
+export function setRoomHost(host: ((room: ShellRoom) => RoomHandle) | undefined): void {
+  roomHost = host;
+}
+
+/** Called by the room view once it knows its room. Without the shell, a handle that does nothing. */
+export function attachRoom(room: ShellRoom): RoomHandle {
+  if (roomHost !== undefined) return roomHost(room);
+  return { away: false, update: () => undefined };
 }
 
 /** Where the shell notes which room was playing while another page is shown (this tab only). */
@@ -74,18 +127,22 @@ export function playingBeforeLoad(): PlayingRoom | undefined {
   }
 }
 
+/** Whether this document already looked for a room that stopped with the last load. */
+let stoppedNoteChecked = false;
+
 /**
- * After a full page load (a reload while the shell showed a page, say): a bar saying that
- * playback of the room stopped and needs a new "Click to listen" in the room. Shown once; does
- * nothing while the shell is running (the mini player is there) or when nothing was playing.
+ * After a full page load (a reload while the shell showed another view, say): a bar saying that
+ * playback of the room stopped and needs a new "Click to listen" in the room. Looked for once per
+ * document (the first view that renders the navigation); nothing when nothing was playing.
  */
 export function showStoppedNote(): void {
-  if (navigator !== undefined || document.getElementById("mini-player") !== null) return;
+  if (stoppedNoteChecked) return;
+  stoppedNoteChecked = true;
   const room = playingBeforeLoad();
   rememberPlaying(null);
   if (room === undefined) return;
   const bar = document.createElement("div");
-  bar.id = "mini-player";
+  bar.id = "stopped-note";
   bar.className = "mini-player";
   bar.setAttribute("role", "status");
   const text = document.createElement("span");

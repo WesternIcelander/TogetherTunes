@@ -1,9 +1,11 @@
-// The registration page (/register.html). Whether registration is open is the server's call
+// The registration view (/register). Whether registration is open is the server's call
 // (`registration.mode`); when it isn't, the API's error is shown.
 import { api, ApiError, setupNeeded } from "./api.js";
 import {
-  element, formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, withNext,
+  element, formValue, LOGIN_PAGE, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, renderNav, SETUP_PAGE,
+  withNext,
 } from "./session.js";
+import { navigate } from "./nav.js";
 
 async function start(): Promise<void> {
   const form = element<HTMLFormElement>("register-form");
@@ -11,7 +13,7 @@ async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("register-status");
   const next = nextPath();
   element<HTMLAnchorElement>("login-link").href = withNext(LOGIN_PAGE, next);
-  // An invite link (/register.html?invite=<code>) fills the code in.
+  // An invite link (/register?invite=<code>) fills the code in.
   const invite = new URLSearchParams(location.search).get("invite");
   if (invite) {
     (form.elements.namedItem("invite") as HTMLInputElement).value = invite;
@@ -19,7 +21,7 @@ async function start(): Promise<void> {
 
   try {
     if (await setupNeeded()) {
-      location.replace("/setup.html");
+      navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();
@@ -45,13 +47,13 @@ async function start(): Promise<void> {
       });
     } catch (e) {
       if (e instanceof ApiError && e.code === "setup_required") {
-        location.replace("/setup.html");
+        navigate(SETUP_PAGE, true);
         return;
       }
       throw e;
     }
     await offerGuestMerge();
-    location.assign(next);
+    navigate(next);
   });
 }
 

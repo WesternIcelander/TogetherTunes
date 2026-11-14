@@ -1,64 +1,49 @@
-// The room page's shell: keeps listen-mode playback going while the user visits other pages of
-// the site. Every page is still its own HTML document with one module (deep links and reloads
-// work as before); while the room plays in listen mode, the room page handles same-site
-// navigations itself instead of letting the browser unload it (rules in router.ts):
+// The single-page app's shell (docs/ui.md#single-page-app). The server sends index.html for every
+// UI path; this shows the URL's view in `#app` and handles every same-site navigation in place
+// (rules in router.ts), so moving around never loads another document:
 //
-// - a link (or a page script's `navigate()`, nav.ts) to a site page: the page's HTML is fetched,
-//   its content goes into `#shell-page` (the room's view, `#room-body`, is hidden, with the media
-//   elements, the WebSocket and the clock sync left running), its title is taken over, the URL is
-//   set with history.pushState, and its module is run again (imported under a fresh `?mount=`,
-//   so it starts as on a page load and finds its elements; the previous page's `pageSignal()` is
-//   aborted first);
-// - a link back to the playing room shows its view again, without restarting anything;
-// - back / forward (popstate) do the same for the entries this page pushed; scroll positions are
-//   kept in history.state, focus goes to the new page's heading;
-// - a mini player (room name linking back, what plays, play state, "Audio only", Leave) is shown
-//   on the other pages.
-//
-// Another room, logging in or out, other sites and downloads go to the browser as usual, which
-// leaves the room. Requests-only (remote) mode plays nothing, so the shell stands aside there.
-import { decide, pageKey, routeOf, type ClickInfo, type Decision } from "./router.js";
-import { nextPageSignal, rememberPlaying, setNavigator } from "./nav.js";
+// - a view is its `<template id="view-…">` from index.html, cloned into a fresh `<div class="view">`,
+//   plus its module, imported under a fresh `?mount=N` (a new module instance starts like on a page
+//   load and finds its elements); the previous view's signal (nav.ts `pageSignal()`) is aborted and
+//   its element removed;
+// - links, a view's own `navigate()` / `reloadPage()` calls (nav.ts) and plain GET form submits go
+//   through `decide()`; the URL is set with history.pushState (replaceState for a redirect), back /
+//   forward (popstate) show the entry's view again, scroll positions are kept in history.state, and
+//   focus goes to the new view's heading;
+// - the room view, while it plays in listen mode, is kept (hidden, with its media elements, socket
+//   and clock sync running) when another view is shown; a mini player (room name linking back, what
+//   plays, play state, "Audio only", Leave) is shown meanwhile, and a link back shows the room view
+//   again. Another room and the identity views (login, register, password, setup) then load a new
+//   document, which leaves the room; Leave takes the room view away in place.
+import { decide, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
+import { rememberPlaying, setNavigator, setRoomHost, startPageSignal, type RoomHandle, type ShellRoom } from "./nav.js";
 import { recordEvent } from "./diagnostics.js";
 
-/** What the shell needs from the room page. */
-export interface ShellRoom {
-  /** Whether the room plays here now (listen mode, not kicked): only then the shell takes over. */
-  active(): boolean;
-  /** Whether `ref` (id or slug) is this room. */
-  isRoom(ref: string): boolean;
-  /** The room page's path (`/rooms/{slug}`). */
-  path(): string;
-  name(): string;
-  /** The title of the room page. */
-  title(): string;
-  /** What plays: title (empty when nothing) and the timeline state. */
-  nowPlaying(): { title: string; state: string };
-  /** Why the room stopped playing here (kicked), or undefined. */
-  stopped(): string | undefined;
-  audioOnly(): boolean;
-  /** Whether the room is audio-only: then there is no video / audio-only switch. */
-  audioOnlyRoom?(): boolean;
-  setAudioOnly(on: boolean): void;
-  /** The room view is shown again (re-render the navigation etc.). */
-  shown(): void;
-}
-
 interface HistoryState {
-  /** Set on the entries this document manages. */
-  tt?: true;
   scrollY?: number;
 }
 
+/** A view in the document: shown, or (the room) kept playing in the background. */
+interface Mounted {
+  route: ViewRoute;
+  /** pathname + search it was shown for. */
+  key: string;
+  el: HTMLElement;
+  controller: AbortController;
+  /** Its module's `?mount=` number (0: none). */
+  mount: number;
+  /** The room view's hooks, once its module attached them. */
+  room?: ShellRoom;
+}
+
 export class Shell {
-  readonly #room: ShellRoom;
-  readonly #roomBody: HTMLElement;
-  /** `#shell-page` while another page is shown. */
-  #page: HTMLElement | undefined;
-  /** pathname + search of what is shown (the room page, or another page). */
-  #shownKey: string;
+  readonly #app: HTMLElement;
+  /** The view shown. */
+  #view: Mounted | undefined;
+  /** The room view playing in the background while another view is shown. */
+  #kept: Mounted | undefined;
   #mounts = 0;
-  /** Counts navigations: a slow fetch that was overtaken is dropped. */
+  /** Counts navigations: a slow import that was overtaken is dropped. */
   #seq = 0;
   readonly #mini: HTMLElement;
   readonly #miniRoom: HTMLAnchorElement;
@@ -67,16 +52,13 @@ export class Shell {
   readonly #miniAudioOnly: HTMLInputElement;
   readonly #miniAudioOnlyLabel: HTMLLabelElement;
 
-  constructor(room: ShellRoom, roomBody: HTMLElement) {
-    this.#room = room;
-    this.#roomBody = roomBody;
-    this.#shownKey = location.pathname + location.search;
+  constructor(app: HTMLElement) {
+    this.#app = app;
     try {
       history.scrollRestoration = "manual";
     } catch {
       // Not settable: the browser restores (too early, but harmlessly).
     }
-    this.#replaceState({ tt: true });
     this.#mini = document.createElement("div");
     this.#mini.id = "mini-player";
     this.#mini.className = "mini-player";
@@ -96,7 +78,7 @@ export class Shell {
     this.#miniAudioOnly.id = "mini-audio-only";
     label.append(this.#miniAudioOnly, " Audio only");
     this.#miniAudioOnlyLabel = label;
-    this.#miniAudioOnly.addEventListener("change", () => this.#room.setAudioOnly(this.#miniAudioOnly.checked));
+    this.#miniAudioOnly.addEventListener("change", () => this.#kept?.room?.setAudioOnly(this.#miniAudioOnly.checked));
     const leave = document.createElement("button");
     leave.type = "button";
     leave.id = "mini-leave";
@@ -109,30 +91,49 @@ export class Shell {
     document.addEventListener("click", (ev) => this.#onClick(ev));
     document.addEventListener("submit", (ev) => this.#onSubmit(ev));
     window.addEventListener("popstate", () => this.#onPopState());
-    // A page taken away while its requests were still out fails when they come back (its elements
+    // A view taken away while its requests were still out fails when they come back (its elements
     // are gone): not an error worth reporting.
     window.addEventListener("unhandledrejection", (ev) => {
-      if (this.#fromOldPage(ev.reason)) ev.preventDefault();
+      if (this.#fromOldView(ev.reason)) ev.preventDefault();
     });
     setNavigator((href, replace) => this.#navigate(href, replace));
+    setRoomHost((room) => this.#attach(room));
+  }
+
+  /** Shows the view of the document's own URL (the first view after a load). */
+  start(): void {
+    const url = new URL(location.href);
+    const route = routeOf(url.pathname);
+    if (route.kind === "view" && route.path !== url.pathname) {
+      // An alias (`/login.html`, `/library`): show the view's own spelling.
+      url.pathname = route.path;
+      this.#replaceState({}, url.pathname + url.search + url.hash);
+    }
+    void this.#show(url, 0);
+  }
+
+  /** Leave in the mini player: stop the room playing in the background (leaves the room). */
+  leave(): void {
+    const kept = this.#kept;
+    if (kept === undefined) return;
+    this.#kept = undefined;
+    this.#unmount(kept);
+    rememberPlaying(null);
+    recordEvent("shell", { leave: kept.key });
     this.update();
   }
 
-  /** Whether another page is shown (the room view is hidden). */
-  get away(): boolean {
-    return this.#page !== undefined;
-  }
-
-  /** Refreshes the mini player (call on every room state). */
+  /** Refreshes the mini player (the room calls it on every state). */
   update(): void {
-    const away = this.#page !== undefined;
+    const room = this.#kept?.room;
+    const away = room !== undefined;
     this.#mini.hidden = !away;
     document.body.classList.toggle("has-mini-player", away);
-    if (!away) return;
-    this.#miniRoom.href = this.#room.path();
-    this.#miniRoom.textContent = this.#room.name();
-    const stopped = this.#room.stopped();
-    const now = this.#room.nowPlaying();
+    if (room === undefined) return;
+    this.#miniRoom.href = room.path();
+    this.#miniRoom.textContent = room.name();
+    const stopped = room.stopped();
+    const now = room.nowPlaying();
     let state: string;
     if (stopped !== undefined) state = "Stopped";
     else if (now.title === "" || now.state === "idle") state = "Nothing playing";
@@ -140,29 +141,40 @@ export class Shell {
     else state = "⏸ Paused";
     this.#miniState.textContent = state;
     this.#miniTitle.textContent = stopped ?? now.title;
-    this.#miniAudioOnly.checked = this.#room.audioOnly();
+    this.#miniAudioOnly.checked = room.audioOnly();
     this.#miniAudioOnly.disabled = stopped !== undefined;
-    this.#miniAudioOnlyLabel.hidden = this.#room.audioOnlyRoom?.() === true;
-    rememberPlaying(stopped === undefined ? { path: this.#room.path(), name: this.#room.name() } : null);
+    this.#miniAudioOnlyLabel.hidden = room.audioOnlyRoom?.() === true;
+    rememberPlaying(stopped === undefined ? { path: room.path(), name: room.name() } : null);
   }
 
-  /**
-   * The mini player's Leave: stop playing and load the shown page normally (unloading the room page
-   * closes its socket, which leaves the room).
-   */
-  leave(): void {
-    rememberPlaying(null);
-    setNavigator(undefined);
-    location.replace(location.href);
+  /** The room view's module tells the shell about itself (nav.ts `attachRoom`). */
+  #attach(room: ShellRoom): RoomHandle {
+    // The view being started is the room view whose module calls this.
+    const m = this.#view !== undefined && this.#view.route.view === "room" && this.#view.room === undefined
+      ? this.#view : undefined;
+    if (m !== undefined) m.room = room;
+    return {
+      get away(): boolean {
+        return m !== undefined && m.el.hidden === true;
+      },
+      update: () => this.update(),
+    };
   }
 
-  /** Whether `e` was thrown by the module of a page that is no longer shown (`?mount=` in its stack). */
-  #fromOldPage(e: unknown): boolean {
+  /** The room playing here (shown or in the background), whose rules decide navigations. */
+  #playing(): ShellRoom | undefined {
+    const m = this.#kept ?? (this.#view?.route.view === "room" ? this.#view : undefined);
+    const room = m?.room;
+    return room !== undefined && room.active() ? room : undefined;
+  }
+
+  /** Whether `e` was thrown by the module of a view that is no longer in the document. */
+  #fromOldView(e: unknown): boolean {
     const stack = e instanceof Error ? e.stack ?? "" : "";
     const mounts = stack.match(/[?&]mount=\d+/g);
     if (mounts === null) return false;
-    const current = this.#page !== undefined ? "mount=" + this.#mounts : "";
-    return mounts.every((m) => m.slice(1) !== current);
+    const live = [this.#view, this.#kept].filter((m): m is Mounted => m !== undefined).map((m) => "mount=" + m.mount);
+    return mounts.every((m) => live.indexOf(m.slice(1)) < 0);
   }
 
   #clickInfo(ev: MouseEvent, a: Element): ClickInfo {
@@ -173,9 +185,8 @@ export class Shell {
   }
 
   #decide(href: string, click?: ClickInfo): Decision {
-    // Requests-only (remote) mode or kicked: nothing plays, so a page load costs nothing.
-    if (!this.#room.active()) return "browser";
-    return decide(href, location.href, (ref) => this.#room.isRoom(ref), click);
+    const room = this.#playing();
+    return decide(href, location.href, room !== undefined ? (ref) => room.isRoom(ref) : undefined, click);
   }
 
   #onClick(ev: MouseEvent): void {
@@ -186,10 +197,10 @@ export class Shell {
     const d = this.#decide(a.href, this.#clickInfo(ev, a));
     if (d === "browser" || d === "hash") return;
     ev.preventDefault();
-    this.#go(a.href, d, false);
+    this.#go(a.href, false);
   }
 
-  /** A form that really submits (no script handled it) with GET to a site page. */
+  /** A form that really submits (no script handled it) with GET to a view. */
   #onSubmit(ev: SubmitEvent): void {
     const form = ev.target;
     if (!(form instanceof HTMLFormElement) || ev.defaultPrevented) return;
@@ -203,138 +214,170 @@ export class Shell {
     const d = this.#decide(url.href);
     if (d === "browser" || d === "hash") return;
     ev.preventDefault();
-    this.#go(url.href, d, false);
+    this.#go(url.href, false);
   }
 
   #navigate(href: string, replace: boolean): boolean {
-    let d = this.#decide(href);
+    const d = this.#decide(href);
     if (d === "browser") return false;
     if (d === "hash") {
-      if (replace) {
-        // The same page again (reloadPage()): start it over in place, keeping the fragment.
-        if (routeOf(location.pathname).kind !== "page") return false;
-        d = "page";
-      } else {
+      if (!replace) {
         location.hash = new URL(href, location.href).hash;
         return true;
       }
+      // The same view again (reloadPage()): start it over in place, keeping the fragment. The
+      // playing room isn't started over (that would stop it): the browser reloads it.
+      if (this.#view?.route.view === "room") return false;
     }
-    this.#go(href, d, replace);
+    this.#go(href, replace);
     return true;
   }
 
-  #go(href: string, d: "room" | "page", replace: boolean): void {
+  #go(href: string, replace: boolean): void {
     const url = new URL(href, location.href);
+    const route = routeOf(url.pathname);
+    if (route.kind === "view") url.pathname = route.path;
     this.#saveScroll();
-    if (replace) history.replaceState({ tt: true }, "", url.href);
-    else history.pushState({ tt: true }, "", url.href);
-    if (d === "room") this.#showRoom(0, url.hash);
-    else void this.#showPage(url, 0);
+    const target = url.pathname + url.search + url.hash;
+    if (replace) this.#replaceState({}, target);
+    else {
+      try {
+        history.pushState({}, "", target);
+      } catch {
+        // Not allowed (a file:// page): the view changes, the address doesn't.
+      }
+    }
+    void this.#show(url, 0);
   }
 
   #onPopState(): void {
     const key = location.pathname + location.search;
-    // Only the fragment changed (an in-page link, a tab of the admin page): the page handles it.
-    if (key === this.#shownKey) return;
+    // Only the fragment changed (an in-page link, a tab of the admin view): the view handles it.
+    if (this.#view !== undefined && key === this.#view.key) return;
     const state = (history.state ?? {}) as HistoryState;
     const scrollY = typeof state.scrollY === "number" ? state.scrollY : 0;
-    const route = routeOf(location.pathname);
-    if (route.kind === "room" && this.#room.isRoom(route.ref)) {
-      this.#showRoom(scrollY, "");
-    } else if (route.kind === "page" && state.tt === true) {
-      void this.#showPage(new URL(location.href), scrollY);
-    } else {
-      // Not ours to show (another room's entry): a normal load.
+    if (this.#decide(location.href) === "browser") {
+      // Not shown in place while the room plays (another room, login, ...): a normal load.
       location.reload();
+      return;
     }
+    void this.#show(new URL(location.href), scrollY);
   }
 
   #saveScroll(): void {
     const state = (history.state ?? {}) as HistoryState;
-    this.#replaceState({ ...state, tt: true, scrollY: window.scrollY });
+    this.#replaceState({ ...state, scrollY: window.scrollY });
   }
 
-  #replaceState(state: HistoryState): void {
+  #replaceState(state: HistoryState, url?: string): void {
     try {
-      history.replaceState(state, "");
+      if (url === undefined) history.replaceState(state, "");
+      else history.replaceState(state, "", url);
     } catch {
       // Not allowed (a file:// page): scroll positions aren't kept.
     }
   }
 
-  #unmountPage(): void {
-    nextPageSignal();
-    this.#page?.remove();
-    this.#page = undefined;
+  /** Aborts a view's signal and removes its element. */
+  #unmount(m: Mounted): void {
+    m.controller.abort();
+    m.el.remove();
   }
 
-  #showRoom(scrollY: number, hash: string): void {
-    this.#seq++;
-    this.#unmountPage();
-    this.#shownKey = location.pathname + location.search;
-    this.#roomBody.hidden = false;
-    document.title = this.#room.title();
-    rememberPlaying(null);
-    this.update();
-    this.#room.shown();
-    recordEvent("shell", { show: "room" });
-    this.#scroll(scrollY, hash);
-    this.#focus(this.#roomBody);
+  /** Takes the shown view away: kept (hidden) if it is the room playing here, otherwise removed. */
+  #putAway(): void {
+    const v = this.#view;
+    this.#view = undefined;
+    if (v === undefined || v === this.#kept) return;
+    if (v.route.view === "room" && v.room !== undefined && v.room.active()) {
+      if (this.#kept !== undefined) this.#unmount(this.#kept);
+      v.el.hidden = true;
+      this.#kept = v;
+      return;
+    }
+    this.#unmount(v);
   }
 
-  async #showPage(url: URL, scrollY: number): Promise<void> {
+  /** Shows the view for `url`: the kept room again, or a new view. */
+  async #show(url: URL, scrollY: number): Promise<void> {
     const seq = ++this.#seq;
     const key = url.pathname + url.search;
-    let html: string;
-    try {
-      const res = await fetch(key, { credentials: "same-origin", headers: { Accept: "text/html" } });
-      const type = res.headers.get("Content-Type") ?? "";
-      if (!res.ok || !type.includes("text/html")) throw new Error("HTTP " + res.status + " " + type);
-      html = await res.text();
-    } catch (e) {
-      recordEvent("shell", { failed: pageKey(url.href), error: String(e) });
-      if (seq === this.#seq) location.reload();
+    const r = routeOf(url.pathname);
+    const route: ViewRoute = r.kind === "view" ? r : { kind: "view", view: "notFound", params: {}, path: url.pathname };
+    const shown = this.#view;
+    if (route.view === "room" && shown?.route.view === "room" && shown.room !== undefined
+      && shown.room.isRoom(route.params["ref"] ?? "")) {
+      // The room view already shown (a link to it): nothing to start.
+      shown.key = key;
+      this.#scroll(scrollY, url.hash);
       return;
     }
-    if (seq !== this.#seq) return;
-    const doc = new DOMParser().parseFromString(html, "text/html");
-    const script = doc.querySelector<HTMLScriptElement>("script[type=module][src]");
-    const src = script?.getAttribute("src");
-    if (src === null || src === undefined) {
-      location.reload();
+    const kept = this.#kept;
+    if (route.view === "room" && kept?.room !== undefined && kept.room.isRoom(route.params["ref"] ?? "")) {
+      // The room playing in the background: show it again, without restarting anything.
+      this.#putAway();
+      this.#kept = undefined;
+      kept.el.hidden = false;
+      kept.key = key;
+      this.#view = kept;
+      document.title = kept.room.title();
+      rememberPlaying(null);
+      this.update();
+      kept.room.shown();
+      recordEvent("shell", { show: "room" });
+      this.#scroll(scrollY, url.hash);
+      this.#focus(kept.el);
       return;
     }
-    this.#unmountPage();
-    this.#shownKey = key;
-    const page = document.createElement("div");
-    page.id = "shell-page";
-    page.tabIndex = -1;
-    for (const node of Array.from(doc.body.childNodes)) {
-      if (node instanceof Element) {
-        // The navigation bar stays (the page fills it), and nothing of the room page is duplicated.
-        if (node.id === "site-nav" || node.tagName === "SCRIPT" || node.id === "room-listen-overlay") continue;
-      }
-      page.append(document.adoptNode(node));
+    this.#putAway();
+    // A new room view replaces one playing in the background (decide() only lets it through when
+    // that one isn't playing any more).
+    if (route.view === "room" && this.#kept !== undefined) {
+      this.#unmount(this.#kept);
+      this.#kept = undefined;
     }
-    this.#roomBody.hidden = true;
-    this.#roomBody.after(page);
-    this.#page = page;
-    document.title = doc.title;
+    const info = VIEWS[route.view];
+    const template = document.getElementById(info.template);
+    const el = document.createElement("div");
+    el.className = "view view-" + route.view;
+    el.tabIndex = -1;
+    if (template instanceof HTMLTemplateElement) {
+      el.append(template.content.cloneNode(true));
+      document.title = template.dataset["title"] ?? "TogetherTunes";
+    } else {
+      el.textContent = "This page is missing from the app (" + info.template + ").";
+      document.title = "TogetherTunes";
+    }
+    const controller = startPageSignal();
+    const m: Mounted = { route, key, el, controller, mount: 0 };
+    this.#view = m;
+    this.#app.append(el);
     this.update();
     recordEvent("shell", { show: pageKey(url.href) });
-    // The page's module, run afresh: a new URL is a new module instance, which starts like on a page load.
-    const mount = ++this.#mounts;
-    const moduleUrl = new URL(src, url);
-    moduleUrl.searchParams.set("mount", String(mount));
-    try {
-      await import(moduleUrl.href);
-    } catch (e) {
-      recordEvent("shell", { importFailed: moduleUrl.pathname, error: String(e) });
-      if (seq === this.#seq) location.reload();
-      return;
+    if (info.module !== undefined) {
+      // The view's module, run afresh: a new URL is a new module instance, which starts like on a page load.
+      const mount = ++this.#mounts;
+      m.mount = mount;
+      const moduleUrl = new URL("/js/" + info.module + ".js", location.href);
+      moduleUrl.searchParams.set("mount", String(mount));
+      try {
+        await import(moduleUrl.href);
+      } catch (e) {
+        recordEvent("shell", { importFailed: moduleUrl.pathname, error: String(e) });
+        if (seq === this.#seq) {
+          const p = document.createElement("p");
+          p.className = "error";
+          p.setAttribute("role", "alert");
+          p.textContent = "This page failed to load. Reload to try again.";
+          el.prepend(p);
+        }
+        return;
+      }
     }
+    if (seq !== this.#seq) return;
     this.#scroll(scrollY, url.hash);
-    this.#focus(page);
+    // After a load the browser puts focus at the start already; after a navigation, the new view's heading.
+    if (seq > 1) this.#focus(el);
   }
 
   #scroll(scrollY: number, hash: string): void {
@@ -352,7 +395,7 @@ export class Shell {
       }
     }
     window.scrollTo(0, scrollY);
-    // Pages fill in after their data loads: try once more when that's likely done.
+    // Views fill in after their data loads: try once more when that's likely done.
     if (scrollY > 0) window.setTimeout(() => window.scrollTo(0, scrollY), 300);
   }
 

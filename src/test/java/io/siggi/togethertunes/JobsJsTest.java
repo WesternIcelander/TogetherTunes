@@ -31,7 +31,7 @@ class JobsJsTest {
         for (String s : List.of("from \"./jobs.js\"", "\"/api/admin/jobs\"", "admin: true", "\"jobs\"")) {
             assertTrue(admin.contains(s), s);
         }
-        String adminPage = read("web/admin/index.html");
+        String adminPage = NodeTests.view("view-admin");
         assertTrue(adminPage.contains("data-tab=\"jobs\""), adminPage);
         assertTrue(adminPage.contains("id=\"tab-jobs\""), adminPage);
         assertTrue(adminPage.contains("id=\"jobs-root\""), adminPage);
@@ -74,6 +74,6 @@ class JobsJsTest {
 
         String session = read("web/js/session.js");
         assertTrue(session.contains("\"/encodes/\"") && session.contains("\"Encodes\""), session);
-        assertTrue(read("web/library/index.html").contains("href=\"/encodes/\""));
+        assertTrue(NodeTests.view("view-library").contains("href=\"/encodes/\""));
     }
 }

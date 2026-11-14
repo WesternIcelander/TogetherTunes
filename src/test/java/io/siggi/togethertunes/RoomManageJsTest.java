@@ -59,13 +59,13 @@ class RoomManageJsTest {
         }
         assertFalse(page.contains("/requests"), "the request history is gone");
         assertTrue(read("web/js/guestban.js").contains("/guest-bans/"));
-        String html = read("web/room-manage.html");
-        for (String s : List.of("src=\"/js/roommanage.js\"", "id=\"site-nav\"", "id=\"tab-settings\"",
+        String html = NodeTests.view("view-room-manage");
+        for (String s : List.of("id=\"tab-settings\"",
                 "id=\"tab-members\"", "id=\"tab-bans\"", "id=\"member-add\"")) {
             assertTrue(html.contains(s), s);
         }
         assertFalse(html.contains("tab-requests"), html);
-        assertTrue(read("web/room.html").contains("id=\"room-manage-link\""));
+        assertTrue(NodeTests.view("view-room").contains("id=\"room-manage-link\""));
         assertTrue(read("web/js/room.js").contains("/manage"));
         assertTrue(read("web/css/main.css").contains(".server-disabled"));
     }

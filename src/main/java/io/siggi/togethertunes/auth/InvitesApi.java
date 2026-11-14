@@ -53,7 +53,7 @@ public final class InvitesApi {
 
     /** The registration link for an invite code. */
     public String link(String code) {
-        return publicBaseUrl + "/register.html?invite=" + URLEncoder.encode(code, StandardCharsets.UTF_8);
+        return publicBaseUrl + "/register?invite=" + URLEncoder.encode(code, StandardCharsets.UTF_8);
     }
 
     public void register(Router router) {

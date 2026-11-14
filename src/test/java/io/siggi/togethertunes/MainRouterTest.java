@@ -39,7 +39,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -133,17 +132,54 @@ class MainRouterTest {
         assertTrue(get("/").body().contains("/test/ws-echo.html"));
     }
 
+    /** The app's one document (index.html): its shell module, no other module, and every view's template. */
+    private static void assertAppDocument(String path, HttpResponse<String> page) {
+        assertEquals(200, page.statusCode(), path);
+        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""), path);
+        String body = page.body();
+        assertEquals(1, body.split("<script type=\"module\"", -1).length - 1, path);
+        assertTrue(body.contains("<script type=\"module\" src=\"/js/app.js\"></script>"), path);
+        assertTrue(body.contains("id=\"site-nav\""), path);
+        assertTrue(body.contains("<main id=\"app\">"), path);
+        assertTrue(body.contains("<template id=\"view-room\""), path);
+    }
+
+    /**
+     * The single-page app (docs/ui.md#single-page-app): every UI path, deep links included, gets the
+     * same document; the API, media, streams, OIDC, the short link, the test pages and the static
+     * files keep their own answers.
+     */
     @Test
-    void itemPageIsServedForItsDirectLink() throws Exception {
-        HttpResponse<String> page = get("/items/0190abcd-ef01-7000-8000-000000000001");
-        assertEquals(200, page.statusCode());
-        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
-        assertTrue(page.body().contains("src=\"/js/item.js\""), page.body());
-        assertEquals(200, get("/js/item.js").statusCode());
-        // The API and media routes stay more specific than the page.
+    void everyUiPathServesTheAppDocument() throws Exception {
+        String index = get("/").body();
+        for (String path : List.of("/", "/index.html", "/rooms/", "/rooms", "/library/", "/library", "/playlists/",
+                "/playlists/?id=0190abcd-ef01-7000-8000-000000000001", "/playlists/0190abcd-ef01-7000-8000-000000000001",
+                "/encodes/", "/account/", "/admin/", "/login", "/login.html?next=%2F", "/register", "/password",
+                "/setup", "/setup.html", "/items/0190abcd-ef01-7000-8000-000000000001", "/rooms/my-room",
+                "/rooms/my-room?mode=remote", "/rooms/my-room/manage", "/no/such/view")) {
+            HttpResponse<String> page = get(path);
+            assertAppDocument(path, page);
+            assertEquals(index, page.body(), path);
+        }
+        // The shell imports each view's module under ?mount=N.
+        for (String module : List.of("app", "shell", "router", "main", "rooms", "room", "roommanage", "library",
+                "playlists", "encodes", "account", "admin", "item", "login", "register", "password", "setup")) {
+            HttpResponse<String> js = get("/js/" + module + ".js?mount=7");
+            assertEquals(200, js.statusCode(), module);
+            assertTrue(js.headers().firstValue("Content-Type").orElse("").startsWith("text/javascript"), module);
+        }
+        // The API and media routes stay more specific than the app; unknown ones are 404s, not the app.
         assertEquals(404, get("/api/items/0190abcd-ef01-7000-8000-000000000001").statusCode());
-        for (String path : List.of("/library/", "/playlists/")) {
-            assertEquals(200, get(path).statusCode(), path);
+        for (String path : List.of("/api/nope", "/media/0190abcd-ef01-7000-8000-000000000001/nope",
+                "/live/nope", "/test/", "/test/nope.html", "/js/nope.js", "/css/nope.css", "/favicon.ico")) {
+            HttpResponse<String> r = get(path);
+            assertEquals(404, r.statusCode(), path);
+            assertFalse(r.body().contains("/js/app.js"), path);
+        }
+        // The old page files are gone.
+        for (String file : List.of("room.html", "item.html", "room-manage.html", "rooms/index.html",
+                "library/index.html", "account/index.html")) {
+            assertFalse(java.nio.file.Files.exists(staticFiles.root().resolve(file)), file);
         }
     }
 
@@ -176,81 +212,19 @@ class MainRouterTest {
         // Other methods aren't allowed.
         HttpResponse<String> post = post("/r/my-room", "application/json", "{}");
         assertTrue(post.statusCode() == 405 || post.statusCode() == 403, String.valueOf(post.statusCode()));
-        // The target is the room page (whether the room exists is the page's business).
-        HttpResponse<String> page = get("/rooms/my-room?mode=remote");
-        assertEquals(200, page.statusCode());
-        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
-        assertTrue(page.body().contains("src=\"/js/room.js\""), page.body());
+        // The target is the app's room view (whether the room exists is the view's business).
+        assertAppDocument("/rooms/my-room?mode=remote", get("/rooms/my-room?mode=remote"));
         assertEquals(200, get("/js/room.js").statusCode());
         assertEquals(404, get("/api/rooms/my-room").statusCode());
     }
 
     @Test
-    void roomsPageIsServedAtTheRoomsDirectory() throws Exception {
-        // /rooms/ is the rooms list, not the room page for an empty room name.
-        HttpResponse<String> page = get("/rooms/");
-        assertEquals(200, page.statusCode());
-        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
-        assertTrue(page.body().contains("src=\"/js/rooms.js\""), page.body());
-        assertFalse(page.body().contains("src=\"/js/room.js\""), page.body());
-        assertEquals(200, get("/js/rooms.js").statusCode());
+    void roomsListApiIsOpenToAnonymousCallers() throws Exception {
         assertEquals(200, get("/js/roomlist.js").statusCode());
-        // Without the slash it redirects to the directory, like /library.
-        HttpResponse<String> redirect = get("/rooms");
-        assertEquals(308, redirect.statusCode());
-        assertEquals("/rooms/", redirect.headers().firstValue("Location").orElse(""));
-        // A room path is still the room page; the list API is open to anonymous callers.
-        assertTrue(get("/rooms/lounge").body().contains("src=\"/js/room.js\""));
+        assertEquals(200, get("/js/roomsettings.js").statusCode());
         HttpResponse<String> list = get("/api/rooms");
         assertEquals(200, list.statusCode());
         assertEquals("{\"items\":[]}", list.body());
-    }
-
-    /**
-     * The room page's shell (shell.ts) fetches the pages it shows in place and runs their module
-     * again under {@code ?mount=N}: each of those paths must serve HTML with exactly one module
-     * script, and the module must be served with its query.
-     */
-    @Test
-    void pagesTheShellShowsInPlaceServeHtmlWithOneModule() throws Exception {
-        Map<String, String> pages = new LinkedHashMap<>();
-        pages.put("/", "/js/main.js");
-        pages.put("/rooms/", "/js/rooms.js");
-        pages.put("/library/", "/js/library.js");
-        pages.put("/playlists/", "/js/playlists.js");
-        pages.put("/playlists/?id=0190abcd-ef01-7000-8000-000000000001", "/js/playlists.js");
-        pages.put("/encodes/", "/js/encodes.js");
-        pages.put("/account/", "/js/account.js");
-        pages.put("/admin/", "/js/admin.js");
-        pages.put("/items/0190abcd-ef01-7000-8000-000000000001", "/js/item.js");
-        pages.put("/rooms/my-room/manage", "/js/roommanage.js");
-        for (Map.Entry<String, String> e : pages.entrySet()) {
-            HttpResponse<String> page = get(e.getKey());
-            assertEquals(200, page.statusCode(), e.getKey());
-            assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""), e.getKey());
-            String body = page.body();
-            assertEquals(1, body.split("<script type=\"module\"", -1).length - 1, e.getKey());
-            assertTrue(body.contains("<script type=\"module\" src=\"" + e.getValue() + "\"></script>"), e.getKey());
-            assertTrue(body.contains("id=\"site-nav\""), e.getKey());
-            HttpResponse<String> module = get(e.getValue() + "?mount=7");
-            assertEquals(200, module.statusCode(), e.getValue());
-            assertTrue(module.headers().firstValue("Content-Type").orElse("").startsWith("text/javascript"),
-                    module.headers().firstValue("Content-Type").orElse(""));
-        }
-        // The room page holds the view the shell hides and shows again.
-        String room = get("/rooms/my-room").body();
-        assertTrue(room.contains("<div id=\"room-body\">"), room);
-        assertTrue(room.contains("id=\"room-listen-overlay\""), room);
-    }
-
-    @Test
-    void roomManagementPageIsServedAtTheRoomPath() throws Exception {
-        HttpResponse<String> page = get("/rooms/my-room/manage");
-        assertEquals(200, page.statusCode());
-        assertEquals("text/html; charset=utf-8", page.headers().firstValue("Content-Type").orElse(""));
-        assertTrue(page.body().contains("src=\"/js/roommanage.js\""), page.body());
-        assertEquals(200, get("/js/roommanage.js").statusCode());
-        assertEquals(200, get("/js/roomsettings.js").statusCode());
     }
 
     @Test
@@ -326,13 +300,14 @@ class MainRouterTest {
 
     @Test
     void setupPageLoads() throws Exception {
-        HttpResponse<String> page = get("/setup.html");
-        assertEquals(200, page.statusCode());
-        assertTrue(page.body().contains("/js/setup.js"), page.body());
+        HttpResponse<String> page = get("/setup");
+        assertAppDocument("/setup", page);
+        assertTrue(page.body().contains("<template id=\"view-setup\""), page.body());
         HttpResponse<String> script = get("/js/setup.js");
         assertEquals(200, script.statusCode());
         assertTrue(script.body().contains("\"/api/setup\"") || get("/js/api.js").body().contains("\"/api/setup\""));
-        assertTrue(get("/js/main.js").body().contains("/setup.html"), "the home page sends you to setup");
+        assertTrue(get("/js/main.js").body().contains("SETUP_PAGE"), "the home page sends you to setup");
+        assertTrue(get("/js/session.js").body().contains("\"/setup\""));
     }
 
     private HttpResponse<String> postJson(String path, String body, String cookie) throws IOException, InterruptedException {
@@ -614,7 +589,7 @@ class MainRouterTest {
 
         // Static files never resolve the actor, so they don't slide or set cookies.
         clock.advance(2 * 60_000);
-        assertTrue(send("GET", "/setup.html", null, "Cookie", sid).headers().allValues("Set-Cookie").isEmpty());
+        assertTrue(send("GET", "/setup", null, "Cookie", sid).headers().allValues("Set-Cookie").isEmpty());
 
         // A logout that slides first still sends only the clearing cookie.
         HttpResponse<String> out = send("POST", "/api/auth/logout", null, "Cookie", sid);

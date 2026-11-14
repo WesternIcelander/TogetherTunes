@@ -1,6 +1,5 @@
 package io.siggi.togethertunes.rooms;
 
-import io.siggi.togethertunes.http.Handler;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
@@ -8,11 +7,12 @@ import io.siggi.togethertunes.http.Router;
 import java.io.IOException;
 
 /**
- * The room page's URLs in the web UI.
+ * The room view's URLs in the web UI.
  *
  * <ul>
- *   <li>{@code GET /rooms/{idOrSlug}}: the room page (the page reads the room from the path, and
- *       the mode from {@code ?mode=}).</li>
+ *   <li>{@code /rooms/{idOrSlug}}: the room view of the single-page app (served as the app's
+ *       {@code index.html} by {@link io.siggi.togethertunes.http.StaticFiles}; the view reads the
+ *       room from the path, and the mode from {@code ?mode=}).</li>
  *   <li>{@code GET /r/{slug}}: the short link, the QR code's target ({@code docs/overlay.md}) →
  *       {@code 302} to {@code /rooms/{slug}?mode=remote}, the room page in remote mode
  *       ({@code docs/rooms.md#web-and-app-playback}). The slug is lower-cased; anything that isn't
@@ -28,13 +28,8 @@ public final class RoomLinks {
     private RoomLinks() {
     }
 
-    /**
-     * Registers both routes.
-     *
-     * @param roomPage the handler serving the room page's HTML file
-     */
-    public static void register(Router router, Handler roomPage) {
-        router.get("/rooms/{room}", roomPage);
+    /** Registers the short link's route. */
+    public static void register(Router router) {
         router.get("/r/{slug}", RoomLinks::shortLink);
     }
 

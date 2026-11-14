@@ -34,7 +34,7 @@ class WebBuildTest {
 
     @Test
     void staticAssetsArePackaged() throws IOException {
-        assertTrue(read("web/index.html").contains("src=\"/js/main.js\""));
+        assertTrue(read("web/index.html").contains("src=\"/js/app.js\""));
         read("web/css/main.css");
     }
 
@@ -67,22 +67,22 @@ class WebBuildTest {
 
     @Test
     void setupPageIsPackaged() throws IOException {
-        String page = read("web/setup.html");
-        assertTrue(page.contains("src=\"/js/setup.js\""), page);
+        String page = read("web/index.html");
+        assertTrue(page.contains("<template id=\"view-setup\""), page);
+        assertTrue(read("web/js/router.js").contains("module: \"setup\""));
         assertTrue(read("web/js/setup.js").contains("from \"./api.js\""));
         assertTrue(read("web/js/api.js").contains("\"/api/setup\""));
     }
 
     @Test
     void accountPagesArePackaged() throws IOException {
-        for (String page : List.of("login", "register", "password")) {
-            String html = read("web/" + page + ".html");
-            assertTrue(html.contains("src=\"/js/" + page + ".js\""), html);
-            assertTrue(html.contains("id=\"site-nav\""), html);
+        String index = read("web/index.html");
+        String router = read("web/js/router.js");
+        for (String page : List.of("login", "register", "password", "account")) {
+            assertTrue(index.contains("<template id=\"view-" + page + "\""), page);
+            assertTrue(router.contains("module: \"" + page + "\""), page);
             assertTrue(read("web/js/" + page + ".js").contains("from \"./session.js\""), page);
         }
-        String account = read("web/account/index.html");
-        assertTrue(account.contains("src=\"/js/account.js\""), account);
         String accountJs = read("web/js/account.js");
         assertTrue(accountJs.contains("\"/api/me/sessions\""), accountJs);
         assertTrue(read("web/js/login.js").contains("\"/api/auth/login\""));
@@ -95,8 +95,8 @@ class WebBuildTest {
         String session = read("web/js/session.js");
         // A temporary password sends the user to the change-password page first.
         assertTrue(session.contains("mustChangePassword"), session);
-        assertTrue(session.contains("\"/password.html\""), session);
-        assertTrue(session.contains("\"/login.html\""), session);
+        assertTrue(session.contains("\"/password\""), session);
+        assertTrue(session.contains("\"/login\""), session);
         // Administration is linked for any admin.* permission.
         assertTrue(session.contains("\"admin.\""), session);
         assertTrue(read("web/js/login.js").contains("mustChangePassword"));
@@ -105,22 +105,23 @@ class WebBuildTest {
         }
         assertTrue(read("web/js/admin.js").contains("requireUser"));
         assertTrue(read("web/js/account.js").contains("requireUser"));
-        assertTrue(read("web/admin/index.html").contains("id=\"site-nav\""));
+        assertTrue(read("web/index.html").contains("<template id=\"view-admin\""));
     }
 
     @Test
     void libraryPagesArePackaged() throws IOException {
         Map<String, String> pages = Map.of(
-                "web/library/index.html", "library",
-                "web/playlists/index.html", "playlists",
-                "web/encodes/index.html", "encodes",
-                "web/item.html", "item",
-                "web/room.html", "room",
-                "web/rooms/index.html", "rooms");
+                "view-library", "library",
+                "view-playlists", "playlists",
+                "view-encodes", "encodes",
+                "view-item", "item",
+                "view-room", "room",
+                "view-rooms", "rooms");
+        String index = read("web/index.html");
+        String router = read("web/js/router.js");
         for (Map.Entry<String, String> e : pages.entrySet()) {
-            String html = read(e.getKey());
-            assertTrue(html.contains("src=\"/js/" + e.getValue() + ".js\""), html);
-            assertTrue(html.contains("id=\"site-nav\""), html);
+            assertTrue(index.contains("<template id=\"" + e.getKey() + "\""), e.getKey());
+            assertTrue(router.contains("template: \"" + e.getKey() + "\", module: \"" + e.getValue() + "\""), e.getKey());
             assertTrue(read("web/js/" + e.getValue() + ".js").contains("from \"./session.js\""), e.getValue());
         }
         // Library and playlists need an account; the item page is open to anyone with the link.
@@ -152,7 +153,7 @@ class WebBuildTest {
         assertTrue(client.contains("\"/api/me/guest\""), client);
         assertTrue(client.contains("type: \"identity\""), client);
         assertTrue(client.contains("identity_required"), client);
-        assertTrue(read("web/room.html").contains("id=\"room-queue\""));
+        assertTrue(index.contains("id=\"room-queue\""));
         assertTrue(read("web/js/media.js").contains("/job"));
         String uploads = read("web/js/uploads.js");
         assertTrue(uploads.contains("\"/api/uploads\""), uploads);

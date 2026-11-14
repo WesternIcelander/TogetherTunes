@@ -1,20 +1,92 @@
-// The rules of the room page's shell (shell.ts): which navigations it handles itself, so that
-// listen-mode playback survives them, and which it leaves to the browser. Pure logic (no DOM), so
-// it runs under Node in the tests (src/test/resources/web-tests/router.test.mjs).
+// The single-page app's routes (docs/ui.md#single-page-app): which view a URL shows, and how the
+// shell (shell.ts) handles a navigation. Pure logic (no DOM), so it runs under Node in the tests
+// (src/test/resources/web-tests/router.test.mjs).
 //
-// While a room plays in listen mode, links to the site's own pages (front page, rooms list,
-// library, playlists, encodes, account, administration, item pages, room management) are fetched and
-// swapped into the page; a link back to the playing room shows its view again. Everything else
-// goes to the browser: another room (leave this one, join that one), the login / register /
-// password / setup pages (they change who is listening), the API, media and downloads, test pages,
-// other sites, and clicks meant for a new tab or window.
+// The server sends the same document (index.html) for every UI path (StaticFiles.isAppPath, which
+// follows the same rules as `isAppPath` here); the shell routes it to a view. Paths with their own
+// server routes (the API, media, streams, OIDC, the room short link, the WebSocket, the test pages
+// and the static files) are never views.
+//
+// While a room plays in the background (listen mode, another view shown), a link to another room
+// and the identity views (login, register, password, setup: they change who is listening) still
+// load a new document, which leaves the room; everything else is shown in place.
 
-/** What a URL on this site is, for the shell: a page it can show, a room, or neither. */
-export type Route = { kind: "page" } | { kind: "room"; ref: string } | { kind: "other" };
+/** The views of the app. Each has a `<template id="view-…">` in index.html and (most) a module. */
+export type ViewName = "home" | "login" | "register" | "password" | "setup" | "rooms" | "room" | "roomManage"
+  | "library" | "playlists" | "encodes" | "account" | "admin" | "item" | "notFound";
 
-/** The site pages the shell may show in place (each is a static HTML page with one module). */
-const PAGE_PATHS = new Set(["/", "/index.html", "/rooms/", "/library/", "/playlists/", "/encodes/",
-  "/account/", "/admin/"]);
+/** A URL that shows a view: which one, its path parameters, and the path to show for it. */
+export interface ViewRoute {
+  kind: "view";
+  view: ViewName;
+  /** Path parameters (`ref` for rooms, `id` for items and playlists), decoded. */
+  params: Record<string, string>;
+  /** The view's own spelling of the path (aliases such as `/login.html` or `/library` map to it). */
+  path: string;
+}
+
+/** What a path on this site is: a view, or something the server answers itself. */
+export type Route = ViewRoute | { kind: "other" };
+
+/** What the shell knows about each view. */
+export interface ViewInfo {
+  /** The `<template>` in index.html holding the view's markup. */
+  template: string;
+  /** The module (under /js/) that runs the view, if any. */
+  module?: string;
+  /** Whether the view changes who is using the page: never shown in place while a room plays. */
+  identity?: true;
+}
+
+export const VIEWS: Readonly<Record<ViewName, ViewInfo>> = {
+  home: { template: "view-home", module: "main" },
+  login: { template: "view-login", module: "login", identity: true },
+  register: { template: "view-register", module: "register", identity: true },
+  password: { template: "view-password", module: "password", identity: true },
+  setup: { template: "view-setup", module: "setup", identity: true },
+  rooms: { template: "view-rooms", module: "rooms" },
+  room: { template: "view-room", module: "room" },
+  roomManage: { template: "view-room-manage", module: "roommanage" },
+  library: { template: "view-library", module: "library" },
+  playlists: { template: "view-playlists", module: "playlists" },
+  encodes: { template: "view-encodes", module: "encodes" },
+  account: { template: "view-account", module: "account" },
+  admin: { template: "view-admin", module: "admin" },
+  item: { template: "view-item", module: "item" },
+  notFound: { template: "view-not-found" },
+};
+
+/**
+ * First path segments the server answers itself (API, media, streams, OIDC, short links, the
+ * WebSocket, test pages, static files): never a view, and never sent index.html.
+ */
+export const SERVER_PREFIXES: readonly string[] = ["api", "media", "live", "auth", "r", "ws", "test", "js", "css"];
+
+/** Fixed paths → view and canonical path. Without the trailing slash and the old `.html` names too. */
+const FIXED: Record<string, [ViewName, string]> = {
+  "/": ["home", "/"],
+  "/index.html": ["home", "/"],
+  "/login": ["login", "/login"],
+  "/login.html": ["login", "/login"],
+  "/register": ["register", "/register"],
+  "/register.html": ["register", "/register"],
+  "/password": ["password", "/password"],
+  "/password.html": ["password", "/password"],
+  "/setup": ["setup", "/setup"],
+  "/setup.html": ["setup", "/setup"],
+  "/rooms": ["rooms", "/rooms/"],
+  "/rooms/": ["rooms", "/rooms/"],
+  "/library": ["library", "/library/"],
+  "/library/": ["library", "/library/"],
+  "/playlists": ["playlists", "/playlists/"],
+  "/playlists/": ["playlists", "/playlists/"],
+  "/encodes": ["encodes", "/encodes/"],
+  "/encodes/": ["encodes", "/encodes/"],
+  "/account": ["account", "/account/"],
+  "/account/": ["account", "/account/"],
+  "/admin": ["admin", "/admin/"],
+  "/admin/": ["admin", "/admin/"],
+};
 
 function decodeSegment(s: string): string | undefined {
   try {
@@ -24,18 +96,61 @@ function decodeSegment(s: string): string | undefined {
   }
 }
 
-/** The route of a path on this site. */
+/**
+ * Whether the server sends index.html for this path when no file is there (StaticFiles.isAppPath):
+ * not under one of {@link SERVER_PREFIXES}, no empty, dot or dot-file segments (but a trailing
+ * slash), no backslash or NUL, and not file-like (a last segment with a dot, other than the old
+ * `.html` page names).
+ */
+export function isAppPath(pathname: string): boolean {
+  if (!pathname.startsWith("/") || pathname.indexOf("\\") >= 0 || pathname.indexOf("\0") >= 0) return false;
+  const segments = pathname.slice(1).split("/");
+  const first = segments[0] ?? "";
+  if (SERVER_PREFIXES.indexOf(first) >= 0) return false;
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i] ?? "";
+    // Only the last segment may be empty (a trailing slash); no dot segments or dot-files.
+    if (segment === "" ? i < segments.length - 1 : segment.startsWith(".")) return false;
+  }
+  const last = segments[segments.length - 1] ?? "";
+  return last.indexOf(".") < 0 || last.endsWith(".html");
+}
+
+/** The route of a path on this site (`location.pathname`, still percent-encoded). */
 export function routeOf(pathname: string): Route {
-  if (PAGE_PATHS.has(pathname)) return { kind: "page" };
-  // Item pages (/items/{id}) and room management (/rooms/{ref}/manage) are pages too.
-  if (/^\/items\/[^/]+\/?$/.test(pathname)) return { kind: "page" };
-  if (/^\/rooms\/[^/]+\/manage\/?$/.test(pathname)) return { kind: "page" };
-  const m = /^\/rooms\/([^/]+)\/?$/.exec(pathname);
+  if (!isAppPath(pathname)) return { kind: "other" };
+  const fixed = FIXED[pathname];
+  if (fixed !== undefined) return { kind: "view", view: fixed[0], params: {}, path: fixed[1] };
+  let m = /^\/rooms\/([^/]+)\/?$/.exec(pathname);
   if (m !== null && m[1] !== undefined) {
     const ref = decodeSegment(m[1]);
-    if (ref !== undefined && ref !== "") return { kind: "room", ref };
+    if (ref !== undefined && ref !== "") return { kind: "view", view: "room", params: { ref }, path: "/rooms/" + m[1] };
   }
-  return { kind: "other" };
+  m = /^\/rooms\/([^/]+)\/manage\/?$/.exec(pathname);
+  if (m !== null && m[1] !== undefined) {
+    const ref = decodeSegment(m[1]);
+    if (ref !== undefined && ref !== "") {
+      return { kind: "view", view: "roomManage", params: { ref }, path: "/rooms/" + m[1] + "/manage" };
+    }
+  }
+  m = /^\/items\/([^/]+)\/?$/.exec(pathname);
+  if (m !== null && m[1] !== undefined) {
+    const id = decodeSegment(m[1]);
+    if (id !== undefined && id !== "") return { kind: "view", view: "item", params: { id }, path: "/items/" + m[1] };
+  }
+  m = /^\/playlists\/([^/]+)\/?$/.exec(pathname);
+  if (m !== null && m[1] !== undefined) {
+    const id = decodeSegment(m[1]);
+    if (id !== undefined && id !== "") {
+      return { kind: "view", view: "playlists", params: { id }, path: "/playlists/" + m[1] };
+    }
+  }
+  return { kind: "view", view: "notFound", params: {}, path: pathname };
+}
+
+/** The path of a playlist's view. */
+export function playlistPath(id: string): string {
+  return "/playlists/" + encodeURIComponent(id);
 }
 
 /** A link click, as the shell sees it (from the event and the `<a>`). */
@@ -56,20 +171,20 @@ export interface ClickInfo {
 
 /**
  * What to do with a navigation to `href`:
- * - "browser": leave it to the browser (a full page load, a new tab, another site, ...);
- * - "hash": same page, only the fragment differs: the browser scrolls, nothing is loaded;
- * - "room": the playing room's own page: show its view again;
- * - "page": a site page: fetch it and show it in place.
+ * - "browser": leave it to the browser (a new document, a new tab, another site, ...);
+ * - "hash": same view, only the fragment differs: the browser scrolls, nothing is loaded;
+ * - "room": the room playing in the background: show its view again;
+ * - "view": show the URL's view in place.
  */
-export type Decision = "browser" | "hash" | "room" | "page";
+export type Decision = "browser" | "hash" | "room" | "view";
 
 /**
- * Decides a navigation from the page at `current` (an absolute URL) to `href` (absolute, or
- * relative to `current`). `isCurrentRoom` says whether a room reference (id or slug) is the
- * playing room. `click` is the link click that started it, if any (a script's own navigation
- * has none).
+ * Decides a navigation from `current` (an absolute URL) to `href` (absolute, or relative to
+ * `current`). `playingRoom` is set while a room plays in the background (kept while other views
+ * are shown) and says whether a room reference (id or slug) is that room. `click` is the link click
+ * that started it, if any (a script's own navigation has none).
  */
-export function decide(href: string, current: string, isCurrentRoom: (ref: string) => boolean,
+export function decide(href: string, current: string, playingRoom: ((ref: string) => boolean) | undefined,
                        click?: ClickInfo): Decision {
   if (click !== undefined) {
     if (click.defaultPrevented || click.button !== 0) return "browser";
@@ -90,11 +205,15 @@ export function decide(href: string, current: string, isCurrentRoom: (ref: strin
   if (to.origin !== from.origin) return "browser";
   if (to.pathname === from.pathname && to.search === from.search && to.hash !== "") return "hash";
   const route = routeOf(to.pathname);
-  if (route.kind === "room") return isCurrentRoom(route.ref) ? "room" : "browser";
-  return route.kind === "page" ? "page" : "browser";
+  if (route.kind !== "view") return "browser";
+  if (playingRoom !== undefined) {
+    if (route.view === "room") return playingRoom(route.params["ref"] ?? "") ? "room" : "browser";
+    if (VIEWS[route.view].identity === true) return "browser";
+  }
+  return "view";
 }
 
-/** The part of a URL that picks the page (path and query, not the fragment). */
+/** The part of a URL that picks the view (path and query, not the fragment). */
 export function pageKey(url: string): string {
   try {
     const u = new URL(url);

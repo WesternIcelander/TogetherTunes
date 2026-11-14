@@ -51,6 +51,6 @@ class OutputsJsTest {
         for (String s : List.of("from \"./outputspanel.js\"", "new OutputsPanel(", "outputsPanel.update(")) {
             assertTrue(room.contains(s), s);
         }
-        assertTrue(read("web/room.html").contains("id=\"room-outputs\""));
+        assertTrue(NodeTests.view("view-room").contains("id=\"room-outputs\""));
     }
 }

@@ -187,7 +187,7 @@ abstract class InvitesContract {
         JsonObject carols = create(carolToken, "{\"note\":\"  for Erin  \",\"expiresInHours\":2}");
         String code = carols.get("code").getAsString();
         assertTrue(Tokens.isWellFormed(code), code);
-        assertEquals(BASE + "/register.html?invite=" + code, carols.get("url").getAsString());
+        assertEquals(BASE + "/register?invite=" + code, carols.get("url").getAsString());
         JsonObject invite = carols.getAsJsonObject("invite");
         String carolsId = invite.get("id").getAsString();
         assertEquals("pending", invite.get("status").getAsString());

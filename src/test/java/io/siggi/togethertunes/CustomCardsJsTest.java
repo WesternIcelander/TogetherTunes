@@ -34,8 +34,8 @@ class CustomCardsJsTest {
         for (String s : List.of("\"PUT\"", "\"DELETE\"", "w.message", "canEdit")) {
             assertTrue(ui.contains(s), "customcardsui.js: " + s);
         }
-        for (String page : List.of("web/admin/index.html", "web/room-manage.html")) {
-            String html = Files.readString(NodeTests.resource(page), StandardCharsets.UTF_8);
+        for (String page : List.of("view-admin", "view-room-manage")) {
+            String html = NodeTests.view(page);
             assertTrue(html.contains("id=\"cards-root\"") && html.contains("data-tab=\"cards\""), page);
         }
     }

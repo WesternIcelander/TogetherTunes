@@ -1254,15 +1254,6 @@ public final class Main {
         return loaded.cipher();
     }
 
-    /** The web UI file served for {@code /items/{id}}. */
-    static final String ITEM_PAGE = "item.html";
-
-    /** The web UI file served for {@code /rooms/{idOrSlug}} (and, by redirect, {@code /r/{slug}}). */
-    static final String ROOM_PAGE = "room.html";
-
-    /** The web UI file served for {@code /rooms/{idOrSlug}/manage}: settings, members, guest bans. */
-    static final String ROOM_MANAGE_PAGE = "room-manage.html";
-
     /**
      * The application's routes. Router-wide hooks: actor resolution ({@link ActorResolver#hook()};
      * handlers read the actor with {@link ActorResolver#actor}), then the CSRF check ({@link Csrf}:
@@ -1284,9 +1275,10 @@ public final class Main {
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
      * media files ({@code /media/{id}/{file}}), {@link RoomsApi} rooms and room roles
      * ({@code /api/rooms...}), {@link DiagnosticsApi} the room page's listen-mode diagnostics report
-     * ({@code /api/diagnostics}), {@link RoomSocket} the room WebSocket ({@code /ws}). {@code GET /items/{id}} serves the item page
-     * ({@link #ITEM_PAGE}) of the web UI, {@link RoomLinks} the room page ({@link #ROOM_PAGE}) at
-     * {@code /rooms/{idOrSlug}} and the short link {@code /r/{slug}}.
+     * ({@code /api/diagnostics}), {@link RoomSocket} the room WebSocket ({@code /ws}), {@link RoomLinks} the room short link
+     * {@code /r/{slug}}. The web UI is a single-page app: every UI path ({@code /}, {@code /rooms/{ref}},
+     * {@code /items/{id}}, …; {@link StaticFiles#isAppPath}) without a file of its own gets its
+     * {@code index.html} from the catch-all route.
      */
     static Router router(Config config, StaticFiles staticFiles, ActorResolver actors, SetupApi setup, AuthApi auth,
                          SessionsApi sessions, MeApi me, AdminApi admin, ProvidersApi providers,
@@ -1316,12 +1308,9 @@ public final class Main {
         WebSockets webSockets = new WebSockets(csrf);
         EchoEndpoint.register(router, webSockets);
         roomSocket.register(router, webSockets);
-        // The item page by direct link (docs/libraries.md#visibility); the page reads the id from the path.
-        router.get("/items/{id}", staticFiles.page(ITEM_PAGE));
-        // The room page, and the QR short link /r/{slug} → the room page in remote mode.
-        RoomLinks.register(router, staticFiles.page(ROOM_PAGE));
-        // The room's management view (owner and moderators; the page checks through the API).
-        router.get("/rooms/{room}/manage", staticFiles.page(ROOM_MANAGE_PAGE));
+        // The QR short link /r/{slug} → the room view in remote mode.
+        RoomLinks.register(router);
+        // The web UI: static files, and index.html for every other UI path (the single-page app).
         staticFiles.register(router);
         return router;
     }

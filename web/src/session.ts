@@ -3,7 +3,7 @@
 // change-password page while the password is a temporary one an admin set.
 import { api } from "./api.js";
 import { mergeableGuest, mergeGuest, mergeQuestion } from "./guestmerge.js";
-import { pageSignal, rememberPlaying, showStoppedNote } from "./nav.js";
+import { navigate, pageSignal, rememberPlaying, showStoppedNote } from "./nav.js";
 
 /** `GET /api/me` for a logged-in user. */
 export interface MeUser {
@@ -37,9 +37,10 @@ export interface MeAnonymous {
 
 export type Me = MeUser | MeGuest | MeAnonymous;
 
-export const LOGIN_PAGE = "/login.html";
-export const REGISTER_PAGE = "/register.html";
-export const PASSWORD_PAGE = "/password.html";
+export const LOGIN_PAGE = "/login";
+export const REGISTER_PAGE = "/register";
+export const PASSWORD_PAGE = "/password";
+export const SETUP_PAGE = "/setup";
 export const ACCOUNT_PAGE = "/account/";
 export const ADMIN_PAGE = "/admin/";
 export const LIBRARY_PAGE = "/library/";
@@ -84,7 +85,7 @@ export function withNext(page: string, next: string): string {
  */
 export function checkPasswordChange(me: Me): boolean {
   if (me.kind === "user" && me.mustChangePassword) {
-    location.replace(withNext(PASSWORD_PAGE, here()));
+    navigate(withNext(PASSWORD_PAGE, here()), true);
     return false;
   }
   return true;
@@ -97,7 +98,7 @@ export function checkPasswordChange(me: Me): boolean {
 export async function requireUser(): Promise<MeUser | null> {
   const me = await loadMe();
   if (me.kind !== "user") {
-    location.replace(withNext(LOGIN_PAGE, here()));
+    navigate(withNext(LOGIN_PAGE, here()), true);
     return null;
   }
   if (!checkPasswordChange(me)) {
@@ -109,7 +110,8 @@ export async function requireUser(): Promise<MeUser | null> {
 /** `POST /api/auth/logout`, then back to the front page. */
 export async function logout(): Promise<void> {
   await api("POST", "/api/auth/logout");
-  // Logging out stops playback (a full page load); no "stopped" note for that.
+  // Logging out reloads the document (docs/ui.md#single-page-app), which stops playback; no
+  // "stopped" note for that.
   rememberPlaying(null);
   location.assign("/");
 }
@@ -118,7 +120,7 @@ function link(href: string, text: string): HTMLAnchorElement {
   const a = document.createElement("a");
   a.href = href;
   a.textContent = text;
-  if (location.pathname === href) {
+  if (location.pathname === href || location.pathname + "/" === href) {
     a.setAttribute("aria-current", "page");
   }
   return a;
@@ -159,8 +161,8 @@ export function renderNav(me: Me): void {
 }
 
 /**
- * Runs `start` once the DOM is ready. A page the room page's shell already took away again while
- * it was starting (nav.ts `pageSignal()`) fails quietly: its elements are gone.
+ * Runs `start` once the DOM is ready. A view the shell already took away again while it was
+ * starting (nav.ts `pageSignal()`) fails quietly: its elements are gone.
  */
 export function onReady(start: () => void | Promise<void>): void {
   const signal = pageSignal();

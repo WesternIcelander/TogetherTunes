@@ -406,14 +406,14 @@ class OidcLoginTest {
         oidc("idp", null);
         Started s = start("idp", "", null);
         assertEquals(200, callback("idp", s.state(), "c", s.cookie()).statusCode());
-        assertError("/login.html", "login_expired", callback("idp", s.state(), "c", s.cookie()));
+        assertError("/login", "login_expired", callback("idp", s.state(), "c", s.cookie()));
         assertEquals(1, tokenForms.size(), "a replayed state never reaches the token endpoint");
 
         Started old = start("idp", "", s.cookie());
         clock.advance(OidcLogin.TTL_MS);
-        assertError("/login.html", "login_expired", callback("idp", old.state(), "c", old.cookie()));
-        assertError("/login.html", "login_expired", callback("idp", "not-a-state", "c", old.cookie()));
-        assertError("/login.html", "login_expired", get("/auth/oidc/idp/callback?code=c", old.cookie()));
+        assertError("/login", "login_expired", callback("idp", old.state(), "c", old.cookie()));
+        assertError("/login", "login_expired", callback("idp", "not-a-state", "c", old.cookie()));
+        assertError("/login", "login_expired", get("/auth/oidc/idp/callback?code=c", old.cookie()));
         assertEquals(1, tokenForms.size());
         assertEquals(0, login.pending().size());
     }
@@ -423,12 +423,12 @@ class OidcLoginTest {
         oidc("idp", null);
         Started s = start("idp", "?next=%2Fx", null);
         // e.g. an attacker's own callback URL sent to a victim: no binding cookie, or another one
-        assertError("/login.html", "login_browser_mismatch", callback("idp", s.state(), "c", null));
+        assertError("/login", "login_browser_mismatch", callback("idp", s.state(), "c", null));
         Started s2 = start("idp", "", null);
-        assertError("/login.html", "login_browser_mismatch",
+        assertError("/login", "login_browser_mismatch",
                 callback("idp", s2.state(), "c", OidcLogin.BINDING_COOKIE + "=" + Tokens.newToken()));
         // and the state is gone after the failed try
-        assertError("/login.html", "login_expired", callback("idp", s2.state(), "c", s2.cookie()));
+        assertError("/login", "login_expired", callback("idp", s2.state(), "c", s2.cookie()));
         assertTrue(tokenForms.isEmpty());
         assertTrue(completed.isEmpty());
     }
@@ -438,7 +438,7 @@ class OidcLoginTest {
         oidc("one", null);
         oidc("two", null);
         Started s = start("one", "", null);
-        assertError("/login.html", "login_expired", callback("two", s.state(), "c", s.cookie()));
+        assertError("/login", "login_expired", callback("two", s.state(), "c", s.cookie()));
         assertTrue(tokenForms.isEmpty());
     }
 
@@ -501,7 +501,7 @@ class OidcLoginTest {
         for (Object[] answer : answers) {
             userinfoAnswer.set(answer);
             Started s = start("gh", "", null);
-            assertError("/login.html", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
+            assertError("/login", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
         }
         assertTrue(completed.isEmpty());
         assertEquals(answers.length, userinfoAuth.size());
@@ -512,7 +512,7 @@ class OidcLoginTest {
                 p.scopes(), true, false, new ClaimMapping(base + "/authorize", base + "/token",
                         "http://127.0.0.1:1/user", "id", null, null, null)), Providers.SecretChange.KEEP);
         Started s = start("gh", "", null);
-        assertError("/login.html", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
+        assertError("/login", "userinfo_failed", callback("gh", s.state(), "c", s.cookie()));
         assertTrue(completed.isEmpty());
     }
 
@@ -541,7 +541,7 @@ class OidcLoginTest {
         discoveryDoc.set(discovery(List.of("S256"), List.of("private_key_jwt")));
         expireDiscovery();
         Started s3 = start("basic", "", s.cookie());
-        assertError("/login.html", "provider_unsupported", callback("basic", s3.state(), "c", s3.cookie()));
+        assertError("/login", "provider_unsupported", callback("basic", s3.state(), "c", s3.cookie()));
         assertEquals(2, tokenForms.size());
     }
 
@@ -554,24 +554,24 @@ class OidcLoginTest {
     void providerWithoutS256IsRefused() throws Exception {
         discoveryDoc.set(discovery(List.of("plain"), List.of()));
         oidc("idp", null);
-        assertError("/login.html", "provider_unsupported", get("/auth/oidc/idp/start", null));
+        assertError("/login", "provider_unsupported", get("/auth/oidc/idp/start", null));
         assertEquals(0, login.pending().size());
     }
 
     @Test
     void unreachableUnknownOrDisabledProvider() throws Exception {
-        assertError("/login.html", "provider_unavailable", get("/auth/oidc/nope/start", null));
+        assertError("/login", "provider_unavailable", get("/auth/oidc/nope/start", null));
         Providers.Provider p = oidc("idp", null);
         Started s = start("idp", "", null);
         Providers.Spec off = new Providers.Spec(p.slug(), p.displayName(), p.kind(), p.issuer(), p.clientId(),
                 p.scopes(), false, p.allowSignup(), p.claimMapping());
         providers.update(p.id(), off, Providers.SecretChange.KEEP);
-        assertError("/login.html", "provider_unavailable", get("/auth/oidc/idp/start", null));
-        assertError("/login.html", "provider_unavailable", callback("idp", s.state(), "c", s.cookie()));
+        assertError("/login", "provider_unavailable", get("/auth/oidc/idp/start", null));
+        assertError("/login", "provider_unavailable", callback("idp", s.state(), "c", s.cookie()));
 
         providers.create(new Providers.Spec("down", "Down", Providers.Kind.OIDC, "http://127.0.0.1:9/idp",
                 "c", null, true, false, null), null);
-        assertError("/login.html", "provider_unreachable", get("/auth/oidc/down/start?next=%2Fq", null));
+        assertError("/login", "provider_unreachable", get("/auth/oidc/down/start?next=%2Fq", null));
         assertTrue(tokenForms.isEmpty());
     }
 
@@ -581,14 +581,14 @@ class OidcLoginTest {
         Started s = start("idp", "?next=%2Frooms%2Fx", null);
         HttpResponse<String> denied = get("/auth/oidc/idp/callback?state=" + s.state()
                 + "&error=access_denied&error_description=no", s.cookie());
-        assertError("/login.html", "provider_denied", denied);
+        assertError("/login", "provider_denied", denied);
         assertEquals("/rooms/x", query(location(denied)).get("next"));
 
         Started s2 = start("idp", "", s.cookie());
-        assertError("/login.html", "provider_error",
+        assertError("/login", "provider_error",
                 get("/auth/oidc/idp/callback?state=" + s2.state() + "&error=server_error", s.cookie()));
         Started s3 = start("idp", "", s.cookie());
-        assertError("/login.html", "provider_error", get("/auth/oidc/idp/callback?state=" + s3.state(), s.cookie()));
+        assertError("/login", "provider_error", get("/auth/oidc/idp/callback?state=" + s3.state(), s.cookie()));
 
         for (Object[] answer : List.of(
                 new Object[]{400, "{\"error\":\"invalid_grant\"}"},
@@ -601,7 +601,7 @@ class OidcLoginTest {
                 new Object[]{200, "{\"access_token\":\"" + "x".repeat(OidcLogin.MAX_BODY_BYTES) + "\"}"})) {
             tokenAnswer.set(answer);
             Started t = start("idp", "", s.cookie());
-            assertError("/login.html", "token_exchange_failed", callback("idp", t.state(), "c", t.cookie()));
+            assertError("/login", "token_exchange_failed", callback("idp", t.state(), "c", t.cookie()));
         }
         assertTrue(completed.isEmpty());
     }
@@ -614,7 +614,7 @@ class OidcLoginTest {
         // the IdP hands out a token carrying another login's nonce (e.g. a replayed ID token)
         nonceByCode.put("c", b.params().get("nonce"));
         HttpResponse<String> r = get("/auth/oidc/idp/callback?state=" + a.state() + "&code=c", a.cookie());
-        assertError("/login.html", "id_token_invalid", r);
+        assertError("/login", "id_token_invalid", r);
         assertEquals("/rooms/x", query(location(r)).get("next"));
 
         // signed by a key the provider never published
@@ -625,7 +625,7 @@ class OidcLoginTest {
         SignedJWT forged = new SignedJWT(new JWSHeader.Builder(JWSAlgorithm.RS256).keyID("rogue").build(), claims);
         forged.sign(new RSASSASigner(rogue));
         tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + forged.serialize() + "\"}"});
-        assertError("/login.html", "id_token_invalid", callback("idp", b.state(), "c2", b.cookie()));
+        assertError("/login", "id_token_invalid", callback("idp", b.state(), "c2", b.cookie()));
 
         // the same token, but issued long before now: iat out of range
         tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + ID_TOKEN + "\"}"});
@@ -634,7 +634,7 @@ class OidcLoginTest {
         String early = idToken("client-idp", d.params().get("nonce"), "u");
         clock.advance(IdTokenValidator.MAX_SKEW_MS + 1);
         tokenAnswer.set(new Object[]{200, "{\"access_token\":\"at\",\"id_token\":\"" + early + "\"}"});
-        assertError("/login.html", "id_token_invalid", callback("idp", d.state(), "c3", d.cookie()));
+        assertError("/login", "id_token_invalid", callback("idp", d.state(), "c3", d.cookie()));
         assertTrue(completed.isEmpty());
     }
 
@@ -673,7 +673,7 @@ class OidcLoginTest {
             claimsTweak.set(e.getValue());
             Started s = start("idp", "?next=%2Frooms%2Fr" + n, browser);
             HttpResponse<String> r = callback("idp", s.state(), "bad" + n, s.cookie());
-            assertError("/login.html", "id_token_invalid", r);
+            assertError("/login", "id_token_invalid", r);
             assertEquals("/rooms/r" + n, query(location(r)).get("next"), e.getKey());
             // the failed state is gone: the same callback again doesn't get a second try
             assertNotEquals("id_token_invalid", query(location(
@@ -689,17 +689,17 @@ class OidcLoginTest {
         issuingKey.set(new RSAKeyGenerator(2048).keyID("never-published").keyUse(KeyUse.SIGNATURE).generate());
         Started u = start("idp", "?next=%2Fq", browser);
         HttpResponse<String> r = callback("idp", u.state(), "kid1", u.cookie());
-        assertError("/login.html", "id_token_invalid", r);
+        assertError("/login", "id_token_invalid", r);
         assertEquals("/q", query(location(r)).get("next"));
         assertEquals(2, jwksHits.get(), "the unknown kid made the keys be fetched again");
         // a second try right away doesn't hammer the IdP (refetch rate limit), and is refused too
         Started u2 = start("idp", "", browser);
-        assertError("/login.html", "id_token_invalid", callback("idp", u2.state(), "kid2", u2.cookie()));
+        assertError("/login", "id_token_invalid", callback("idp", u2.state(), "kid2", u2.cookie()));
         assertEquals(2, jwksHits.get());
         // an impostor key reusing the published kid: the signature doesn't verify
         issuingKey.set(new RSAKeyGenerator(2048).keyID(signingKey.getKeyID()).generate());
         Started u3 = start("idp", "", browser);
-        assertError("/login.html", "id_token_invalid", callback("idp", u3.state(), "kid3", u3.cookie()));
+        assertError("/login", "id_token_invalid", callback("idp", u3.state(), "kid3", u3.cookie()));
         assertEquals(1, completed.size());
 
         // the IdP rotates in a new key: its new kid is fetched and the login goes through
@@ -718,7 +718,7 @@ class OidcLoginTest {
     void linkNeedsTheSameLoggedInUser() throws Exception {
         oidc("idp", null);
         assertError("/account/", "not_authenticated", get("/auth/oidc/idp/start?intent=link", null));
-        assertError("/login.html", "provider_error", get("/auth/oidc/idp/start?intent=weird", null));
+        assertError("/login", "provider_error", get("/auth/oidc/idp/start?intent=weird", null));
 
         String alice = fixtures.user("alice", false);
         String bob = fixtures.user("bob", false);
@@ -759,7 +759,7 @@ class OidcLoginTest {
             HttpResponse<String> done = http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:"
                     + other.port() + "/auth/oidc/idp/callback?state=" + p.get("state") + "&code=c"))
                     .header("Cookie", bindingCookie(r)).build(), HttpResponse.BodyHandlers.ofString());
-            assertError("/login.html", "login_unavailable", done);
+            assertError("/login", "login_unavailable", done);
             assertEquals("/next", query(location(done)).get("next"));
         }
     }

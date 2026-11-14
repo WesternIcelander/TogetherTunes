@@ -1,10 +1,11 @@
-// The login page (/login.html). After logging in, a user whose password is a temporary one
+// The login view (/login). After logging in, a user whose password is a temporary one
 // (set by an admin) goes to the change-password page first; everyone else to `?next=` or `/`.
 import { api, setupNeeded } from "./api.js";
 import {
   element, formValue, loadMe, nextPath, offerGuestMerge, onReady, onSubmit, PASSWORD_PAGE, REGISTER_PAGE, renderNav,
-  withNext,
+  SETUP_PAGE, withNext,
 } from "./session.js";
+import { navigate } from "./nav.js";
 import { providerErrorMessage, providerStartUrl, type ProviderButton } from "./providers.js";
 
 interface LoginResponse {
@@ -46,7 +47,7 @@ async function start(): Promise<void> {
 
   try {
     if (await setupNeeded()) {
-      location.replace("/setup.html");
+      navigate(SETUP_PAGE, true);
       return;
     }
     const me = await loadMe();
@@ -65,7 +66,7 @@ async function start(): Promise<void> {
       password: formValue(form, "password"),
     });
     if (!result.user.mustChangePassword) await offerGuestMerge();
-    location.assign(afterLogin(result.user.mustChangePassword, next));
+    navigate(afterLogin(result.user.mustChangePassword, next));
   });
 }
 

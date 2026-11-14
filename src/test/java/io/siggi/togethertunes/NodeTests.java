@@ -30,6 +30,19 @@ final class NodeTests {
     }
 
     /**
+     * The markup of one view of the single-page app: the {@code <template id="<template>">} in
+     * {@code web/index.html} (e.g. {@code view-room}).
+     */
+    static String view(String template) throws Exception {
+        String index = Files.readString(resource("web/index.html"), StandardCharsets.UTF_8);
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "<template id=\"" + java.util.regex.Pattern.quote(template) + "\"[^>]*>(.*?)</template>",
+                java.util.regex.Pattern.DOTALL).matcher(index);
+        assertTrue(m.find(), template + " is missing from web/index.html");
+        return m.group(1);
+    }
+
+    /**
      * Runs {@code web-tests/<testFile>} and asserts that it ran tests and none failed.
      *
      * @param env environment variable → classpath resource of a compiled module (e.g. {@code web/js/x.js})

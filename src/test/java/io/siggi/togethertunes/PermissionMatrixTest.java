@@ -431,17 +431,14 @@ class PermissionMatrixTest {
             // The room page's listen-mode diagnostics report: anyone may send one (it is only logged).
             row("POST /api/diagnostics", c -> Call.post("/api/diagnostics", "{\"ref\":\"matrix\"}"), 204, 204, 204, 204),
 
-            // The item page by direct link: open to everyone (the page then calls /api/items/{id}).
-            row("GET /items/{id}", c -> Call.get("/items/" + c.itemId()), 200, 200, 200, 200),
-            // The room page and its QR short link (→ 302 to the page in remote mode): open to
-            // everyone; the page then calls /api/rooms/{room}, which applies the room's visibility.
-            row("GET /rooms/{room}", c -> Call.get("/rooms/" + c.rootRoomSlug()), 200, 200, 200, 200),
+            // The room's QR short link (→ 302 to the room view in remote mode): open to everyone;
+            // the view then calls /api/rooms/{room}, which applies the room's visibility.
             row("GET /r/{slug}", c -> Call.get("/r/" + c.rootRoomSlug()), 302, 302, 302, 302),
-            // The management view's page: served to anyone, the page checks through the API.
-            row("GET /rooms/{room}/manage", c -> Call.get("/rooms/" + c.rootRoomSlug() + "/manage"), 200, 200, 200, 200),
 
-            // Static files.
-            row("GET /{path...}", c -> Call.get("/test/ws-echo.html"), 200, 200, 200, 200));
+            // Static files, and the single-page app's document for every UI path (the item, room
+            // and room management views included, MainRouterTest): open to everyone; the views
+            // check through the API.
+            row("GET /{path...}", c -> Call.get("/rooms/" + c.rootRoomSlug() + "/manage"), 200, 200, 200, 200));
 
     // ------------------------------------------------------------------ fixture
 
