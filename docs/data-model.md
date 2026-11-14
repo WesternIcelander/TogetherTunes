@@ -136,8 +136,22 @@ rooms(id PK, slug UNIQUE, name, owner_id FK, created_at,
       playback_state TEXT,                  -- 'idle' | 'playing' | 'paused' (extensible; see rooms.md)
       current_entry_id NULL, anchor_server_ms, anchor_position_ms,
       version BIGINT,
-      current_audio_only INTEGER)           -- 0|1: the current entry plays audio-only (the mode it
+      current_audio_only INTEGER,           -- 0|1: the current entry plays audio-only (the mode it
                                             -- started with; rooms.md#audio-only-rooms), migration 0016
+      alone_user_id NULL FK users UNIQUE)   -- set: this is that user's alone room (rooms.md#alone), 0029
+
+alone_sessions(user_id PK FK ON DELETE CASCADE,  -- where a user is (rooms.md#alone), 0029
+      room_id NULL FK rooms ON DELETE SET NULL,  -- the room they joined; NULL: alone
+      resume_playing INTEGER,               -- 0|1: the alone room played when they joined a room
+      deleted_room_name NULL, fork_json NULL, -- a room deleted while they were in it: its name and
+                                            -- what a fork copies ({currentItemId, positionMs, playing, queue})
+      updated_at)
+
+play_history(id PK, user_id FK ON DELETE CASCADE, item_id FK ON DELETE CASCADE,  -- 0029
+      room_id NULL FK rooms ON DELETE SET NULL,  -- NULL with room_name NULL: played alone
+      room_name NULL,                       -- the room's name then (kept once it is deleted)
+      played_at)                            -- GET /api/me/history; index (user_id, played_at);
+                                            -- trimmed after rooms.requestHistoryDays
 
 room_members(room_id FK, user_id FK, role TEXT,   -- 'owner' | 'moderator' | 'member' | 'banned'
       joined_at, PRIMARY KEY(room_id, user_id))

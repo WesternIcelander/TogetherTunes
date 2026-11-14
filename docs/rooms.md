@@ -37,6 +37,23 @@ Until that start the timeline is `playing` with a negative position (`positionAt
 
 **Restart:** the timeline is persisted. On startup, a room that was playing resumes from its computed position, or from the start of the entry if the server was down for longer than the entry's remaining time.
 
+## Alone
+
+(M9, `docs/ui.md#alone-and-in-rooms`.) A user who isn't in a room plays their own music with their own play status (current song, position, playing or paused) and queue, kept on the server so it follows them to another device. Guests have none.
+
+**Design (decided 2026-11-14): a private pseudo-room on the room engine** (`rooms/AloneSessions`), rather than a separate WebSocket channel, so the sync engine and clients work exactly the same alone and in a room. Each user's alone state is a `rooms` row with `alone_user_id` set (made on first use by `GET /api/me/play-session`, slug `~<userId>`, which is no valid room slug, name "Alone"): `private`, control mode `owner` (the user is its owner, so adding, reordering and playback are always allowed; the queue is the room queue, whose manually added section comes first once the autoplay engine adds sections), never listed, not counted against the 100-room limit, `404 room_not_found` to everyone else (even `rooms.moderateAny`), and it can't be changed, deleted, given members or stream outputs (`409 alone_room`). Clients play it through the room socket (`join` with its id); its `state` says `room.alone: true`. Two devices are two sockets on the same room.
+
+Where the user is lives in `alone_sessions` ([data-model.md](data-model.md#rooms)), changed only through `/api/me/play-session*` ([api.md](api.md#auth-account-guest-identity)); the room socket's own `join` doesn't change it:
+
+- **Join** a room: coming from the alone state **saves** it: the alone room is paused where it is (remembering whether it played); from another room the saved state stays as it is.
+- **Create** a room with `moveAloneSession: true`: the alone room's current song (with its position; playing if the user was alone and it played, else paused) and its queue **move** into the new room, the alone room is left empty, and the user is in the new room. (From inside another room this moves the saved alone state, not that room's.)
+- **Leave** to be alone, with a choice: **fork** copies the room's current song, position, play state and queue into the alone state (replacing the saved one; the copies are added by the user, the old alone entries are removed, not put in any history); **restore** brings back the saved state, playing again if it played when the user joined.
+- **The room is deleted** while users are in it: in the delete's transaction each of their sessions keeps the room's name and what a fork copies (`fork_json`), and they are no longer in a room; `GET /api/me/play-session` shows `deletedRoom` until they choose fork or restore (or join another room, which drops the choice; the alone state stays saved).
+- The alone room's `state` carries `awayInRoomId` (the room the user is in while the alone state is saved), and every join or leave sends a full `state` there, so every device hears about it.
+- Copying (fork, the create-room move) leaves out items that can't play any more (failed, purged, gone); a current item that isn't ready goes to the front of the queue instead and the next ready one starts. The copy starts at the source's position without counting as a new play.
+
+**Play history** (`play_history`, `GET /api/me/history`): a row whenever an entry starts playing (advance and `previous`): in an alone room for its user (no room), in any other room for every user present then (a socket in listen or requests-only mode), with the room and its name (kept once the room is deleted). Trimmed after `rooms.requestHistoryDays` like the room history.
+
 ## Control modes
 
 | `controlMode` | Who adds to the queue | Order | Who can skip |
