@@ -92,6 +92,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
   - A logged-in user who isn't banned but comes from a banned IP address is **treated as banned**, unless the room has added them as a **member**.
   - Unbanning lifts the account and the IP address together. Timeouts work the same way.
 - **Ban from server:** admins only; disables the user's account.
+- As implemented: [rooms.md](rooms.md#bans-and-timeouts) (`/api/rooms/{id}/bans/...`; Ban from server is `PATCH /api/admin/users/{id} {disabled: true}`, shown to holders of *admin.users*).
 - (Future ideas, not in M9: ban a whole home server from the room, or from the server; see [future-ideas.md](future-ideas.md).)
 
 ## Library rules

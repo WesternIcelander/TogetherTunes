@@ -161,9 +161,13 @@ play_history(id PK, user_id FK ON DELETE CASCADE, item_id FK ON DELETE CASCADE, 
       played_at)                            -- GET /api/me/history; index (user_id, played_at);
                                             -- trimmed after rooms.requestHistoryDays
 
-room_members(room_id FK, user_id FK, role TEXT,   -- 'owner' | 'moderator' | 'member' | 'banned'
+room_members(room_id FK, user_id FK, role TEXT,   -- 'owner' | 'moderator' | 'member' ('banned' moved to room_bans, 0032)
       joined_at, PRIMARY KEY(room_id, user_id))
-room_guest_bans(room_id FK, guest_id FK, created_at, PRIMARY KEY(room_id, guest_id))
+room_bans(room_id FK, subject TEXT,          -- 'u:<userId>' | 'g:<guestId>': whom the ban or timeout was for
+      target_kind TEXT, target TEXT,          -- 'user' (user id) | 'guest' (guest id) | 'ip' (hash of the IP key)
+      expires_at NULL,                        -- NULL = ban until lifted; else a timeout until then
+      created_by_user_id NULL, created_at,    -- docs/rooms.md#bans-and-timeouts; replaced room_guest_bans (0032)
+      PRIMARY KEY(room_id, subject, target_kind, target))
 
 queue_entries(id PK, room_id FK, item_id FK,
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
