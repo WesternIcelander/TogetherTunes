@@ -145,6 +145,7 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Episodes$Season",
             "io.siggi.togethertunes.library.Episodes$Show",
             "io.siggi.togethertunes.library.LibraryApi$Shows",
+            "io.siggi.togethertunes.library.LibraryApi$Uncategorized",
             "io.siggi.togethertunes.overlay.CustomCards$Warning",
             "io.siggi.togethertunes.library.Playlists$Entry",
             "io.siggi.togethertunes.library.Playlists$Page",
@@ -735,6 +736,12 @@ class DtoIpLeakTest {
         produced.add(showsCtor.newInstance(List.of(new io.siggi.togethertunes.library.Episodes.Show<>("Some Show",
                 List.of(new io.siggi.togethertunes.library.Episodes.Season<>(1,
                         library.list(aliceId, null, null, null, Library.LIST_MAX).items()))))));
+        // GET /api/library/uncategorized: the uncategorized entries and their total
+        var uncategorizedCtor = Class.forName("io.siggi.togethertunes.library.LibraryApi$Uncategorized")
+                .getDeclaredConstructors()[0];
+        uncategorizedCtor.setAccessible(true);
+        produced.add(uncategorizedCtor.newInstance(library.list(aliceId, null, null, null, Library.LIST_MAX).items(),
+                "cursor", 3L));
         // the custom card images' spec warnings
         produced.add(io.siggi.togethertunes.overlay.CustomCards.warnings(800, 600,
                 io.siggi.togethertunes.config.OutputProfile.P720_30));
@@ -941,7 +948,7 @@ class DtoIpLeakTest {
                 "/api/admin/providers", "/api/admin/providers/" + f.providerId(), "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
-                "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
+                "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/library/uncategorized", "/api/items/search", "/api/items/search?q=video", "/api/search", "/api/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/me/likes", "/api/me/likes/" + f.itemId,
                 "/api/library/" + f.itemId + "/playlists",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",

@@ -205,6 +205,23 @@ public final class Library {
         });
     }
 
+    /** How many of the user's library entries are {@code uncategorized} videos (the Uncategorized Videos view). */
+    public long countUncategorized(String userId) throws SQLException {
+        Objects.requireNonNull(userId);
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*) FROM library_entries e"
+                    + " JOIN items i ON i.id = e.item_id WHERE e.user_id = ? AND i.kind = 'video'"
+                    + " AND i.media_type = ?")) {
+                ps.setString(1, userId);
+                ps.setString(2, MediaType.UNCATEGORIZED.wire());
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getLong(1);
+                }
+            }
+        });
+    }
+
     /** The search words of {@code query}: split at whitespace, at most {@link #QUERY_MAX_TERMS}. */
     public static List<String> terms(String query) {
         if (query == null) {

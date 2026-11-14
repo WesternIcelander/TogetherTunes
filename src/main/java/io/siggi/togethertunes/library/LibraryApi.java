@@ -24,6 +24,11 @@ import java.util.Objects;
  *       "episodes": [entry]}]}]}}: the {@code show} items of the library grouped by show name
  *       (case-insensitive), season (none first, then 0, 1, ...) and episode ({@link Episodes});
  *       {@code name} limits it to one show. {@code 400 invalid_query} (name too long).</li>
+ *   <li>{@code GET /api/library/uncategorized?q=&cursor=&limit=} → {@code {"items": [entry],
+ *       "nextCursor"?, "total"}}: the Uncategorized Videos view, the caller's library entries of
+ *       media type {@code uncategorized} (as {@code GET /api/library?type=uncategorized}), plus
+ *       {@code total}, how many the library has in all (not narrowed by {@code q}; the sidebar
+ *       shows the view while it is above 0, so {@code limit=1} is enough to ask).</li>
  *   <li>{@code PUT /api/library/{itemId}} (body optional: {@code {"mediaType", "show"?}}) →
  *       {@code 201 entry} when added ({@code via: "manual"}),
  *       {@code 200 entry} when it already was there (unchanged). An {@code uncategorized} video
@@ -51,6 +56,7 @@ public final class LibraryApi {
     public void register(Router router) {
         router.get("/api/library", this::list);
         router.get("/api/library/shows", this::shows);
+        router.get("/api/library/uncategorized", this::uncategorized);
         router.put("/api/library/{itemId}", this::add);
         router.delete("/api/library/{itemId}", this::remove);
     }
@@ -64,6 +70,28 @@ public final class LibraryApi {
 
     private void list(Request request, Response response) throws Exception {
         Actor.User user = user(request);
+        int limit = limit(request);
+        Library.Page page = library.list(user.userId(), request.query("q"), emptyToNull(request.query("kind")),
+                emptyToNull(request.query("type")), emptyToNull(request.query("cursor")), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    /** The Uncategorized Videos view: the caller's {@code uncategorized} entries, and how many there are. */
+    private void uncategorized(Request request, Response response) throws Exception {
+        Actor.User user = user(request);
+        int limit = limit(request);
+        Library.Page page = library.list(user.userId(), request.query("q"), null, MediaType.UNCATEGORIZED.wire(),
+                emptyToNull(request.query("cursor")), limit);
+        long total = library.countUncategorized(user.userId());
+        response.header("Cache-Control", "no-store");
+        response.json(new Uncategorized(page.items(), page.nextCursor(), total));
+    }
+
+    private record Uncategorized(java.util.List<Library.Entry> items, String nextCursor, long total) {
+    }
+
+    private static int limit(Request request) {
         int limit = Library.LIST_DEFAULT;
         String limitParam = request.query("limit");
         if (limitParam != null) {
@@ -76,10 +104,7 @@ public final class LibraryApi {
                 throw new HttpError(400, "invalid_limit", "limit must be 1.." + Library.LIST_MAX);
             }
         }
-        Library.Page page = library.list(user.userId(), request.query("q"), emptyToNull(request.query("kind")),
-                emptyToNull(request.query("type")), emptyToNull(request.query("cursor")), limit);
-        response.header("Cache-Control", "no-store");
-        response.json(page);
+        return limit;
     }
 
     private void shows(Request request, Response response) throws Exception {

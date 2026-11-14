@@ -250,6 +250,8 @@ class PermissionMatrixTest {
             // The caller's own library: users only (guests have no library).
             row("GET /api/library", c -> Call.get("/api/library?q=song&kind=audio"), 401, 401, 200, 200),
             row("GET /api/library/shows", c -> Call.get("/api/library/shows"), 401, 401, 200, 200),
+            row("GET /api/library/uncategorized", c -> Call.get("/api/library/uncategorized?limit=1"),
+                    401, 401, 200, 200),
             row("PUT /api/library/{itemId}", c -> Call.put("/api/library/" + c.itemId(), null), 401, 401, 201, 201),
             row("DELETE /api/library/{itemId}", c -> Call.delete("/api/library/" + c.libraryItemId()),
                     401, 401, 204, 204),
@@ -259,6 +261,9 @@ class PermissionMatrixTest {
             // by the setup admin, so only the admin column may edit it); purging needs library.purge.
             // ItemsContract covers the adder rule.
             row("GET /api/items/search", c -> Call.get("/api/items/search?q=song"), 401, 401, 200, 200),
+            // The whole-server search: users; guests and anonymous visitors only from a room (with a
+            // roomId; ItemsApiTest and RequestSearchContract cover that path), so 401 here.
+            row("GET /api/search", c -> Call.get("/api/search?q=song"), 401, 401, 200, 200),
             row("GET /api/items/{id}", c -> Call.get("/api/items/" + c.itemId()), 200, 200, 200, 200),
             row("PATCH /api/items/{id}", c -> Call.patch("/api/items/" + c.itemId(), "{\"title\":\"Renamed\"}"),
                     401, 401, 403, 200),

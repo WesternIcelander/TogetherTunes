@@ -297,6 +297,19 @@ public final class Playlists {
         }
     }
 
+    /**
+     * The owner's playlist without its entries.
+     *
+     * @throws HttpError {@code 404 playlist_not_found}
+     */
+    public Playlist summary(String ownerId, String playlistId) throws SQLException {
+        Playlist p = db.read(c -> summary(c, ownerId, playlistId));
+        if (p == null) {
+            throw playlistNotFound();
+        }
+        return p;
+    }
+
     /** The owner's playlist with its entries in order. @throws HttpError {@code 404 playlist_not_found} */
     public PlaylistPage get(String ownerId, String playlistId) throws SQLException {
         return db.read(c -> page(c, ownerId, playlistId));

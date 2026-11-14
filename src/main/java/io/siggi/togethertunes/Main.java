@@ -392,7 +392,6 @@ public final class Main {
                 config.ingestMaxDurationSeconds()));
         youtubeImports.libraryAddListener(qualityOnLibraryAdd);
         youtubeImports.diskSpace(diskSpace);
-        YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia);
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
         library.libraryAddListener(qualityOnLibraryAdd);
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
@@ -410,6 +409,8 @@ public final class Main {
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
+        // "Add from link" imports straight into a playlist (and the library).
+        YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia, playlists);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
         // Guests and anonymous visitors may fetch the current and next items of the rooms they are in.
@@ -438,8 +439,10 @@ public final class Main {
         }
         RoomHistory roomHistory = new RoomHistory(database, rooms, settings::roomsRequestHistoryDays,
                 Clock.systemUTC());
-        RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests,
-                new RequestSearch(database, rooms, roomGuests), roomHistory);
+        RequestSearch requestSearch = new RequestSearch(database, rooms, roomGuests);
+        // GET /api/search: guests and anonymous visitors search what they may request in a room.
+        itemsApi.roomSearch(requestSearch::requireMayRequest);
+        RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests, requestSearch, roomHistory);
         RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,

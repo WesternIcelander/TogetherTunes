@@ -27,6 +27,14 @@ import java.util.Set;
  *       whole server"), newest item first. Nothing about whose libraries hold an item. {@code limit}
  *       1..{@value ItemSearch#LIST_MAX}, default {@value ItemSearch#LIST_DEFAULT}; {@code 400
  *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
+ *   <li>{@code GET /api/search?q=&kind=&type=&cursor=&limit=&roomId=} → the same shape: every
+ *       item on the server that isn't purged, the items in the caller's own library first (then
+ *       the rest), each part newest item first; cursor {@code <1|0>_<itemId>}. Signed-in users
+ *       always; guests and anonymous visitors only with the {@code roomId} (or slug) of a room
+ *       where they may request from the library ({@link RoomSearch}: {@code 404 room_not_found},
+ *       {@code 403 banned_from_room}, {@code guest_library_requests_disabled},
+ *       {@code library_requests_off}); without one {@code 401 not_authenticated}. A user's
+ *       {@code roomId} is ignored.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
  *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
  *       "mediaType", "show"?: {"name", "season"?, "episode"},
@@ -97,6 +105,7 @@ public final class ItemsApi {
     private final Permissions permissions;
     private final YoutubeImports youtube;
     private final ItemSearch search;
+    private volatile RoomSearch roomSearch;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -113,6 +122,7 @@ public final class ItemsApi {
 
     public void register(Router router) {
         router.get("/api/items/search", this::search);
+        router.get("/api/search", this::searchServer);
         router.get("/api/items/{id}", this::get);
         router.patch("/api/items/{id}", this::update);
         router.delete("/api/items/{id}", this::purge, permissions.hook(Permission.LIBRARY_PURGE));
@@ -173,6 +183,42 @@ public final class ItemsApi {
         if (!(ActorResolver.actor(request) instanceof Actor.User user)) {
             throw new HttpError(401, "not_authenticated", "Log in first");
         }
+        int limit = limit(request);
+        ItemSearch.Page page = search.search(ItemSearch.Scope.server(), user.userId(), request.query("q"),
+                emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
+                emptyToNull(request.query("cursor")), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    /**
+     * {@code GET /api/search}: the whole-server search, the caller's own library first
+     * ({@link ItemSearch#searchMineFirst}). Users search everything (they may play any item);
+     * guests and anonymous visitors only from a room ({@code roomId}), where what they find is
+     * what they may request there ({@link RoomSearch}); without one, {@code 401}.
+     */
+    private void searchServer(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        String viewer = null;
+        if (actor instanceof Actor.User user) {
+            viewer = user.userId();
+        } else {
+            String room = emptyToNull(request.query("roomId"));
+            RoomSearch check = roomSearch;
+            if (room == null || check == null) {
+                throw new HttpError(401, "not_authenticated", "Log in, or search from a room you are in");
+            }
+            check.check(actor, room);
+        }
+        int limit = limit(request);
+        ItemSearch.Page page = search.searchMineFirst(viewer, request.query("q"),
+                emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
+                emptyToNull(request.query("cursor")), limit);
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private static int limit(Request request) {
         int limit = ItemSearch.LIST_DEFAULT;
         String param = request.query("limit");
         if (param != null && !param.isEmpty()) {
@@ -185,11 +231,21 @@ public final class ItemsApi {
                 throw new HttpError(400, "invalid_limit", "limit must be 1.." + ItemSearch.LIST_MAX);
             }
         }
-        ItemSearch.Page page = search.search(ItemSearch.Scope.server(), user.userId(), request.query("q"),
-                emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
-                emptyToNull(request.query("cursor")), limit);
-        response.header("Cache-Control", "no-store");
-        response.json(page);
+        return limit;
+    }
+
+    /**
+     * Decides whether a guest or anonymous visitor may search from a room: what they may request
+     * there ({@code rooms.RequestSearch#requireMayRequest}). Throws an {@link HttpError} to refuse.
+     */
+    @FunctionalInterface
+    public interface RoomSearch {
+        void check(Actor actor, String roomIdOrSlug) throws SQLException;
+    }
+
+    /** Sets the room check of {@code GET /api/search} for guests and anonymous visitors (none: they get 401). */
+    public void roomSearch(RoomSearch roomSearch) {
+        this.roomSearch = roomSearch;
     }
 
     private static String emptyToNull(String s) {

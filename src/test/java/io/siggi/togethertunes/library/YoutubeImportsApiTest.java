@@ -55,6 +55,8 @@ class YoutubeImportsApiTest {
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
     private String token;
+    private String aliceId;
+    private Playlists playlists;
     private Path failFile;
 
     @BeforeEach
@@ -78,10 +80,13 @@ class YoutubeImportsApiTest {
         BuiltinRoles.ensure(db);
         io.siggi.togethertunes.settings.Settings settings = new io.siggi.togethertunes.settings.Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        TestUploads.youtubeApi(db, config, new Permissions(db, settings), clock).register(router);
+        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
+        playlists = new Playlists(db, youtube, clock);
+        new YoutubeImportsApi(youtube, TestUploads.policy(new Permissions(db, settings), settings), playlists)
+                .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
-        String aliceId = accounts.createLocal("alice", null, "alice-password", false, null, "account.register").id();
+        aliceId = accounts.createLocal("alice", null, "alice-password", false, null, "account.register").id();
         token = new Sessions(db, clock).create(aliceId, Actor.Via.BEARER, "test", null).token();
     }
 
@@ -218,6 +223,105 @@ class YoutubeImportsApiTest {
         assertEquals(400, refused.statusCode());
         assertEquals("invalid_youtube_url",
                 JsonParser.parseString(refused.body()).getAsJsonObject().getAsJsonObject("error").get("code").getAsString());
+    }
+
+    /** "Add from link": one call imports into the caller's library and into one of their playlists. */
+    @Test
+    void addFromLinkIntoAPlaylist() throws Exception {
+        String mix = playlists.create(aliceId, "Mix", null).id();
+        // checked before anything is imported (the fake yt-dlp isn't run)
+        HttpResponse<String> missing = http.send(post("application/x-ndjson",
+                ",\"mediaType\":\"music_video\",\"playlistId\":\"no-such\""), HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, missing.statusCode(), missing.body());
+        assertEquals("playlist_not_found", code(missing));
+        assertEquals(0, count("SELECT COUNT(*) FROM items"));
+        HttpResponse<String> notLibrary = http.send(post("application/json",
+                ",\"addToLibrary\":false,\"playlistId\":\"" + mix + "\""), HttpResponse.BodyHandlers.ofString());
+        assertEquals(400, notLibrary.statusCode(), notLibrary.body());
+        assertEquals("invalid_add_to_library", code(notLibrary));
+        HttpResponse<String> loose = http.send(post("application/json", ",\"beforeEntryId\":\"x\""),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals("invalid_before_entry_id", code(loose));
+        assertEquals(0, count("SELECT COUNT(*) FROM items"));
+
+        // with a type, through the lookup's stream: the result line carries the playlist entry
+        HttpResponse<java.io.InputStream> r = http.send(post("application/x-ndjson",
+                ",\"mediaType\":\"music_video\",\"playlistId\":\"" + mix + "\""), HttpResponse.BodyHandlers.ofInputStream());
+        List<Line> lines = stream(r, System.nanoTime());
+        JsonObject result = lines.get(lines.size() - 1).json();
+        assertEquals("result", result.get("type").getAsString(), lines.toString());
+        String itemId = result.get("itemId").getAsString();
+        JsonObject entry = result.getAsJsonObject("entry");
+        assertEquals(itemId, entry.getAsJsonObject("item").get("id").getAsString());
+        assertEquals("music_video", entry.getAsJsonObject("item").get("mediaType").getAsString());
+        assertEquals(List.of(entry.get("id").getAsString()),
+                playlists.get(aliceId, mix).entries().stream().map(Playlists.Entry::id).toList());
+        assertEquals("youtube", string("SELECT via FROM library_entries WHERE item_id = '" + itemId + "'"));
+
+        // the known item again, before the first entry (plain JSON, no lookup)
+        HttpResponse<String> again = http.send(post("application/x-ndjson", ",\"playlistId\":\"" + mix
+                + "\",\"beforeEntryId\":\"" + entry.get("id").getAsString() + "\""), HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, again.statusCode(), again.body());
+        JsonObject second = JsonParser.parseString(again.body()).getAsJsonObject();
+        String secondEntry = second.getAsJsonObject("entry").get("id").getAsString();
+        assertEquals(List.of(secondEntry, entry.get("id").getAsString()),
+                playlists.get(aliceId, mix).entries().stream().map(Playlists.Entry::id).toList());
+        assertEquals(1, count("SELECT COUNT(*) FROM library_entries"));
+        // an unknown beforeEntryId: the item stays in the library, the playlist is unchanged
+        HttpResponse<String> badBefore = http.send(post("application/json", ",\"playlistId\":\"" + mix
+                + "\",\"beforeEntryId\":\"nope\""), HttpResponse.BodyHandlers.ofString());
+        assertEquals("before_entry_not_found", code(badBefore));
+        assertEquals(2, playlists.get(aliceId, mix).entries().size());
+
+        // into Liked Songs: once
+        String likes = playlists.likes(aliceId).id();
+        for (int i = 0; i < 2; i++) {
+            HttpResponse<String> liked = http.send(post("application/json", ",\"playlistId\":\"" + likes + "\""),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, liked.statusCode(), liked.body());
+        }
+        assertEquals(1, playlists.likes(aliceId).entries().size());
+        // someone else's playlist is not found
+        String bobId = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock)
+                .createLocal("bob", null, "bob-password", false, null, "account.register").id();
+        assertEquals("playlist_not_found", code(http.send(post("application/json", ",\"playlistId\":\""
+                + playlists.create(bobId, "x", null).id() + "\""), HttpResponse.BodyHandlers.ofString())));
+
+        // an uncategorized video without a type: in neither the library nor the playlist
+        db.write(c -> {
+            c.createStatement().executeUpdate("UPDATE items SET media_type = 'uncategorized'");
+            c.createStatement().executeUpdate("DELETE FROM playlist_entries");
+            c.createStatement().executeUpdate("DELETE FROM library_entries");
+            return null;
+        });
+        HttpResponse<String> untyped = http.send(post("application/json", ",\"playlistId\":\"" + mix + "\""),
+                HttpResponse.BodyHandlers.ofString());
+        assertEquals(409, untyped.statusCode(), untyped.body());
+        assertEquals("needs_classification", code(untyped));
+        assertEquals(0, playlists.get(aliceId, mix).entries().size());
+        assertEquals(0, count("SELECT COUNT(*) FROM library_entries"));
+    }
+
+    private static String code(HttpResponse<String> r) {
+        return JsonParser.parseString(r.body()).getAsJsonObject().getAsJsonObject("error").get("code").getAsString();
+    }
+
+    private long count(String sql) throws Exception {
+        return db.read(c -> {
+            try (java.sql.ResultSet rs = c.createStatement().executeQuery(sql)) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        });
+    }
+
+    private String string(String sql) throws Exception {
+        return db.read(c -> {
+            try (java.sql.ResultSet rs = c.createStatement().executeQuery(sql)) {
+                rs.next();
+                return rs.getString(1);
+            }
+        });
     }
 
     @Test

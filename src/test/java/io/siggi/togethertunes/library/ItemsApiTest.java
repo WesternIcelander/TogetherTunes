@@ -35,6 +35,7 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.PreparedStatement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.AfterEach;
@@ -48,6 +49,7 @@ class ItemsApiTest {
     Path dir;
 
     private Database db;
+    private final List<String> roomChecks = new java.util.concurrent.CopyOnWriteArrayList<>();
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
@@ -82,7 +84,15 @@ class ItemsApiTest {
         versions.undoWindow(() -> 48 * 3_600_000L);
         items.mediaVersions(versions);
         items.trimJobs(jobs);
-        new ItemsApi(items, new Permissions(db, settings), youtube).register(router);
+        ItemsApi itemsApi = new ItemsApi(items, new Permissions(db, settings), youtube);
+        // GET /api/search from a room: "open" lets guests and anonymous visitors search, "closed" refuses
+        itemsApi.roomSearch((actor, room) -> {
+            roomChecks.add(actor + "@" + room);
+            if (!room.equals("open")) {
+                throw new io.siggi.togethertunes.http.HttpError(403, "guest_library_requests_disabled", "no");
+            }
+        });
+        itemsApi.register(router);
         new LibraryApi(new Library(db, youtube, clock), TestUploads.policy(new Permissions(db, settings), settings))
                 .register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
@@ -183,6 +193,73 @@ class ItemsApiTest {
         // a page of 1 has a cursor to the next (nothing; the purged one isn't listed)
         JsonObject first = json(call("GET", "/api/items/search?limit=1", bob, null));
         assertFalse(first.has("nextCursor"), first.toString());
+    }
+
+    /** GET /api/search: the whole server, the caller's library first; guests only from a room. */
+    @Test
+    void searchWithYourLibraryFirst() throws Exception {
+        String a = item("audio"); // alice's
+        String b = item("audio"); // alice's, then also bob's
+        String c = item("audio"); // alice's
+        String purged = item("audio");
+        db.write(x -> {
+            try (PreparedStatement ps = x.prepareStatement("UPDATE items SET status = 'purged' WHERE id = ?")) {
+                ps.setString(1, purged);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        assertEquals(201, call("PUT", "/api/library/" + b, bob, null).statusCode());
+        java.util.function.Function<JsonObject, List<String>> ids = page -> {
+            List<String> out = new ArrayList<>();
+            page.getAsJsonArray("items").forEach(e -> out.add(
+                    e.getAsJsonObject().getAsJsonObject("item").get("id").getAsString()));
+            return out;
+        };
+        List<String> newest = new ArrayList<>(List.of(a, b, c));
+        newest.sort(java.util.Comparator.reverseOrder());
+        HttpResponse<String> r = call("GET", "/api/search?q=song", bob, null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(""));
+        List<String> bobs = new ArrayList<>(List.of(b));
+        newest.stream().filter(id -> !id.equals(b)).forEach(bobs::add);
+        assertEquals(bobs, ids.apply(json(r)), "bob's own item first, then the rest newest first");
+        JsonObject firstHit = json(r).getAsJsonArray("items").get(0).getAsJsonObject();
+        assertTrue(firstHit.get("inYourLibrary").getAsBoolean());
+        assertFalse(r.body().contains(aliceId));
+        assertEquals(newest, ids.apply(json(call("GET", "/api/search", alice, null))), "all alice's");
+        // paging across the two parts
+        List<String> paged = new ArrayList<>();
+        String path = "/api/search?limit=1";
+        while (true) {
+            JsonObject page = json(call("GET", path, bob, null));
+            paged.addAll(ids.apply(page));
+            if (!page.has("nextCursor")) {
+                break;
+            }
+            path = "/api/search?limit=1&cursor=" + page.get("nextCursor").getAsString();
+        }
+        assertEquals(bobs, paged);
+        // a user's roomId is ignored (no room check)
+        assertEquals(bobs, ids.apply(json(call("GET", "/api/search?roomId=closed", bob, null))));
+        assertEquals(List.of(), roomChecks);
+        // guests and anonymous visitors: only from a room where they may request from the library
+        HttpResponse<String> anon = call("GET", "/api/search", null, null);
+        assertEquals(401, anon.statusCode());
+        assertEquals("not_authenticated", code(anon));
+        assertEquals("guest_library_requests_disabled", code(call("GET", "/api/search?roomId=closed", null, null)));
+        HttpResponse<String> fromRoom = call("GET", "/api/search?roomId=open&q=song", null, null);
+        assertEquals(200, fromRoom.statusCode(), fromRoom.body());
+        assertEquals(newest, ids.apply(json(fromRoom)), "no library of their own: newest first");
+        json(fromRoom).getAsJsonArray("items").forEach(e ->
+                assertFalse(e.getAsJsonObject().get("inYourLibrary").getAsBoolean()));
+        assertEquals(2, roomChecks.size());
+        // errors
+        assertEquals("invalid_limit", code(call("GET", "/api/search?limit=201", bob, null)));
+        assertEquals("invalid_kind", code(call("GET", "/api/search?kind=x", bob, null)));
+        assertEquals("invalid_type", code(call("GET", "/api/search?type=x", bob, null)));
+        assertEquals("invalid_cursor", code(call("GET", "/api/search?cursor=" + a, bob, null)));
+        assertEquals("invalid_query", code(call("GET", "/api/search?q=" + "x".repeat(201), bob, null)));
     }
 
     private Object[] pinRow(String itemId) throws Exception {

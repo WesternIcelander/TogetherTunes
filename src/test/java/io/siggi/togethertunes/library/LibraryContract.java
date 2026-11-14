@@ -250,6 +250,8 @@ abstract class LibraryContract {
             }
         };
         assertEquals(List.of(e), typed.apply("uncategorized"));
+        assertEquals(1, library.countUncategorized(alice.userId()), "the Uncategorized Videos view");
+        assertEquals(0, library.countUncategorized(bob.userId()));
         assertEquals(List.of(d, c, b, a), typed.apply("audio"));
         assertEquals(List.of(), typed.apply("movie,show"));
         db.write(conn -> {
@@ -261,6 +263,7 @@ abstract class LibraryContract {
             return null;
         });
         assertEquals(List.of(e), typed.apply("movie,show"));
+        assertEquals(0, library.countUncategorized(alice.userId()), "classified");
         assertEquals("movie", library.list(alice.userId(), null, null, "movie", null, 50).items().get(0).item().mediaType());
         assertEquals("invalid_type", assertThrows(HttpError.class,
                 () -> library.list(alice.userId(), null, null, "song", null, 10)).code());

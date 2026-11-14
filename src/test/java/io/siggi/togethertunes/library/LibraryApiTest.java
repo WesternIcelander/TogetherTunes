@@ -243,6 +243,60 @@ class LibraryApiTest {
         assertEquals("invalid_query", code(call("GET", "/api/library?q=" + "x".repeat(201), true)));
     }
 
+    /** The Uncategorized Videos view: the caller's uncategorized entries and their total. */
+    @Test
+    void uncategorizedView() throws Exception {
+        JsonObject empty = json(call("GET", "/api/library/uncategorized?limit=1", true));
+        assertEquals(0, empty.get("total").getAsLong());
+        assertEquals(0, empty.getAsJsonArray("items").size());
+        assertFalse(empty.has("nextCursor"));
+        String song = item("Song", "ready", null);
+        List<String> clips = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            String id = item("Clip " + i, "ready", null);
+            db.write(c -> {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video',"
+                        + " media_type = 'uncategorized' WHERE id = ?")) {
+                    ps.setString(1, id);
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id,"
+                        + " added_at, via) VALUES (?, ?, ?, 'upload')")) {
+                    ps.setString(1, aliceId);
+                    ps.setString(2, id);
+                    ps.setLong(3, clock.millis());
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+            clock.advance(1000);
+            clips.add(0, id);
+        }
+        assertEquals(201, call("PUT", "/api/library/" + song, true).statusCode());
+        HttpResponse<String> first = call("GET", "/api/library/uncategorized?limit=2", true);
+        assertEquals(200, first.statusCode(), first.body());
+        assertEquals("no-store", first.headers().firstValue("Cache-Control").orElse(""));
+        JsonObject page = json(first);
+        assertEquals(3, page.get("total").getAsLong());
+        List<String> seen = new ArrayList<>();
+        page.getAsJsonArray("items").forEach(e -> seen.add(
+                e.getAsJsonObject().getAsJsonObject("item").get("id").getAsString()));
+        JsonObject second = json(call("GET", "/api/library/uncategorized?limit=2&cursor="
+                + page.get("nextCursor").getAsString(), true));
+        second.getAsJsonArray("items").forEach(e -> seen.add(
+                e.getAsJsonObject().getAsJsonObject("item").get("id").getAsString()));
+        assertEquals(clips, seen, "newest first, the song left out");
+        assertFalse(second.has("nextCursor"));
+        JsonObject searched = json(call("GET", "/api/library/uncategorized?q=clip%201", true));
+        assertEquals(1, searched.getAsJsonArray("items").size());
+        assertEquals(3, searched.get("total").getAsLong(), "the total isn't narrowed by q");
+        assertEquals("uncategorized", searched.getAsJsonArray("items").get(0).getAsJsonObject()
+                .getAsJsonObject("item").get("mediaType").getAsString());
+        assertEquals("invalid_limit", code(call("GET", "/api/library/uncategorized?limit=0", true)));
+        assertEquals("invalid_cursor", code(call("GET", "/api/library/uncategorized?cursor=nope", true)));
+        assertEquals(401, call("GET", "/api/library/uncategorized", false).statusCode());
+    }
+
     private HttpResponse<String> put(String path, String json) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
                 .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")

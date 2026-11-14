@@ -249,6 +249,92 @@ abstract class RequestSearchContract {
     }
 
     @Test
+    void wholeServerWithTheSearchersLibraryFirst() throws Exception {
+        // GET /api/search: the whole server, carol's own library first, each part newest first
+        ItemSearch items = new ItemSearch(db);
+        List<String> mine = new ArrayList<>(List.of(shared, carolOnly));
+        List<String> rest = new ArrayList<>(List.of(ownLib, ownList, daveOnly, nobody, video));
+        mine.sort(java.util.Comparator.reverseOrder());
+        rest.sort(java.util.Comparator.reverseOrder());
+        List<String> expected = new ArrayList<>(mine);
+        expected.addAll(rest);
+        ItemSearch.Page page = items.searchMineFirst(carol.userId(), null, null, null, null, 50);
+        assertEquals(expected, page.items().stream().map(h -> h.item().id()).toList());
+        for (ItemSearch.Hit hit : page.items()) {
+            assertEquals(mine.contains(hit.item().id()), hit.inYourLibrary(), hit.item().title());
+        }
+        assertNull(page.nextCursor());
+        // pages of one, across the boundary between the two parts
+        for (int size : List.of(1, 2, 3)) {
+            List<String> paged = new ArrayList<>();
+            String cursor = null;
+            do {
+                ItemSearch.Page p = items.searchMineFirst(carol.userId(), null, null, null, cursor, size);
+                p.items().forEach(h -> paged.add(h.item().id()));
+                assertTrue(p.items().size() <= size);
+                cursor = p.nextCursor();
+            } while (cursor != null);
+            assertEquals(expected, paged, "pages of " + size);
+        }
+        assertTrue(items.searchMineFirst(carol.userId(), null, null, null, null, 1).nextCursor().startsWith("1_"));
+        // alice: the failed upload and the purged YouTube item in her library aren't on the server
+        List<String> aliceMine = new ArrayList<>(List.of(ownLib, shared, video));
+        aliceMine.sort(java.util.Comparator.reverseOrder());
+        assertEquals(aliceMine, items.searchMineFirst(aliceId, null, null, null, null, 50).items().stream()
+                .limit(3).map(h -> h.item().id()).toList());
+        // nobody's library (guests, anonymous visitors): newest first
+        List<String> server = new ArrayList<>(expected);
+        server.sort(java.util.Comparator.reverseOrder());
+        List<String> paged = new ArrayList<>();
+        String cursor = null;
+        do {
+            ItemSearch.Page p = items.searchMineFirst(null, null, null, null, cursor, 2);
+            p.items().forEach(h -> {
+                paged.add(h.item().id());
+                assertFalse(h.inYourLibrary());
+            });
+            cursor = p.nextCursor();
+            assertTrue(cursor == null || cursor.startsWith("0_"), cursor);
+        } while (cursor != null);
+        assertEquals(server, paged);
+        // filters as everywhere else
+        List<String> newOrder = new ArrayList<>(List.of(ownLib, ownList, video));
+        newOrder.sort(java.util.Comparator.reverseOrder());
+        List<String> aliceFirst = new ArrayList<>(newOrder);
+        aliceFirst.remove(ownList);
+        aliceFirst.add(ownList);
+        assertEquals(aliceFirst, items.searchMineFirst(aliceId, "new order", null, null, null, 50).items()
+                .stream().map(h -> h.item().id()).toList(), "alice's two first, then the playlist-only one");
+        assertEquals(List.of(video), items.searchMineFirst(carol.userId(), null, "video", null, null, 50).items()
+                .stream().map(h -> h.item().id()).toList());
+        assertEquals(List.of(carolOnly), items.searchMineFirst(dave.userId(), "secret", null, null, null, 50).items()
+                .stream().map(h -> h.item().id()).toList(), "carol's item found by dave");
+        assertEquals("invalid_type", refused(() -> items.searchMineFirst(null, null, null, "film", null, 50)));
+        assertEquals("invalid_kind", refused(() -> items.searchMineFirst(null, null, "image", null, null, 50)));
+        for (String bad : List.of("x", shared, "2_" + shared, "1_nope", "0_")) {
+            assertEquals("invalid_cursor", refused(() -> items.searchMineFirst(carol.userId(), null, null, null, bad,
+                    50)), bad);
+        }
+        assertEquals("invalid_cursor", refused(() -> items.searchMineFirst(null, null, null, null, "1_" + shared, 50)),
+                "no own library part without a user");
+    }
+
+    @Test
+    void mayRequestFromTheRoom() throws Exception {
+        // the check GET /api/search uses for guests and anonymous visitors
+        assertEquals(roomId, search.requireMayRequest(guest, roomId).id());
+        assertEquals(roomId, search.requireMayRequest(Actor.ANONYMOUS, roomId).id());
+        roomSettings("{\"guests\":{\"canRequestLibrary\":false}}");
+        assertEquals("guest_library_requests_disabled", refused(() -> search.requireMayRequest(guest, roomId)));
+        roomSettings("{\"libraryRequests\":false}");
+        assertEquals("library_requests_off", refused(() -> search.requireMayRequest(guest, roomId)));
+        assertEquals(roomId, search.requireMayRequest(bob, roomId).id(), "moderators");
+        sql("UPDATE rooms SET visibility = 'private' WHERE id = ?", roomId);
+        assertEquals("room_not_found", refused(() -> search.requireMayRequest(guest, roomId)));
+        assertEquals("room_not_found", refused(() -> search.requireMayRequest(guest, "no-such-room")));
+    }
+
+    @Test
     void libraryRequestsOff() throws Exception {
         roomSettings("{\"libraryRequests\":false}");
         for (Actor a : List.of(carol, dave, guest, Actor.ANONYMOUS)) {

@@ -137,6 +137,81 @@ public final class ItemSearch {
             }
             sql.append(") AND NOT (i.youtube_id IS NULL AND i.status IN ('failed', 'purged'))");
         }
+        appendMatch(d, sql, params, kind, types, terms);
+        if (cursor != null) {
+            sql.append(" AND i.id < ?");
+            params.add(cursor);
+        }
+        sql.append(" ORDER BY i.id DESC LIMIT ").append(limit + 1);
+        return run(sql.toString(), params, limit, false);
+    }
+
+    /**
+     * The whole-server search of {@code GET /api/search} ({@code docs/libraries.md#visibility}):
+     * every item on the server that isn't purged ({@link Scope#server()}), the items in the
+     * searching user's own library first, each part newest item first (by item id). For a guest or
+     * anonymous caller ({@code viewerUserId} null) there is no own library: newest first. Only the
+     * caller's own library affects the order, so nothing tells whose other libraries hold an item.
+     * The cursor is {@code <1|0>_<itemId>} (1 while in the caller's library part).
+     *
+     * @throws HttpError as {@link #search(Scope, String, String, String, String, String, int)}
+     */
+    public Page searchMineFirst(String viewerUserId, String query, String kind, String type, String cursor,
+                                int limit) throws SQLException {
+        List<String> types = MediaType.filter(type);
+        if (limit < 1 || limit > LIST_MAX) {
+            throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
+        }
+        if (kind != null && !kind.equals("audio") && !kind.equals("video")) {
+            throw new HttpError(400, "invalid_kind", "kind must be audio or video");
+        }
+        int cursorMine = -1;
+        String cursorId = null;
+        if (cursor != null) {
+            if (cursor.length() < 3 || cursor.charAt(1) != '_' || (cursor.charAt(0) != '0' && cursor.charAt(0) != '1')
+                    || !UuidV7.isValid(cursor.substring(2))
+                    || (viewerUserId == null && cursor.charAt(0) == '1')) {
+                throw new HttpError(400, "invalid_cursor", "Malformed cursor");
+            }
+            cursorMine = cursor.charAt(0) - '0';
+            cursorId = cursor.substring(2);
+        }
+        List<String> terms = Library.terms(query);
+        Dialect d = db.dialect();
+        List<String> params = new ArrayList<>();
+        String mine = "EXISTS (SELECT 1 FROM library_entries v WHERE v.item_id = i.id AND v.user_id = ?)";
+        StringBuilder sql = new StringBuilder("SELECT " + Library.ItemView.COLUMNS + ", ");
+        if (viewerUserId != null) {
+            sql.append("CASE WHEN ").append(mine).append(" THEN 1 ELSE 0 END AS mine");
+            params.add(viewerUserId);
+        } else {
+            sql.append("0 AS mine");
+        }
+        sql.append(" FROM items i WHERE i.status <> 'purged' AND NOT (i.youtube_id IS NULL AND i.status = 'failed')");
+        appendMatch(d, sql, params, kind, types, terms);
+        if (cursorId != null) {
+            if (viewerUserId == null) {
+                sql.append(" AND i.id < ?");
+                params.add(cursorId);
+            } else if (cursorMine == 1) {
+                // still in the caller's library part: later ones there, then everything else
+                sql.append(" AND ((").append(mine).append(" AND i.id < ?) OR NOT ").append(mine).append(")");
+                params.add(viewerUserId);
+                params.add(cursorId);
+                params.add(viewerUserId);
+            } else {
+                sql.append(" AND NOT ").append(mine).append(" AND i.id < ?");
+                params.add(viewerUserId);
+                params.add(cursorId);
+            }
+        }
+        sql.append(viewerUserId == null ? " ORDER BY i.id DESC" : " ORDER BY mine DESC, i.id DESC")
+                .append(" LIMIT ").append(limit + 1);
+        return run(sql.toString(), params, limit, true);
+    }
+
+    private static void appendMatch(Dialect d, StringBuilder sql, List<String> params, String kind,
+                                    List<String> types, List<String> terms) {
         if (kind != null) {
             sql.append(" AND i.kind = ?");
             params.add(kind);
@@ -152,14 +227,12 @@ public final class ItemSearch {
             params.add(pattern);
             params.add(pattern);
         }
-        if (cursor != null) {
-            sql.append(" AND i.id < ?");
-            params.add(cursor);
-        }
-        sql.append(" ORDER BY i.id DESC LIMIT ").append(limit + 1);
+    }
+
+    private Page run(String sql, List<String> params, int limit, boolean rankedCursor) throws SQLException {
         return db.read(c -> {
             List<Hit> items = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
                 for (int i = 0; i < params.size(); i++) {
                     ps.setString(i + 1, params.get(i));
                 }
@@ -172,7 +245,9 @@ public final class ItemSearch {
             String next = null;
             if (items.size() > limit) {
                 items = new ArrayList<>(items.subList(0, limit));
-                next = items.get(limit - 1).item().id();
+                Hit last = items.get(limit - 1);
+                next = rankedCursor ? (last.inYourLibrary() ? "1_" : "0_") + last.item().id()
+                        : last.item().id();
             }
             return new Page(List.copyOf(items), next);
         });

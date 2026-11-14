@@ -78,9 +78,25 @@ public final class RequestSearch {
      */
     public Page search(Actor actor, String idOrSlug, String query, String kind, String type, String cursor,
                        int limit, boolean all) throws SQLException {
+        Rooms.Room room = requireMayRequest(actor, idOrSlug);
+        String userId = actor instanceof Actor.User u ? u.userId() : null;
+        ItemSearch.Scope scope = all ? ItemSearch.Scope.server()
+                : ItemSearch.Scope.of(Arrays.asList(room.ownerId(), userId), List.of(room.ownerId()));
+        ItemSearch.Page page = items.search(scope, null, query, kind, type, cursor, limit);
+        return new Page(page.items().stream().map(ItemSearch.Hit::item).toList(), page.nextCursor());
+    }
+
+    /**
+     * Checks that {@code actor} may open the room and request from libraries there (the rules of
+     * the request search, also used by {@code GET /api/search} for guests and anonymous visitors).
+     *
+     * @return the room
+     * @throws HttpError {@code 404 room_not_found}, {@code 403 banned_from_room},
+     *                   {@code 403 guest_library_requests_disabled}, {@code 403 library_requests_off}
+     */
+    public Rooms.Room requireMayRequest(Actor actor, String idOrSlug) throws SQLException {
         Rooms.Access access = rooms.access(actor, idOrSlug);
         Rooms.Room room = access.room();
-        String userId = actor instanceof Actor.User u ? u.userId() : null;
         boolean mods = access.role() != null && access.role().moderates();
         if (!mods && !room.settings().libraryRequests()) {
             throw new HttpError(403, "library_requests_off", "This room doesn't take requests from libraries");
@@ -90,9 +106,6 @@ public final class RequestSearch {
             throw new HttpError(403, "guest_library_requests_disabled",
                     "Guests can't request from the library in this room");
         }
-        ItemSearch.Scope scope = all ? ItemSearch.Scope.server()
-                : ItemSearch.Scope.of(Arrays.asList(room.ownerId(), userId), List.of(room.ownerId()));
-        ItemSearch.Page page = items.search(scope, null, query, kind, type, cursor, limit);
-        return new Page(page.items().stream().map(ItemSearch.Hit::item).toList(), page.nextCursor());
+        return room;
     }
 }
