@@ -151,3 +151,33 @@ test("cleartext warning: only for a token URL used over plain HTTP, generic word
   assert.equal(O.cleartextWarning(url({ urlKind: "token", tokenCleartextAt: "5" }), date), undefined, "malformed");
   assert.match(O.cleartextWarning(url({ urlKind: "token", tokenCleartextAt: 1800000000000 })), /^This URL has been used over unencrypted HTTP \(since .+\), so/);
 });
+
+test("room view quick output buttons: Turn on for the owner, Copy link for the owner and moderators", () => {
+  const on = () => true;
+  const rows = [
+    { id: "r1", kind: "rtmp", enabled: true, serverEnabled: true, active: true, createdAt: 1 },
+    { id: "t1", kind: "ts", enabled: false, serverEnabled: true, active: false, createdAt: 1 },
+    { id: "h1", kind: "hls", enabled: true, serverEnabled: true, active: true, createdAt: 1, url: "https://x/live/a/index.m3u8" },
+  ];
+  const owner = O.quickOutputs(rows, on, true, "https://viewer.example/abc");
+  assert.deepEqual(owner.map((q) => [q.kind, q.action]), [["rtmp", "copy"], ["ts", "turnOn"], ["hls", "copy"],
+    ["mp3", "turnOn"]]);
+  assert.equal(owner[0].url, "https://viewer.example/abc");
+  assert.equal(owner[1].rowId, "t1");
+  assert.equal(owner[3].rowId, undefined, "no row yet: created");
+  assert.equal(owner[2].url, "https://x/live/a/index.m3u8");
+  assert.ok(owner.every((q) => typeof q.label === "string" && q.label !== ""));
+  // moderators can't switch outputs: only the links
+  assert.deepEqual(O.quickOutputs(rows, on, false, "https://viewer.example/abc").map((q) => q.kind), ["rtmp", "hls"]);
+  // RTMP on without a viewer URL: nothing to copy; RTMP missing: set up in Manage Room, no Turn on
+  assert.deepEqual(O.quickOutputs(rows, on, true, undefined).map((q) => q.kind), ["ts", "hls", "mp3"]);
+  assert.deepEqual(O.quickOutputs([], on, true, undefined).map((q) => q.kind), ["ts", "hls", "mp3"]);
+  // the server's switch off: no Turn on, neither for a new output nor for an existing one
+  const off = (k) => k !== "mp3";
+  const serverOff = [{ id: "m1", kind: "mp3", enabled: false, serverEnabled: false, active: false, createdAt: 1 }];
+  assert.deepEqual(O.quickOutputs(serverOff, off, true, undefined).map((q) => q.kind), ["ts", "hls"]);
+  assert.deepEqual(O.quickOutputs([], off, true, undefined).map((q) => q.kind), ["ts", "hls"]);
+  // enabled but not active (server switch off since): nothing
+  assert.deepEqual(O.quickOutputs([{ id: "m1", kind: "mp3", enabled: true, serverEnabled: false, active: false,
+    createdAt: 1, url: "u" }], () => false, true, undefined), []);
+});

@@ -287,3 +287,89 @@ export function presenceText(p: { listening: number; remote: number; anonymous: 
   if (p.anonymous > 0) text += " · +" + p.anonymous + " anonymous";
   return text;
 }
+
+/** What a person's ⋯ menu (the moderation menu, docs/ui.md#moderation-menu-right-click-a-person-in-the-room-tab) offers. */
+export type PersonAction = "addModerator" | "removeModerator" | "timeout" | "ban" | "banFromServer";
+
+/** Who opens the menu: their rights in the room, their own identity and whether they hold `admin.users`. */
+export interface PersonViewer {
+  you: YouLike & { role?: string };
+  actor: ActorLike | undefined;
+  adminUsers: boolean;
+}
+
+/**
+ * The moderation menu's items for `person` (whose stored room role, `owner`/`moderator`/`member`/
+ * `banned`, is `targetRole` when known; guests have none). The server's rules: only the owner names
+ * or removes moderators; the owner and moderators time out and ban, but never the owner, a
+ * moderator only by the owner (a ban; a moderator can't be timed out) and never themselves; Ban from
+ * server (disables the account) for holders of `admin.users`, users only.
+ */
+export function personActions(v: PersonViewer, person: PersonLike, targetRole?: string): PersonAction[] {
+  const a = person.actor;
+  if (v.actor !== undefined && v.actor.kind === a.kind && v.actor.id === a.id) return [];
+  const out: PersonAction[] = [];
+  const user = a.kind === "user";
+  const owner = v.you.role === "owner";
+  const free = v.you.restriction === undefined;
+  if (free && v.you.canModerate && targetRole !== "owner") {
+    if (owner && user && targetRole !== undefined && targetRole !== "banned") {
+      out.push(targetRole === "moderator" ? "removeModerator" : "addModerator");
+    }
+    if (targetRole !== "moderator") out.push("timeout");
+    if (targetRole !== "moderator" || owner) out.push("ban");
+  }
+  if (v.adminUsers && user) out.push("banFromServer");
+  return out;
+}
+
+/** The menu text of each action. */
+export const PERSON_ACTION_LABELS: Record<PersonAction, string> = {
+  addModerator: "Add Moderator",
+  removeModerator: "Remove Moderator",
+  timeout: "Timeout…",
+  ban: "Ban",
+  banFromServer: "Ban from server",
+};
+
+/** A timeout's shortest and longest length (the server's limits). */
+export const MIN_TIMEOUT_MS = 1000;
+export const MAX_TIMEOUT_MS = 315_360_000_000;
+
+const DURATION_UNITS: Record<string, number> = {
+  s: 1000, sec: 1000, secs: 1000, second: 1000, seconds: 1000,
+  m: 60_000, min: 60_000, mins: 60_000, minute: 60_000, minutes: 60_000,
+  h: 3_600_000, hr: 3_600_000, hrs: 3_600_000, hour: 3_600_000, hours: 3_600_000,
+  d: 86_400_000, day: 86_400_000, days: 86_400_000,
+  w: 604_800_000, week: 604_800_000, weeks: 604_800_000,
+};
+
+/**
+ * A timeout length as a moderator types it: "10" (minutes), "30s", "10m", "2h", "1d", "1w", or
+ * combined ("1h 30m", "1d12h"); decimals allowed ("1.5h"). Undefined when it doesn't parse or is
+ * outside the server's limits (1 s to 10 years).
+ */
+export function parseDurationInput(text: string): number | undefined {
+  const t = text.trim().toLowerCase();
+  if (t === "") return undefined;
+  let ms: number;
+  if (/^\d+(\.\d+)?$/.test(t)) {
+    ms = Number(t) * 60_000;
+  } else {
+    const re = /(\d+(?:\.\d+)?)\s*([a-z]+)\s*/y;
+    ms = 0;
+    let pos = 0;
+    while (pos < t.length) {
+      re.lastIndex = pos;
+      const m = re.exec(t);
+      if (m === null) return undefined;
+      const unit = DURATION_UNITS[m[2] ?? ""];
+      if (unit === undefined) return undefined;
+      ms += Number(m[1]) * unit;
+      pos = re.lastIndex;
+    }
+  }
+  ms = Math.round(ms);
+  if (!Number.isFinite(ms) || ms < MIN_TIMEOUT_MS || ms > MAX_TIMEOUT_MS) return undefined;
+  return ms;
+}

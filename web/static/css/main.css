@@ -1433,3 +1433,199 @@ table.rooms td {
     background: #222;
   }
 }
+
+/* ------------------------------------------------------------------ room view (docs/ui.md#room-view-desktop) */
+
+/* The left sidebar hides behind ☰ (signed-in users), pushing the page aside when shown; no right panel. */
+.sidebar-toggle {
+  display: none;
+}
+
+body.room-view.signed-in .sidebar-toggle {
+  display: block;
+  flex: none;
+  position: sticky;
+  top: 0;
+  margin: 0.5rem 0 0 0.5rem;
+  font-size: 1.25rem;
+}
+
+body.room-view .app-sidebar,
+body.room-view .app-panel {
+  display: none;
+}
+
+body.room-view.sidebar-open .app-sidebar:not([hidden]) {
+  display: block;
+}
+
+body.room-view #app {
+  max-width: 90rem;
+}
+
+.rv-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16rem;
+  gap: 1.5rem;
+  margin-top: 0.5rem;
+}
+
+.rv-grid[hidden] {
+  display: none;
+}
+
+.rv-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(12rem, 18rem);
+  gap: 1.5rem;
+}
+
+.rv-video-slot .app-video {
+  margin-top: 0;
+}
+
+.rv-video-slot .room-player video,
+.rv-video-slot .video-card {
+  max-height: 60vh;
+}
+
+.rv-under-video {
+  margin: 0.5rem 0 0.75rem;
+}
+
+.rv-title[hidden],
+.rv-outputs[hidden],
+.rv-request-link[hidden] {
+  display: none;
+}
+
+.rv-title .entry-title {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.rv-queue h3,
+.rv-side h3 {
+  font-size: 0.95rem;
+  margin: 0.75rem 0 0.25rem;
+}
+
+.rv-request h2 {
+  font-size: 1.1rem;
+  margin: 0.75rem 0 0.4rem;
+}
+
+.rv-outputs {
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.75rem;
+}
+
+.request-link-form {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+
+.request-link-form input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.room-identity {
+  margin-top: 1rem;
+}
+
+.guest-line {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.room-more {
+  margin-top: 2rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.3);
+  padding-top: 0.5rem;
+}
+
+.room-more > summary {
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.person-more {
+  margin-left: auto;
+}
+
+.person-menu {
+  min-width: 11rem;
+}
+
+/* The card for audio items in the video area (the Now Playing View makes it big). */
+.app-video .video-card {
+  aspect-ratio: 16 / 9;
+  justify-content: center;
+  gap: 0.5rem;
+  background: #000;
+  color: #fff;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  padding: 0.5rem;
+  box-sizing: border-box;
+}
+
+.app-video .video-card .card-cover {
+  width: auto;
+  height: 55%;
+  aspect-ratio: 1 / 1;
+  border-radius: 0.5rem;
+}
+
+.app-video .video-card .card-title {
+  font-size: 1.3rem;
+}
+
+.app-video .video-card .card-artist {
+  font-size: 1rem;
+}
+
+.app-panel .app-video .video-card .card-title {
+  font-size: 1rem;
+}
+
+body.now-view-open .app-video .video-card {
+  aspect-ratio: auto;
+  max-height: none;
+  background: none;
+  gap: 1rem;
+}
+
+body.now-view-open .app-video .video-card .card-cover {
+  width: min(50vh, 70vw);
+  height: min(50vh, 70vw);
+  border-radius: 1rem;
+}
+
+body.now-view-open .app-video .video-card .card-title {
+  font-size: 2.5rem;
+}
+
+body.now-view-open .app-video .video-card .card-artist {
+  font-size: 1.5rem;
+}
+
+/* "Click to enable sound": a translucent dark layer over the video area only. */
+.app-video .listen-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  border-radius: 0.5rem;
+}
+
+@media (max-width: 60rem) {
+  .rv-grid,
+  .rv-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

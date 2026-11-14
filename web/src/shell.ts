@@ -256,6 +256,8 @@ export class Shell {
 
   /** Aborts a view's signal and removes its element. */
   #unmount(m: Mounted): void {
+    // The room view may hold the frame's video panel: it goes back to the right panel first.
+    this.#frame.release(m.el);
     m.controller.abort();
     m.el.remove();
   }
@@ -269,6 +271,7 @@ export class Shell {
     this.#leaving = false;
     if (v.route.view === "room" && v.room !== undefined && v.room.active() && !leaving) {
       if (this.#kept !== undefined) this.#unmount(this.#kept);
+      this.#frame.release(v.el);
       v.el.hidden = true;
       this.#kept = v;
       return;

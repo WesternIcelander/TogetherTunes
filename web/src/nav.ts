@@ -184,7 +184,7 @@ let stoppedNoteChecked = false;
 
 /**
  * After a full page load (a reload while the shell showed another view, say): a bar saying that
- * playback of the room stopped and needs a new "Click to listen" in the room. Looked for once per
+ * playback of the room stopped and needs a new "Click to enable sound" in the room. Looked for once per
  * document (the first view that renders the navigation); nothing when nothing was playing.
  */
 export function showStoppedNote(): void {
@@ -203,7 +203,7 @@ export function showStoppedNote(): void {
   link.href = room.path;
   link.textContent = room.name;
   text.append("Playback of ", link, " stopped: it can't go on across a full page load (a reload, say)."
-    + " Open the room and click \"Click to listen\" to listen again.");
+    + " Open the room and click \"Click to enable sound\" to listen again.");
   const close = document.createElement("button");
   close.type = "button";
   close.className = "link";

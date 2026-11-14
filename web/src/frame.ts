@@ -15,9 +15,10 @@ import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
 import { navigate, setFrame, type ShellRoom } from "./nav.js";
 import {
-  canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseVolume,
-  personModeText, playerControls, presenceText, queueSections, suggestionsPlace, volumeGain, voteSkip,
-  type AutoplaySelectionLike,
+  canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
+  parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections,
+  suggestionsPlace, volumeGain, voteSkip, type AutoplaySelectionLike, type PersonAction, type PersonLike,
+  type PersonViewer,
 } from "./panels.js";
 import type { CurrentEntry, HistoryEntry, RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
 import type { RoomListEntry } from "./roomlist.js";
@@ -100,14 +101,49 @@ export class Frame {
       window.clearTimeout(this.#roomsTimer);
       this.#roomsTimer = window.setTimeout(() => { void this.#loadRooms(); }, 250);
     });
-    // The video panel shows while the player shows a video (listen.ts hides its container otherwise).
+    // The video panel shows while the player shows a video (listen.ts hides its container otherwise),
+    // and while the "Click to enable sound" layer over it is up.
     const container = byId("room-player");
-    new MutationObserver(() => this.#drawVideo()).observe(container, { attributes: true, attributeFilter: ["hidden"] });
+    const observer = new MutationObserver(() => this.#drawVideo());
+    observer.observe(container, { attributes: true, attributeFilter: ["hidden"] });
+    observer.observe(byId("room-listen-overlay"), { attributes: true, attributeFilter: ["hidden"] });
+    // The room view: ☰ shows the left sidebar (pushing the page aside); double-clicking Queue, Recents
+    // or Room in the right panel opens the room view.
+    const toggle = byId("app-sidebar-toggle");
+    toggle.addEventListener("click", () => {
+      const open = !document.body.classList.contains("sidebar-open");
+      document.body.classList.toggle("sidebar-open", open);
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    byId("app-panel").querySelectorAll<HTMLButtonElement>(".tabs [data-tab]").forEach((b) => {
+      b.title = "Double-click to open the room view";
+      b.addEventListener("dblclick", () => {
+        const room = this.#host.room();
+        if (room !== undefined) navigate(room.path());
+      });
+    });
     window.setInterval(() => this.#tick(), 250);
     document.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && document.body.classList.contains("now-view-open")) this.#setNowView(false);
     });
     document.addEventListener("click", (ev) => this.#closeMenus(ev));
+  }
+
+  /**
+   * A view's element is about to leave the document (or be hidden): the video panel goes back to the
+   * right panel first if the room view had it (moved in the same task, so the media keep playing).
+   */
+  release(el: HTMLElement): void {
+    const video = byId("app-video");
+    if (el.contains(video)) byId("app-panel").append(video);
+  }
+
+  /** The room view is shown: the video panel lives in its video area; otherwise in the right panel. */
+  #placeVideo(roomView: boolean): void {
+    const video = byId("app-video");
+    const slot = roomView ? document.getElementById("rv-video-slot") : null;
+    const home = slot ?? byId("app-panel");
+    if (video.parentElement !== home) home.append(video);
   }
 
   /** Loads who is here and draws the frame. */
@@ -288,6 +324,14 @@ export class Frame {
     const room = this.#host.room();
     const s = room?.state();
     const user = this.#me?.kind === "user";
+    // The room view (docs/ui.md#room-view-desktop): no right panel, the sidebar behind ☰, the video big.
+    const roomView = this.#host.roomShown();
+    document.body.classList.toggle("room-view", roomView);
+    if (!roomView && document.body.classList.contains("sidebar-open")) {
+      document.body.classList.remove("sidebar-open");
+      byId("app-sidebar-toggle").setAttribute("aria-expanded", "false");
+    }
+    this.#placeVideo(roomView);
     byId("app-panel").hidden = room === undefined;
     byId("player-bar").hidden = room === undefined && !user;
     document.body.classList.toggle("has-panel", room !== undefined);
@@ -303,12 +347,16 @@ export class Frame {
       room.setVolume(gain, muted);
     }
     this.#drawPanel(room, s);
+    if (roomView) this.#drawRoomView(room, s);
     this.#drawPlayerBar(room, s);
     this.#drawVideo();
   }
 
   #showError(e: unknown): void {
-    byId("app-panel-error").textContent = e === "" ? "" : message(e);
+    const text = e === "" ? "" : message(e);
+    byId("app-panel-error").textContent = text;
+    const rv = document.getElementById("rv-error");
+    if (rv !== null) rv.textContent = text;
   }
 
   #act(room: ShellRoom, msg: Record<string, unknown>): void {
@@ -435,7 +483,8 @@ export class Frame {
       actions);
   }
 
-  #nowPlayingBlock(room: ShellRoom, s: RoomState): HTMLElement[] {
+  /** Now Playing (heart, ×); vote-to-skip under it unless `voteSkipHere` is false (the room view has it under the video). */
+  #nowPlayingBlock(room: ShellRoom, s: RoomState, voteSkipHere = true): HTMLElement[] {
     const c = s.current;
     const out: HTMLElement[] = [h("h3", { text: "Now Playing" })];
     if (c === undefined) {
@@ -450,13 +499,17 @@ export class Frame {
       cover(c.item, "cover entry-cover"),
       h("div", { class: "grow" }, this.#entryText(c.item), this.#statusLine(room, c, false)),
       actions)));
-    const vs = voteSkip(s, s.current !== undefined);
-    if (vs.show) {
-      const b = this.#actButton(room, vs.label, "Vote to skip this song", { type: "voteSkip" }, "small");
-      b.disabled = !vs.enabled;
-      out.push(h("div", { class: "vote-skip" }, b));
-    }
+    const b = voteSkipHere ? this.#voteSkipButton(room, s) : null;
+    if (b !== null) out.push(h("div", { class: "vote-skip" }, b));
     return out;
+  }
+
+  #voteSkipButton(room: ShellRoom, s: RoomState): HTMLButtonElement | null {
+    const vs = voteSkip(s, s.current !== undefined);
+    if (!vs.show) return null;
+    const b = this.#actButton(room, vs.label, "Vote to skip this song", { type: "voteSkip" }, "small");
+    b.disabled = !vs.enabled;
+    return b;
   }
 
   #suggestionsBlock(room: ShellRoom, s: RoomState): HTMLElement {
@@ -485,11 +538,17 @@ export class Frame {
       people.replaceChildren(wait());
       return;
     }
-    // Queue: suggestions above (people who may edit it) or below, Now Playing, Requests, From Playlist.
+    queue.replaceChildren(...this.#queueParts(room, s, true));
+    recents.replaceChildren(...this.#recentsParts(s));
+    people.replaceChildren(...this.#peopleParts(room, s));
+  }
+
+  /** Queue: suggestions above (people who may edit it) or below, Now Playing, Requests, From Playlist. */
+  #queueParts(room: ShellRoom, s: RoomState, voteSkipHere: boolean): HTMLElement[] {
     const place = suggestionsPlace(s);
     const parts: HTMLElement[] = [];
     if (place === "above") parts.push(this.#suggestionsBlock(room, s));
-    parts.push(...this.#nowPlayingBlock(room, s));
+    parts.push(...this.#nowPlayingBlock(room, s, voteSkipHere));
     const { requests, fromPlaylist } = queueSections(s.queue);
     const reqList = h("ul", { class: "entries" });
     for (const e of requests) reqList.append(this.#waitingRow(room, s, e, false));
@@ -500,36 +559,166 @@ export class Frame {
     parts.push(h("h3", { text: "From Playlist" }),
       fromPlaylist.length > 0 ? apList : h("p", { class: "muted small", text: "Nothing from playlists." }));
     if (place === "below") parts.push(this.#suggestionsBlock(room, s));
-    queue.replaceChildren(...parts);
+    return parts;
+  }
 
-    // Recents: Now Playing, then Earlier (the room's history), each with a heart.
+  /** Earlier: the room's history, each with a heart. */
+  #earlierParts(s: RoomState): HTMLElement[] {
     const earlier = h("ul", { class: "entries" });
     for (const r of s.history) earlier.append(this.#historyRow(r));
+    return [h("h3", { text: "Earlier" }),
+      s.history.length > 0 ? earlier : h("p", { class: "muted small", text: "Nothing played yet." })];
+  }
+
+  /** Recents: Now Playing, then Earlier. */
+  #recentsParts(s: RoomState): HTMLElement[] {
     const nowList = h("ul", { class: "entries" });
     if (s.current !== undefined) {
       nowList.append(h("li", { class: "entry" }, cover(s.current.item, "cover entry-cover"),
         h("div", { class: "grow" }, this.#entryText(s.current.item)),
         h("span", { class: "entry-actions" }, this.#heart(s.current.item.id))));
     }
-    recents.replaceChildren(h("h3", { text: "Now Playing" }),
+    return [h("h3", { text: "Now Playing" }),
       s.current !== undefined ? nowList : h("p", { class: "muted small", text: "Nothing is playing." }),
-      h("h3", { text: "Earlier" }),
-      s.history.length > 0 ? earlier : h("p", { class: "muted small", text: "Nothing played yet." }));
+      ...this.#earlierParts(s)];
+  }
 
-    // Room: Manage Room (owner and moderators), who is here.
+  /** Room: Manage Room (owner and moderators) above the people, each with a ⋯ moderation menu. */
+  #peopleParts(room: ShellRoom, s: RoomState): HTMLElement[] {
     const roomParts: HTMLElement[] = [];
     if (s.room.you.canModerate) {
       roomParts.push(h("p", {}, h("a", { class: "button-link", href: room.path() + "/manage", text: "Manage Room" })));
     }
     roomParts.push(h("p", { class: "muted small", text: presenceText(s.presence) }));
     const ul = h("ul", { class: "people" });
+    const viewer = this.#personViewer(room, s);
     for (const p of s.presence.people ?? []) {
-      ul.append(h("li", { class: "person", "data-actor": p.actor.kind + ":" + p.actor.id },
+      const li = h("li", { class: "person", "data-actor": p.actor.kind + ":" + p.actor.id },
         h("span", { class: "person-icon", "aria-hidden": "true", text: "👤" }),
-        h("div", { class: "grow" }, actorLabel(p.actor), h("div", { class: "muted small", text: personModeText(p) }))));
+        h("div", { class: "grow" }, actorLabel(p.actor), h("div", { class: "muted small", text: personModeText(p) })));
+      // ⋯ when the menu can have anything (the target's room role is looked up when it opens).
+      if (personActions(viewer, p, "member").length > 0 || personActions(viewer, p, "moderator").length > 0) {
+        const more = h("button", { type: "button", class: "icon person-more", text: "⋯",
+          title: "Moderate " + p.actor.name, "aria-label": "Moderate " + p.actor.name, "aria-haspopup": "true" });
+        more.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          void this.#openPersonMenu(room, p, more);
+        });
+        li.append(more);
+      }
+      ul.append(li);
     }
     roomParts.push(ul);
-    people.replaceChildren(...roomParts);
+    return roomParts;
+  }
+
+  #personViewer(room: ShellRoom, s: RoomState): PersonViewer {
+    const me = this.#me;
+    return { you: s.room.you, actor: room.actor(),
+      adminUsers: me?.kind === "user" && me.permissions.indexOf("admin.users") >= 0 };
+  }
+
+  // ---------------------------------------------------------------- moderation menu (⋯ on a person)
+
+  #personMenu: HTMLElement | undefined;
+
+  #closePersonMenu(): void {
+    this.#personMenu?.remove();
+    this.#personMenu = undefined;
+  }
+
+  /** Opens the moderation menu under `anchor`: looks up the person's room role first (users, for the owner and moderators). */
+  async #openPersonMenu(room: ShellRoom, p: PersonLike, anchor: HTMLElement): Promise<void> {
+    this.#closePersonMenu();
+    const s = room.state();
+    if (s === undefined) return;
+    const roomPath = "/api/rooms/" + encodeURIComponent(room.id());
+    let role: string | undefined;
+    if (p.actor.kind === "user" && s.room.you.canModerate) {
+      try {
+        const page = await api<Page<{ user: { id: string }; role: string }>>("GET", roomPath + "/members?limit=200");
+        role = page.items.find((m) => m.user.id === p.actor.id)?.role ?? "member";
+      } catch {
+        role = undefined;
+      }
+    } else if (p.actor.kind !== "user") {
+      role = "member"; // guests have no room role
+    }
+    const actions = personActions(this.#personViewer(room, s), p, role);
+    const menu = h("div", { class: "menu person-menu", role: "menu" });
+    if (actions.length === 0) {
+      menu.append(h("span", { class: "muted small", text: "Nothing you can do here." }));
+    }
+    for (const a of actions) {
+      const item = h("button", { type: "button", role: "menuitem", text: PERSON_ACTION_LABELS[a] });
+      item.addEventListener("click", () => {
+        this.#closePersonMenu();
+        this.#personAction(roomPath, p, a).catch((e: unknown) => this.#showError(e));
+      });
+      menu.append(item);
+    }
+    const r = anchor.getBoundingClientRect();
+    menu.style.top = String(r.bottom + window.scrollY + 4) + "px";
+    menu.style.left = String(Math.max(8, r.right + window.scrollX - 192)) + "px";
+    document.body.append(menu);
+    this.#personMenu = menu;
+  }
+
+  async #personAction(roomPath: string, p: PersonLike, a: PersonAction): Promise<void> {
+    this.#showError("");
+    const name = p.actor.name;
+    const who = (p.actor.kind === "user" ? "/users/" : "/guests/") + encodeURIComponent(p.actor.id);
+    switch (a) {
+      case "addModerator":
+        await api("PUT", roomPath + "/members/" + encodeURIComponent(p.actor.id), { role: "moderator" });
+        return;
+      case "removeModerator":
+        await api("PUT", roomPath + "/members/" + encodeURIComponent(p.actor.id), { role: "member" });
+        return;
+      case "timeout": {
+        const text = window.prompt("Time out " + name + " for how long? For example 10m, 2h, 1d or 1h 30m."
+          + " They can keep listening, nothing else.", "10m");
+        if (text === null) return;
+        const ms = parseDurationInput(text);
+        if (ms === undefined) throw new Error("\"" + text + "\" isn't a length between 1 second and 10 years (e.g. 10m, 2h, 1d).");
+        await api("PUT", roomPath + "/bans" + who, { durationMs: ms });
+        return;
+      }
+      case "ban":
+        if (!window.confirm("Ban " + name + " from this room? Their IP address is banned here too. They can keep"
+          + " listening, nothing else, until unbanned (Manage Room).")) return;
+        await api("PUT", roomPath + "/bans" + who);
+        return;
+      case "banFromServer":
+        if (!window.confirm("Ban " + name + " from the server? This disables their account.")) return;
+        await api("PATCH", "/api/admin/users/" + encodeURIComponent(p.actor.id), { disabled: true });
+        return;
+    }
+  }
+
+  // ---------------------------------------------------------------- room view
+
+  /** The room view's frame-drawn parts: the queue, the title line and vote-skip under the video, people, Earlier. */
+  #drawRoomView(room: ShellRoom | undefined, s: RoomState | undefined): void {
+    const queue = document.getElementById("rv-queue");
+    const people = document.getElementById("rv-people");
+    const earlier = document.getElementById("rv-earlier");
+    const voteSkipBox = document.getElementById("rv-vote-skip");
+    if (queue === null || people === null || earlier === null || voteSkipBox === null) return;
+    if (room === undefined || s === undefined) {
+      queue.replaceChildren();
+      people.replaceChildren();
+      earlier.replaceChildren();
+      voteSkipBox.replaceChildren();
+      voteSkipBox.hidden = true;
+      return;
+    }
+    queue.replaceChildren(...this.#queueParts(room, s, false));
+    people.replaceChildren(...this.#peopleParts(room, s));
+    earlier.replaceChildren(...this.#earlierParts(s));
+    const b = this.#voteSkipButton(room, s);
+    voteSkipBox.replaceChildren(...(b !== null ? [b] : []));
+    voteSkipBox.hidden = b === null;
   }
 
   #historyRow(r: HistoryEntry): HTMLLIElement {
@@ -622,6 +811,7 @@ export class Frame {
   #closeMenus(ev: MouseEvent): void {
     const t = ev.target;
     if (!(t instanceof Element)) return;
+    if (this.#personMenu !== undefined && t.closest(".person-menu") === null) this.#closePersonMenu();
     const menu = byId("pb-menu");
     if (!menu.hidden && t.closest("#pb-menu, #pb-menu-button") === null) {
       menu.hidden = true;
@@ -738,15 +928,32 @@ export class Frame {
     const panel = byId("app-video");
     const card = byId("app-video-card");
     const nowView = document.body.classList.contains("now-view-open");
+    const roomView = this.#host.roomShown();
+    const blocked = !byId("room-listen-overlay").hidden;
     const video = room !== undefined && room.mode() === "listen" && !container.hidden;
-    // Collapsed for audio items (and Audio Only); the Now Playing View shows a card instead.
-    panel.hidden = room === undefined || (!video && !nowView);
-    card.hidden = video || !nowView;
+    // In the right panel: collapsed for audio items (and Audio Only), unless the "Click to enable
+    // sound" layer is up. The room view's video area always shows; the Now Playing View too. Where
+    // no video shows, a card like the stream's item card.
+    panel.hidden = !roomView && (room === undefined || (!video && !nowView && !blocked));
+    card.hidden = video || !(nowView || roomView || blocked);
+    const c = room?.state()?.current;
     if (!card.hidden) {
-      const c = room?.state()?.current;
-      card.replaceChildren(cover(c?.item, "cover card-cover"),
-        h("div", { class: "card-title", text: c?.item.title ?? (room?.name() ?? "") }),
-        h("div", { class: "card-artist", text: c !== undefined ? c.item.artist ?? "" : "Nothing is playing" }));
+      const key = (c?.item.id ?? "") + "|" + (c?.item.coverUrl ?? "") + "|" + (c?.item.title ?? room?.name() ?? "");
+      if (card.dataset["key"] !== key) {
+        card.dataset["key"] = key;
+        card.replaceChildren(cover(c?.item, "cover card-cover"),
+          h("div", { class: "card-title", text: c?.item.title ?? (room?.name() ?? "") }),
+          h("div", { class: "card-artist", text: c !== undefined ? c.item.artist ?? "" : "Nothing is playing" }));
+      }
+    }
+    // The room view's title line under the video: only while a video shows (the card has it otherwise).
+    const title = document.getElementById("rv-title");
+    if (title !== null) {
+      title.hidden = !video || c === undefined;
+      if (!title.hidden && c !== undefined && title.dataset["item"] !== c.item.id) {
+        title.dataset["item"] = c.item.id;
+        title.replaceChildren(this.#entryText(c.item));
+      }
     }
   }
 

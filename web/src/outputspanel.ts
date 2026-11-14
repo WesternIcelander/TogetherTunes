@@ -9,7 +9,7 @@
 import { api } from "./api.js";
 import { button, h } from "./dom.js";
 import {
-  activeKey, autoOffLine, canCreate, canRotate, cleartextWarning, urlKey, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, rtmpPlaybackUrl,
+  activeKey, autoOffLine, canCreate, canRotate, cleartextWarning, urlKey, OUTPUT_DESCRIPTIONS, OUTPUT_KINDS, OUTPUT_LABELS, outputNotes, pushDetail, pushLine, quickOutputs, rtmpPlaybackUrl,
   validRtmpUrl, type OutputKind, type OutputRow,
 } from "./outputs.js";
 import type { RoomState } from "./roomclient.js";
@@ -49,6 +49,20 @@ function copyButton(input: HTMLInputElement, text: string, status: HTMLElement, 
   return copy;
 }
 
+/** Copies `text` (the clipboard API; without it, a prompt with the text selected for copying by hand). */
+export function copyText(text: string, status: HTMLElement): void {
+  const fallback = (): void => {
+    window.prompt("Copy this link:", text);
+    status.textContent = "";
+  };
+  const clip = navigator.clipboard;
+  if (clip !== undefined && typeof clip.writeText === "function") {
+    clip.writeText(text).then(() => { status.textContent = "Copied."; }, fallback);
+  } else {
+    fallback();
+  }
+}
+
 /** A read-only URL field with a Copy button; where the clipboard API is missing, selects the text. */
 export function copyField(url: string, label: string): HTMLElement {
   const input = h("input", { type: "text", readonly: true, value: url, class: "grow copy-url", "aria-label": label });
@@ -79,6 +93,8 @@ export function secretField(secret: string, label: string): HTMLElement {
 
 export class OutputsPanel {
   readonly #el: HTMLElement;
+  /** The room view's quick output buttons (Turn on / Copy link), if there is a place for them. */
+  readonly #quick: HTMLElement | undefined;
   #roomId = "";
   #owner = false;
   #moderator = false;
@@ -99,8 +115,9 @@ export class OutputsPanel {
   /** The viewer URL setting the management part was drawn with. */
   #managePlayback: string | undefined;
 
-  constructor(el: HTMLElement) {
+  constructor(el: HTMLElement, quick?: HTMLElement) {
     this.#el = el;
+    this.#quick = quick;
     this.#playback = h("div", { class: "outputs-playback" });
     this.#manage = h("div", { class: "outputs-manage" });
     el.replaceChildren(this.#playback, this.#manage);
@@ -134,6 +151,7 @@ export class OutputsPanel {
       this.#manage.replaceChildren();
       this.#pushStatus = undefined;
       this.#pushDetail = undefined;
+      this.#renderQuick();
     }
     this.#el.hidden = this.#playback.childElementCount === 0 && this.#manage.childElementCount === 0;
   }
@@ -198,6 +216,7 @@ export class OutputsPanel {
     this.#pushDetail = undefined;
     if (this.#error !== "") parts.push(h("p", { class: "error", role: "alert", text: this.#error }));
     const rows = this.#rows;
+    this.#renderQuick();
     if (rows === undefined) {
       parts.push(h("p", { class: "muted small", text: this.#loading ? "Loading…" : "" }));
       this.#manage.replaceChildren(...parts);
@@ -215,6 +234,33 @@ export class OutputsPanel {
     this.#manage.replaceChildren(...parts);
     this.#el.hidden = false;
     this.#renderLive();
+  }
+
+  /** The quick buttons (owner and moderators): Turn on for an output that is off, Copy link for one that is on. */
+  #renderQuick(): void {
+    const el = this.#quick;
+    if (el === undefined) return;
+    const rows = this.#rows;
+    if (!this.#moderator || rows === undefined) {
+      el.replaceChildren();
+      el.hidden = true;
+      return;
+    }
+    const playback = this.#state !== undefined ? rtmpPlaybackUrl([{ kind: "rtmp" }], this.#state.room.settings) : undefined;
+    const quick = quickOutputs(rows, (k) => this.#serverOn(k), this.#owner, playback);
+    const status = h("span", { class: "muted small", role: "status" });
+    const fail = (e: unknown): void => { status.textContent = message(e); };
+    const buttons: Node[] = quick.map((q) => {
+      if (q.action === "copy") {
+        const b = h("button", { type: "button", class: "small", text: q.label, title: q.url ?? "" });
+        b.addEventListener("click", () => copyText(q.url ?? "", status));
+        return b;
+      }
+      return button(q.label, () => q.rowId === undefined ? this.#act("POST", "", { kind: q.kind })
+        : this.#act("PATCH", "/" + encodeURIComponent(q.rowId), { enabled: true }), fail, "small");
+    });
+    el.replaceChildren(...buttons, status);
+    el.hidden = buttons.length === 0;
   }
 
   #serverOn(kind: OutputKind): boolean {

@@ -22,6 +22,9 @@
     <nav id="site-nav" class="site-nav"></nav>
   </header>
   <div class="app-body">
+    <!-- The room view hides the left sidebar behind this button (signed-in users); it pushes the page aside. -->
+    <button type="button" id="app-sidebar-toggle" class="icon sidebar-toggle" title="Show the library"
+            aria-label="Show the library" aria-controls="app-sidebar" aria-expanded="false">☰</button>
     <aside id="app-sidebar" class="app-sidebar" aria-label="Library and rooms" hidden>
       <div class="tabs" role="tablist">
         <button type="button" role="tab" id="app-tab-library" data-tab="library" aria-selected="true">Library</button>
@@ -49,11 +52,17 @@
       <div id="app-room" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-room" hidden></div>
       <p id="app-panel-error" class="error small" role="alert"></p>
       <!-- The video panel: the room's player puts its media elements in #room-player (listen.ts); it shows
-           while a video plays (not in Audio Only) and collapses for audio items. In the Now Playing View it
-           fills the window, letterboxed, with a card for audio items. -->
+           while a video plays (not in Audio Only) and collapses for audio items. The room view moves it into its
+           video area (#rv-video-slot), where it always shows (a card for audio items). In the Now Playing View
+           it fills the window, letterboxed, with a card for audio items. -->
       <section id="app-video" class="app-video" aria-label="Video" hidden>
         <div id="room-player" class="room-player" hidden></div>
         <div id="app-video-card" class="video-card" hidden></div>
+        <!-- Shown while the browser doesn't let the page play sound without a click (listen.ts): over the
+             video area only, so clicks elsewhere on the page work as usual and don't start the sound. -->
+        <div id="room-listen-overlay" class="listen-overlay" hidden>
+          <button type="button">Click to enable sound</button>
+        </div>
         <button type="button" id="app-now-close" class="now-close" hidden>Close</button>
       </section>
     </aside>
@@ -260,37 +269,20 @@
 
   <template id="view-room" data-title="Room · TogetherTunes">
 
-    <div id="room-body">
+    <!-- The room view (docs/ui.md#room-view-desktop): the frame's video panel moves into #rv-video-slot
+         while this view is shown, and the frame (frame.ts) draws the queue (#rv-queue), the people (#rv-people)
+         and Earlier (#rv-earlier) from the room state; this view's module (room.ts) draws the rest. -->
+    <div id="room-body" class="room-view-body">
       <header class="room-head">
         <h1 id="room-name">Room</h1>
         <p class="muted small"><span id="room-mode"></span> · <span id="room-meta"></span>
           <button type="button" id="room-mode-toggle" class="link"></button>
           <a id="room-manage-link" href="#" hidden>Manage room</a></p>
-        <p id="room-presence" class="small" aria-live="polite"></p>
-        <p id="room-identity"></p>
-        <div id="room-guest-name" class="panel" hidden></div>
       </header>
       <p id="room-status" role="status">Loading...</p>
       <p id="room-error" class="error" role="alert"></p>
+      <p id="rv-error" class="error" role="alert"></p>
       <ul id="room-notices" class="notices" aria-live="polite"></ul>
-      <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
-      <div id="room-listen-controls" class="row room-listen-controls" hidden>
-        <label id="room-audio-only-label"><input type="checkbox" id="room-audio-only"> Audio only</label>
-        <span id="room-audio-only-room" class="muted small" hidden>Audio-only room</span>
-        <label class="small" title="How this browser plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by itself if Web Audio stutters here. On: always Web Audio. Off: straight from the media element, which costs the crossfade on the audio-only switch and the loudness adjustment for originals where the browser can't set the volume (iOS).">Web Audio
-          <select id="room-webaudio">
-            <option value="auto">Auto</option>
-            <option value="on">On</option>
-            <option value="off">Off</option>
-          </select></label>
-        <span id="room-webaudio-note" class="muted small" role="status"></span>
-        <span id="room-webaudio-hint" class="muted small" hidden>Off plays straight from the media element. Where
-          the browser can't set the volume (iOS), that means no crossfade when switching audio only, and originals
-          play without their loudness adjustment.</span>
-        <button type="button" id="room-diagnostics" class="link small"
-                title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
-        <span id="room-diagnostics-status" class="muted small" role="status"></span>
-      </div>
       <!-- Requests-only (remote) mode: no media; the now-playing panel runs this much behind the timeline (the room's
            output delay plus this browser's nudge for the room). -->
       <div id="room-remote-controls" class="row room-remote-controls" hidden>
@@ -300,21 +292,64 @@
         <button type="button" id="room-delay-more" class="small" title="Show the room 0.5 s later">+0.5 s</button>
         <button type="button" id="room-delay-reset" class="link small" hidden>Reset</button>
       </div>
-      <!-- Listen mode: the video plays in the frame's video panel (#room-player in the right panel). -->
-      <div id="room-main" class="room-main" hidden>
-        <section id="room-now" class="panel room-now"></section>
-        <section id="room-queue" class="room-queue"></section>
-        <section id="room-suggestions" class="room-suggestions" hidden></section>
-        <section id="room-request" class="panel room-request"></section>
-        <!-- The program outputs: the RTMP viewer URL for everyone; stream URLs, push status and controls
-             for the owner and moderators (outputspanel.ts). -->
-        <section id="room-outputs" class="panel room-outputs" hidden></section>
-        <section id="room-history" class="room-history"></section>
+      <div id="rv-grid" class="rv-grid">
+        <div class="rv-main">
+          <!-- The video area: the video, or a card (cover, title, artist) for audio items. -->
+          <div id="rv-video-slot" class="rv-video-slot"></div>
+          <div class="rv-under-video">
+            <div id="rv-title" class="rv-title" hidden></div>
+            <div id="rv-vote-skip" class="vote-skip" hidden></div>
+          </div>
+          <div class="rv-columns">
+            <section id="rv-queue" class="rv-queue" aria-label="Queue"></section>
+            <section class="rv-request" aria-label="Request">
+              <!-- The owner's and moderators' quick output buttons (outputspanel.ts): Turn on / Copy link. -->
+              <div id="rv-outputs" class="row rv-outputs" hidden></div>
+              <div id="rv-request-link" class="rv-request-link" hidden></div>
+              <div id="room-identity" class="room-identity"></div>
+              <div id="room-guest-name" class="panel" hidden></div>
+            </section>
+          </div>
+        </div>
+        <aside class="rv-side" aria-label="People and history">
+          <section id="rv-people" class="rv-people"></section>
+          <section id="rv-earlier" class="rv-earlier"></section>
+        </aside>
       </div>
-    </div>
-    <!-- Shown in listen mode while the browser doesn't let the page play sound without a click. -->
-    <div id="room-listen-overlay" class="listen-overlay" hidden>
-      <button type="button">Click to listen</button>
+      <!-- Everything else the room page had, until the later UI steps give it its place: the queue editor
+           (pin, move), the request search, uploads and playlists, the stream outputs, the full history,
+           and this browser's playback settings. -->
+      <details id="room-more" class="room-more">
+        <summary>More: queue editor, search and upload, stream outputs, full history, playback settings</summary>
+        <!-- Listen mode: video / audio-only switch (audio only never loads mezz.mp4). -->
+        <div id="room-listen-controls" class="row room-listen-controls" hidden>
+          <label id="room-audio-only-label"><input type="checkbox" id="room-audio-only"> Audio only</label>
+          <span id="room-audio-only-room" class="muted small" hidden>Audio-only room</span>
+          <label class="small" title="How this browser plays the sound. Auto: through Web Audio (volume, crossfade), switching to direct by itself if Web Audio stutters here. On: always Web Audio. Off: straight from the media element, which costs the crossfade on the audio-only switch and the loudness adjustment for originals where the browser can't set the volume (iOS).">Web Audio
+            <select id="room-webaudio">
+              <option value="auto">Auto</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </select></label>
+          <span id="room-webaudio-note" class="muted small" role="status"></span>
+          <span id="room-webaudio-hint" class="muted small" hidden>Off plays straight from the media element. Where
+            the browser can't set the volume (iOS), that means no crossfade when switching audio only, and originals
+            play without their loudness adjustment.</span>
+          <button type="button" id="room-diagnostics" class="link small"
+                  title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
+          <span id="room-diagnostics-status" class="muted small" role="status"></span>
+        </div>
+        <div id="room-main" class="room-main" hidden>
+          <section id="room-now" class="panel room-now"></section>
+          <section id="room-queue" class="room-queue"></section>
+          <section id="room-suggestions" class="room-suggestions" hidden></section>
+          <section id="room-request" class="panel room-request"></section>
+          <!-- The program outputs: the RTMP viewer URL for everyone; stream URLs, push status and controls
+               for the owner and moderators (outputspanel.ts). -->
+          <section id="room-outputs" class="panel room-outputs" hidden></section>
+          <section id="room-history" class="room-history"></section>
+        </div>
+      </details>
     </div>
   </template>
 

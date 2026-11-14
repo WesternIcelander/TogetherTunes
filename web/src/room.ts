@@ -1,6 +1,12 @@
 // The room page (/rooms/{idOrSlug}). The QR short link /r/{slug} redirects here with
 // ?mode=remote (docs/rooms.md#web-and-app-playback), which opens the page in remote mode.
 //
+// The room view (docs/ui.md#room-view-desktop): the frame (frame.ts) moves its video panel into the
+// view's video area and draws Now Playing / Requests / From Playlist, the people (⋯ moderation menus,
+// Manage Room) and Earlier from this view's room state; this module draws the header, the owner's and
+// moderators' quick output buttons, the Request Link box, Join as guest / the guest's name, and (in
+// "More", until the later UI steps place them) the old room page's parts below.
+//
 // The page joins the room over the WebSocket (roomclient.ts) and shows what is playing, the
 // queue (with votes, pins, moves and removals as the control mode and the viewer's rights allow),
 // suggestions (accept/reject for the owner and moderators), the request panel (search of the
@@ -330,13 +336,13 @@ function renderHeader(s: RoomState): void {
   const manage = element<HTMLAnchorElement>("room-manage-link");
   manage.hidden = !s.room.you.canModerate;
   manage.href = "/rooms/" + encodeURIComponent(s.room.slug) + "/manage";
-  const p = s.presence;
-  const parts = [p.listening + " listening", p.remote + " requests-only"];
-  let text = parts.join(" · ");
-  if (p.anonymous > 0) text += " · +" + p.anonymous + " anonymous";
-  element("room-presence").textContent = text;
 }
 
+/**
+ * Under the request section (docs/ui.md#existing-features-in-the-new-ui): **Join as guest** for an
+ * anonymous visitor (where guests may do anything here), and once joined the guest's name with an
+ * edit button (where the admin lets guests choose names). Users see nothing here (the header is theirs).
+ */
 function renderIdentity(): void {
   const el = element("room-identity");
   const a = conn.actor;
@@ -347,28 +353,37 @@ function renderIdentity(): void {
     const guests = shown?.room.settings["guests"] as Record<string, unknown> | undefined;
     const roomAllows = guests === undefined || guests["canVote"] === true || guests["canRequestLibrary"] === true
       || guests["canUpload"] === true || guests["canYoutube"] === true;
-    const loginLink = h("a", { href: withNext(LOGIN_PAGE, here()), text: "Log in" });
+    const loginLink = h("a", { href: withNext(LOGIN_PAGE, here()), text: "log in" });
     if (me.kind === "anonymous" && me.guestsEnabled && roomAllows) {
-      el.replaceChildren(h("span", { class: "muted small", text: "You are listening anonymously. " }),
-        button("Join as guest", () => conn.ensureIdentity(), (e) => { if (e !== CANCELLED) showError(e); }),
-        h("span", { class: "muted small", text: " to vote or request, or " }), loginLink, ".");
+      el.replaceChildren(
+        button("Join as guest", () => conn.ensureIdentity(), (e) => { if (e !== CANCELLED) showError(e); },
+          "join-guest"),
+        h("p", { class: "muted small" }, "to vote and request, or ", loginLink, "."));
     } else {
-      el.replaceChildren(h("span", { class: "muted small", text: "You are listening anonymously. " }), loginLink,
-        h("span", { class: "muted small", text: " to vote or request." }));
+      el.replaceChildren(h("p", { class: "muted small" }, "You are listening anonymously. ",
+        h("a", { href: withNext(LOGIN_PAGE, here()), text: "Log in" }), " to vote or request."));
     }
     return;
   }
-  const parts: (Node | string)[] = [h("span", { class: "muted small", text: "You: " }), actorLabel(a)];
-  if (a.kind === "guest" && (me.kind === "guest" || me.kind === "anonymous") && me.customNames) {
-    parts.push(" ", button("Change name", async () => {
+  if (a.kind !== "guest") {
+    el.replaceChildren();
+    return;
+  }
+  const parts: (Node | string)[] = [h("span", { class: "muted small", text: "You are " }),
+    h("strong", { class: "guest-name", text: a.name })];
+  if ((me.kind === "guest" || me.kind === "anonymous") && me.customNames) {
+    const edit = button("✎", async () => {
       const name = await askGuestName(a.name);
       if (name === a.name || name === "") return;
       const updated = await api<ActorRef>("PATCH", "/api/me/guest", { name });
       conn.actor = { kind: "guest", id: updated.id, name: updated.name, isGuest: true };
       renderIdentity();
-    }, (e) => { if (e !== CANCELLED) showError(e); }, "link"));
+    }, (e) => { if (e !== CANCELLED) showError(e); }, "icon guest-edit");
+    edit.title = "Change your name";
+    edit.setAttribute("aria-label", "Change your name");
+    parts.push(" ", edit);
   }
-  el.replaceChildren(...parts);
+  el.replaceChildren(h("p", { class: "guest-line" }, ...parts));
 }
 
 const CANCELLED = new Error("Cancelled");
@@ -814,9 +829,10 @@ function renderRequests(s: RoomState): void {
   const parts: Node[] = [h("h2", { text: s.room.controlMode === "owner" && !you.canModerate ? "Suggest something" : "Request" })];
   if (canSearch) parts.push(searchPanel());
   if (you.canUpload) parts.push(uploadPanel());
-  if (you.canYoutube) parts.push(youtubePanel());
   if (canSearch && isUser) parts.push(playlistPanel());
-  if (parts.length === 1) {
+  if (parts.length === 1 && you.canYoutube) {
+    parts.push(h("p", { class: "muted", text: "Request links with the Request Link box above." }));
+  } else if (parts.length === 1) {
     parts.push(h("p", { class: "muted", text: me.kind === "user" ? "You can't request in this room."
       : !you.identified ? "Join as a guest or log in to request."
         : "Requests aren't open to guests here. Log in to request." }));
@@ -980,11 +996,25 @@ function uploadPanel(): HTMLElement {
   return h("div", { class: "add-upload" }, h("h3", { text: "Upload" }), input, drop, libraryOption, activity);
 }
 
-function youtubePanel(): HTMLElement {
-  const url = h("input", { name: "url", type: "url", required: true, placeholder: "https://www.youtube.com/watch?v=…",
-    "aria-label": "YouTube link", class: "grow" });
-  const submit = h("button", { type: "submit", text: "Request" });
-  const form = h("form", { class: "row add-youtube" }, url, submit);
+/** What the Request Link box was built for, so it is only rebuilt when that changes (keeps what was typed). */
+let requestLinkKey = "";
+
+/** The room view's **Request Link** box (URL field + Request), for people who may request links here. */
+function renderRequestLink(s: RoomState): void {
+  const el = element("rv-request-link");
+  const show = s.room.you.canYoutube && s.room.you.restriction === undefined;
+  const key = show ? s.room.controlMode + "," + s.room.you.canModerate : "";
+  if (key === requestLinkKey) return;
+  requestLinkKey = key;
+  el.hidden = !show;
+  el.replaceChildren(...(show ? [linkPanel(s)] : []));
+}
+
+function linkPanel(s: RoomState): HTMLElement {
+  const url = h("input", { name: "url", type: "url", required: true, placeholder: "https://",
+    "aria-label": "Link to request", class: "grow" });
+  const submit = h("button", { type: "submit", text: requestVerb(s) === "Suggest" ? "Suggest" : "Request" });
+  const form = h("form", { class: "add-youtube request-link-form" }, url, submit);
   const status = h("p", { class: "muted small", role: "status" });
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
@@ -1014,7 +1044,7 @@ function youtubePanel(): HTMLElement {
       submit.disabled = false;
     });
   });
-  return h("div", {}, h("h3", { text: "YouTube link" }), form, status);
+  return h("div", {}, h("h2", { text: "Request Link" }), form, status);
 }
 
 function playlistPanel(): HTMLElement {
@@ -1053,8 +1083,9 @@ function render(s: RoomState): void {
   renderQueue(s);
   renderSuggestions(s);
   renderRequests(s);
+  renderRequestLink(s);
   renderHistory(s);
-  outputsPanel ??= new OutputsPanel(element("room-outputs"));
+  outputsPanel ??= new OutputsPanel(element("room-outputs"), element("rv-outputs"));
   outputsPanel.update(s);
   renderRemoteDelay();
   // The owner may force requests-only mode: then nothing plays here, whatever the user chose.
@@ -1068,6 +1099,7 @@ function render(s: RoomState): void {
   element("room-audio-only-label").hidden = audioOnlyRoom;
   element("room-audio-only-room").hidden = !audioOnlyRoom;
   element("room-main").hidden = false;
+  element("rv-grid").hidden = false;
   if (mode === "listen") player?.update(s);
   shell?.update();
 }
@@ -1389,6 +1421,7 @@ async function start(): Promise<void> {
       kickedText = KICK_TEXT[reason] ?? "You were removed from this room (" + reason + ").";
       shell?.update();
       element("room-main").hidden = true;
+      element("rv-grid").hidden = true;
       const status = element("room-status");
       status.hidden = false;
       status.textContent = kickedText;

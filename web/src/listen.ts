@@ -3,7 +3,7 @@
 //
 // Elements: a fixed pool of two `<audio>` and two `<video>` elements, reused for every entry (one
 // plays, the other holds the preloaded next entry). Reusing them matters on iOS, where an element
-// may only start playing with sound after a user gesture has touched it: the "Click to listen"
+// may only start playing with sound after a user gesture has touched it: the "Click to enable sound"
 // click touches all four. Where the page can set an element's `volume` (desktop Safari, Chrome,
 // Firefox, Android; `volumeSettable`), Auto plays straight from the elements: `volume` applies a
 // negative `originalGainDb`, keeps the preloaded element silent and is stepped for the crossfade
@@ -62,7 +62,7 @@
 // steady dropouts with the clock fine, (b) it plays straight from fresh elements (Auto only; On
 // keeps Web Audio) and the room page remembers that for this browser. Either way the current entry
 // starts on the new element at the timeline's position, like the stuck-seek handoff. Spare elements
-// are touched in every "Click to listen" gesture, so iOS lets the new pool play without a tap. What
+// are touched in every "Click to enable sound" gesture, so iOS lets the new pool play without a tap. What
 // the player starts with comes from the "Web Audio" setting (webAudioPlan).
 import {
   ClockWatch, delta, LevelMeter, METER_FFT_SIZE, METER_INTERVAL_MS, MuteDetector, toDb, WebAudioCheck, windowStats,
@@ -99,7 +99,7 @@ const RESUME_RETRY_MS = 5000;
  * want a gesture for a new context) counts as a failed fix: Auto falls back to the direct path.
  */
 const RATE_FIX_START_MS = 4000;
-/** Spare elements kept per kind, touched in every "Click to listen" gesture (two rebuilds' worth). */
+/** Spare elements kept per kind, touched in every "Click to enable sound" gesture (two rebuilds' worth). */
 const RESERVE_PER_KIND = 4;
 
 /** What the room page learns from the player. */
@@ -282,7 +282,7 @@ export class ListenPlayer {
   /** The rate fix: tried once per page; `started` once its context runs, `confirmed` once checked ok. */
   #rateFixTried = false;
   #rateFix: { rate: number; at: number; started: boolean; confirmed: boolean } | undefined;
-  /** Spare elements, touched in the "Click to listen" gesture, for the next rebuild. */
+  /** Spare elements, touched in the "Click to enable sound" gesture, for the next rebuild. */
   readonly #reserve: HTMLMediaElement[] = [];
   /** The Web Audio path went silent; the overlay asks for a tap to rebuild without it. */
   #needsRestore = false;
@@ -315,7 +315,7 @@ export class ListenPlayer {
 
   /**
    * @param container where the elements live (the video one is shown there while it plays)
-   * @param overlay the "Click to listen" overlay; shown while the browser doesn't let the page play
+   * @param overlay the "Click to enable sound" overlay; shown while the browser doesn't let the page play
    * @param serverNow the server's clock (ClockSync)
    * @param audioOnly start in audio-only mode (video items play `audio.m4a`)
    * @param mode how small drift is corrected (`syncModeFor`: "seek" in WebKit, else "rate")
@@ -702,7 +702,7 @@ export class ListenPlayer {
   }
 
   /**
-   * The "Click to listen" click: resumes the audio context and touches every element inside the
+   * The "Click to enable sound" click: resumes the audio context and touches every element inside the
    * gesture, so each may play later without one (iOS asks per element).
    */
   unlock(): void {
@@ -1265,11 +1265,11 @@ export class ListenPlayer {
     const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running" && !fixStarting);
     this.#overlay.hidden = !(wants && (locked || this.#needsRestore));
     const button = this.#overlay.querySelector("button");
-    const text = this.#needsRestore ? "Tap to restore sound" : "Click to listen";
+    const text = this.#needsRestore ? "Tap to restore sound" : "Click to enable sound";
     if (button !== null && button.textContent !== text) button.textContent = text;
   }
 
-  /** The overlay's button: "Click to listen", or after a mute "Tap to restore sound". */
+  /** The overlay's button: "Click to enable sound", or after a mute "Tap to restore sound". */
   #overlayClick(): void {
     if (this.#needsRestore) this.#restoreWithoutWebAudio();
     else this.unlock();
@@ -1438,7 +1438,7 @@ export class ListenPlayer {
     if (fix !== undefined && !fix.started && ctx !== undefined && ctx.state !== "running"
         && performance.now() - fix.at >= RATE_FIX_START_MS) {
       // The new context didn't start (WebKit may want a gesture for it): Auto plays direct; On
-      // leaves it to the "Click to listen" overlay, whose tap resumes it.
+      // leaves it to the "Click to enable sound" overlay, whose tap resumes it.
       fix.started = true;
       recordEvent("rate-fix-start", { state: ctx.state, autoFallback: this.#plan.autoFallback });
       if (this.#plan.autoFallback) {

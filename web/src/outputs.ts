@@ -216,3 +216,46 @@ export function canCreate(kind: string, rows: OutputRow[], serverEnabled: boolea
 export function validRtmpUrl(url: string): boolean {
   return /^rtmps?:\/\/[^/\s]+/i.test(url.trim()) && url.trim().length <= 2048;
 }
+
+/** The short names the room view's quick output buttons use. */
+export const QUICK_OUTPUT_LABELS: Record<string, string> = { rtmp: "stream", ts: ".ts", hls: "HLS", mp3: "MP3" };
+
+/** One quick output button in the room view: Turn on (an output that is off) or Copy link (one that is on). */
+export interface QuickOutput {
+  kind: OutputKind;
+  action: "turnOn" | "copy";
+  /** The button's text. */
+  label: string;
+  /** Turn on: the existing (off) output to switch on; absent: create it. */
+  rowId?: string;
+  /** Copy link: the URL to copy. */
+  url?: string;
+}
+
+/**
+ * The room view's quick output buttons above Request Link (docs/ui.md#existing-features-in-the-new-ui),
+ * for the owner and moderators: an output the server allows but the room has off gets **Turn on**
+ * (only the owner may switch outputs, so moderators get none; a new RTMP push needs its target, so
+ * that one stays in Manage Room), one that is on gets **Copy link** (the stream URL; for RTMP the
+ * viewer URL, when one is saved).
+ */
+export function quickOutputs(rows: readonly OutputRow[], serverOn: (kind: OutputKind) => boolean, owner: boolean,
+    rtmpPlayback: string | undefined): QuickOutput[] {
+  const out: QuickOutput[] = [];
+  for (const kind of OUTPUT_KINDS) {
+    const row = rows.find((r) => r.kind === kind);
+    const name = QUICK_OUTPUT_LABELS[kind] ?? kind;
+    if (row !== undefined && row.active) {
+      const url = kind === "rtmp" ? rtmpPlayback : row.url;
+      if (url !== undefined && url !== "") out.push({ kind, action: "copy", label: "Copy " + name + " link", url });
+      continue;
+    }
+    if (!owner) continue;
+    if (row === undefined) {
+      if (kind !== "rtmp" && serverOn(kind)) out.push({ kind, action: "turnOn", label: "Turn on " + name });
+    } else if (!row.enabled && row.serverEnabled) {
+      out.push({ kind, action: "turnOn", label: "Turn on " + name, rowId: row.id });
+    }
+  }
+  return out;
+}

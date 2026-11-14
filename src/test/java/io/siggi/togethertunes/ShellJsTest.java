@@ -112,7 +112,7 @@ class ShellJsTest {
     void viewsCanBeMountedNextToTheRoomView() throws Exception {
         Map<String, String> templates = templates();
         Set<String> roomIds = ids(templates.get("view-room"));
-        assertTrue(roomIds.contains("room-body") && roomIds.contains("room-listen-overlay"), roomIds.toString());
+        assertTrue(roomIds.contains("room-body") && roomIds.contains("rv-video-slot"), roomIds.toString());
         // The frame's ids (header, sidebars, right panel, video panel, player bar) live outside the
         // templates and must not clash with a view's.
         String frame = TEMPLATE.matcher(read("web/index.html")).replaceAll("");
@@ -120,7 +120,7 @@ class ShellJsTest {
         shellIds.add("stopped-note");
         for (String id : List.of("site-nav", "app", "app-sidebar", "app-panel", "app-video", "room-player",
                 "player-bar", "pb-play", "pb-volume", "pb-menu", "pb-audio-only", "pb-requests-only", "pb-now-view",
-                "pb-fullscreen", "pb-mute-menu", "app-search")) {
+                "pb-fullscreen", "pb-mute-menu", "app-search", "room-listen-overlay", "app-sidebar-toggle")) {
             assertTrue(shellIds.contains(id), id);
         }
         for (Map.Entry<String, String> view : views().entrySet()) {

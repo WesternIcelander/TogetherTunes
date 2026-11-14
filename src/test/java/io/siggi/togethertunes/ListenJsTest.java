@@ -137,11 +137,18 @@ class ListenJsTest {
         assertTrue(room.contains("new ListenPlayer("), room);
         assertTrue(room.contains("setAudioOnly("), room);
         String html = NodeTests.view("view-room");
-        assertTrue(html.contains("id=\"room-listen-overlay\""), html);
-        assertTrue(html.contains("Click to listen"), html);
-        // The videos play in the frame's video panel (right panel), outside the room view.
+        // The videos play in the frame's video panel (the room view moves it into its video area),
+        // and "Click to enable sound" lies over that panel only.
         assertTrue(!html.contains("id=\"room-player\""), html);
-        assertTrue(read("web/index.html").contains("<div id=\"room-player\" class=\"room-player\" hidden></div>"));
+        assertTrue(!html.contains("id=\"room-listen-overlay\""), html);
+        assertTrue(html.contains("id=\"rv-video-slot\""), html);
+        String index = read("web/index.html");
+        assertTrue(index.contains("<div id=\"room-player\" class=\"room-player\" hidden></div>"));
+        int video = index.indexOf("id=\"app-video\"");
+        int overlay = index.indexOf("id=\"room-listen-overlay\"");
+        assertTrue(video > 0 && overlay > video && overlay < index.indexOf("</section>", video), index);
+        assertTrue(index.contains("Click to enable sound"), index);
+        assertTrue(player.contains("\"Click to enable sound\""), "the overlay's text");
         assertTrue(html.contains("id=\"room-audio-only\""), html);
     }
 }

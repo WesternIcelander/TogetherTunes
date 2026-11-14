@@ -152,3 +152,69 @@ test("links, search path, shuffle, people", () => {
   assert.equal(P.presenceText({ listening: 3, remote: 5, anonymous: 0 }), "3 listening · 5 requests-only");
   assert.equal(P.presenceText({ listening: 1, remote: 0, anonymous: 2 }), "1 listening · 0 requests-only · +2 anonymous");
 });
+
+// ---------------------------------------------------------------- room view: the ⋯ moderation menu
+
+const person = (kind, id, name = id) => ({ actor: { kind, id, name, isGuest: kind === "guest" }, mode: "listen" });
+const viewer = (youOver = {}, actor = ME, adminUsers = false) => ({ you: you(youOver), actor, adminUsers });
+
+test("the moderation menu: nothing for oneself or for people without rights", () => {
+  assert.deepEqual(P.personActions(viewer({ canModerate: true, role: "owner" }), person("user", "u1"), "owner"), []);
+  assert.deepEqual(P.personActions(viewer(), person("user", "u2"), "member"), []);
+  assert.deepEqual(P.personActions(viewer({}, undefined), person("guest", "g1"), "member"), []);
+});
+
+test("the moderation menu: the owner names and removes moderators, times out and bans", () => {
+  const owner = viewer({ canModerate: true, role: "owner" });
+  assert.deepEqual(P.personActions(owner, person("user", "u2"), "member"), ["addModerator", "timeout", "ban"]);
+  assert.deepEqual(P.personActions(owner, person("user", "u2"), "moderator"), ["removeModerator", "ban"]);
+  // guests have no room role: no moderator items
+  assert.deepEqual(P.personActions(owner, person("guest", "g1"), "member"), ["timeout", "ban"]);
+  // an unknown role (the lookup failed): no moderator items, but timeout and ban
+  assert.deepEqual(P.personActions(owner, person("user", "u2"), undefined), ["timeout", "ban"]);
+  // a banned member: restrictions only
+  assert.deepEqual(P.personActions(owner, person("user", "u2"), "banned"), ["timeout", "ban"]);
+});
+
+test("the moderation menu: moderators restrict members and guests, never the owner or other moderators", () => {
+  const mod = viewer({ canModerate: true, role: "moderator" });
+  assert.deepEqual(P.personActions(mod, person("user", "u2"), "member"), ["timeout", "ban"]);
+  assert.deepEqual(P.personActions(mod, person("user", "u2"), "moderator"), []);
+  assert.deepEqual(P.personActions(mod, person("user", "u2"), "owner"), []);
+  assert.deepEqual(P.personActions(mod, person("guest", "g1"), "member"), ["timeout", "ban"]);
+  // a restricted moderator does nothing to the room
+  const restricted = viewer({ canModerate: true, role: "moderator", restriction: { kind: "timeout", until: 1 } });
+  assert.deepEqual(P.personActions(restricted, person("user", "u2"), "member"), []);
+});
+
+test("the moderation menu: Ban from server for admin.users holders, users only", () => {
+  const admin = viewer({}, ME, true);
+  assert.deepEqual(P.personActions(admin, person("user", "u2"), "member"), ["banFromServer"]);
+  assert.deepEqual(P.personActions(admin, person("guest", "g1"), "member"), []);
+  assert.deepEqual(P.personActions(admin, person("user", "u1"), "member"), []);
+  const ownerAdmin = viewer({ canModerate: true, role: "owner" }, ME, true);
+  assert.deepEqual(P.personActions(ownerAdmin, person("user", "u2"), "member"),
+    ["addModerator", "timeout", "ban", "banFromServer"]);
+  for (const a of ["addModerator", "removeModerator", "timeout", "ban", "banFromServer"]) {
+    assert.equal(typeof P.PERSON_ACTION_LABELS[a], "string");
+  }
+});
+
+test("timeout lengths as typed: minutes by default, units, combinations, limits", () => {
+  assert.equal(P.parseDurationInput("10"), 600_000);
+  assert.equal(P.parseDurationInput(" 10m "), 600_000);
+  assert.equal(P.parseDurationInput("30s"), 30_000);
+  assert.equal(P.parseDurationInput("2h"), 7_200_000);
+  assert.equal(P.parseDurationInput("1d"), 86_400_000);
+  assert.equal(P.parseDurationInput("1w"), 604_800_000);
+  assert.equal(P.parseDurationInput("1h 30m"), 5_400_000);
+  assert.equal(P.parseDurationInput("1d12h"), 129_600_000);
+  assert.equal(P.parseDurationInput("1.5h"), 5_400_000);
+  assert.equal(P.parseDurationInput("2 hours"), 7_200_000);
+  assert.equal(P.parseDurationInput("15 MIN"), 900_000);
+  for (const bad of ["", "abc", "10x", "-5", "0", "0.5s", "11000d", "m", "1h foo"]) {
+    assert.equal(P.parseDurationInput(bad), undefined, bad);
+  }
+  assert.equal(P.parseDurationInput("1s"), P.MIN_TIMEOUT_MS);
+  assert.equal(P.parseDurationInput("3650d"), P.MAX_TIMEOUT_MS);
+});
