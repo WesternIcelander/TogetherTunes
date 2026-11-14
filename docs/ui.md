@@ -54,6 +54,9 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 ## Interaction rules (all layouts)
 
 - **Requesting:** double-click (double-tap) an item in a playlist or in search results to request it in the current room.
+- **Alone**, double-click does what the user chose in their **user settings** (stored on the server per user; default **Play immediately**):
+  - **Play immediately:** the item starts playing now.
+  - **Queue it:** the item is added to the bottom of the **manually added** section of the queue. Manually added items always come before the queue's other items (e.g. autoplay songs).
 - **Touch:** everything on a right-click menu is also on a **⋯** button (people, songs, the mute button). **Long press** a playlist toggles it for autoplay; its ⋯ menu has **Use only this one for autoplay** (the double-click's job).
 - **Multi-select:** select several items (Shift/Ctrl/Cmd-click on desktop; a **Select** mode with checkboxes on touch) for **Add to Queue** and similar actions.
 
