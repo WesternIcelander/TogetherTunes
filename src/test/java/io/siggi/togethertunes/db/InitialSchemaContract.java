@@ -40,6 +40,7 @@ abstract class InitialSchemaContract {
         t("roles", "id", "name", "builtin", "is_default");
         t("role_permissions", "role_id", "permission");
         t("user_roles", "user_id", "role_id");
+        t("user_settings", "user_id", "settings_json", "updated_at");
         t("sessions", "id", "user_id", "token_hash", "kind", "created_at", "last_seen_at", "expires_at",
                 "user_agent", "ip");
         t("guests", "id", "kind", "key_hash", "ip_last", "display_name", "name_chosen", "created_at",

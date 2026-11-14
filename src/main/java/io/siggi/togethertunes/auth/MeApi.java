@@ -44,6 +44,8 @@ import java.util.Objects;
  *   <li>{@code PATCH /api/me}: for a guest the same as {@code PATCH /api/me/guest}; for a user
  *       {@code {"displayName"?}} (blank: the username; absent: unchanged) → {@code 200} and the user as in
  *       {@code GET /api/me}; anonymous {@code 401 identity_required}.</li>
+ *   <li>{@code GET}/{@code PATCH /api/me/settings}: the user's preferences, when
+ *       {@link #userSettings} was given ({@link UserSettingsApi}).</li>
  * </ul>
  */
 public final class MeApi {
@@ -53,6 +55,7 @@ public final class MeApi {
     private final Guests guests;
     private final Settings settings;
     private final IdentityTickets tickets;
+    private UserSettingsApi userSettings;
 
     record GuestRequest(String name) {
     }
@@ -71,11 +74,19 @@ public final class MeApi {
         this.tickets = Objects.requireNonNull(tickets);
     }
 
+    /** Also serves {@code /api/me/settings} ({@link UserSettingsApi}); call before {@link #register}. */
+    public void userSettings(UserSettingsApi userSettings) {
+        this.userSettings = Objects.requireNonNull(userSettings);
+    }
+
     public void register(Router router) {
         router.get("/api/me", this::get);
         router.patch("/api/me", this::patch);
         router.post("/api/me/guest", this::createGuest);
         router.patch("/api/me/guest", this::renameGuest);
+        if (userSettings != null) {
+            userSettings.register(router);
+        }
     }
 
     private void get(Request request, Response response) throws Exception {

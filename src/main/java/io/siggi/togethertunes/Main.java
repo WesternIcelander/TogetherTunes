@@ -23,6 +23,8 @@ import io.siggi.togethertunes.auth.Roles;
 import io.siggi.togethertunes.auth.Sessions;
 import io.siggi.togethertunes.auth.SessionsApi;
 import io.siggi.togethertunes.auth.SetupApi;
+import io.siggi.togethertunes.auth.UserSettings;
+import io.siggi.togethertunes.auth.UserSettingsApi;
 import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigException;
@@ -304,6 +306,8 @@ public final class Main {
         IdentityTickets identityTickets = new IdentityTickets();
         Guests guests = new Guests(database, settings, config.secureCookies());
         MeApi me = new MeApi(accounts, users, permissions, guests, settings, identityTickets);
+        // The user's own preferences (GET/PATCH /api/me/settings).
+        me.userSettings(new UserSettingsApi(new UserSettings(database)));
         AdminActivityApi activity = AdminActivityApi.create(database, guests, permissions, Clock.systemUTC());
         Uploads uploads = uploads(config, dataDir, database, ingest, settings, outputAssets);
         // Adding a quick-encoded item to a library queues its quality re-encode.

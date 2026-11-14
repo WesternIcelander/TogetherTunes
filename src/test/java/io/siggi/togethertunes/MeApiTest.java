@@ -24,6 +24,8 @@ import io.siggi.togethertunes.auth.Roles;
 import io.siggi.togethertunes.auth.Sessions;
 import io.siggi.togethertunes.auth.SessionsApi;
 import io.siggi.togethertunes.auth.SetupApi;
+import io.siggi.togethertunes.auth.UserSettings;
+import io.siggi.togethertunes.auth.UserSettingsApi;
 import io.siggi.togethertunes.auth.Users;
 import io.siggi.togethertunes.config.Config;
 import io.siggi.togethertunes.config.ConfigLoader;
@@ -87,11 +89,13 @@ class MeApiTest {
         tickets = new IdentityTickets(clock);
         TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
                 permissions, actors, tickets, clock);
+        MeApi me = new MeApi(accounts, users, permissions, guests, settings, tickets);
+        me.userSettings(new UserSettingsApi(new UserSettings(database, clock)));
         server = WebServer.start("127.0.0.1", 0, Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
                 new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
-                new MeApi(accounts, users, permissions, guests, settings, tickets),
+                me,
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
                 TestUploads.providersApi(database, config, settings, accounts),
                 io.siggi.togethertunes.auth.AdminActivityApi.create(database, guests, permissions, clock),
@@ -592,5 +596,57 @@ class MeApiTest {
     /** An IPv6 literal in full uncompressed lowercase form, so the test doesn't depend on how SiggiHTTP prints it. */
     private static String normalised(String ip) throws Exception {
         return java.net.InetAddress.getByName(ip).getHostAddress();
+    }
+
+    // ------------------------------------------------------------------ user settings
+
+    @Test
+    void userSettingsDefaultsAndPatch() throws Exception {
+        HttpResponse<String> r = send("GET", "/api/me/settings", null, admin);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(null));
+        assertEquals(JsonParser.parseString("{\"doubleClickAlone\":\"play\",\"webAudio\":\"auto\",\"debug\":false}"),
+                JsonParser.parseString(r.body()));
+        assertEquals(0, count("SELECT COUNT(*) FROM user_settings"));
+
+        JsonObject patched = call(200, "PATCH", "/api/me/settings", "{\"doubleClickAlone\":\"queue\"}", admin);
+        assertEquals("queue", patched.get("doubleClickAlone").getAsString());
+        assertEquals("auto", patched.get("webAudio").getAsString());
+        assertFalse(patched.get("debug").getAsBoolean());
+
+        patched = call(200, "PATCH", "/api/me/settings", "{\"webAudio\":\"off\",\"debug\":true}", admin);
+        assertEquals("queue", patched.get("doubleClickAlone").getAsString(), "other keys keep their value");
+        assertEquals("off", patched.get("webAudio").getAsString());
+        assertTrue(patched.get("debug").getAsBoolean());
+        assertEquals(patched, call(200, "GET", "/api/me/settings", null, admin));
+        assertEquals(patched, call(200, "PATCH", "/api/me/settings", "{}", admin), "an empty patch changes nothing");
+    }
+
+    @Test
+    void userSettingsValidation() throws Exception {
+        assertError("unknown_setting", call(400, "PATCH", "/api/me/settings", "{\"theme\":\"dark\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"doubleClickAlone\":\"skip\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"webAudio\":true}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"debug\":\"yes\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"debug\":null}", admin));
+        // All or nothing: a valid key next to a bad one isn't saved either.
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings",
+                "{\"doubleClickAlone\":\"queue\",\"webAudio\":\"maybe\"}", admin));
+        assertEquals("play", call(200, "GET", "/api/me/settings", null, admin).get("doubleClickAlone").getAsString());
+        assertEquals(0, count("SELECT COUNT(*) FROM user_settings"));
+        assertEquals(400, send("PATCH", "/api/me/settings", "[]", admin).statusCode());
+        assertEquals(400, send("PATCH", "/api/me/settings", "null", admin).statusCode());
+    }
+
+    @Test
+    void userSettingsAreForUsersOnly() throws Exception {
+        assertError("not_authenticated", call(401, "GET", "/api/me/settings", null, null));
+        assertError("not_authenticated", call(401, "PATCH", "/api/me/settings", "{\"debug\":true}", null));
+        HttpResponse<String> r = send("POST", "/api/me/guest", null, null);
+        assertEquals(201, r.statusCode(), r.body());
+        String gid = cookie(r, "gid");
+        assertError("not_authenticated", call(401, "GET", "/api/me/settings", null, gid));
+        assertError("not_authenticated", call(401, "PATCH", "/api/me/settings", "{\"debug\":true}", gid));
+        assertEquals(0, count("SELECT COUNT(*) FROM user_settings"));
     }
 }
