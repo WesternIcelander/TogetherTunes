@@ -392,7 +392,7 @@ class AdminApiTest {
         JsonObject list = call(200, "GET", "/api/admin/roles", null, admin);
         assertEquals(List.of("admin", "user"), strings(list.getAsJsonArray("items")));
         JsonArray perms = list.getAsJsonArray("permissions");
-        assertEquals(16, perms.size());
+        assertEquals(17, perms.size());
         JsonObject youtube = perms.asList().stream().map(JsonElement::getAsJsonObject)
                 .filter(p -> p.get("name").getAsString().equals("library.youtube")).findFirst().orElseThrow();
         assertEquals("ytdlp.enabled", youtube.get("feature").getAsString());

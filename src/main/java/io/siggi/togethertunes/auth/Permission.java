@@ -32,7 +32,8 @@ public enum Permission {
     ROOMS_MODERATE_ANY("rooms.moderateAny", null, "Act as moderator in any room"),
     ROOMS_CUSTOM_CARDS("rooms.customCards", null, "Upload custom card images for rooms this user owns"),
     OUTPUT_OVERLAY_VIDEO("output.overlayVideo", Feature.OVERLAY,
-            "Rooms owned by this user may re-encode music videos to add the QR overlay");
+            "Rooms owned by this user may re-encode music videos to add the QR overlay"),
+    USERS_INVITE("users.invite", null, "Create invites that let someone register an account");
 
     private static final Map<String, Permission> BY_WIRE_NAME;
 

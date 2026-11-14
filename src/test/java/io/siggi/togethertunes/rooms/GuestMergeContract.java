@@ -236,7 +236,7 @@ abstract class GuestMergeContract {
         GuestMerge.Moved moved = new GuestMerge(registry).merge(guestId, bobId, "203.0.113.20");
         // entries: playing, queued, suggested, played; votes: 3 moved + 1 dropped, skip votes 1
         // dropped, plus the lounge vote
-        assertEquals(new GuestMerge.Moved(4, 5), moved);
+        assertEquals(new GuestMerge.Moved(4, 5, 0), moved);
 
         // The live state of the loaded room.
         Live after = live(party);
@@ -286,7 +286,7 @@ abstract class GuestMergeContract {
                 GuestMerge.AUDIT_MERGED));
         String details = (String) row("SELECT details_json FROM audit_log WHERE action = ?", GuestMerge.AUDIT_MERGED)
                 .get(0);
-        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":4,\"votes\":5}"),
+        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":4,\"votes\":5,\"items\":0}"),
                 com.google.gson.JsonParser.parseString(details));
 
         // A reload reads what the live state had.
@@ -294,6 +294,54 @@ abstract class GuestMergeContract {
         assertEquals(after, live(party));
 
         // Nothing left: merging again moves nothing.
-        assertEquals(new GuestMerge.Moved(0, 0), new GuestMerge(registry).merge(guestId, bobId, null));
+        assertEquals(new GuestMerge.Moved(0, 0, 0), new GuestMerge(registry).merge(guestId, bobId, null));
+    }
+
+    /** An item added by the user or the guest, of this kind and media type; returns its id. */
+    private String item(String kind, String mediaType, String userId, String byGuestId, String status)
+            throws SQLException {
+        String itemId = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, source, added_by_user_id, added_by_guest_id, added_at, status,"
+                + " output_profile, last_referenced_at, duration_ms, media_type) VALUES (?, ?, 'Song', 'upload', ?, ?,"
+                + " 1, ?, '720p30', 1, 60000, ?)", itemId, kind, userId, byGuestId, status, mediaType);
+        return itemId;
+    }
+
+    @Test
+    void movesTheItemsTheGuestAddedIntoTheLibrary() throws Exception {
+        String song = item("audio", "audio", null, guestId, "ready");
+        String video = item("video", "uncategorized", null, guestId, "ready");
+        String processing = item("audio", "audio", null, guestId, "processing");
+        String already = item("audio", "audio", null, guestId, "ready");
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 5, 'request')", bobId, already);
+        String others = item("audio", "audio", null, otherGuestId, "ready");
+        String alices = item("audio", "audio", aliceId, null, "ready");
+        clock.advance(1000);
+        List<String> told = new ArrayList<>();
+
+        GuestMerge.Moved moved = new GuestMerge(registry).libraryAddListener(told::add)
+                .merge(guestId, bobId, null);
+
+        assertEquals(new GuestMerge.Moved(0, 0, 4), moved);
+        for (String id : List.of(song, video, processing, already)) {
+            assertEquals(List.of(bobId), row("SELECT added_by_user_id FROM items WHERE id = ?", id));
+            assertEquals(1L, count("SELECT COUNT(*) FROM library_entries WHERE user_id = ? AND item_id = ?", bobId, id));
+        }
+        assertEquals(0L, count("SELECT COUNT(*) FROM items WHERE added_by_guest_id = ?", guestId));
+        assertEquals(List.of(clock.millis(), "manual"), row("SELECT added_at, via FROM library_entries"
+                + " WHERE user_id = ? AND item_id = ?", bobId, song).stream()
+                .map(o -> o instanceof Number n ? (Object) n.longValue() : o).toList());
+        assertEquals(List.of("request"), row("SELECT via FROM library_entries WHERE user_id = ? AND item_id = ?",
+                bobId, already), "an entry already there stays as it was");
+        assertEquals(List.of("uncategorized"), row("SELECT media_type FROM items WHERE id = ?", video),
+                "an uncategorized video stays uncategorized (the Uncategorized view)");
+        assertEquals(Set.of(song, video, processing), Set.copyOf(told), "only new library entries are announced");
+        assertEquals(List.of(otherGuestId), row("SELECT added_by_guest_id FROM items WHERE id = ?", others));
+        assertEquals(0L, count("SELECT COUNT(*) FROM library_entries WHERE item_id IN (?, ?)", others, alices));
+        String details = (String) row("SELECT details_json FROM audit_log WHERE action = ?", GuestMerge.AUDIT_MERGED)
+                .get(0);
+        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":0,\"votes\":0,\"items\":4}"),
+                com.google.gson.JsonParser.parseString(details));
+        assertEquals(new GuestMerge.Moved(0, 0, 0), new GuestMerge(registry).merge(guestId, bobId, null));
     }
 }

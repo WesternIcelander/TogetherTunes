@@ -161,6 +161,7 @@ public final class RoomsApi {
     }
 
     private volatile AloneSessions alone;
+    private io.siggi.togethertunes.library.LibraryAddListener libraryAddListener;
     private volatile PlayHistory playHistory;
 
     /**
@@ -179,6 +180,14 @@ public final class RoomsApi {
      * Turns on the autoplay selections ({@link AutoplaySelections}, {@link AutoplayApi}):
      * {@code /api/rooms/{room}/autoplay*}. Set before {@link #register}.
      */
+    /**
+     * Who is told when the guest merge adds the guest's items to the user's library
+     * ({@link GuestMerge#libraryAddListener}). Call before {@link #register}.
+     */
+    public void libraryAddListener(io.siggi.togethertunes.library.LibraryAddListener listener) {
+        this.libraryAddListener = listener;
+    }
+
     public void autoplay(AutoplaySelections autoplay) {
         this.autoplay = Objects.requireNonNull(autoplay);
     }
@@ -252,7 +261,7 @@ public final class RoomsApi {
         router.get("/api/rooms/{room}/history", this::history);
         router.get("/api/rooms/{room}/server-switches", this::serverSwitches);
         // Guest -> account merge moves room data, so it lives with the rooms (GuestMerge).
-        new GuestMerge(registry).register(router);
+        new GuestMerge(registry).libraryAddListener(libraryAddListener).register(router);
         if (alone != null) {
             new AloneApi(alone, playHistory).register(router);
         }

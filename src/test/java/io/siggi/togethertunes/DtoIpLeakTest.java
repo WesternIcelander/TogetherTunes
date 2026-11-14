@@ -122,6 +122,9 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.auth.Providers$Provider",
             "io.siggi.togethertunes.auth.ClaimMapping",
             "io.siggi.togethertunes.auth.Identities$IdentityView",
+            "io.siggi.togethertunes.auth.Invites$Created",
+            "io.siggi.togethertunes.auth.Invites$InviteView",
+            "io.siggi.togethertunes.auth.Invites$Page",
             "io.siggi.togethertunes.auth.Sessions$Created",
             "io.siggi.togethertunes.auth.Sessions$Page",
             "io.siggi.togethertunes.auth.Sessions$SessionView",
@@ -256,6 +259,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.auth.Passwords$Params", "password hashing"),
             Map.entry("io.siggi.togethertunes.auth.Passwords$Parsed", "password hashing"),
             Map.entry("io.siggi.togethertunes.auth.AuthApi$RegisterRequest", "request body (inbound)"),
+            Map.entry("io.siggi.togethertunes.auth.InvitesApi$CreateRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.auth.AuthApi$LoginRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.auth.AuthApi$TokenRequest", "request body (inbound)"),
             Map.entry("io.siggi.togethertunes.auth.AuthApi$PasswordChangeRequest", "request body (inbound)"),
@@ -751,6 +755,10 @@ class DtoIpLeakTest {
             produced.add(guests.get(g.guest().id()));
         }
         produced.add(new AuditEntries(database).list(null, null, null, 200));
+        // invites (created with an IP for the audit row): the new one, and the list
+        io.siggi.togethertunes.auth.Invites invites = new io.siggi.togethertunes.auth.Invites(database, clock);
+        produced.add(invites.create(adminId, null, "dto test", false, V6_SERVICE));
+        produced.add(invites.list(null, null, io.siggi.togethertunes.auth.Invites.LIST_MAX));
         produced.add(new io.siggi.togethertunes.library.Classify.Suggestion("show",
                 new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
         produced.add(new Items.StillImageView(1_700_000_000_000L)); // the item page's still-image warning

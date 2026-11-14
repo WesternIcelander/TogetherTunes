@@ -12,6 +12,9 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.library.Library;
+import io.siggi.togethertunes.library.LibraryAddListener;
+import io.siggi.togethertunes.retention.References;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -36,7 +39,8 @@ import java.util.Objects;
  *       offer it). A user only ({@code 401 not_authenticated}); {@code guest} is left out for a
  *       bearer request (no cookies), no or a stale {@code gid} cookie, or a banned guest.</li>
  *   <li>{@code POST /api/me/merge-guest} (no body) → {@code 200 {"guest": actor, "moved":
- *       {"entries", "votes"}}} ({@code votes} counts votes and skip votes) and clears
+ *       {"entries", "votes", "items"}}} ({@code votes} counts votes and skip votes, {@code items}
+ *       the items the guest added, now the user's and in their library) and clears
  *       the {@code gid} cookie. Errors: {@code 401 not_authenticated} (not a logged-in user),
  *       {@code 403 cookie_session_required} (a bearer request: only the browser holding the cookie
  *       can merge), {@code 404 guest_not_found} (no {@code gid} cookie, or none of a current
@@ -51,8 +55,12 @@ import java.util.Objects;
  * dropped. Entries keep {@code added_by_name} (the name a request was made under; where it is
  * {@code NULL} the history shows the account's name from now on). Afterwards the guest's
  * key is replaced by a random one, so the old cookie (and any copy of it) no longer identifies
- * it; the guest row itself stays (its uploads and the items it added keep pointing at it). The
+ * it; the guest row itself stays (its uploads keep pointing at it). The
  * merge is written to the audit log ({@value #AUDIT_MERGED}). No IP in any response.
+ *
+ * <p>The items the guest added ({@code items.added_by_guest_id}) become the user's and are added
+ * to the user's library ({@link #moveItems}); the guest's uploads ({@code uploads.guest_id}) keep
+ * pointing at the guest.
  */
 public final class GuestMerge {
     /** Audit action of a merge (actor: the user; target: the guest). */
@@ -64,17 +72,28 @@ public final class GuestMerge {
     private final Database db;
     private final Clock clock;
 
-    /** What a merge moved. {@code votes} counts votes and skip votes. */
-    public record Moved(int entries, int votes) {
+    /**
+     * What a merge moved. {@code votes} counts votes and skip votes, {@code items} the items the
+     * guest had added ({@code items.added_by_guest_id}), which now are the user's and in their library.
+     */
+    public record Moved(int entries, int votes, int items) {
         Moved plus(Moved o) {
-            return new Moved(entries + o.entries, votes + o.votes);
+            return new Moved(entries + o.entries, votes + o.votes, items + o.items);
         }
     }
+
+    private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
 
     public GuestMerge(RoomRegistry registry) {
         this.registry = Objects.requireNonNull(registry);
         this.db = registry.db();
         this.clock = registry.clock();
+    }
+
+    /** Who is told about the items the merge adds to the user's library (the quality re-encode). */
+    public GuestMerge libraryAddListener(LibraryAddListener listener) {
+        this.libraryAddListener = listener == null ? LibraryAddListener.NONE : listener;
+        return this;
     }
 
     public void register(Router router) {
@@ -125,6 +144,7 @@ public final class GuestMerge {
         Map<String, Object> counts = new LinkedHashMap<>();
         counts.put("entries", moved.entries());
         counts.put("votes", moved.votes());
+        counts.put("items", moved.items());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("guest", ActorRef.guest(guest.id(), guest.name()));
         out.put("moved", counts);
@@ -161,7 +181,7 @@ public final class GuestMerge {
     public Moved merge(String guestId, String userId, String clientIp) throws Exception {
         Objects.requireNonNull(guestId);
         Objects.requireNonNull(userId);
-        Moved total = new Moved(0, 0);
+        Moved total = new Moved(0, 0, 0);
         for (int pass = 0; pass < PASSES; pass++) {
             List<String> roomIds = roomsOf(guestId);
             if (roomIds.isEmpty()) {
@@ -179,17 +199,62 @@ public final class GuestMerge {
             }
         }
         Moved done = total;
-        db.write(c -> {
+        long now = EpochMs.now(clock);
+        int items = db.write(c -> {
+            int n = moveItems(c, guestId, userId, now);
             try (PreparedStatement ps = c.prepareStatement("UPDATE guests SET key_hash = ? WHERE id = ?")) {
                 ps.setString(1, Tokens.hash(Tokens.newToken()));
                 ps.setString(2, guestId);
                 ps.executeUpdate();
             }
-            AuditLog.write(c, EpochMs.now(clock), userId, null, clientIp, AUDIT_MERGED, guestId,
-                    Map.of("entries", done.entries(), "votes", done.votes()));
-            return null;
+            AuditLog.write(c, now, userId, null, clientIp, AUDIT_MERGED, guestId,
+                    Map.of("entries", done.entries(), "votes", done.votes(), "items", n));
+            return n;
         });
-        return done;
+        return new Moved(done.entries(), done.votes(), items);
+    }
+
+    /**
+     * The items the guest added become the user's ({@code items.added_by_user_id}) and go into the
+     * user's library ({@link Library#VIA_MANUAL}, as an add of their own; an uncategorized video stays
+     * uncategorized, so it shows in the Uncategorized view). Items in the library already keep
+     * their entry.
+     *
+     * @return how many items changed hands
+     */
+    private int moveItems(Connection c, String guestId, String userId, long now) throws SQLException {
+        List<String> itemIds = new ArrayList<>();
+        try (PreparedStatement ps = c.prepareStatement("SELECT id FROM items WHERE added_by_guest_id = ? ORDER BY id")) {
+            ps.setString(1, guestId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    itemIds.add(rs.getString(1));
+                }
+            }
+        }
+        if (itemIds.isEmpty()) {
+            return 0;
+        }
+        try (PreparedStatement ps = c.prepareStatement(
+                "UPDATE items SET added_by_user_id = ?, added_by_guest_id = NULL WHERE added_by_guest_id = ?")) {
+            ps.setString(1, userId);
+            ps.setString(2, guestId);
+            ps.executeUpdate();
+        }
+        try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
+                List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
+            for (String itemId : itemIds) {
+                ps.setString(1, userId);
+                ps.setString(2, itemId);
+                ps.setLong(3, now);
+                ps.setString(4, Library.VIA_MANUAL);
+                if (ps.executeUpdate() > 0) {
+                    References.touch(c, itemId, now);
+                    libraryAddListener.addedToLibrary(itemId);
+                }
+            }
+        }
+        return itemIds.size();
     }
 
     /** The rooms where the guest has entries, votes or skip votes. */
@@ -222,7 +287,7 @@ public final class GuestMerge {
         private int votes;
 
         Moved get() {
-            return new Moved(entries, votes);
+            return new Moved(entries, votes, 0);
         }
     }
 

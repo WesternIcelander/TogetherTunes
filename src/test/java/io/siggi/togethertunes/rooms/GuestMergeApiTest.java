@@ -189,11 +189,13 @@ class GuestMergeApiTest {
         HttpResponse<String> merged = call("POST", null, bobSid, gid);
         assertEquals(200, merged.statusCode(), merged.body());
         assertEquals(ref, json(merged).get("guest"));
-        assertEquals(JsonParser.parseString("{\"entries\":1,\"votes\":1}"), json(merged).get("moved"));
+        assertEquals(JsonParser.parseString("{\"entries\":1,\"votes\":1,\"items\":1}"), json(merged).get("moved"));
         assertEquals("gid=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
                 merged.headers().firstValue("Set-Cookie").orElse(""), "the gid cookie is cleared");
         assertEquals(bobId, one("SELECT added_by_user_id FROM queue_entries WHERE id = ?", entry));
         assertEquals(bobId, one("SELECT voter_user_id FROM votes WHERE entry_id = ?", entry));
+        assertEquals("1", one("SELECT COUNT(*) FROM library_entries e JOIN queue_entries q ON q.item_id = e.item_id"
+                + " WHERE q.id = ? AND e.user_id = ?", entry, bobId), "the guest's item is in Bob's library");
         assertEquals(bobId, registry.call(roomId, tx -> tx.state().queue().get(0).addedByUserId()),
                 "the live room has it too");
         assertEquals("1", one("SELECT COUNT(*) FROM audit_log WHERE action = ? AND actor_user_id = ? AND target = ?",

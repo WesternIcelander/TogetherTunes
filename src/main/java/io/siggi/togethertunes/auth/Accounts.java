@@ -112,6 +112,28 @@ public final class Accounts {
     public Account createLocal(String username, String displayName, String password, boolean onlyFirst,
                                String ip, String auditAction, String actorUserId, boolean temporaryPassword)
             throws SQLException {
+        return createLocal(username, displayName, password, onlyFirst, ip, auditAction, actorUserId,
+                temporaryPassword, null);
+    }
+
+    /**
+     * Work done in the transaction that creates an account, after the {@code users} row is
+     * inserted and before the audit row; throwing rolls the account back (e.g. an invite that
+     * can't be used, {@link Invites#consume}).
+     */
+    @FunctionalInterface
+    public interface InCreation {
+        /** @return extra {@code details} for the audit row, or {@code null} */
+        Map<String, Object> run(Connection c, String newUserId, long now) throws SQLException;
+    }
+
+    /**
+     * {@link #createLocal(String, String, String, boolean, String, String, String, boolean)} with
+     * {@code inCreation} run in the creating transaction ({@code null}: nothing).
+     */
+    public Account createLocal(String username, String displayName, String password, boolean onlyFirst,
+                               String ip, String auditAction, String actorUserId, boolean temporaryPassword,
+                               InCreation inCreation) throws SQLException {
         String name = validUsername(username);
         String display = validDisplayName(displayName, name);
         String passwordProblem = Passwords.problem(password);
@@ -156,6 +178,12 @@ public final class Accounts {
             details.put("roles", roles);
             if (temporaryPassword) {
                 details.put("temporaryPassword", true);
+            }
+            if (inCreation != null) {
+                Map<String, Object> extra = inCreation.run(c, id, now);
+                if (extra != null) {
+                    details.putAll(extra);
+                }
             }
             AuditLog.write(c, now, actorUserId == null ? id : actorUserId, null, ip, auditAction, id, details);
             return new Account(id, name, display, roles, temporaryPassword);

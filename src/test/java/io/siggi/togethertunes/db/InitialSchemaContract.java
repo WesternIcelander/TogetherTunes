@@ -68,6 +68,8 @@ abstract class InitialSchemaContract {
         t("room_autoplay_selections", "room_id", "playlist_id", "user_id", "selected_at");
         t("room_bans", "room_id", "subject", "target_kind", "target", "expires_at", "created_by_user_id",
                 "created_at");
+        t("invites", "id", "code_hash", "created_by_user_id", "created_at", "expires_at", "note",
+                "used_by_user_id", "used_at", "revoked_at");
         t("queue_entries", "id", "room_id", "item_id", "added_by_user_id", "added_by_guest_id", "added_at",
                 "state", "position", "pinned", "played_at", "via", "added_by_name", "overlay", "section");
         t("votes", "entry_id", "voter_user_id", "voter_guest_id", "value", "at");

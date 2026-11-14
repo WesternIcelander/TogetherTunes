@@ -276,6 +276,11 @@ public final class Main {
         SessionsApi sessionsApi = new SessionsApi(sessions, accounts, config.secureCookies());
         Users users = new Users(database, Passwords.DEFAULT, Clock.systemUTC());
         Permissions permissions = new Permissions(database, settings);
+        // Invites (docs/auth.md#invites): registration in 'invite' mode, /api/invites.
+        io.siggi.togethertunes.auth.Invites invites = new io.siggi.togethertunes.auth.Invites(database,
+                Clock.systemUTC());
+        auth.invites(invites, new io.siggi.togethertunes.auth.InvitesApi(invites, permissions,
+                config.publicBaseUrl()));
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
         admin.diskSpace(diskSpace);
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
@@ -444,6 +449,7 @@ public final class Main {
         // GET /api/search: guests and anonymous visitors search what they may request in a room.
         itemsApi.roomSearch(requestSearch::requireMayRequest);
         RoomsApi roomsApi = new RoomsApi(rooms, roomRegistry, permissions, roomGuests, requestSearch, roomHistory);
+        roomsApi.libraryAddListener(qualityOnLibraryAdd);
         // The alone state (docs/rooms.md#alone): each user's own pseudo-room, and their play history.
         io.siggi.togethertunes.rooms.PlayHistory playHistory = new io.siggi.togethertunes.rooms.PlayHistory(database,
                 settings::roomsRequestHistoryDays, Clock.systemUTC());

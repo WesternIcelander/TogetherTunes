@@ -18,9 +18,11 @@ import java.util.Objects;
  * <ul>
  *   <li>{@code POST /api/auth/register} {@code {"username", "password", "displayName"?}} →
  *       {@code 201 {"user": {...}}} and a new {@code sid} cookie (the new user is logged in).
- *       Only when {@code registration.mode} is {@code open}: {@code invite} gives
- *       {@code 403 registration_invite_only} (no invite mechanism exists yet), {@code closed}
- *       {@code 403 registration_closed}. While no account exists it is {@code 409 setup_required}
+ *       Only when {@code registration.mode} is {@code open}, or {@code invite} with a usable
+ *       {@code "invite"} code in the body ({@link Invites}; used up by this registration, in the
+ *       transaction that creates the account): without one {@code 403 invite_required}, with an
+ *       unknown, used, revoked or expired one {@code 403 invalid_invite} (in {@code open} mode a
+ *       code is ignored). {@code closed} gives {@code 403 registration_closed}. While no account exists it is {@code 409 setup_required}
  *       (the first account comes from {@link SetupApi}). Validation and the clash check as in
  *       {@link Accounts#createLocal}; audited as {@value #AUDIT_REGISTER}.</li>
  *   <li>{@code POST /api/auth/login} {@code {"username", "password"}} → {@code 200 {"user": {...}}}
@@ -64,8 +66,10 @@ public final class AuthApi {
     private final Settings settings;
     private final boolean secureCookies;
     private final AuthRateLimits limits;
+    private volatile Invites invites;
+    private InvitesApi invitesApi;
 
-    record RegisterRequest(String username, String password, String displayName) {
+    record RegisterRequest(String username, String password, String displayName, String invite) {
     }
 
     record LoginRequest(String username, String password) {
@@ -95,7 +99,21 @@ public final class AuthApi {
         this.secureCookies = secureCookies;
     }
 
+    /**
+     * Turns on invites ({@code docs/auth.md#invites}): registration in {@code invite} mode takes an
+     * invite code, and {@code /api/invites} is served ({@link InvitesApi}). Call before
+     * {@link #register}. Without it, {@code invite} mode refuses every registration
+     * ({@code 403 registration_invite_only}).
+     */
+    public void invites(Invites invites, InvitesApi api) {
+        this.invites = Objects.requireNonNull(invites);
+        this.invitesApi = Objects.requireNonNull(api);
+    }
+
     public void register(Router router) {
+        if (invitesApi != null) {
+            invitesApi.register(router);
+        }
         router.post("/api/auth/register", this::registerAccount, Hooks.rateLimit(limits.register()));
         router.post("/api/auth/login", this::login, Hooks.rateLimit(limits.login()));
         router.post("/api/auth/logout", this::logout);
@@ -117,17 +135,28 @@ public final class AuthApi {
     private void registerAccount(Request request, Response response) throws Exception {
         RegisterRequest body = request.readJson(RegisterRequest.class);
         RegistrationMode mode = settings.get(Settings.REGISTRATION_MODE);
+        Invites inviteStore = invites;
         switch (mode) {
             case OPEN -> {
             }
-            case INVITE -> throw new HttpError(403, "registration_invite_only", "Registration is by invitation only");
+            case INVITE -> {
+                if (inviteStore == null) {
+                    throw new HttpError(403, "registration_invite_only", "Registration is by invitation only");
+                }
+            }
             case CLOSED -> throw new HttpError(403, "registration_closed", "Registration is closed");
         }
         if (!accounts.anyExists()) {
             throw new HttpError(409, "setup_required", "The server has not been set up yet");
         }
+        Accounts.InCreation useInvite = null;
+        if (mode == RegistrationMode.INVITE) {
+            inviteStore.check(body.invite()); // cheap, before the password hash; consume decides
+            String code = body.invite();
+            useInvite = (c, newUserId, now) -> Map.of("invite", Invites.consume(c, code, newUserId, now));
+        }
         Accounts.Account account = accounts.createLocal(body.username(), body.displayName(), body.password(), false,
-                request.clientIp(), AUDIT_REGISTER);
+                request.clientIp(), AUDIT_REGISTER, null, false, useInvite);
         startSession(request, response, account);
         response.json(201, Map.of("user", userJson(account)));
     }

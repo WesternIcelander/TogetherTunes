@@ -11,6 +11,11 @@ async function start(): Promise<void> {
   const status = element<HTMLParagraphElement>("register-status");
   const next = nextPath();
   element<HTMLAnchorElement>("login-link").href = withNext(LOGIN_PAGE, next);
+  // An invite link (/register.html?invite=<code>) fills the code in.
+  const invite = new URLSearchParams(location.search).get("invite");
+  if (invite) {
+    (form.elements.namedItem("invite") as HTMLInputElement).value = invite;
+  }
 
   try {
     if (await setupNeeded()) {
@@ -36,6 +41,7 @@ async function start(): Promise<void> {
         username: formValue(form, "username"),
         displayName: formValue(form, "displayName"),
         password: formValue(form, "password"),
+        invite: formValue(form, "invite").trim() || undefined,
       });
     } catch (e) {
       if (e instanceof ApiError && e.code === "setup_required") {

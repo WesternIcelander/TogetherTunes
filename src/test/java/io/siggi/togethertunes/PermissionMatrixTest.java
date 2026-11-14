@@ -11,6 +11,8 @@ import io.siggi.simplewebsocket.WebSocketConnector;
 import io.siggi.simplewebsocket.WebSocketMessage;
 import io.siggi.simplewebsocket.WebsocketHeaders;
 import io.siggi.togethertunes.auth.Accounts;
+import io.siggi.togethertunes.auth.Invites;
+import io.siggi.togethertunes.auth.InvitesApi;
 import io.siggi.togethertunes.auth.ActorResolver;
 import io.siggi.togethertunes.auth.AdminActivityApi;
 import io.siggi.togethertunes.auth.AdminApi;
@@ -191,6 +193,11 @@ class PermissionMatrixTest {
             // their sid, so a user has nothing to merge (GuestMergeApiTest covers the merge itself).
             row("GET /api/me/merge-guest", c -> Call.get("/api/me/merge-guest"), 401, 401, 200, 200),
             row("POST /api/me/merge-guest", c -> Call.post("/api/me/merge-guest", null), 401, 401, 404, 404),
+
+            // Invites (InvitesApi): users.invite (admins hold it), admin.users sees all.
+            row("POST /api/invites", c -> Call.post("/api/invites", null), 401, 401, 403, 201),
+            row("GET /api/invites", c -> Call.get("/api/invites"), 401, 401, 403, 200),
+            row("DELETE /api/invites/{id}", c -> Call.delete("/api/invites/nope"), 401, 401, 403, 404),
 
             // Admin: admin.users / admin.roles / admin.settings / ip.view.
             admin("GET /api/admin/users", c -> Call.get("/api/admin/users"), 200),
@@ -467,7 +474,8 @@ class PermissionMatrixTest {
                 permissions, actors, new IdentityTickets(), clock);
         router = Main.router(config, staticFiles, actors,
                 new SetupApi(accounts, sessions, config.secureCookies(), limits),
-                new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
+                invitingAuth(new AuthApi(accounts, sessions, settings, config.secureCookies(), limits),
+                        permissions, config),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets()),
                 new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
@@ -494,6 +502,12 @@ class PermissionMatrixTest {
             }
         }
         assertTrue(adminRoleId != null, "the admin role exists");
+    }
+
+    private AuthApi invitingAuth(AuthApi auth, Permissions permissions, Config config) {
+        Invites invites = new Invites(database, clock);
+        auth.invites(invites, new InvitesApi(invites, permissions, config.publicBaseUrl()));
+        return auth;
     }
 
     @AfterEach
