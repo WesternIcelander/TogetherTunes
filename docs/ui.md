@@ -15,7 +15,7 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
 
 - **Header:** logo + "TogetherTunes", a search box, the account button.
 - **Left sidebar**, tabs **Library** and **Rooms**:
-  - **Library:** All My Songs, Movies/Shows, Liked Songs, **Uncategorized Videos** (the user's own library items still uncategorized; only shown while there are any), then the user's playlists. At the bottom, a small section listing the playlists **other users** selected for autoplay in the current room.
+  - **Library:** All My Songs, Movies/Shows, Liked Songs, **+ New Playlist** (just below Liked Songs), **Uncategorized Videos** (the user's own library items still uncategorized; only shown while there are any), then the user's playlists. At the bottom, a small section listing the playlists **other users** selected for autoplay in the current room.
   - **Rooms:** "New Room +", then the rooms the user owns or can access, each with its listener count; a search box filters the list, and entering an unlisted room's exact slug (or its URL) shows that room at the top.
 - **Middle:** the open view, e.g. a playlist: cover, name, song count and total time, **+ Add from link**, and a table (#, cover, title/artist, album, date added, time). Multi-select rows, then **Add to Queue** plays them in order.
 - **Right panel**, tabs **Queue**, **Recents**, **Room**:
@@ -105,6 +105,8 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
   - **A link** opens the Add Link dialog, where the type is chosen.
   - A YouTube link whose item already exists on the server uses that item (and asks for a type only if it's uncategorized, with the option to leave it).
 - **Search** covers the whole server, with items in the user's library ranked first.
+- **Playlist order:** users drag their playlists up and down in the sidebar to reorder them (stored per user on the server). The built-in entries above them (All My Songs, Movies/Shows, Liked Songs, New Playlist, Uncategorized Videos) stay where they are.
+- **Dragging items into a playlist** (drop on it in the sidebar, or into an open playlist at a position) works from other playlists, the queue, Recents and search results, as well as the file browser and links (above).
 
 ## Requests-only mode
 
@@ -113,4 +115,4 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 
 ## Not designed yet
 
-See the M9 notes in PLAN.md for the list of screens and decisions still missing.
+Until Siggi draws them (2026-11-14), screens without a drawing **follow the existing design**: same header, sidebars, lists, ⋯ menus and dialogs as the drawn screens, and the mobile rules above. Missing so far: room settings, item page, search results, Movies/Shows, the classify dialog, login/signup/setup and the guest name prompt, account and user settings, New Room, the song ⋯ menu, admin pages, loading/failed/empty states, colours and theme.
