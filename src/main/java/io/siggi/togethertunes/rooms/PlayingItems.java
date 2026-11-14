@@ -18,6 +18,14 @@ public interface PlayingItems {
     /** Whether {@code itemId} is the current or the next entry of room {@code roomId}'s queue right now. */
     boolean isCurrentOrNextIn(String roomId, String itemId);
 
+    /**
+     * Whether room {@code roomId} forces requests-only mode ({@link RoomSettings#requestsOnly()}):
+     * then being in it gives guests and anonymous visitors no media ({@link RoomViewers}).
+     */
+    default boolean requestsOnly(String roomId) {
+        return false;
+    }
+
     /** Nothing is playing anywhere (tests that don't involve rooms). */
     PlayingItems NO_ROOMS = new PlayingItems() {
         @Override

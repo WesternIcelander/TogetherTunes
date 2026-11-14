@@ -31,7 +31,8 @@ import { captureErrors, recordEvent, snapshot, stripQuery, type ErrorTarget } fr
 import { ListenPlayer, type SoundInfo } from "./listen.js";
 import { syncModeFor, type EngineHints } from "./listensync.js";
 import {
-  chooseMode, DelayedTimeline, effectiveDelay, formatSeconds, modeKey, nudgeKey, outputDelay, parseNudge, stepNudge,
+  chooseMode, DelayedTimeline, effectiveDelay, effectiveMode, forcedRequestsOnly, formatSeconds, modeKey, modeLabel,
+  nudgeKey, outputDelay, parseNudge, stepNudge,
   type RoomMode,
 } from "./remote.js";
 import { button, formatBytes, formatDuration, formatTime, h } from "./dom.js";
@@ -69,6 +70,7 @@ interface RoomResponse {
   id: string;
   slug: string;
   name: string;
+  settings?: Record<string, unknown>;
 }
 
 /** The room from `/rooms/{idOrSlug}` (or `?room=` when the page is opened as a plain file). */
@@ -181,8 +183,12 @@ function serverNow(): number {
 
 let me: Me;
 let conn: RoomConnection;
-/** The page's mode: listen (plays the room) or remote (no media, delayed view). */
+/** The page's mode: listen (plays the room) or remote (requests-only: no media, delayed view). */
 let mode: RoomMode = "listen";
+/** The mode the user chose (URL or toggle); `mode` differs while the room forces requests-only. */
+let chosenMode: RoomMode = "listen";
+/** Whether the room forces requests-only mode (its `requestsOnly` setting). */
+let forced = false;
 /** Plays the room in listen mode; created on first entering listen mode, stopped in remote mode. */
 let player: ListenPlayer | undefined;
 /** The timeline as it was a while ago, for remote mode's delayed view. */
@@ -310,7 +316,7 @@ function renderHeader(s: RoomState): void {
   manage.hidden = !s.room.you.canModerate;
   manage.href = "/rooms/" + encodeURIComponent(s.room.slug) + "/manage";
   const p = s.presence;
-  const parts = [p.listening + " listening", p.remote + " remote"];
+  const parts = [p.listening + " listening", p.remote + " requests-only"];
   let text = parts.join(" · ");
   if (p.anonymous > 0) text += " · +" + p.anonymous + " anonymous";
   element("room-presence").textContent = text;
@@ -1036,6 +1042,12 @@ function render(s: RoomState): void {
   outputsPanel ??= new OutputsPanel(element("room-outputs"));
   outputsPanel.update(s);
   renderRemoteDelay();
+  // The owner may force requests-only mode: then nothing plays here, whatever the user chose.
+  const nowForced = forcedRequestsOnly(s.room.settings);
+  if (nowForced !== forced) {
+    forced = nowForced;
+    setMode(effectiveMode(chosenMode, forced));
+  }
   // An audio-only room plays every item's audio (the server gives no video URLs): no switch.
   const audioOnlyRoom = isAudioOnlyRoom(s);
   element("room-audio-only-label").hidden = audioOnlyRoom;
@@ -1070,9 +1082,10 @@ function setNudge(n: number): void {
 function applyMode(m: RoomMode): void {
   mode = m;
   element("room-body").dataset["mode"] = m;
-  element("room-mode").textContent = m === "remote" ? "Remote mode" : "Listen mode";
+  element("room-mode").textContent = modeLabel(m) + (forced ? " (set by the room)" : "");
   const toggle = element("room-mode-toggle") as HTMLButtonElement;
-  toggle.textContent = m === "remote" ? "Listen here instead" : "I'm listening through the stream (remote mode)";
+  toggle.textContent = m === "remote" ? "Listen here instead" : "Requests only (I'm listening elsewhere)";
+  toggle.hidden = forced;
   element("room-listen-controls").hidden = m !== "listen";
   element("room-remote-controls").hidden = m !== "remote";
   if (m === "listen") {
@@ -1086,9 +1099,21 @@ function applyMode(m: RoomMode): void {
   if (shown !== undefined) renderNowPlaying(shown);
 }
 
+/** Tells the server the page's mode and switches to it. */
+function setMode(m: RoomMode): void {
+  if (m === mode) {
+    applyMode(m); // the labels may still change (forced or not)
+    return;
+  }
+  conn.mode = m;
+  if (conn.joined) conn.request({ type: "mode", mode: m }).catch(showError);
+  applyMode(m);
+}
+
 /** The toggle: remember the choice for this room, tell the server, switch. */
 function switchMode(m: RoomMode): void {
-  if (m === mode) return;
+  if (forced || m === mode) return;
+  chosenMode = m;
   storageSet(modeKey(roomId), m);
   // The URL's ?mode= would win over the remembered choice on the next visit.
   const url = new URL(location.href);
@@ -1100,9 +1125,7 @@ function switchMode(m: RoomMode): void {
       // Not allowed (e.g. a file:// page): harmless.
     }
   }
-  conn.mode = m;
-  if (conn.joined) conn.request({ type: "mode", mode: m }).catch(showError);
-  applyMode(m);
+  setMode(m);
   // The toggle click is a user gesture: let the new player play at once.
   if (m === "listen") player?.unlock();
 }
@@ -1305,6 +1328,9 @@ async function start(): Promise<void> {
   document.title = room.name + " · TogetherTunes";
   element("room-name").textContent = room.name;
   mode = chooseMode(modeFromLocation(), storageGet(modeKey(room.id)));
+  forced = forcedRequestsOnly(room.settings);
+  chosenMode = mode;
+  mode = effectiveMode(chosenMode, forced);
   nudge = parseNudge(storageGet(nudgeKey(room.id)));
   element("room-status").textContent = "Connecting…";
 

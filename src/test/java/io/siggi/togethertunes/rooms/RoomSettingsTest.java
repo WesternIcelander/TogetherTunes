@@ -70,6 +70,19 @@ class RoomSettingsTest {
         assertEquals(7000, RoomSettings.DEFAULTS.patch(obj("{\"transitionCard\":true,\"gapMs\":7000}")).transitionGapMs());
     }
 
+    /** {@code requestsOnly} (forced requests-only mode): a boolean, off by default. */
+    @Test
+    void requestsOnlySetting() {
+        assertFalse(RoomSettings.DEFAULTS.requestsOnly());
+        RoomSettings on = RoomSettings.DEFAULTS.patch(obj("{\"requestsOnly\":true}"));
+        assertTrue(on.requestsOnly());
+        assertEquals("{\"requestsOnly\":true}", on.toStoredJson());
+        assertEquals(java.util.List.of("requestsOnly"), on.changedFrom(RoomSettings.DEFAULTS));
+        assertFalse(on.patch(obj("{\"requestsOnly\":null}")).requestsOnly());
+        assertEquals("invalid_setting", patchError("{\"requestsOnly\":\"yes\"}").code());
+        assertFalse(RoomSettings.parse("{\"requestsOnly\":1}").requestsOnly());
+    }
+
     @Test
     void audioOnlySetting() {
         RoomSettings on = RoomSettings.DEFAULTS.patch(obj("{\"audioOnly\":true}"));
@@ -88,14 +101,14 @@ class RoomSettingsTest {
         JsonObject j = RoomSettings.DEFAULTS.toJson();
         assertEquals(obj("{\"libraryRequests\":true,\"uploadRequests\":true,\"requestsPerActor\":3,\"allowDownvotes\":false,"
                 + "\"voteSkipThreshold\":0.5,\"noRepeatWindow\":10,\"transitionCard\":false,\"gapMs\":0,"
-                + "\"audioOnly\":false,\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
+                + "\"audioOnly\":false,\"requestsOnly\":false,\"guests\":{\"canVote\":true,\"canRequestLibrary\":true,\"canUpload\":false,\"canYoutube\":false},"
                 + "\"overlay\":{\"mode\":\"off\",\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
                 + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"\"},\"autoOff\":true,\"autoOffMinutes\":10,\"ts\":{\"join\":\"next\"}},"
                 + "\"autoplay\":{\"selectors\":\"owner\",\"upcoming\":5,\"mix\":\"random\",\"recentPct\":50,"
                 + "\"requestsFirst\":\"first\"},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000,\"mp3\":3000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 30);
+        assertEquals(RoomSettings.keys().size(), 31);
     }
 
     @Test

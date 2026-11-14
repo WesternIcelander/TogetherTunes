@@ -882,6 +882,81 @@ class RoomSocketTest {
         assertEquals(403, media(cookie, elsewhere));
     }
 
+    /** Waits (up to 5 s) for a media request to give {@code status}; the room publishes after the change. */
+    private int awaitMedia(String cookie, String itemId, int status) throws Exception {
+        long by = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        int got = media(cookie, itemId);
+        while (got != status && System.nanoTime() < by) {
+            Thread.sleep(20);
+            got = media(cookie, itemId);
+        }
+        return got;
+    }
+
+    /**
+     * M9 forced requests-only mode ({@code docs/ui.md#requests-only-mode}): with the room's
+     * {@code requestsOnly} on, being in the room gives guests and anonymous visitors no media
+     * ({@code 403}), unless another room they are in plays the item; logged-in users are never
+     * refused. The setting reaches every client in the room state.
+     */
+    @Test
+    void forcedRequestsOnlyRefusesUnauthenticatedMediaButNeverUsers() throws Exception {
+        room("party", "public", "vote");
+        String song1 = servedItem("One");
+        String song2 = servedItem("Two");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"party\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song1 + "\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song2 + "\"}");
+
+        HttpResponse<String> created = call(null, "POST", "/api/me/guest", null);
+        assertEquals(201, created.statusCode(), created.body());
+        String cookie = created.headers().allValues("Set-Cookie").stream().filter(v -> v.startsWith("gid="))
+                .map(v -> v.substring(0, v.indexOf(';'))).findFirst().orElseThrow();
+        Client guest = connect(null, cookie);
+        guest.next("identity");
+        guest.ok("{\"type\":\"join\",\"room\":\"party\"}");
+        assertFalse(guest.await("state").getAsJsonObject("room").getAsJsonObject("settings")
+                .get("requestsOnly").getAsBoolean());
+        assertEquals(200, media(cookie, song1), "not forced: current");
+        assertEquals(200, media(cookie, song2), "not forced: next");
+
+        roomSettings("party", "{\"requestsOnly\":true}");
+        JsonObject forced = guest.await(m -> m.get("type").getAsString().equals("state") && m.has("room")
+                && m.getAsJsonObject("room").getAsJsonObject("settings").get("requestsOnly").getAsBoolean());
+        assertTrue(forced.getAsJsonObject("room").getAsJsonObject("settings").get("requestsOnly").getAsBoolean());
+        assertEquals(403, awaitMedia(cookie, song1, 403), "forced: the guest gets nothing through this room");
+        assertEquals(403, media(cookie, song2));
+        // anonymous visitors likewise
+        Client anon = connect(null, null);
+        anon.next("identity");
+        anon.ok("{\"type\":\"join\",\"room\":\"party\"}");
+        assertEquals(403, media(null, song1), "forced: anonymous");
+        // logged-in users are never refused: the owner and any other user
+        assertEquals(200, call(alice, "GET", "/media/" + song1 + "/audio.m4a", null).statusCode());
+        assertEquals(200, call(bob, "GET", "/media/" + song2 + "/audio.m4a", null).statusCode());
+        // the guest's queue rights are unchanged: requests and votes are what the mode is for
+        guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Guest pick") + "\"}");
+
+        // another reason: a room the guest is also in that plays the item (and doesn't force it)
+        room("lounge", "public", "vote");
+        Client owner2 = connect(alice, null);
+        owner2.ok("{\"type\":\"join\",\"room\":\"lounge\"}");
+        owner2.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song1 + "\"}");
+        Client guest2 = connect(null, cookie);
+        guest2.next("identity");
+        guest2.ok("{\"type\":\"join\",\"room\":\"lounge\"}");
+        assertEquals(200, awaitMedia(cookie, song1, 200), "current in a room that doesn't force it");
+        assertEquals(403, media(cookie, song2), "next only in the forced room");
+        guest2.ok("{\"type\":\"leave\"}");
+        assertEquals(403, awaitMedia(cookie, song1, 403), "left the other room");
+
+        // turned off again: being in the room counts again
+        roomSettings("party", "{\"requestsOnly\":false}");
+        assertEquals(200, awaitMedia(cookie, song1, 200), "no longer forced");
+        assertEquals(200, media(cookie, song2));
+    }
+
     private HttpResponse<String> callCookie(String cookie, String path) throws Exception {
         return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
                 .header("Cookie", cookie).build(), HttpResponse.BodyHandlers.ofString());

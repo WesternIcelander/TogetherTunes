@@ -60,6 +60,9 @@ export const SETTINGS: SettingDef[] = [
   { key: "audioOnly", label: "Audio-only room", kind: "bool", group: "playback", default: false,
     help: "Only audio plays, for listeners and in the stream outputs (which show each item's card at a lower"
       + " constant rate). A change applies from the next item." },
+  { key: "requestsOnly", label: "Requests-only room", kind: "bool", group: "playback", default: false,
+    help: "Everyone's room page plays nothing and is only for requests and votes, e.g. when the room plays on"
+      + " one speaker or through a stream. Visitors who aren't logged in can't fetch the room's media then." },
   { key: "overlay.mode", label: "Show the QR code overlay", kind: "select", group: "overlay", default: "off",
     options: OVERLAY_MODES,
     help: "Always: on every card and on videos. Only when the queue is empty: just on the card shown while"

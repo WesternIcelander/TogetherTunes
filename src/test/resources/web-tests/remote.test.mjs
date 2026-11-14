@@ -127,3 +127,18 @@ test("delayed timeline: old changes are dropped once no delay can reach them", (
   d.clear();
   assert.equal(d.size, 0);
 });
+
+test("requests-only: a room forcing it wins over the user's choice, which comes back after", () => {
+  assert.equal(R.forcedRequestsOnly({ requestsOnly: true }), true);
+  assert.equal(R.forcedRequestsOnly({ requestsOnly: false }), false);
+  assert.equal(R.forcedRequestsOnly({ requestsOnly: "yes" }), false);
+  assert.equal(R.forcedRequestsOnly({}), false);
+  assert.equal(R.forcedRequestsOnly(undefined), false);
+  assert.equal(R.effectiveMode("listen", true), "remote");
+  assert.equal(R.effectiveMode("remote", true), "remote");
+  assert.equal(R.effectiveMode("listen", false), "listen");
+  assert.equal(R.effectiveMode("remote", false), "remote");
+  // The wire name "remote" is never shown: users see "Requests-only mode".
+  assert.equal(R.modeLabel("remote"), "Requests-only mode");
+  assert.equal(R.modeLabel("listen"), "Listen mode");
+});

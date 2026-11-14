@@ -41,7 +41,10 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
     /** A ReentrantLock, not synchronized: the critical sections are short but run on virtual threads. */
     private final ReentrantLock lock = new ReentrantLock();
 
-    private record Published(Object owner, Set<String> items, Map<String, Integer> ranks) {
+    /** Rooms that force requests-only mode ({@link #requestsOnly}); changed under {@link #lock}. */
+    private final Set<String> requestsOnlyRooms = ConcurrentHashMap.newKeySet();
+
+    private record Published(Object owner, Set<String> items, Map<String, Integer> ranks, boolean requestsOnly) {
     }
 
     /** Every loaded room's ranks merged (the lowest rank per item); replaced, never changed. */
@@ -95,6 +98,11 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
         return items != null && items.contains(itemId);
     }
 
+    @Override
+    public boolean requestsOnly(String roomId) {
+        return roomId != null && requestsOnlyRooms.contains(roomId);
+    }
+
     /**
      * The items of a room that its guests and anonymous visitors may fetch right now: the current entry's item (playing or
      * paused), the first queued entry in play order, and the first queued entry that is ready to
@@ -127,11 +135,19 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
      * room, so a closing executor can't wipe what its replacement already published.
      */
     void update(String roomId, Object owner, Set<String> items) {
-        update(roomId, owner, items, Map.of());
+        update(roomId, owner, items, Map.of(), false);
     }
 
     /** {@link #update(String, Object, Set)} with the room's ranked wanted items ({@link #ranks(RoomState)}). */
     void update(String roomId, Object owner, Set<String> items, Map<String, Integer> ranks) {
+        update(roomId, owner, items, ranks, false);
+    }
+
+    /**
+     * {@link #update(String, Object, Set)} with the room's ranked wanted items ({@link #ranks(RoomState)})
+     * and whether it forces requests-only mode ({@link RoomSettings#requestsOnly()}).
+     */
+    void update(String roomId, Object owner, Set<String> items, Map<String, Integer> ranks, boolean requestsOnly) {
         Objects.requireNonNull(roomId, "roomId");
         Objects.requireNonNull(owner, "owner");
         Set<String> copy = Set.copyOf(items);
@@ -140,11 +156,16 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
         lock.lock();
         try {
             Published old = byRoom.get(roomId);
-            if (old != null && old.owner == owner && old.items.equals(copy) && old.ranks.equals(rankCopy)) {
+            if (old != null && old.owner == owner && old.items.equals(copy) && old.ranks.equals(rankCopy)
+                    && old.requestsOnly == requestsOnly) {
                 return;
             }
             ranksChanged = old == null ? !rankCopy.isEmpty() : !old.ranks.equals(rankCopy);
-            byRoom.put(roomId, new Published(owner, copy, rankCopy));
+            byRoom.put(roomId, new Published(owner, copy, rankCopy, requestsOnly));
+            // Set before the items are listed, so a forced room never briefly lets guests in.
+            if (requestsOnly) {
+                requestsOnlyRooms.add(roomId);
+            }
             roomItems.put(roomId, copy);
             for (String item : copy) {
                 if (old == null || !old.items.contains(item)) {
@@ -157,6 +178,9 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
                         decrement(item);
                     }
                 }
+            }
+            if (!requestsOnly) {
+                requestsOnlyRooms.remove(roomId);
             }
             if (ranksChanged) {
                 remerge();
@@ -180,6 +204,7 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
             }
             byRoom.remove(roomId);
             roomItems.remove(roomId);
+            requestsOnlyRooms.remove(roomId);
             for (String item : old.items) {
                 decrement(item);
             }

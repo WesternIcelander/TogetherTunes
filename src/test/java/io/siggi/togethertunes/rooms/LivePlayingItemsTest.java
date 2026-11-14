@@ -34,6 +34,43 @@ class LivePlayingItemsTest {
         assertEquals(0, p.size());
     }
 
+    /**
+     * A room forcing requests-only mode is flagged (its items still count as in use, e.g. for old
+     * media versions), and guests in it get no media through it ({@link RoomViewers}); the flag
+     * follows the latest publish and goes with the room.
+     */
+    @Test
+    void requestsOnlyRoomsAreFlaggedAndGiveGuestsNoMedia() {
+        LivePlayingItems p = new LivePlayingItems();
+        RoomViewers viewers = new RoomViewers(p);
+        io.siggi.togethertunes.auth.Actor guest = new io.siggi.togethertunes.auth.Actor.Guest("g1",
+                io.siggi.togethertunes.settings.GuestIdentity.COOKIE, false);
+        viewers.enter("c1", guest, "198.51.100.7", "r1");
+        p.update("r1", exec1, Set.of("x"), java.util.Map.of(), false);
+        assertFalse(p.requestsOnly("r1"));
+        assertTrue(viewers.allowed(guest, "198.51.100.7", "x"));
+
+        p.update("r1", exec1, Set.of("x"), java.util.Map.of(), true);
+        assertTrue(p.requestsOnly("r1"));
+        assertTrue(p.isCurrentOrNext("x"), "still in use");
+        assertFalse(viewers.allowed(guest, "198.51.100.7", "x"), "forced: no media through this room");
+        assertFalse(viewers.allowed(new io.siggi.togethertunes.auth.Actor.Anonymous(), "198.51.100.7", "x"));
+
+        // in a second room that plays it and doesn't force it: allowed again
+        viewers.enter("c2", guest, "198.51.100.7", "r2");
+        p.update("r2", exec2, Set.of("x"), java.util.Map.of(), false);
+        assertTrue(viewers.allowed(guest, "198.51.100.7", "x"));
+        viewers.exit("c2");
+        assertFalse(viewers.allowed(guest, "198.51.100.7", "x"));
+
+        p.update("r1", exec1, Set.of("x"), java.util.Map.of(), false);
+        assertFalse(p.requestsOnly("r1"));
+        assertTrue(viewers.allowed(guest, "198.51.100.7", "x"));
+        p.update("r1", exec1, Set.of("x"), java.util.Map.of(), true);
+        p.remove("r1", exec1);
+        assertFalse(p.requestsOnly("r1"), "withdrawn with the room");
+    }
+
     /** Ranks merge across rooms (the earliest wins); the listener hears changes only. */
     @Test
     void ranksMergeAcrossRoomsAndTellTheListener() {

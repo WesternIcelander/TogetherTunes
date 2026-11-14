@@ -380,7 +380,8 @@ public final class RoomExecutor {
             return;
         }
         try {
-            playing.update(roomId, this, LivePlayingItems.of(state), LivePlayingItems.ranks(state));
+            playing.update(roomId, this, LivePlayingItems.of(state), LivePlayingItems.ranks(state),
+                    state.settings().requestsOnly());
         } catch (Throwable t) {
             LOG.log(System.Logger.Level.WARNING, "Could not publish the playing items of room " + roomId, t);
         }

@@ -36,6 +36,9 @@ import java.util.function.Function;
  *   <tr><td>{@code transitionCard}</td><td>false</td><td></td></tr>
  *   <tr><td>{@code gapMs}</td><td>0</td><td>0..{@value #MAX_GAP_MS}</td></tr>
  *   <tr><td>{@code audioOnly}</td><td>false</td><td>audio-only room: every item plays as audio (a video's audio-only file), the program output shows cards at {@code output.audioOnlyBitrateKbps}; a change applies from the next item</td></tr>
+ *   <tr><td>{@code requestsOnly}</td><td>false</td><td>forced requests-only mode ({@code docs/ui.md#requests-only-mode}):
+ *       the room's pages play nothing, and guests and anonymous visitors get no media through this room
+ *       ({@link RoomViewers}); logged-in users are never refused media</td></tr>
  *   <tr><td>{@code guests.canVote}, {@code guests.canRequestLibrary}</td><td>true</td><td>effective only if the server setting is on too</td></tr>
  *   <tr><td>{@code guests.canUpload}, {@code guests.canYoutube}</td><td>false</td><td>effective only if the server setting is on too</td></tr>
  *   <tr><td>{@code overlay.mode}</td><td>{@code "off"}</td><td>{@code off} | {@code always} | {@code idleOnly}
@@ -54,7 +57,7 @@ import java.util.function.Function;
  *   <tr><td>{@code autoplay.mix}</td><td>{@code "random"}</td><td>{@code random} (one pool) | {@code turns} (between the selecting people)</td></tr>
  *   <tr><td>{@code autoplay.recentPct}</td><td>50</td><td>0..100: a song's weight ramps back to full once its last play is this % of the pool ago</td></tr>
  *   <tr><td>{@code autoplay.requestsFirst}</td><td>{@code "first"}</td><td>{@code first} (requests always first) | {@code alternate} (a request, then an autoplay song)</td></tr>
- *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls} / {@code .mp3}</td><td>5000 / 2000 / 8000 / 3000</td><td>0..{@value #MAX_DELAY_MS}, for remote mode</td></tr>
+ *   <tr><td>{@code estimatedDelayMs.rtmp} / {@code .ts} / {@code .hls} / {@code .mp3}</td><td>5000 / 2000 / 8000 / 3000</td><td>0..{@value #MAX_DELAY_MS}, for requests-only mode (API name: {@code remote})</td></tr>
  * </table>
  *
  * <p>Whether an output exists and is on is not a setting: that is the {@code stream_outputs} row
@@ -146,6 +149,7 @@ public final class RoomSettings {
         def("transitionCard", false, RoomSettings::bool);
         def("gapMs", 0, whole(0, MAX_GAP_MS));
         def("audioOnly", false, RoomSettings::bool);
+        def("requestsOnly", false, RoomSettings::bool);
         def("guests.canVote", true, RoomSettings::bool);
         def("guests.canRequestLibrary", true, RoomSettings::bool);
         def("guests.canUpload", false, RoomSettings::bool);
@@ -494,6 +498,15 @@ public final class RoomSettings {
      */
     public boolean audioOnly() {
         return (Boolean) values.get("audioOnly");
+    }
+
+    /**
+     * {@code requestsOnly}: the owner forces requests-only mode ({@code docs/ui.md#requests-only-mode}).
+     * Clients play nothing; guests and anonymous visitors get no media through this room
+     * ({@link RoomViewers#allowed}), logged-in users still get everything.
+     */
+    public boolean requestsOnly() {
+        return (Boolean) values.get("requestsOnly");
     }
 
     /** The room half of {@code guests.canVote} (the server setting must be on too). */

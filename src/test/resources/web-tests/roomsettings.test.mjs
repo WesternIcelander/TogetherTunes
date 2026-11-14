@@ -22,7 +22,7 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.mp3", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.autoOff", "outputs.autoOffMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
-    "overlay.heightPct", "overlay.margin", "overlay.mode", "requestsPerActor", "transitionCard", "uploadRequests",
+    "overlay.heightPct", "overlay.margin", "overlay.mode", "requestsOnly", "requestsPerActor", "transitionCard", "uploadRequests",
     "voteSkipThreshold"]);
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
 });

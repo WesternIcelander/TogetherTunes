@@ -570,7 +570,7 @@ button.voted {
   display: none;
 }
 
-/* Remote mode: the delay line with its nudge buttons. */
+/* Requests-only (remote) mode: the delay line with its nudge buttons. */
 .room-remote-controls {
   margin: 0.5rem 0 0;
   align-items: center;

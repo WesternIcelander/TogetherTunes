@@ -16,7 +16,7 @@
 //   on the other pages.
 //
 // Another room, logging in or out, other sites and downloads go to the browser as usual, which
-// leaves the room. Remote mode plays nothing, so the shell stands aside there.
+// leaves the room. Requests-only (remote) mode plays nothing, so the shell stands aside there.
 import { decide, pageKey, routeOf, type ClickInfo, type Decision } from "./router.js";
 import { nextPageSignal, rememberPlaying, setNavigator } from "./nav.js";
 import { recordEvent } from "./diagnostics.js";
@@ -173,7 +173,7 @@ export class Shell {
   }
 
   #decide(href: string, click?: ClickInfo): Decision {
-    // Remote mode or kicked: nothing plays, so a page load costs nothing.
+    // Requests-only (remote) mode or kicked: nothing plays, so a page load costs nothing.
     if (!this.#room.active()) return "browser";
     return decide(href, location.href, (ref) => this.#room.isRoom(ref), click);
   }

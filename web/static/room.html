@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Room · TogetherTunes</title>
   <link rel="stylesheet" href="/css/main.css">
-  <!-- Served for /rooms/{idOrSlug}; /r/{slug} (the QR short link) redirects here with ?mode=remote. -->
+  <!-- Served for /rooms/{idOrSlug}; /r/{slug} (the QR short link) redirects here with ?mode=remote (requests-only mode). -->
   <script type="module" src="/js/room.js"></script>
 </head>
 <body>
@@ -41,7 +41,7 @@
               title="Send what the player did to the server log (for sync problems)">Send diagnostics</button>
       <span id="room-diagnostics-status" class="muted small" role="status"></span>
     </div>
-    <!-- Remote mode: no media; the now-playing panel runs this much behind the timeline (the room's
+    <!-- Requests-only (remote) mode: no media; the now-playing panel runs this much behind the timeline (the room's
          output delay plus this browser's nudge for the room). -->
     <div id="room-remote-controls" class="row room-remote-controls" hidden>
       <span class="small">Delay <span id="room-delay-total" class="num"></span>

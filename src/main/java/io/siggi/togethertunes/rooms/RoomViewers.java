@@ -14,7 +14,9 @@ import java.util.concurrent.locks.ReentrantLock;
  * ({@code docs/libraries.md#media-access-rules}, {@link GuestMediaAccess}): a guest or anonymous
  * visitor gets an item's media only while it is the current or next entry ({@link LivePlayingItems})
  * of a room they are <b>in</b>, that is a room one of their WebSocket connections has joined (in
- * listen or remote mode). Users are never tracked: they may fetch any item.
+ * listen or remote (requests-only) mode), unless that room forces requests-only mode
+ * ({@link RoomSettings#requestsOnly()}): its pages play nothing, so being in it is no reason to fetch
+ * (being in another room that plays the item still is). Users are never tracked: they may fetch any item.
  *
  * <p>A connection is recorded under one <b>viewer key</b>: a guest's id ({@code g:…}), or for an
  * anonymous connection its client's {@link IpKeys IP key} ({@code ip:…}; nothing else tells an
@@ -156,7 +158,8 @@ public final class RoomViewers implements GuestMediaAccess {
                 continue;
             }
             for (String roomId : in.keySet()) {
-                if (playing.isCurrentOrNextIn(roomId, itemId)) {
+                // A room forcing requests-only mode plays nothing in its pages: no reason to fetch.
+                if (!playing.requestsOnly(roomId) && playing.isCurrentOrNextIn(roomId, itemId)) {
                     return true;
                 }
             }

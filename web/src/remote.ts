@@ -1,5 +1,6 @@
-// Remote mode (docs/rooms.md#remote-mode): the decisions behind the room page's remote view, kept
-// free of the DOM so Node can test them (src/test/resources/web-tests/remote.test.mjs).
+// Remote mode (docs/rooms.md#remote-mode), shown to users as **requests-only mode**
+// (docs/ui.md#requests-only-mode; the wire name stays "remote"): the decisions behind the room page's
+// remote view, kept free of the DOM so Node can test them (src/test/resources/web-tests/remote.test.mjs).
 //
 // A remote user hears the room through one of its program outputs (in VRChat), which runs a few
 // seconds behind the timeline. The page therefore loads no media and shows the timeline as it was
@@ -45,6 +46,24 @@ export function chooseMode(fromUrl: string | null | undefined, stored: string | 
   if (fromUrl === "remote" || fromUrl === "listen") return fromUrl;
   if (stored === "remote" || stored === "listen") return stored;
   return "listen";
+}
+
+/** Whether the room's owner forces requests-only mode (its `requestsOnly` setting). */
+export function forcedRequestsOnly(settings: Record<string, unknown> | undefined): boolean {
+  return settings?.["requestsOnly"] === true;
+}
+
+/**
+ * The mode the page actually runs in: remote (requests-only) while the room forces it, else the
+ * mode the user chose. The user's choice is kept, so it comes back when the room stops forcing.
+ */
+export function effectiveMode(chosen: RoomMode, forced: boolean): RoomMode {
+  return forced ? "remote" : chosen;
+}
+
+/** The name a mode is shown under (the wire name `remote` is "Requests-only mode" to users). */
+export function modeLabel(m: RoomMode): string {
+  return m === "remote" ? "Requests-only mode" : "Listen mode";
 }
 
 /** localStorage key of the mode remembered for a room. */
