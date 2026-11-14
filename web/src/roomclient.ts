@@ -128,6 +128,8 @@ export interface RoomInfo {
   ownerId: string;
   settings: RoomSettingsView;
   you: You;
+  /** The user's alone room (docs/rooms.md#alone). */
+  alone?: boolean;
 }
 
 /** The room as the page knows it (the `state` message, with deltas applied). */

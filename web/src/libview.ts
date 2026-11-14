@@ -9,14 +9,22 @@
 // Rows: #, cover, title and artist, album, date added, time and a ⋯ menu (also on right-click and
 // long press). On narrow windows (docs/ui.md#mobile-narrow-windows) only #, cover, title and artist
 // show, and **Select** turns on the Select mode: checkboxes on the rows and a bar with Add to Queue
-// (the selected songs, in the list's order). Double-click, the desktop's multi-select and drag and
-// drop come with the interaction steps; the server enforces every rule.
+// (the selected songs, in the list's order). Interactions (docs/ui.md#interaction-rules-all-layouts,
+// rules in the DOM-free interactions.ts): double-click (double-tap) a row requests the song in the
+// room open here, or alone does what the user setting `doubleClickAlone` says (play it now or queue
+// it); on the desktop a click selects a row, Ctrl/Cmd-click toggles one and Shift-click selects a
+// range, and the selection bar's Add to Queue adds them in list order. The title link opens the item
+// page after a moment (a double-click cancels it). Drag and drop comes with its own step; the server
+// enforces every rule.
 import { api } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
 import { formatDuration, h } from "./dom.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
-import { Selection, selectedText } from "./mobile.js";
-import { currentRoom, navigate, pageSignal, refreshLibrary } from "./nav.js";
+import { clickSelect, doubleClickAction, playNowBefore, selectionText, SONG_ACTION_LABELS, songMenu, toggleKey,
+  type DoubleClickAction, type SongList } from "./interactions.js";
+import { MOBILE_QUERY, Selection, selectedText } from "./mobile.js";
+import { currentRoom, navigate, pageSignal, refreshLibrary, type ShellRoom } from "./nav.js";
+import { copyText } from "./outputspanel.js";
 import { formatTotal, songCount, totalDuration } from "./panels.js";
 import { routeOf, type ListName } from "./router.js";
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
@@ -26,6 +34,8 @@ import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 interface Row {
   item: ItemSummary;
   addedAt?: number;
+  /** The playlist entry's id (playlists and Liked Songs). */
+  entryId?: string;
 }
 
 const PAGE_SIZE = 100;
@@ -35,9 +45,32 @@ let loadMore: (() => Promise<void>) | undefined;
 let shownRows = 0;
 /** The items of the rows shown, by row key (its number). */
 const rowItems: Record<string, ItemSummary> = {};
-/** The Select mode: on, and what is selected (row keys). */
+/** The playlist entry ids of the rows shown, by row key (playlists and Liked Songs). */
+const rowEntries: Record<string, string> = {};
+/** The Select mode (touch): on; and what is selected (row keys; on the desktop by click, too). */
 let selecting = false;
 const selection = new Selection();
+/** The desktop multi-select's anchor (the last row clicked without Shift). */
+let anchor: string | undefined;
+/** Which kind of list is shown (for the song menu), and the playlist's id. */
+let songList: SongList = "library";
+let listPlaylistId: string | undefined;
+/** The title link waiting to be followed (a double-click on the row cancels it). */
+let linkTimer: number | undefined;
+/** The user setting `doubleClickAlone`, read once per view when first needed. */
+let doubleClickSetting: Promise<string | undefined> | undefined;
+
+function mobile(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
+}
+
+function aloneSetting(): Promise<string | undefined> {
+  if (doubleClickSetting === undefined) {
+    doubleClickSetting = api<{ doubleClickAlone?: string }>("GET", "/api/me/settings")
+      .then((r) => r.doubleClickAlone, () => undefined);
+  }
+  return doubleClickSetting;
+}
 
 function showError(e: unknown): void {
   element("list-error").textContent = e === "" ? "" : message(e);
@@ -93,18 +126,103 @@ async function addToQueue(items: readonly ItemSummary[]): Promise<boolean> {
   return failed.length === 0;
 }
 
+/** Whether the room open here is the user's alone room. */
+function isAlone(room: ShellRoom | undefined): boolean {
+  return room?.state()?.room.alone === true;
+}
+
+/**
+ * Double-click on a song: request it in the room open here; alone, play it now or queue it (the
+ * user setting), unless `how` says which.
+ */
+async function doubleClick(item: ItemSummary, how?: DoubleClickAction): Promise<void> {
+  const room = currentRoom();
+  if (room === undefined) {
+    showError("Open a room first: double-click adds the song to the room's queue.");
+    return;
+  }
+  const alone = isAlone(room);
+  const action = how ?? doubleClickAction(alone, alone ? await aloneSetting() : undefined);
+  if (action !== "playNow") {
+    await addToQueue([item]);
+    return;
+  }
+  // Play immediately (alone): add it, move it to the front of the queue and skip to it.
+  showError("");
+  const s = room.state();
+  const before = s !== undefined ? playNowBefore(s.queue) : undefined;
+  const hadCurrent = s?.current !== undefined;
+  try {
+    const ack = await room.request({ type: "queue.add", itemId: item.id });
+    const entryId = typeof ack["entryId"] === "string" ? ack["entryId"] : undefined;
+    if (hadCurrent && entryId !== undefined) {
+      if (before !== undefined) await room.request({ type: "queue.move", entryIds: [entryId], beforeEntryId: before });
+      await room.request({ type: "next" });
+      await room.request({ type: "play" });
+    }
+    notice("Playing " + item.title + ".");
+  } catch (e) {
+    showError(item.title + ": " + message(e));
+  }
+}
+
+async function removeRow(key: string, item: ItemSummary, what: "removeFromPlaylist" | "unlike" | "removeFromLibrary"):
+    Promise<void> {
+  showError("");
+  try {
+    if (what === "removeFromPlaylist") {
+      const entryId = rowEntries[key];
+      if (listPlaylistId === undefined || entryId === undefined) return;
+      await api("DELETE", "/api/playlists/" + encodeURIComponent(listPlaylistId) + "/entries/"
+        + encodeURIComponent(entryId));
+    } else if (what === "unlike") {
+      await api("DELETE", "/api/me/likes/" + encodeURIComponent(item.id));
+    } else {
+      const holding = await api<{ playlists: { name: string }[] }>("GET",
+        "/api/library/" + encodeURIComponent(item.id) + "/playlists");
+      const names = holding.playlists.map((p) => p.name);
+      if (!window.confirm("Remove \"" + item.title + "\" from your library?"
+        + (names.length > 0 ? " It is also removed from " + names.join(", ") + "." : ""))) return;
+      await api("DELETE", "/api/library/" + encodeURIComponent(item.id));
+    }
+    refreshLibrary();
+    restart();
+  } catch (e) {
+    showError(e);
+  }
+}
+
 /** The row's ⋯ menu (also on right-click and long press). */
-function openRowMenu(key: string, anchor: HTMLElement): void {
+function openRowMenu(key: string, anchorEl: HTMLElement): void {
   const item = rowItems[key];
   if (item === undefined) return;
-  const items: MenuItem[] = [];
-  if (currentRoom() !== undefined) items.push({ label: "Add to Queue", action: () => { void addToQueue([item]); } });
-  items.push({ label: "Open", action: () => navigate(itemPath(item.id)) });
-  items.push({ label: "Select", action: () => {
-    setSelecting(true);
-    toggleSelected(key);
-  } });
-  openMenu(anchor, items, item.title);
+  const room = currentRoom();
+  const items: MenuItem[] = songMenu({ room: room !== undefined, alone: isAlone(room), list: songList })
+    .filter((a) => a !== "removeFromPlaylist" || rowEntries[key] !== undefined)
+    .map((a) => ({ label: SONG_ACTION_LABELS[a], action: () => {
+      switch (a) {
+        case "request": void addToQueue([item]); return;
+        case "playNow": void doubleClick(item, "playNow"); return;
+        case "queue": void doubleClick(item, "queue"); return;
+        case "open": navigate(itemPath(item.id)); return;
+        case "copyLink": {
+          const n = element("list-notice");
+          n.hidden = false;
+          copyText(location.origin + itemPath(item.id), n);
+          return;
+        }
+        case "removeFromPlaylist":
+        case "unlike":
+        case "removeFromLibrary":
+          void removeRow(key, item, a);
+          return;
+        case "select":
+          if (mobile()) setSelecting(true);
+          toggleSelected(key);
+          return;
+      }
+    } }));
+  openMenu(anchorEl, items, item.title);
 }
 
 function rowKeys(): string[] {
@@ -113,8 +231,12 @@ function rowKeys(): string[] {
 }
 
 function drawSelection(): void {
-  element("list-select-count").textContent = selectedText(selection.size);
+  element("list-select-count").textContent = selecting ? selectedText(selection.size) : selectionText(selection.size);
   element<HTMLButtonElement>("list-select-queue").disabled = selection.size === 0;
+  // The desktop's selection (click, Ctrl/Cmd-click, Shift-click) shows the bar too.
+  const bar = selecting || selection.size > 0;
+  element("list-select-bar").hidden = !bar;
+  document.body.classList.toggle("has-select-bar", bar);
   element("list-rows").querySelectorAll<HTMLTableRowElement>("tr[data-key]").forEach((tr) => {
     const on = selection.has(tr.dataset["key"] ?? "");
     tr.classList.toggle("selected", on);
@@ -126,9 +248,8 @@ function drawSelection(): void {
 function setSelecting(on: boolean): void {
   selecting = on;
   if (!on) selection.clear();
+  anchor = undefined;
   element("list-table").classList.toggle("selecting", on);
-  element("list-select-bar").hidden = !on;
-  document.body.classList.toggle("has-select-bar", on);
   const b = document.getElementById("list-select");
   if (b !== null) b.setAttribute("aria-pressed", on ? "true" : "false");
   drawSelection();
@@ -150,6 +271,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
   const item = r.item;
   const key = String(n);
   rowItems[key] = item;
+  if (r.entryId !== undefined) rowEntries[key] = r.entryId;
   const status = item.status === "ready" ? null
     : h("span", { class: "muted small", text: " · " + (item.status === "failed" ? "Failed" : item.status) });
   const check = h("input", { type: "checkbox", class: "row-check", "aria-label": "Select " + item.title, tabindex: "-1" });
@@ -166,11 +288,44 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
     h("td", { class: "small muted col-added", text: dateText(r.addedAt) }),
     h("td", { class: "num small col-time", text: formatDuration(item.durationMs) }),
     h("td", { class: "col-more" }, more));
-  // Select mode: a tap anywhere on the row toggles it (and doesn't follow the title link).
   tr.addEventListener("click", (ev) => {
-    if (!selecting || (ev.target as Element).closest(".row-more") !== null) return;
+    const t = ev.target as Element;
+    if (t.closest(".row-more") !== null) return;
+    // Select mode (touch): a tap anywhere on the row toggles it (and doesn't follow the title link).
+    if (selecting) {
+      ev.preventDefault();
+      toggleSelected(key);
+      return;
+    }
+    // Shift / Ctrl / Cmd-click: multi-select (also on the title link).
+    if (ev.shiftKey || toggleKey(ev)) {
+      ev.preventDefault();
+      anchor = clickSelect(selection, rowKeys(), key, ev, anchor);
+      drawSelection();
+      return;
+    }
+    const link = t.closest("a");
+    if (link instanceof HTMLAnchorElement && ev.button === 0) {
+      // The title opens the item page after a moment, unless this is the start of a double-click.
+      ev.preventDefault();
+      window.clearTimeout(linkTimer);
+      if (ev.detail > 1) return;
+      const href = link.getAttribute("href") ?? "";
+      linkTimer = window.setTimeout(() => navigate(href), 300);
+      return;
+    }
+    // A plain click on the desktop selects just this row.
+    if (!mobile()) {
+      anchor = clickSelect(selection, rowKeys(), key, ev, anchor);
+      drawSelection();
+    }
+  });
+  tr.addEventListener("dblclick", (ev) => {
+    if (selecting || (ev.target as Element).closest("button, input") !== null) return;
     ev.preventDefault();
-    toggleSelected(key);
+    window.clearTimeout(linkTimer);
+    window.getSelection()?.removeAllRanges();
+    void doubleClick(item);
   });
   onLongPress(tr, () => {
     if (!selecting) openRowMenu(key, more);
@@ -315,6 +470,7 @@ async function showUncategorized(): Promise<void> {
 }
 
 async function showSearch(): Promise<void> {
+  songList = "search";
   const q = (new URLSearchParams(location.search).get("q") ?? "").trim();
   const box = document.querySelector<HTMLInputElement>("#app-search input[name=q]");
   if (box !== null && box.value !== q) box.value = q;
@@ -366,7 +522,9 @@ async function showShows(): Promise<void> {
 
 /** Liked Songs or a playlist: header with cover, count and time; Add from link; Add All. */
 async function showPlaylist(p: PlaylistDetail & { owner?: { name: string } }, own: boolean): Promise<void> {
-  const rows = p.entries.map((e) => ({ item: e.item, addedAt: e.addedAt }));
+  songList = !own ? "othersPlaylist" : p.builtin === "likes" ? "liked" : "playlist";
+  listPlaylistId = own ? p.id : undefined;
+  const rows = p.entries.map((e) => ({ item: e.item, addedAt: e.addedAt, entryId: e.id }));
   setHead(p.name, songCount(p.entries.length) + " · " + formatTotal(totalDuration(p.entries.map((e) => e.item)))
     + (p.owner !== undefined ? " · " + p.owner.name + "'s playlist" : ""));
   const first = p.entries[0];
@@ -423,6 +581,7 @@ async function show(): Promise<void> {
 /** Shows the list again from the top (after an add). */
 function restart(): void {
   shownRows = 0;
+  for (const k of Object.keys(rowEntries)) delete rowEntries[k];
   setSelecting(false);
   cursor = undefined;
   element("list-rows").replaceChildren();
@@ -435,6 +594,10 @@ async function start(): Promise<void> {
   if (me === null) return;
   renderNav(me);
   element("list-select-cancel").addEventListener("click", () => setSelecting(false));
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && selection.size > 0 && document.querySelector(".popup-menu") === null) setSelecting(false);
+  }, { signal: pageSignal() });
+  pageSignal().addEventListener("abort", () => window.clearTimeout(linkTimer));
   element("list-select-queue").addEventListener("click", () => {
     const items = selection.inOrder(rowKeys()).map((k) => rowItems[k]).filter((i): i is ItemSummary => i !== undefined);
     if (items.length === 0) return;

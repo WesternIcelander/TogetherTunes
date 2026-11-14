@@ -9,7 +9,21 @@ import { LONG_PRESS_MS, movedTooFar } from "./mobile.js";
  * the element under the finger). A new press starts over.
  */
 let swallowClick = false;
-document.addEventListener("pointerdown", () => { swallowClick = false; }, true);
+/** The pointer type of the last press anywhere ("mouse", "touch", "pen"). */
+let lastPointer = "";
+document.addEventListener("pointerdown", (ev) => {
+  swallowClick = false;
+  lastPointer = ev.pointerType;
+}, true);
+
+/**
+ * Whether the last press was a touch or pen (a long press), not the mouse: for actions where a
+ * long press and a right-click differ (a playlist: long press toggles autoplay, right-click opens
+ * its menu).
+ */
+export function lastPressWasTouch(): boolean {
+  return lastPointer === "touch" || lastPointer === "pen";
+}
 document.addEventListener("click", (ev) => {
   if (!swallowClick) return;
   swallowClick = false;
@@ -36,7 +50,9 @@ export function onLongPress(el: HTMLElement, action: (ev: Event) => void, signal
     cancel();
     if (fired) return;
     fired = true;
-    swallowClick = true;
+    // A mouse right-click (or the keyboard's menu key) ends with no click to swallow: swallowing
+    // would eat the next real click, e.g. on the menu it opened.
+    swallowClick = ev.type !== "contextmenu" || lastPressWasTouch();
     action(ev);
   };
   el.addEventListener("pointerdown", (ev) => {

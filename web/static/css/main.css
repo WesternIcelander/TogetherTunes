@@ -1703,9 +1703,30 @@ table.songs tr.selected {
   display: none;
 }
 
-li.playlist-row {
+li.playlist-row,
+div.playlist-row {
   display: flex;
   align-items: center;
+}
+
+/* The autoplay dot in front of a playlist: a button while a room is open (click toggles). */
+button.autoplay-dot {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  flex: none;
+}
+
+button.autoplay-dot:not(.on) {
+  opacity: 0.45;
+}
+
+/* Desktop multi-select: rows can be clicked without selecting their text. */
+table.songs tbody tr {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 @media (max-width: 799.98px) {
@@ -1984,7 +2005,7 @@ li.playlist-row {
 
   /* Long press is the right-click here: no text selection or link callout while holding. */
   table.songs tr,
-  li.playlist-row a,
+  .playlist-row a,
   .player-bar button {
     -webkit-user-select: none;
     user-select: none;

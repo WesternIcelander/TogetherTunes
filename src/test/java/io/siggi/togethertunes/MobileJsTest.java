@@ -44,7 +44,7 @@ class MobileJsTest {
         }
         String frame = read("web/js/frame.js");
         for (String s : List.of("MOBILE_QUERY", "mPane", "pushState", "\"popstate\"", "tabAction(", "mobileBack(",
-                "showBarTitle(", "onLongPress(", "\"/mine\"", "Use only this one for autoplay")) {
+                "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS")) {
             assertTrue(frame.contains(s), s);
         }
         String list = read("web/js/libview.js");

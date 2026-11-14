@@ -23,7 +23,9 @@ import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
 import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, showBarTitle, tabAction,
   type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
-import { navigate, setFrame, type ShellRoom } from "./nav.js";
+import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
+import { ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
+  playlistNameInput, type EntryAction } from "./interactions.js";
 import {
   canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
   parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections,
@@ -35,7 +37,7 @@ import type { RoomListEntry } from "./roomlist.js";
 import { playlistPath, routeOf } from "./router.js";
 import { ACCOUNT_PAGE, ADMIN_PAGE, ENCODES_PAGE, isAdmin, LIBRARY_PAGE, loadMe, logout, message, PLAYLISTS_PAGE,
   ROOMS_PAGE, type Me } from "./session.js";
-import { onLongPress, openMenu, type MenuItem } from "./touch.js";
+import { lastPressWasTouch, onLongPress, openMenu } from "./touch.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
 const VOLUME_KEY = "togethertunes.volume";
@@ -453,7 +455,11 @@ export class Frame {
       pane.replaceChildren();
       return;
     }
-    const links: HTMLElement[] = LIBRARY_LINKS.map((l) => h("a", { class: "side-link", href: l.path, text: l.label }));
+    const selected = mySelectedPlaylists(this.#selections, me.id);
+    const likes = this.#playlists.find((p) => p.builtin === "likes");
+    const links: HTMLElement[] = LIBRARY_LINKS.map((l) => l.path === "/liked" && likes !== undefined
+      ? this.#playlistRow(likes, selected.has(likes.id), "/liked", "div")
+      : h("a", { class: "side-link", href: l.path, text: l.label }));
     const newPlaylist = h("button", { type: "button", class: "side-link side-new", id: "app-new-playlist" },
       "+ New Playlist");
     newPlaylist.addEventListener("click", () => { void this.#newPlaylist(); });
@@ -462,33 +468,10 @@ export class Frame {
       links.push(h("a", { class: "side-link", href: "/uncategorized" }, "Uncategorized Videos ",
         h("span", { class: "muted small num", text: String(this.#uncategorized) })));
     }
-    const selected = mySelectedPlaylists(this.#selections, me.id);
     const list = h("ul", { class: "side-list playlists-list" });
     for (const p of this.#playlists) {
       if (p.builtin === "likes") continue;
-      const dot = selected.has(p.id);
-      const a = h("a", { class: "side-link grow", href: playlistPath(p.id),
-        title: dot ? "Selected for autoplay in this room" : "" },
-        h("span", { class: "autoplay-dot" + (dot ? " on" : ""), "aria-hidden": "true", text: dot ? "●" : "" }),
-        p.name);
-      const li = h("li", { class: "playlist-row" }, a);
-      // Touch (docs/ui.md#interaction-rules-all-layouts): a long press toggles the playlist for
-      // autoplay in the current room; its ⋯ menu has "Use only this one for autoplay".
-      if (this.#host.room() !== undefined) {
-        onLongPress(a, () => { void this.#autoplay(p.id, dot ? "off" : "on"); });
-        const more = h("button", { type: "button", class: "icon playlist-more m-only", text: "⋯",
-          title: "More for " + p.name, "aria-label": "More for " + p.name, "aria-haspopup": "true" });
-        more.addEventListener("click", () => {
-          const items: MenuItem[] = [
-            { label: dot ? "Stop using for autoplay" : "Use for autoplay", action: () => { void this.#autoplay(p.id, dot ? "off" : "on"); } },
-            { label: "Use only this one for autoplay", action: () => { void this.#autoplay(p.id, "only"); } },
-            { label: "Open", action: () => navigate(playlistPath(p.id)) },
-          ];
-          openMenu(more, items, p.name);
-        });
-        li.append(more);
-      }
-      list.append(li);
+      list.append(this.#playlistRow(p, selected.has(p.id), playlistPath(p.id), "li"));
     }
     const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list,
       h("p", { id: "app-library-error", class: "error small", role: "alert" })];
@@ -508,6 +491,105 @@ export class Frame {
     this.#markCurrent(location.pathname + location.search);
   }
 
+  /**
+   * One of the user's playlists in the sidebar (docs/ui.md#autoplay-from-playlists): with a room open,
+   * the dot in front toggles it for autoplay there, Ctrl-click (Cmd-click) toggles it, double-click
+   * makes it the only one (the first click has opened it); a plain click opens it. Right-click (long
+   * press on touch, ⋯ on narrow windows) opens its menu: the autoplay choices, Open, Rename, Delete.
+   */
+  #playlistRow(p: Playlist, dot: boolean, href: string, tag: "li" | "div"): HTMLElement {
+    const roomOpen = this.#host.room() !== undefined;
+    const name = p.builtin === "likes" ? "Liked Songs" : p.name;
+    const a = h("a", { class: "side-link grow", href, "data-playlist": p.id,
+      title: roomOpen ? (dot ? "Selected for autoplay in this room. " : "")
+        + "Double-click: the only one for autoplay; Ctrl/Cmd-click: toggle for autoplay" : "" }, name);
+    const dotEl = h(roomOpen ? "button" : "span", { class: "autoplay-dot" + (dot ? " on" : "") + (roomOpen ? " dot-button" : ""),
+      text: dot ? "●" : roomOpen ? "○" : "" });
+    if (roomOpen) {
+      dotEl.setAttribute("type", "button");
+      dotEl.setAttribute("aria-pressed", dot ? "true" : "false");
+      dotEl.setAttribute("aria-label", (dot ? "Stop using " : "Use ") + name + " for autoplay");
+      dotEl.title = dot ? "Stop using for autoplay" : "Use for autoplay";
+      dotEl.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        void this.#autoplay(p.id, dot ? "off" : "on");
+      });
+    } else {
+      dotEl.setAttribute("aria-hidden", "true");
+    }
+    a.addEventListener("click", (ev) => {
+      if (playlistClick(ev, this.#host.room() !== undefined) !== "toggle") return;
+      ev.preventDefault();
+      void this.#autoplay(p.id, dot ? "off" : "on");
+    });
+    a.addEventListener("dblclick", (ev) => {
+      if (this.#host.room() === undefined) return;
+      ev.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      void this.#autoplay(p.id, "only");
+    });
+    const row = h(tag, { class: "playlist-row" }, dotEl, a);
+    const more = h("button", { type: "button", class: "icon playlist-more m-only", text: "⋯",
+      title: "More for " + name, "aria-label": "More for " + name, "aria-haspopup": "true" });
+    const menu = (anchor: HTMLElement): void => this.#openPlaylistMenu(p, dot, anchor);
+    more.addEventListener("click", () => menu(more));
+    // Touch: a long press toggles the playlist for autoplay in the current room (docs/ui.md); the
+    // right mouse button opens the menu (onLongPress gets both: tell them apart by the event).
+    onLongPress(a, (ev) => {
+      if ((ev.type !== "contextmenu" || lastPressWasTouch()) && this.#host.room() !== undefined) {
+        void this.#autoplay(p.id, dot ? "off" : "on");
+      }
+      else menu(a);
+    });
+    row.append(more);
+    return row;
+  }
+
+  #openPlaylistMenu(p: Playlist, dot: boolean, anchor: HTMLElement): void {
+    const builtin = p.builtin !== undefined;
+    const name = builtin ? "Liked Songs" : p.name;
+    const actions = playlistMenu({ roomOpen: this.#host.room() !== undefined, selected: dot, builtin });
+    openMenu(anchor, actions.map((a) => ({ label: PLAYLIST_ACTION_LABELS[a], action: () => {
+      switch (a) {
+        case "use": void this.#autoplay(p.id, "on"); return;
+        case "stopUsing": void this.#autoplay(p.id, "off"); return;
+        case "only": void this.#autoplay(p.id, "only"); return;
+        case "open": navigate(builtin ? "/liked" : playlistPath(p.id)); return;
+        case "rename": void this.#renamePlaylist(p); return;
+        case "delete": void this.#deletePlaylist(p); return;
+      }
+    } })), name);
+  }
+
+  #libraryError(e: unknown): void {
+    const err = document.getElementById("app-library-error");
+    if (err !== null) err.textContent = e === "" ? "" : message(e);
+  }
+
+  async #renamePlaylist(p: Playlist): Promise<void> {
+    const name = playlistNameInput(window.prompt("Rename the playlist", p.name), p.name);
+    if (name === undefined) return;
+    try {
+      await api("PATCH", "/api/playlists/" + encodeURIComponent(p.id), { name });
+      await this.#loadLibrary();
+      if (location.pathname === playlistPath(p.id)) reloadPage();
+    } catch (e) {
+      this.#libraryError(e);
+    }
+  }
+
+  async #deletePlaylist(p: Playlist): Promise<void> {
+    if (!window.confirm("Delete the playlist \"" + p.name + "\"? The songs stay in your library.")) return;
+    try {
+      await api("DELETE", "/api/playlists/" + encodeURIComponent(p.id));
+      await this.#loadLibrary();
+      if (location.pathname === playlistPath(p.id)) navigate("/songs", true);
+    } catch (e) {
+      this.#libraryError(e);
+    }
+  }
+
   /** Autoplay selection of one of the user's playlists in the current room: on, off, or the only one. */
   async #autoplay(playlistId: string, how: "on" | "off" | "only"): Promise<void> {
     const room = this.#host.room();
@@ -521,16 +603,15 @@ export class Frame {
       this.#selections = r.selections;
       this.#drawLibrary();
     } catch (e) {
-      const err = document.getElementById("app-library-error");
-      if (err !== null) err.textContent = message(e);
+      this.#libraryError(e);
     }
   }
 
   async #newPlaylist(): Promise<void> {
-    const name = window.prompt("Name of the new playlist");
-    if (name === null || name.trim() === "") return;
+    const name = playlistNameInput(window.prompt("Name of the new playlist"));
+    if (name === undefined) return;
     try {
-      const p = await api<Playlist>("POST", "/api/playlists", { name: name.trim() });
+      const p = await api<Playlist>("POST", "/api/playlists", { name });
       await this.#loadLibrary();
       navigate(playlistPath(p.id));
     } catch (e) {
@@ -735,10 +816,40 @@ export class Frame {
       }
       if (b.remove) actions.append(this.#actButton(room, "×", "Remove", { type: "queue.remove", entryId: e.entryId }));
     }
-    return h("li", { class: "entry", "data-entry": e.entryId },
+    const li = h("li", { class: "entry" + (e.pinned ? " pinned" : ""), "data-entry": e.entryId },
       cover(e.item, "cover entry-cover"),
-      h("div", { class: "grow" }, this.#entryText(e.item), this.#statusLine(room, e, b.retry)),
+      h("div", { class: "grow" }, this.#entryText(e.item),
+        e.pinned && !suggestion ? h("div", { class: "muted small", text: "Pinned" }) : null,
+        this.#statusLine(room, e, b.retry)),
       actions);
+    this.#entryMenuButton(li, actions, e.item.title ?? "this entry",
+      () => entryMenu(s, e, room.actor(), suggestion), (a) => this.#entryAction(room, a, e.entryId, e.item.id));
+    return li;
+  }
+
+  /**
+   * The right-click menu of a queue entry (docs/ui.md: also on a ⋯ button and long press): what its
+   * buttons do, plus Pin to top / Unpin (vote mode, owner and moderators) and Open.
+   */
+  #entryMenuButton(li: HTMLElement, actions: HTMLElement, title: string, menu: () => EntryAction[],
+      run: (a: EntryAction) => void): void {
+    const more = h("button", { type: "button", class: "icon entry-more", text: "⋯", title: "More",
+      "aria-label": "More for " + title, "aria-haspopup": "true" });
+    const open = (anchor: HTMLElement): void => {
+      openMenu(anchor, menu().map((a) => ({ label: ENTRY_ACTION_LABELS[a], action: () => run(a) })), title);
+    };
+    more.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      open(more);
+    });
+    actions.append(more);
+    onLongPress(li, () => open(more));
+  }
+
+  #entryAction(room: ShellRoom, a: EntryAction, entryId: string, itemId: string): void {
+    const msg = entryMessage(a, entryId);
+    if (msg === undefined) navigate(itemPath(itemId));
+    else this.#act(room, msg);
   }
 
   /** Now Playing (heart, ×); vote-to-skip under it unless `voteSkipHere` is false (the room view has it under the video). */
@@ -753,10 +864,14 @@ export class Frame {
     const heart = this.#heart(c.item.id);
     if (heart !== null) actions.append(heart);
     if (canSkipNow(s.room.you)) actions.append(this.#actButton(room, "×", "Skip", { type: "next" }));
-    out.push(h("ul", { class: "entries" }, h("li", { class: "entry now-entry" },
+    const li = h("li", { class: "entry now-entry" },
       cover(c.item, "cover entry-cover"),
       h("div", { class: "grow" }, this.#entryText(c.item), this.#statusLine(room, c, false)),
-      actions)));
+      actions);
+    this.#entryMenuButton(li, actions, c.item.title ?? "Now Playing",
+      () => (canSkipNow(s.room.you) ? ["skip", "open"] : ["open"]) as EntryAction[],
+      (a) => this.#entryAction(room, a, c.entryId, c.item.id));
+    out.push(h("ul", { class: "entries" }, li));
     const b = voteSkipHere ? this.#voteSkipButton(room, s) : null;
     if (b !== null) out.push(h("div", { class: "vote-skip" }, b));
     return out;
@@ -863,6 +978,8 @@ export class Frame {
           void this.#openPersonMenu(room, p, more);
         });
         li.append(more);
+        // Right-click (long press on touch) opens the same menu.
+        onLongPress(li, () => { void this.#openPersonMenu(room, p, more); });
       }
       ul.append(li);
     }
