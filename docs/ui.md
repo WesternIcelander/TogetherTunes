@@ -17,6 +17,23 @@ Added 2026-11-11 from Siggi's drawing [`drawings/ui_main.png`](../drawings/ui_ma
   - Without permission to control the room, only previous / play-pause / next are replaced, by a **mute** button and a **heart**. Volume and the menu stay. Right-clicking mute offers **Mute player** and **Mute only until end of song**.
 - **Now Playing View** fills the window to its edges. Videos are letterboxed by default. Audio items (or Audio Only) show a view like the stream's item card.
 
+## Room view (desktop)
+
+From [`drawings/room_view.png`](../drawings/room_view.png) (2026-11-14):
+
+- Same header. The left sidebar is hidden behind a **☰ button** at the top left.
+- **Video area** large at the top left.
+- Below it: **Now Playing** (heart, ×), **Requests** (votes ↑, ×), **From Playlist** (↑, ×), and beside them a **Request Link** box (URL field + Request button).
+- On the right: the **people** in the room, each with a **⋯** button that opens the moderation menu, and below them **Earlier** (the room's history, with hearts).
+
+## Mobile (narrow windows)
+
+From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
+
+- One column. A **top bar** with a back button (e.g. "‹ Library") and the page title; the title is hidden from the top bar while the page is scrolled to the top (the page's own large title shows instead) and appears once it scrolls away.
+- Lists drop the extra columns: number, cover, title and artist.
+- A **bottom tab bar**: **Library**, **Queue** (sub-tabs **Up Next** | **Recents**), **Room** (sub-tabs **Rooms** | **This Room**).
+
 ## Alone and in rooms
 
 - A user doesn't have to be in a room: **alone**, they play their own music with their own play status (current song, position, paused or playing) and queue. The alone state lives **on the server** (per user), so it follows the user to another device. **Guests can't be alone:** they only exist inside rooms (they have no library).
