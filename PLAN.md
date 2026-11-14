@@ -913,8 +913,6 @@ Design: `docs/media-types.md` (Siggi's decisions, 2026-11-11). Read it first; ea
 
 Design: **`docs/ui.md`** (read it whole first) and the drawings `drawings/ui_main.png`, `drawings/room_view.png`, `drawings/mobile_view.png` (Siggi, 2026-11-11 to 11-14). Screens without a drawing follow the existing design (`docs/ui.md#not-designed-yet`). This milestone **replaces** the provisional UI: the CLAUDE.md "web UI is provisional" rule no longer limits UI work in M9 (keep logic in DOM-free modules, as before, and every rule on the server). Backend steps come first; each documents its API in `docs/api.md` and its data in `docs/data-model.md` (migrations for SQLite and PostgreSQL). Steps marked *(manual)* need Chrome and Firefox (desktop and Android); Safari stays best effort.
 
-- [ ] **On hold (Siggi, 2026-11-11): don't start M9 yet.** A run that reaches this step leaves it unchecked and returns ok=false. Siggi removes this step when M9 may start.
-
 **Backend**
 
 - [ ] User settings: per-user preferences stored on the server (`GET`/`PATCH /api/me/settings`): `doubleClickAlone` (`play` default | `queue`), `webAudio` (moves the Web Audio choice here from the page; the client still applies it), `debug` (false). Validation, defaults for users without a row; guests have none (`401`). Tests.
