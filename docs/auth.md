@@ -12,10 +12,22 @@ Every request resolves to exactly one **actor**:
 
 A **user** can have any number of **identities**: one local password credential, and zero or more OIDC identities keyed by `(provider, subject)`.
 
-- **Registration mode** (a setting): `open` | `invite` | `closed`. OIDC providers have their own `allow_signup` flag.
+- **Registration mode** (a setting): `open` | `invite` | `closed`. OIDC providers have their own `allow_signup` flag. In `invite` mode local registration needs an [invite](#invites).
 - **First user:** the first account created gets the `admin` role. Until it exists, the server shows a setup page.
 - **Linking:** never link accounts automatically by email. A logged-in user links a provider explicitly from their account page (`intent=link`).
-- **Guest upgrade:** when a guest registers or logs in, the server offers to **merge** the guest into the account. Merging moves their requests, queue entries and votes to the account. Merging is offered only in the browser that holds the guest cookie, and only in cookie mode, because in IP mode several people can share one guest identity. (`GuestMerge`, `/api/me/merge-guest`: the guest is found by the request's `gid` cookie and must be a cookie guest, never an IP-mode one, and not banned server-wide; the user must be logged in by cookie in that same request. Every room the guest touched changes on its executor, so the live room and the database stay one: its queue entries of every state (requests and the history are entries), votes and skip votes become the user's, and where the user already voted on an entry, the user's vote stays. Entries keep the name a request was made under. Afterwards the guest's key is replaced, so the old cookie no longer works, the `gid` cookie is cleared, and `guest.merged` is audited; the guest row stays, as its uploads and added items still point at it. The web UI asks right after a password login or registration, and the account page offers it, e.g. after a provider login.)
+- **Guest upgrade:** when a guest registers or logs in, the server offers to **merge** the guest into the account. Merging moves their requests, queue entries and votes to the account, and the items the guest added (`items.added_by_guest_id`), which become the account's and are added to its library. Merging is offered only in the browser that holds the guest cookie, and only in cookie mode, because in IP mode several people can share one guest identity. (`GuestMerge`, `/api/me/merge-guest`: the guest is found by the request's `gid` cookie and must be a cookie guest, never an IP-mode one, and not banned server-wide; the user must be logged in by cookie in that same request. Every room the guest touched changes on its executor, so the live room and the database stay one: its queue entries of every state (requests and the history are entries), votes and skip votes become the user's, and where the user already voted on an entry, the user's vote stays. Entries keep the name a request was made under. Afterwards the guest's key is replaced, so the old cookie no longer works, the `gid` cookie is cleared, and `guest.merged` is audited; the guest's items (`items.added_by_*`) become the user's and get a library entry (`manual`, as the user's own add; an uncategorized video stays uncategorized and shows in the Uncategorized view; an entry already there stays as it was; new entries queue the quality re-encode like any library add); the guest row stays, as its uploads still point at it. The web UI asks right after a password login or registration, and the account page offers it, e.g. after a provider login.)
+
+### Invites
+
+While `registration.mode` is `invite`, local registration (`POST /api/auth/register`) needs an invite code (`invite`). (`Invites`, `InvitesApi`, [api.md](api.md#auth-account-guest-identity).)
+
+- **Who:** holders of `users.invite` create invites and see and revoke their own; holders of `admin.users` see and revoke everyone's (admins hold both). `users.invite` isn't in the default role.
+- **The code** is a 256-bit random token; only its SHA-256 is stored (`invites.code_hash`), so it is shown once, when created, with a registration link `{publicBaseUrl}/register.html?invite=<code>` (the page fills it in).
+- **Single use:** the registration that uses an invite marks it used (`used_by_user_id`, `used_at`) in the transaction that creates the account, so two registrations with one code make one account; a failed registration (bad password, taken username) leaves it unused. The register audit row names the invite.
+- **Lifetime:** 1 h to 30 days (default 7 days), optional note (who it's for, at most 200 characters). Pending invites can be revoked; used ones can't. Without `admin.users` a user has at most 50 pending invites.
+- An invite whose creator's account is **disabled** can't be used. A creator losing `users.invite` doesn't void the invites already handed out (revoke them).
+- In `open` mode a code isn't needed and is ignored; in `closed` mode nothing registers. Provider sign-up (OIDC/OAuth) follows its own `allow_signup` flag, not invites.
+- Audited: `invite.created`, `invite.revoked`.
 
 ### Local passwords
 
@@ -79,6 +91,7 @@ Admins can create more roles (e.g. "trusted", "moderator") and assign several to
 | `rooms.moderateAny` | Act as moderator in any room |
 | `rooms.customCards` | Upload custom card images for rooms this user owns ([media-types.md](media-types.md#custom-card-images)) |
 | `output.overlayVideo` | Rooms owned by this user may re-encode music videos to add the QR overlay ([overlay.md](overlay.md)) |
+| `users.invite` | Create [invites](#invites) and see and revoke one's own. Not in the default `user` role |
 
 Server-wide feature switches (below) are checked **before** permissions: a disabled feature is off for everyone, admins included, until it is re-enabled.
 

@@ -36,6 +36,12 @@ user_roles(user_id FK, role_id FK, PRIMARY KEY(user_id, role_id))
 user_settings(user_id PK FK, settings_json,    -- the user's preferences (ui.md#existing-features-in-the-new-ui): only the keys
       updated_at)                                -- they set ({doubleClickAlone?, webAudio?, debug?}); no row = defaults (api.md /api/me/settings)
 
+invites(id PK, code_hash UNIQUE,             -- auth.md#invites: single-use registration codes; only the code's SHA-256
+      created_by_user_id FK NULL, created_at,  -- creator (NULL: account gone); expires_at: 1 h to 30 d after creation
+      expires_at, note NULL,                   -- note: who it's for (creator's own text)
+      used_by_user_id FK NULL, used_at NULL,   -- set by the registration that used it (same transaction as the account)
+      revoked_at NULL)                         -- pending = not used, not revoked, not expired
+
 sessions(id PK, user_id FK, token_hash UNIQUE, kind TEXT,              -- 'cookie' | 'bearer'
       created_at, last_seen_at, expires_at, user_agent, ip)
 
