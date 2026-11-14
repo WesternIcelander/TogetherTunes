@@ -31,6 +31,11 @@ test("fixed views, with and without the trailing slash and under the old page na
     "/playlists": view("playlists", {}, "/playlists/"), "/playlists/": view("playlists", {}, "/playlists/"),
     "/encodes/": view("encodes", {}, "/encodes/"), "/account": view("account", {}, "/account/"),
     "/admin/": view("admin", {}, "/admin/"),
+    // the desktop layout's middle lists (one view, the list named in its params)
+    "/songs": view("list", { list: "songs" }, "/songs"), "/songs/": view("list", { list: "songs" }, "/songs"),
+    "/shows": view("list", { list: "shows" }, "/shows"), "/liked": view("list", { list: "liked" }, "/liked"),
+    "/uncategorized": view("list", { list: "uncategorized" }, "/uncategorized"),
+    "/search": view("list", { list: "search" }, "/search"), "/search/": view("list", { list: "search" }, "/search"),
   };
   for (const [path, route] of Object.entries(cases)) assert.deepEqual(R.routeOf(path), route, path);
 });
@@ -42,10 +47,10 @@ test("deep links: rooms, room management, items and playlists", () => {
   assert.deepEqual(R.routeOf("/rooms/lounge/manage"), view("roomManage", { ref: "lounge" }, "/rooms/lounge/manage"));
   assert.deepEqual(R.routeOf("/rooms/lounge/manage/"), view("roomManage", { ref: "lounge" }, "/rooms/lounge/manage"));
   assert.deepEqual(R.routeOf("/items/" + ID), view("item", { id: ID }, "/items/" + ID));
-  assert.deepEqual(R.routeOf("/playlists/" + ID), view("playlists", { id: ID }, "/playlists/" + ID));
+  assert.deepEqual(R.routeOf("/playlists/" + ID), view("list", { list: "playlist", id: ID }, "/playlists/" + ID));
   assert.equal(R.playlistPath(ID), "/playlists/" + ID);
   assert.equal(R.playlistPath("a/b"), "/playlists/a%2Fb");
-  assert.deepEqual(R.routeOf(R.playlistPath("a b")), view("playlists", { id: "a b" }, "/playlists/a%20b"));
+  assert.deepEqual(R.routeOf(R.playlistPath("a b")), view("list", { list: "playlist", id: "a b" }, "/playlists/a%20b"));
 });
 
 test("unknown UI paths are the Not found view; the server's own paths are not views", () => {

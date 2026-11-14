@@ -10,8 +10,93 @@
   <script type="module" src="/js/app.js"></script>
 </head>
 <body>
-  <nav id="site-nav" class="site-nav"><a href="/">TogetherTunes</a></nav>
-  <main id="app"></main>
+  <!-- The desktop layout (docs/ui.md#layout-desktop, frame.ts): header, the left sidebar (Library | Rooms),
+       the view in the middle (#app), the right panel (Queue | Recents | Room, and the video panel) and the
+       player bar. The sidebars and the player bar show for signed-in users and while a room is open. -->
+  <header class="app-header">
+    <a class="app-logo" href="/" aria-label="TogetherTunes home"><span class="app-logo-mark" aria-hidden="true">♫</span>
+      <span class="app-logo-text">TogetherTunes</span></a>
+    <form id="app-search" class="app-search" action="/search" method="get" role="search" hidden>
+      <input type="search" name="q" maxlength="200" placeholder="Search" aria-label="Search the whole server">
+    </form>
+    <nav id="site-nav" class="site-nav"></nav>
+  </header>
+  <div class="app-body">
+    <aside id="app-sidebar" class="app-sidebar" aria-label="Library and rooms" hidden>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="app-tab-library" data-tab="library" aria-selected="true">Library</button>
+        <button type="button" role="tab" id="app-tab-rooms" data-tab="rooms" aria-selected="false">Rooms</button>
+      </div>
+      <div id="app-library" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-library"></div>
+      <div id="app-rooms" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-rooms" hidden>
+        <a id="app-new-room" class="side-link side-new" href="/rooms/#create-room">New Room <span aria-hidden="true">+</span></a>
+        <input id="app-room-search" type="search" maxlength="200" placeholder="Find a room (or its link)"
+               aria-label="Find a room">
+        <ul id="app-room-list" class="side-list"></ul>
+        <p id="app-rooms-status" class="muted small" role="status"></p>
+      </div>
+    </aside>
+    <main id="app"></main>
+    <aside id="app-panel" class="app-panel" aria-label="Room" hidden>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" id="app-tab-queue" data-tab="queue" aria-selected="true">Queue</button>
+        <button type="button" role="tab" id="app-tab-recents" data-tab="recents" aria-selected="false">Recents</button>
+        <button type="button" role="tab" id="app-tab-room" data-tab="room" aria-selected="false">Room</button>
+      </div>
+      <p id="app-panel-room" class="panel-room small"></p>
+      <div id="app-queue" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-queue"></div>
+      <div id="app-recents" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-recents" hidden></div>
+      <div id="app-room" class="tab-pane" role="tabpanel" aria-labelledby="app-tab-room" hidden></div>
+      <p id="app-panel-error" class="error small" role="alert"></p>
+      <!-- The video panel: the room's player puts its media elements in #room-player (listen.ts); it shows
+           while a video plays (not in Audio Only) and collapses for audio items. In the Now Playing View it
+           fills the window, letterboxed, with a card for audio items. -->
+      <section id="app-video" class="app-video" aria-label="Video" hidden>
+        <div id="room-player" class="room-player" hidden></div>
+        <div id="app-video-card" class="video-card" hidden></div>
+        <button type="button" id="app-now-close" class="now-close" hidden>Close</button>
+      </section>
+    </aside>
+  </div>
+  <footer id="player-bar" class="player-bar" aria-label="Player" hidden>
+    <div class="pb-now">
+      <div id="pb-cover" class="cover pb-cover cover-none" aria-hidden="true"></div>
+      <div class="pb-text">
+        <a id="pb-title" class="pb-title" href="#">Nothing playing</a>
+        <div id="pb-artist" class="muted small pb-artist"></div>
+      </div>
+    </div>
+    <div class="pb-middle">
+      <div class="pb-buttons">
+        <button type="button" id="pb-prev" class="icon" title="Previous" aria-label="Previous">⏮</button>
+        <button type="button" id="pb-play" class="icon pb-play" title="Play" aria-label="Play">▶</button>
+        <button type="button" id="pb-next" class="icon" title="Next" aria-label="Next">⏭</button>
+        <button type="button" id="pb-mute-big" class="icon" title="Mute" aria-label="Mute" hidden>🔊</button>
+        <button type="button" id="pb-heart" class="icon heart" title="Like" aria-label="Like" aria-pressed="false">♡</button>
+      </div>
+      <div class="pb-seek">
+        <span id="pb-pos" class="small num">0:00</span>
+        <input type="range" id="pb-seek" min="0" max="1" step="1000" value="0" aria-label="Position">
+        <span id="pb-dur" class="small num">0:00</span>
+      </div>
+    </div>
+    <div class="pb-right">
+      <button type="button" id="pb-mute" class="icon" title="Mute (right-click for more)" aria-label="Mute">🔊</button>
+      <div id="pb-mute-menu" class="menu" role="menu" hidden>
+        <button type="button" role="menuitem" id="pb-mute-player">Mute player</button>
+        <button type="button" role="menuitem" id="pb-mute-song">Mute only until end of song</button>
+      </div>
+      <input type="range" id="pb-volume" min="0" max="100" step="1" value="100" aria-label="Volume">
+      <button type="button" id="pb-menu-button" class="icon" title="More" aria-label="More" aria-haspopup="true"
+              aria-expanded="false">⋯</button>
+      <div id="pb-menu" class="menu" role="menu" hidden>
+        <label role="menuitemcheckbox"><input type="checkbox" id="pb-audio-only"> Audio Only</label>
+        <label role="menuitemcheckbox"><input type="checkbox" id="pb-requests-only"> Requests-only mode</label>
+        <button type="button" role="menuitem" id="pb-now-view">Now Playing View</button>
+        <button type="button" role="menuitem" id="pb-fullscreen">Fullscreen</button>
+      </div>
+    </div>
+  </footer>
 
   <template id="view-home" data-title="TogetherTunes">
 
@@ -215,8 +300,7 @@
         <button type="button" id="room-delay-more" class="small" title="Show the room 0.5 s later">+0.5 s</button>
         <button type="button" id="room-delay-reset" class="link small" hidden>Reset</button>
       </div>
-      <!-- Listen mode: the video plays here; audio needs no visible element. -->
-      <div id="room-player" class="room-player" hidden></div>
+      <!-- Listen mode: the video plays in the frame's video panel (#room-player in the right panel). -->
       <div id="room-main" class="room-main" hidden>
         <section id="room-now" class="panel room-now"></section>
         <section id="room-queue" class="room-queue"></section>
@@ -622,6 +706,30 @@
     <p id="item-error" class="error" role="alert"></p>
     <div id="item-body"></div>
     <div id="item-forms"></div>
+  </template>
+
+  <template id="view-list" data-title="Library · TogetherTunes">
+
+    <!-- All My Songs, Movies/Shows, Liked Songs, Uncategorized Videos, search results or one playlist
+         (libview.ts picks by the path). -->
+    <header class="list-head">
+      <div id="list-cover" class="cover list-cover cover-none" aria-hidden="true"></div>
+      <div class="list-head-text">
+        <h1 id="list-title">Library</h1>
+        <p id="list-summary" class="muted"></p>
+        <div id="list-actions" class="row list-actions"></div>
+      </div>
+    </header>
+    <p id="list-status" role="status">Loading...</p>
+    <p id="list-error" class="error" role="alert"></p>
+    <p id="list-notice" class="notice" role="status" hidden></p>
+    <table id="list-table" class="list songs" hidden>
+      <thead><tr><th class="num">#</th><th></th><th>Title</th><th>Album</th><th>Date added</th><th class="num">Time</th></tr></thead>
+      <tbody id="list-rows"></tbody>
+    </table>
+    <div id="list-groups" hidden></div>
+    <p id="list-empty" class="muted" hidden></p>
+    <button id="list-more" type="button" hidden>Load more</button>
   </template>
 
   <template id="view-not-found" data-title="Not found · TogetherTunes">

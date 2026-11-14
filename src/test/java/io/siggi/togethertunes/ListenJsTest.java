@@ -139,7 +139,9 @@ class ListenJsTest {
         String html = NodeTests.view("view-room");
         assertTrue(html.contains("id=\"room-listen-overlay\""), html);
         assertTrue(html.contains("Click to listen"), html);
-        assertTrue(html.contains("id=\"room-player\""), html);
+        // The videos play in the frame's video panel (right panel), outside the room view.
+        assertTrue(!html.contains("id=\"room-player\""), html);
+        assertTrue(read("web/index.html").contains("<div id=\"room-player\" class=\"room-player\" hidden></div>"));
         assertTrue(html.contains("id=\"room-audio-only\""), html);
     }
 }

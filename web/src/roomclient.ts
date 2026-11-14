@@ -66,6 +66,8 @@ export interface CurrentEntry {
 }
 
 export interface WaitingEntry extends CurrentEntry {
+  /** `manual` (Requests) or `autoplay` (From Playlist). */
+  section?: "manual" | "autoplay" | string;
   votes: number;
   pinned: boolean;
   yourVote: number;
@@ -80,7 +82,16 @@ export interface HistoryEntry {
   playedAt: number;
 }
 
-export interface Presence { listening: number; remote: number; anonymous: number }
+/** Someone identified in the room, with how they follow it (`listen`, or `remote`: requests-only mode). */
+export interface PresentPerson { actor: ActorRef; mode: "listen" | "remote" | string }
+
+export interface Presence {
+  listening: number;
+  remote: number;
+  anonymous: number;
+  /** The identified people present, in the order they came (anonymous visitors are only counted). */
+  people?: PresentPerson[];
+}
 
 export interface SkipVotes { entryId: string; votes: number; needed: number }
 

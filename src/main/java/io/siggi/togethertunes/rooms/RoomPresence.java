@@ -60,6 +60,15 @@ public final class RoomPresence {
         }
     }
 
+    /**
+     * Someone identified in the room (a user or a guest with an identity), counted once however many
+     * connections they have: listening if any of them is in listen mode, else requests-only (remote).
+     *
+     * @param actorKey {@link RoomActor#key}: {@code u:<userId>} or {@code g:<guestId>}
+     */
+    public record Person(String actorKey, boolean listening) {
+    }
+
     /** One connection: its actor key ({@code null}: anonymous) and mode. */
     private record Connection(String actorKey, Mode mode) {
     }
@@ -151,6 +160,22 @@ public final class RoomPresence {
             }
         }
         return new Counts(listening, listensByActor.size() - listening, anonymous);
+    }
+
+    /**
+     * The identified people present (users and guests, never anonymous connections), each once, in
+     * the order they came ({@code docs/api.md#websocket}, {@code presence.people}).
+     */
+    public List<Person> people() {
+        Map<String, Boolean> listensByActor = new LinkedHashMap<>();
+        for (Connection c : connections.values()) {
+            if (c.actorKey() != null) {
+                listensByActor.merge(c.actorKey(), c.mode() == Mode.LISTEN, Boolean::logicalOr);
+            }
+        }
+        List<Person> out = new ArrayList<>(listensByActor.size());
+        listensByActor.forEach((key, listens) -> out.add(new Person(key, listens)));
+        return List.copyOf(out);
     }
 
     /** The ids of the users present (listen or remote), each once, in the order they came. */

@@ -45,6 +45,23 @@ class RoomPresenceTest {
     }
 
     @Test
+    void people() {
+        RoomPresence p = new RoomPresence();
+        assertEquals(List.of(), p.people());
+        p.join("a1", null, RoomPresence.Mode.LISTEN);
+        p.join("g1", "g:walrus", RoomPresence.Mode.REMOTE);
+        p.join("u1", "u:alice", RoomPresence.Mode.REMOTE);
+        p.join("u2", "u:alice", RoomPresence.Mode.LISTEN);
+        assertEquals(List.of(new RoomPresence.Person("g:walrus", false), new RoomPresence.Person("u:alice", true)),
+                p.people(), "identified only, each once, in the order they came; one listening tab wins");
+        p.leave("u2");
+        assertEquals(List.of(new RoomPresence.Person("g:walrus", false), new RoomPresence.Person("u:alice", false)),
+                p.people());
+        p.identify("a1", "g:heron");
+        assertEquals(3, p.people().size());
+    }
+
+    @Test
     void modes() {
         assertEquals(RoomPresence.Mode.LISTEN, RoomPresence.Mode.parse("listen"));
         assertEquals(RoomPresence.Mode.REMOTE, RoomPresence.Mode.parse("remote"));

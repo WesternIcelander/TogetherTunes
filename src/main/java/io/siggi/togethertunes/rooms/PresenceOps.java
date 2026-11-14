@@ -6,7 +6,8 @@ import java.util.List;
 /**
  * Presence changes, run on the room's executor ({@code docs/rooms.md#guests-in-rooms}): the
  * WebSocket layer calls these when a socket joins the room, leaves it, switches mode or gets an
- * identity. When the counts change ({@link RoomPresence#counts}), a
+ * identity. When the counts or the people present change ({@link RoomPresence#counts},
+ * {@link RoomPresence#people}), a
  * {@link RoomEvent.PresenceChanged} is broadcast (with a new version, like every change); when
  * fewer identified members are present, the vote-skip threshold is checked again
  * ({@link QueueControl#checkVoteSkip}), since fewer members need fewer skip votes.
@@ -31,7 +32,7 @@ public final class PresenceOps {
     public static RoomPresence.Counts join(RoomTx tx, String connectionId, RoomActor a, RoomPresence.Mode mode)
             throws SQLException {
         RoomPresence p = tx.state().presence();
-        RoomPresence.Counts before = p.counts();
+        Before before = new Before(p);
         p.join(connectionId, key(a), mode);
         return changed(tx, before);
     }
@@ -39,7 +40,7 @@ public final class PresenceOps {
     /** A connection leaves (the socket closed, or sent {@code leave}); whether it was present. */
     public static boolean leave(RoomTx tx, String connectionId) throws SQLException {
         RoomPresence p = tx.state().presence();
-        RoomPresence.Counts before = p.counts();
+        Before before = new Before(p);
         if (!p.leave(connectionId)) {
             return false;
         }
@@ -50,7 +51,7 @@ public final class PresenceOps {
     /** A connection switches between listen and remote mode; whether it was present. */
     public static boolean mode(RoomTx tx, String connectionId, RoomPresence.Mode mode) throws SQLException {
         RoomPresence p = tx.state().presence();
-        RoomPresence.Counts before = p.counts();
+        Before before = new Before(p);
         if (!p.mode(connectionId, mode)) {
             return false;
         }
@@ -65,7 +66,7 @@ public final class PresenceOps {
     public static boolean identify(RoomTx tx, String connectionId, RoomActor a) throws SQLException {
         a.requireIdentity();
         RoomPresence p = tx.state().presence();
-        RoomPresence.Counts before = p.counts();
+        Before before = new Before(p);
         if (!p.identify(connectionId, a.key())) {
             return false;
         }
@@ -76,7 +77,7 @@ public final class PresenceOps {
     /** Removes every connection of an actor (banned from the room); the removed connection ids. */
     static List<String> removeActor(RoomTx tx, String actorKey) throws SQLException {
         RoomPresence p = tx.state().presence();
-        RoomPresence.Counts before = p.counts();
+        Before before = new Before(p);
         List<String> removed = p.removeActor(actorKey);
         if (!removed.isEmpty()) {
             changed(tx, before);
@@ -84,12 +85,22 @@ public final class PresenceOps {
         return removed;
     }
 
-    private static RoomPresence.Counts changed(RoomTx tx, RoomPresence.Counts before) throws SQLException {
-        RoomPresence.Counts after = tx.state().presence().counts();
-        if (!after.equals(before)) {
+    /** The counts and people before a change. */
+    private record Before(RoomPresence.Counts counts, List<RoomPresence.Person> people) {
+        Before(RoomPresence p) {
+            this(p.counts(), p.people());
+        }
+    }
+
+    private static RoomPresence.Counts changed(RoomTx tx, Before before) throws SQLException {
+        RoomPresence p = tx.state().presence();
+        RoomPresence.Counts after = p.counts();
+        // Someone else in the room (or someone switching mode) changes the people list even when
+        // the counts stay the same.
+        if (!after.equals(before.counts()) || !p.people().equals(before.people())) {
             tx.event(new RoomEvent.PresenceChanged(after));
         }
-        if (after.identified() < before.identified()) {
+        if (after.identified() < before.counts().identified()) {
             QueueControl.checkVoteSkip(tx);
         }
         return after;

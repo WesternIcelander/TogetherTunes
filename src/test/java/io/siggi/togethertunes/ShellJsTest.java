@@ -91,7 +91,7 @@ class ShellJsTest {
         assertTrue(index.contains("<nav id=\"site-nav\""));
         assertTrue(index.contains("<main id=\"app\"></main>"));
         Map<String, String> views = views();
-        assertEquals(15, views.size(), views.toString());
+        assertEquals(16, views.size(), views.toString());
         Map<String, String> templates = templates();
         assertEquals(views.keySet(), templates.keySet());
         for (Map.Entry<String, String> e : views.entrySet()) {
@@ -113,12 +113,21 @@ class ShellJsTest {
         Map<String, String> templates = templates();
         Set<String> roomIds = ids(templates.get("view-room"));
         assertTrue(roomIds.contains("room-body") && roomIds.contains("room-listen-overlay"), roomIds.toString());
-        Set<String> shellIds = Set.of("site-nav", "app", "mini-player", "mini-leave", "mini-audio-only", "stopped-note");
+        // The frame's ids (header, sidebars, right panel, video panel, player bar) live outside the
+        // templates and must not clash with a view's.
+        String frame = TEMPLATE.matcher(read("web/index.html")).replaceAll("");
+        Set<String> shellIds = new HashSet<>(ids(frame));
+        shellIds.add("stopped-note");
+        for (String id : List.of("site-nav", "app", "app-sidebar", "app-panel", "app-video", "room-player",
+                "player-bar", "pb-play", "pb-volume", "pb-menu", "pb-audio-only", "pb-requests-only", "pb-now-view",
+                "pb-fullscreen", "pb-mute-menu", "app-search")) {
+            assertTrue(shellIds.contains(id), id);
+        }
         for (Map.Entry<String, String> view : views().entrySet()) {
             Set<String> ids = ids(templates.get(view.getKey()));
             for (String id : ids) {
-                assertFalse(shellIds.contains(id) || id.startsWith("mini-") || id.startsWith("view-"),
-                        view.getKey() + ": " + id);
+                assertFalse(shellIds.contains(id) || id.startsWith("app-") || id.startsWith("pb-")
+                        || id.startsWith("view-"), view.getKey() + ": " + id);
             }
             if (view.getValue() == null) continue;
             String module = read("web/js/" + view.getValue() + ".js");
@@ -162,8 +171,8 @@ class ShellJsTest {
         assertFalse(room.contains("window.setInterval(tick"), room);
         String shell = read("web/js/shell.js");
         for (String s : List.of("history.pushState(", "\"popstate\"", "searchParams.set(\"mount\"",
-                "import(moduleUrl.href)", "startPageSignal()", "setNavigator(", "setRoomHost(", "\"mini-player\"",
-                "\"mini-leave\"", "\"mini-audio-only\"", "scrollRestoration", "HTMLTemplateElement",
+                "import(moduleUrl.href)", "startPageSignal()", "setNavigator(", "setRoomHost(", "new Frame(",
+                "#followed()", "scrollRestoration", "HTMLTemplateElement",
                 "controller.abort()")) {
             assertTrue(shell.contains(s), s);
         }
@@ -174,6 +183,17 @@ class ShellJsTest {
         String session = read("web/js/session.js");
         assertTrue(session.contains("showStoppedNote()"), session);
         assertTrue(read("web/js/listen.js").contains("dispose()"));
-        assertTrue(read("web/css/main.css").contains(".mini-player {"));
+        assertTrue(read("web/css/main.css").contains(".player-bar {"));
+        // The frame follows the room view's room through nav.ts's ShellRoom: no socket of its own.
+        String frame = read("web/js/frame.js");
+        for (String s : List.of("setFrame(", "room.request(", "room.setVolume(", "\"queue.request\"", "\"queue.remove\"",
+                "\"queue.retry\"", "\"suggest.accept\"", "\"voteSkip\"", "\"previous\"", "\"seek\"",
+                "now-view-open", "requestFullscreen", "\"/api/me/likes/\"", "\"/api/library/uncategorized?limit=1\"",
+                "/autoplay\"", "\"/api/rooms?\"")) {
+            assertTrue(frame.contains(s), s);
+        }
+        assertFalse(frame.contains("new RoomConnection("), frame);
+        assertFalse(frame.contains("new WebSocket("), frame);
+        assertTrue(read("web/js/room.js").contains("playerContainer:"));
     }
 }

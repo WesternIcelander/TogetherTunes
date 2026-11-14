@@ -306,6 +306,12 @@ export class ListenPlayer {
   readonly #mode: SyncMode;
   /** Aborted by dispose(). */
   readonly #disposed = new AbortController();
+  /** The listener's own volume (player bar), 0..1 as a linear gain on top of everything else. */
+  #userVolume = 1;
+  /** The listener muted the player (player bar). */
+  #userMuted = false;
+  /** With Web Audio: the gain every deck plays through (after its meter), set to the listener's volume. */
+  #master: GainNode | undefined;
 
   /**
    * @param container where the elements live (the video one is shown there while it plays)
@@ -507,11 +513,11 @@ export class ListenPlayer {
           analyser = this.#ctx.createAnalyser();
           analyser.fftSize = METER_FFT_SIZE;
           gain.connect(analyser);
-          analyser.connect(this.#ctx.destination);
+          analyser.connect(this.#output(this.#ctx));
         } catch (e) {
           recordError("createAnalyser", e, { el: name });
           analyser = undefined;
-          gain.connect(this.#ctx.destination);
+          gain.connect(this.#output(this.#ctx));
         }
       } catch (e) {
         recordError("createMediaElementSource", e, { el: name });
@@ -539,6 +545,69 @@ export class ListenPlayer {
     }
     this.#container.append(el);
     return deck;
+  }
+
+  /**
+   * Where the decks of `ctx` connect: the master gain (the listener's volume), after the meters, so
+   * a muted player never looks like a silent Web Audio path to the mute detector.
+   */
+  #output(ctx: AudioContext): AudioNode {
+    if (this.#master === undefined || this.#master.context !== ctx) {
+      try {
+        const g = ctx.createGain();
+        g.gain.value = this.#listenerGain();
+        g.connect(ctx.destination);
+        this.#master = g;
+      } catch (e) {
+        recordError("createGain", e, { el: "master" });
+        return ctx.destination;
+      }
+    }
+    return this.#master;
+  }
+
+  /** The listener's gain: 0 while muted, else the volume. */
+  #listenerGain(): number {
+    return this.#userMuted ? 0 : this.#userVolume;
+  }
+
+  /** The listener's volume (0..1, a linear gain). */
+  get volume(): number {
+    return this.#userVolume;
+  }
+
+  get muted(): boolean {
+    return this.#userMuted;
+  }
+
+  /** Sets the listener's volume (0..1, a linear gain applied after everything else). */
+  setVolume(v: number): void {
+    const volume = Math.max(0, Math.min(1, Number.isFinite(v) ? v : 1));
+    if (volume === this.#userVolume) return;
+    this.#userVolume = volume;
+    this.#applyListenerGain();
+  }
+
+  /** Mutes or unmutes the player (the room goes on; only this page is silent). */
+  setMuted(on: boolean): void {
+    if (on === this.#userMuted) return;
+    this.#userMuted = on;
+    this.#applyListenerGain();
+  }
+
+  #applyListenerGain(): void {
+    const g = this.#listenerGain();
+    if (this.#master !== undefined) this.#master.gain.value = g;
+    for (const d of this.#decks) {
+      if (d.gain !== undefined) continue;
+      // Direct path: the element's volume carries both its own level and the listener's.
+      this.#stopVolumeRamp(d);
+      try {
+        d.el.volume = Math.min(1, d.level) * g;
+      } catch {
+        // iOS: volume is read-only.
+      }
+    }
   }
 
   /** Whether video items play as audio only. */
@@ -931,7 +1000,7 @@ export class ListenPlayer {
       deck.gain.gain.value = linear;
     } else {
       try {
-        deck.el.volume = Math.min(1, linear);
+        deck.el.volume = Math.min(1, linear) * this.#listenerGain();
       } catch {
         // iOS: volume is read-only.
       }
@@ -955,7 +1024,7 @@ export class ListenPlayer {
     // No Web Audio: step the element's volume.
     const el = deck.el;
     const from = el.volume;
-    const to = Math.min(1, linear);
+    const to = Math.min(1, linear) * this.#listenerGain();
     const start = performance.now();
     deck.volumeTimer = window.setInterval(() => {
       const k = Math.min(1, (performance.now() - start) / ms);

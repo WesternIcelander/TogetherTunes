@@ -473,6 +473,7 @@ class RoomSocketTest {
         assertFalse(state.has("current"));
         assertEquals(0, state.getAsJsonArray("queue").size());
         assertEquals(1, state.getAsJsonObject("presence").get("listening").getAsInt());
+        assertEquals(1, state.getAsJsonObject("presence").getAsJsonArray("people").size());
         assertTrue(room.getAsJsonObject("settings").has("guests"));
         // the join itself bumped the version (presence)
         JsonObject presence = owner.next("presence");
@@ -545,11 +546,20 @@ class RoomSocketTest {
         assertEquals(v + 1, version(presence));
         v++;
         assertEquals(1, presence.getAsJsonObject("presence").get("remote").getAsInt());
+        // the people present: identified actors (no IPs), in the order they came, with their mode
+        JsonArray people = presence.getAsJsonObject("presence").getAsJsonArray("people");
+        assertEquals(2, people.size(), people.toString());
+        assertEquals("listen", people.get(0).getAsJsonObject().get("mode").getAsString());
+        assertEquals("user", people.get(0).getAsJsonObject().getAsJsonObject("actor").get("kind").getAsString());
+        assertEquals("remote", people.get(1).getAsJsonObject().get("mode").getAsString());
+        assertEquals(4, people.get(1).getAsJsonObject().getAsJsonObject("actor").size(), "kind, id, name, isGuest only");
         listener.ok("{\"type\":\"mode\",\"mode\":\"listen\"}");
         presence = owner.await("presence");
         assertEquals(v + 1, version(presence));
         v++;
         assertEquals(2, presence.getAsJsonObject("presence").get("listening").getAsInt());
+        assertEquals("listen", presence.getAsJsonObject("presence").getAsJsonArray("people").get(1).getAsJsonObject()
+                .get("mode").getAsString());
         listener.error("forbidden", "{\"type\":\"next\"}");
         listener.error("invalid_mode", "{\"type\":\"mode\",\"mode\":\"loud\"}");
 

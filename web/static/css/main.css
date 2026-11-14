@@ -623,13 +623,13 @@ button.voted {
   cursor: pointer;
 }
 
-/* The mini player (shell.ts): the playing room on the site's other pages, fixed at the bottom. */
+/* The note after a full load stopped a room's playback (nav.ts showStoppedNote), above the player bar. */
 .mini-player {
   position: fixed;
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 5;
+  z-index: 6;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -646,20 +646,590 @@ button.voted {
   display: none;
 }
 
-.mini-player .mini-room {
+/* Room under the fixed note for the end of the page. */
+body.has-mini-player {
+  padding-bottom: 5rem;
+}
+
+/* ------------------------------------------------------------------ desktop layout (frame.ts) */
+
+body {
+  max-width: none;
+  padding: 0;
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.app-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: bold;
+  font-size: 1.25rem;
+  text-decoration: none;
+}
+
+.app-logo:link,
+.app-logo:visited {
+  color: var(--link-current);
+}
+
+.app-logo-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}
+
+.app-search {
+  flex: 0 1 24rem;
+}
+
+.app-search[hidden] {
+  display: none;
+}
+
+.app-search input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  border: 1px solid rgba(128, 128, 128, 0.6);
+  font: inherit;
+}
+
+.app-header .site-nav {
+  margin-left: auto;
+  padding: 0;
+  border: none;
+}
+
+.app-header .site-nav a:first-child {
+  margin-right: 0;
+  font-weight: normal;
+}
+
+.account-menu {
+  position: relative;
+}
+
+.account-button {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.account-button::-webkit-details-marker {
+  display: none;
+}
+
+.account-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+}
+
+/* Small menus (account, player bar): a box under / above their button. */
+.menu {
+  position: absolute;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 12rem;
+  padding: 0.5rem;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.menu[hidden] {
+  display: none;
+}
+
+.menu > button,
+.menu > a,
+.menu > label {
+  text-align: left;
+  padding: 0.25rem 0.4rem;
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.account-items {
+  right: 0;
+  top: 2.5rem;
+}
+
+.app-body {
+  display: flex;
+  align-items: flex-start;
+}
+
+.app-sidebar,
+.app-panel {
+  position: sticky;
+  top: 0;
+  box-sizing: border-box;
+  max-height: 100vh;
+  overflow-y: auto;
+  padding: 0.75rem;
+}
+
+body.has-player-bar .app-sidebar,
+body.has-player-bar .app-panel {
+  max-height: calc(100vh - 5rem);
+}
+
+.app-sidebar {
+  flex: 0 0 15rem;
+  border-right: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.app-panel {
+  flex: 0 0 21rem;
+  border-left: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.app-sidebar[hidden],
+.app-panel[hidden] {
+  display: none;
+}
+
+#app {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 64rem;
+  padding: 1rem 1.25rem;
+  box-sizing: border-box;
+}
+
+body.has-player-bar {
+  padding-bottom: 5.5rem;
+}
+
+.app-sidebar .tabs,
+.app-panel .tabs {
+  display: flex;
+  gap: 0.75rem;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+  margin-bottom: 0.5rem;
+}
+
+.tabs button[role="tab"] {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 0.25rem 0.1rem;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.tabs button[aria-selected="true"] {
+  border-bottom-color: currentColor;
   font-weight: bold;
 }
 
-.mini-player .mini-title {
+.tab-pane[hidden] {
+  display: none;
+}
+
+.side-links {
+  display: flex;
+  flex-direction: column;
+}
+
+a.side-link,
+button.side-link {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.3rem;
+  text-decoration: none;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+a.side-link:link,
+a.side-link:visited,
+button.side-link {
+  color: inherit;
+}
+
+a.side-link[aria-current="page"] {
+  background: rgba(255, 200, 0, 0.35);
+}
+
+.side-list {
+  list-style: none;
+  margin: 0.25rem 0;
+  padding: 0;
+}
+
+.autoplay-dot {
+  display: inline-block;
+  width: 0.8rem;
+  font-size: 0.7rem;
+}
+
+.side-others {
+  margin-top: 1rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+.side-others h3,
+.app-panel h3 {
+  font-size: 0.85rem;
+  margin: 0.75rem 0 0.25rem;
+  opacity: 0.8;
+}
+
+#app-room-search {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0.25rem 0;
+}
+
+.room-link .num {
+  margin-left: auto;
+}
+
+.panel-room {
+  margin: 0 0 0.25rem;
+}
+
+.app-panel li.entry {
+  gap: 0.4rem;
+}
+
+.entry-text {
   min-width: 0;
+}
+
+.entry-text .entry-title {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Room under the fixed mini player for the end of the page. */
-body.has-mini-player {
-  padding-bottom: 5rem;
+.entry-status .failed {
+  color: #c62828;
+  font-weight: bold;
+}
+
+button.heart.on {
+  color: #d81b60;
+}
+
+button.vote .num {
+  font-weight: bold;
+}
+
+.vote-skip {
+  margin: 0.25rem 0 0.5rem;
+}
+
+ul.people {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+li.person {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+a.button-link {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid currentColor;
+  border-radius: 0.3rem;
+  text-decoration: none;
+}
+
+/* The video panel (bottom of the right panel). */
+.app-video {
+  position: relative;
+  margin-top: 0.75rem;
+}
+
+.app-video[hidden] {
+  display: none;
+}
+
+.app-video .room-player {
+  margin: 0;
+}
+
+.now-close[hidden],
+.video-card[hidden] {
+  display: none;
+}
+
+/* The Now Playing View: the video panel fills the window, the video letterboxed; a card for audio. */
+body.now-view-open .app-video {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  color: #fff;
+}
+
+body.now-view-open .app-video .room-player {
+  width: 100%;
+  height: 100%;
+}
+
+body.now-view-open .app-video .room-player video {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  object-fit: contain;
+  border-radius: 0;
+}
+
+body.now-view-open .app-video .room-player[hidden],
+body.now-view-open .app-video .room-player video[hidden] {
+  display: none;
+}
+
+.now-close {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 61;
+}
+
+.video-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  text-align: center;
+}
+
+.video-card .card-cover {
+  width: min(50vh, 70vw);
+  height: min(50vh, 70vw);
+  object-fit: cover;
+  border-radius: 1rem;
+}
+
+.video-card .card-title {
+  font-size: 2.5rem;
+  font-weight: bold;
+}
+
+.video-card .card-artist {
+  font-size: 1.5rem;
+  opacity: 0.8;
+}
+
+/* The player bar, fixed at the bottom. */
+.player-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  box-sizing: border-box;
+  height: 5rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: Canvas;
+  color: CanvasText;
+  border-top: 1px solid rgba(128, 128, 128, 0.4);
+}
+
+.player-bar[hidden] {
+  display: none;
+}
+
+.pb-now {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.cover.pb-cover {
+  width: 3.5rem;
+  height: 3.5rem;
+  flex: 0 0 auto;
+}
+
+.pb-text {
+  min-width: 0;
+}
+
+.pb-title,
+.pb-artist {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pb-middle {
+  flex: 2 1 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.pb-buttons {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.pb-buttons button[hidden] {
+  display: none;
+}
+
+.pb-buttons button.icon,
+.pb-right button.icon {
+  font-size: 1.2rem;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pb-play {
+  border: 2px solid currentColor !important;
+  border-radius: 50%;
+  width: 2.4rem;
+  height: 2.4rem;
+}
+
+.pb-seek {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  max-width: 36rem;
+}
+
+.pb-seek input {
+  flex: 1 1 auto;
+}
+
+.pb-right {
+  flex: 1 1 0;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+#pb-volume {
+  width: 7rem;
+}
+
+.pb-right .menu {
+  right: 0;
+  bottom: 3.5rem;
+}
+
+/* The middle lists (libview.ts). */
+.list-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 1.25rem;
+  margin-bottom: 1rem;
+}
+
+.cover.list-cover {
+  width: 9rem;
+  height: 9rem;
+  flex: 0 0 auto;
+}
+
+.list-head h1 {
+  font-size: 2.5rem;
+  margin: 0 0 0.25rem;
+}
+
+.list-actions {
+  gap: 0.75rem;
+}
+
+button.pill {
+  border-radius: 999px;
+  padding: 0.3rem 0.9rem;
+}
+
+.cover.row-cover {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+table.songs td {
+  vertical-align: middle;
+}
+
+.show .season {
+  margin: 0.25rem 0 0.5rem;
+}
+
+@media (max-width: 50rem) {
+  .app-body {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .app-sidebar,
+  .app-panel {
+    position: static;
+    max-height: none;
+    flex: none;
+    border: none;
+  }
 }
 
 /* ------------------------------------------------------------------ room management view */

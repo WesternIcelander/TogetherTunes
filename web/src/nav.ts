@@ -6,8 +6,13 @@
 //   socket and player;
 // - `attachRoom()`: how the room view tells the shell about itself, so it can keep playing while
 //   other views are shown (mini player);
-// - the note shown after a reload stopped playback ("say so in the mini player").
+// - the note shown after a reload stopped playback;
+// - the desktop frame's hooks (frame.ts: the sidebar, the right panel, the player bar), so views can
+//   ask it to reload the sidebar's lists or reach the room it follows.
 // Without the shell (a module loaded on its own) navigate() is location.assign.
+import type { ActorRef } from "./actor.js";
+import type { IngestStatus } from "./jobtext.js";
+import type { RoomMode, RoomState } from "./roomclient.js";
 
 /** Handles a navigation in place; returns false to leave it to the browser. */
 export type Navigator = (href: string, replace: boolean) => boolean;
@@ -72,13 +77,60 @@ export interface ShellRoom {
   setAudioOnly(on: boolean): void;
   /** The room view is shown again (re-render the navigation etc.). */
   shown(): void;
+  /** The room's id. */
+  id(): string;
+  /** The room state as the room view knows it (undefined until the first `state`). */
+  state(): RoomState | undefined;
+  /** The socket's actor (undefined while anonymous). */
+  actor(): ActorRef | undefined;
+  /** What ingest is doing for the entries' items that aren't ready (`ingest` messages). */
+  ingest(): Record<string, IngestStatus>;
+  /** Sends a room action (`rid`, answered by `ack` or `error`). */
+  request(msg: Record<string, unknown>): Promise<Record<string, unknown>>;
+  /** The server's clock (ms), for positions on the timeline. */
+  serverNow(): number;
+  /** Listen or requests-only (remote) mode here. */
+  mode(): RoomMode;
+  /** Whether the room forces requests-only mode (then the mode can't be changed). */
+  forcedRequestsOnly(): boolean;
+  /** Switches between listening here and requests-only mode (remembered for the room). */
+  setRequestsOnly(on: boolean): void;
+  /** The listener's volume (linear gain 0..1) and mute, applied to the room's player. */
+  setVolume(gain: number, muted: boolean): void;
+  /** The element the room's videos play in (the frame's video panel holds it). */
+  playerContainer(): HTMLElement | undefined;
+}
+
+/** What the desktop frame (frame.ts) offers to views. */
+export interface FrameHooks {
+  /** Loads the sidebar's lists again (after a playlist was made, renamed, filled, ...). */
+  refreshLibrary(): void;
+  /** The room the frame follows (shown or playing in the background), if any. */
+  room(): ShellRoom | undefined;
+}
+
+let frame: FrameHooks | undefined;
+
+/** Installed by the shell's frame. */
+export function setFrame(f: FrameHooks | undefined): void {
+  frame = f;
+}
+
+/** Asks the frame to load the sidebar's lists again (nothing without one). */
+export function refreshLibrary(): void {
+  frame?.refreshLibrary();
+}
+
+/** The room the frame follows, if any (for "Add All" in a playlist, say). */
+export function currentRoom(): ShellRoom | undefined {
+  return frame?.room();
 }
 
 /** The shell's side, for the room view. */
 export interface RoomHandle {
   /** Whether another view is shown (the room's is hidden). */
   readonly away: boolean;
-  /** Refreshes the mini player (call on every room state). */
+  /** Refreshes the frame's room parts (call on every room state). */
   update(): void;
 }
 

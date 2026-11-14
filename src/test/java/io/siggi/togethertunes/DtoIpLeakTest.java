@@ -453,6 +453,10 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.RoomGuests$GuestRow", "guest name and kind (no IP column read)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Counts", "three counts; the WebSocket layer sends"
                     + " them as presence"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Person", "actor key and listen flag; the WebSocket"
+                    + " layer sends the actor (RoomViews.presence: kind, id, name, isGuest) and the mode, never an IP"),
+            Map.entry("io.siggi.togethertunes.rooms.PresenceOps$Before", "presence counts and people before a change,"
+                    + " compared to decide on a presence event; never serialised"),
             Map.entry("io.siggi.togethertunes.rooms.RoomPresence$Connection", "connection id -> actor key and mode,"
                     + " in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$PresenceChanged", "executor -> listeners, in memory only"),

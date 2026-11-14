@@ -411,13 +411,17 @@ final class RoomBroadcaster implements RoomListener {
         List<Member> full = new ArrayList<>();
         Map<RoomSnapshot, List<Member>> deltas = new IdentityHashMap<>();
         JsonObject currentJson = null;
+        JsonObject presenceJson = null;
         boolean currentLooked = false;
         for (Member m : members.values()) {
             if (forceFull.contains(m) || m.base == null) {
                 full.add(m);
             } else if (presenceOnly) {
+                if (presenceJson == null) {
+                    presenceJson = presence(s);
+                }
                 JsonObject msg = message("presence", s.version());
-                msg.add("presence", RoomViews.presence(s.presence()));
+                msg.add("presence", presenceJson.deepCopy());
                 m.conn.send(msg);
             } else if (timelineOnly && sameCurrent(m.base, s)) {
                 if (!currentLooked) {
@@ -510,7 +514,7 @@ final class RoomBroadcaster implements RoomListener {
         if (skip != null) {
             base.add("skipVotes", skip);
         }
-        base.add("presence", RoomViews.presence(s.presence()));
+        base.add("presence", presence(s));
         // The overlay (M5) adds its part here.
         List<RoomOutputs.Status> active = activeOutputs();
         for (Member m : to) {
@@ -565,13 +569,22 @@ final class RoomBroadcaster implements RoomListener {
         if (skip != null) {
             msg.add("skipVotes", skip);
         }
-        msg.add("presence", RoomViews.presence(s.presence()));
+        msg.add("presence", presence(s));
         for (Member m : to) {
             JsonObject copy = msg.deepCopy();
             yourVotes(copy.getAsJsonArray("upsert"), s, m.actor);
             m.conn.send(copy);
             m.base = s;
         }
+    }
+
+    /** The presence part of a message: the counts and the people present ({@link RoomViews#presence}). */
+    private JsonObject presence(RoomSnapshot s) throws java.sql.SQLException {
+        List<String> keys = new ArrayList<>(s.people().size());
+        for (RoomPresence.Person p : s.people()) {
+            keys.add(p.actorKey());
+        }
+        return RoomViews.presence(s.presence(), s.people(), views.actors(keys));
     }
 
     /** The room's active outputs; none if they can't be read (logged). */

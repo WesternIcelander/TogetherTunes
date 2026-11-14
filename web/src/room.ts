@@ -220,6 +220,9 @@ let kickedText: string | undefined;
 let shell: RoomHandle | undefined;
 /** The outputs panel (RTMP viewer URL; stream URLs and controls for the owner and moderators). */
 let outputsPanel: OutputsPanel | undefined;
+/** The listener's volume and mute from the frame's player bar (applied to every player made here). */
+let listenerGain = 1;
+let listenerMuted = false;
 
 // ------------------------------------------------------------------ small helpers
 
@@ -1163,6 +1166,8 @@ function createPlayer(): ListenPlayer {
       onSound: showSound,
     });
   player = p;
+  p.setVolume(listenerGain);
+  p.setMuted(listenerMuted);
   const hint = element("room-webaudio-hint");
   select.value = loadWebAudioSetting();
   hint.hidden = select.value !== "off";
@@ -1216,6 +1221,22 @@ function createShell(): RoomHandle {
     audioOnlyRoom: () => isAudioOnlyRoom(shown),
     setAudioOnly,
     shown: () => renderNav(me),
+    id: () => roomId,
+    state: () => shown,
+    actor: () => conn.actor,
+    ingest: () => conn.ingest,
+    request: (msg) => conn.request(msg),
+    serverNow,
+    mode: () => mode,
+    forcedRequestsOnly: () => forced,
+    setRequestsOnly: (on) => switchMode(on ? "remote" : "listen"),
+    setVolume: (gain, muted) => {
+      listenerGain = gain;
+      listenerMuted = muted;
+      player?.setVolume(gain);
+      player?.setMuted(muted);
+    },
+    playerContainer: () => document.getElementById("room-player") ?? undefined,
   });
 }
 

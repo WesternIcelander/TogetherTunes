@@ -11,12 +11,15 @@
 //   forward (popstate) show the entry's view again, scroll positions are kept in history.state, and
 //   focus goes to the new view's heading;
 // - the room view, while it plays in listen mode, is kept (hidden, with its media elements, socket
-//   and clock sync running) when another view is shown; a mini player (room name linking back, what
-//   plays, play state, "Audio only", Leave) is shown meanwhile, and a link back shows the room view
-//   again. Another room and the identity views (login, register, password, setup) then load a new
-//   document, which leaves the room; Leave takes the room view away in place.
+//   and clock sync running) when another view is shown; the desktop frame around the views
+//   (frame.ts: sidebars, right panel, player bar) follows that room meanwhile, and a link back shows
+//   the room view again. Another room and the identity views (login, register, password, setup) then
+//   load a new document, which leaves the room; Leave (in the right panel) takes the room view away
+//   in place.
 import { decide, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
-import { rememberPlaying, setNavigator, setRoomHost, startPageSignal, type RoomHandle, type ShellRoom } from "./nav.js";
+import { navigate, rememberPlaying, setNavigator, setRoomHost, startPageSignal, type RoomHandle,
+  type ShellRoom } from "./nav.js";
+import { Frame } from "./frame.js";
 import { recordEvent } from "./diagnostics.js";
 
 interface HistoryState {
@@ -45,12 +48,10 @@ export class Shell {
   #mounts = 0;
   /** Counts navigations: a slow import that was overtaken is dropped. */
   #seq = 0;
-  readonly #mini: HTMLElement;
-  readonly #miniRoom: HTMLAnchorElement;
-  readonly #miniTitle: HTMLElement;
-  readonly #miniState: HTMLElement;
-  readonly #miniAudioOnly: HTMLInputElement;
-  readonly #miniAudioOnlyLabel: HTMLLabelElement;
+  /** The desktop layout around the views. */
+  readonly #frame: Frame;
+  /** Leave was clicked while the room view was shown: don't keep it when the next view comes. */
+  #leaving = false;
 
   constructor(app: HTMLElement) {
     this.#app = app;
@@ -59,35 +60,11 @@ export class Shell {
     } catch {
       // Not settable: the browser restores (too early, but harmlessly).
     }
-    this.#mini = document.createElement("div");
-    this.#mini.id = "mini-player";
-    this.#mini.className = "mini-player";
-    this.#mini.setAttribute("role", "region");
-    this.#mini.setAttribute("aria-label", "Now playing");
-    this.#mini.hidden = true;
-    this.#miniRoom = document.createElement("a");
-    this.#miniRoom.className = "mini-room";
-    this.#miniState = document.createElement("span");
-    this.#miniState.className = "mini-state";
-    this.#miniTitle = document.createElement("span");
-    this.#miniTitle.className = "mini-title grow";
-    const label = document.createElement("label");
-    label.className = "small";
-    this.#miniAudioOnly = document.createElement("input");
-    this.#miniAudioOnly.type = "checkbox";
-    this.#miniAudioOnly.id = "mini-audio-only";
-    label.append(this.#miniAudioOnly, " Audio only");
-    this.#miniAudioOnlyLabel = label;
-    this.#miniAudioOnly.addEventListener("change", () => this.#kept?.room?.setAudioOnly(this.#miniAudioOnly.checked));
-    const leave = document.createElement("button");
-    leave.type = "button";
-    leave.id = "mini-leave";
-    leave.textContent = "Leave";
-    leave.title = "Stop listening and leave the room";
-    leave.addEventListener("click", () => this.leave());
-    this.#mini.append(this.#miniState, this.#miniRoom, this.#miniTitle, label, leave);
-    document.body.append(this.#mini);
-
+    this.#frame = new Frame({
+      room: () => this.#followed(),
+      roomShown: () => this.#view?.route.view === "room",
+      leave: () => this.leave(),
+    });
     document.addEventListener("click", (ev) => this.#onClick(ev));
     document.addEventListener("submit", (ev) => this.#onSubmit(ev));
     window.addEventListener("popstate", () => this.#onPopState());
@@ -109,13 +86,26 @@ export class Shell {
       url.pathname = route.path;
       this.#replaceState({}, url.pathname + url.search + url.hash);
     }
+    void this.#frame.start();
     void this.#show(url, 0);
   }
 
-  /** Leave in the mini player: stop the room playing in the background (leaves the room). */
+  /** The room the frame follows: the room view's room, shown or kept in the background. */
+  #followed(): ShellRoom | undefined {
+    if (this.#kept?.room !== undefined) return this.#kept.room;
+    return this.#view?.route.view === "room" ? this.#view.room : undefined;
+  }
+
+  /** Leave (right panel): stop the room, shown or playing in the background (leaves the room). */
   leave(): void {
     const kept = this.#kept;
-    if (kept === undefined) return;
+    if (kept === undefined) {
+      if (this.#view?.route.view !== "room") return;
+      // The room view is shown: go to the library (or the front page) without keeping it.
+      this.#leaving = true;
+      navigate("/");
+      return;
+    }
     this.#kept = undefined;
     this.#unmount(kept);
     rememberPlaying(null);
@@ -123,28 +113,14 @@ export class Shell {
     this.update();
   }
 
-  /** Refreshes the mini player (the room calls it on every state). */
+  /** Refreshes the frame's room parts (the room calls it on every state). */
   update(): void {
     const room = this.#kept?.room;
-    const away = room !== undefined;
-    this.#mini.hidden = !away;
-    document.body.classList.toggle("has-mini-player", away);
-    if (room === undefined) return;
-    this.#miniRoom.href = room.path();
-    this.#miniRoom.textContent = room.name();
-    const stopped = room.stopped();
-    const now = room.nowPlaying();
-    let state: string;
-    if (stopped !== undefined) state = "Stopped";
-    else if (now.title === "" || now.state === "idle") state = "Nothing playing";
-    else if (now.state === "playing") state = "▶ Playing";
-    else state = "⏸ Paused";
-    this.#miniState.textContent = state;
-    this.#miniTitle.textContent = stopped ?? now.title;
-    this.#miniAudioOnly.checked = room.audioOnly();
-    this.#miniAudioOnly.disabled = stopped !== undefined;
-    this.#miniAudioOnlyLabel.hidden = room.audioOnlyRoom?.() === true;
-    rememberPlaying(stopped === undefined ? { path: room.path(), name: room.name() } : null);
+    if (room !== undefined) {
+      const stopped = room.stopped();
+      rememberPlaying(stopped === undefined ? { path: room.path(), name: room.name() } : null);
+    }
+    this.#frame.update();
   }
 
   /** The room view's module tells the shell about itself (nav.ts `attachRoom`). */
@@ -289,7 +265,9 @@ export class Shell {
     const v = this.#view;
     this.#view = undefined;
     if (v === undefined || v === this.#kept) return;
-    if (v.route.view === "room" && v.room !== undefined && v.room.active()) {
+    const leaving = this.#leaving;
+    this.#leaving = false;
+    if (v.route.view === "room" && v.room !== undefined && v.room.active() && !leaving) {
       if (this.#kept !== undefined) this.#unmount(this.#kept);
       v.el.hidden = true;
       this.#kept = v;
@@ -324,6 +302,7 @@ export class Shell {
       rememberPlaying(null);
       this.update();
       kept.room.shown();
+      this.#frame.navigated(url.pathname + url.search);
       recordEvent("shell", { show: "room" });
       this.#scroll(scrollY, url.hash);
       this.#focus(kept.el);
@@ -353,6 +332,7 @@ export class Shell {
     this.#view = m;
     this.#app.append(el);
     this.update();
+    this.#frame.navigated(url.pathname + url.search);
     recordEvent("shell", { show: pageKey(url.href) });
     if (info.module !== undefined) {
       // The view's module, run afresh: a new URL is a new module instance, which starts like on a page load.

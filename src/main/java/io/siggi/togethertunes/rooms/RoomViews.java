@@ -404,6 +404,51 @@ final class RoomViews {
         return o;
     }
 
+    /**
+     * The presence with the people in the room: the counts plus {@code people: [{actor, mode}]}
+     * ({@code mode} {@code listen} or {@code remote}), identified people only, in the order they
+     * came; someone whose name can't be found (deleted meanwhile) is left out. Actors only, never
+     * an IP address.
+     */
+    static JsonObject presence(RoomPresence.Counts c, List<RoomPresence.Person> people, Map<String, ActorRef> actors) {
+        JsonObject o = presence(c);
+        JsonArray list = new JsonArray();
+        for (RoomPresence.Person p : people) {
+            ActorRef a = actors.get(p.actorKey());
+            if (a == null) {
+                continue;
+            }
+            JsonObject row = new JsonObject();
+            row.add("actor", actor(a));
+            row.addProperty("mode", p.listening() ? "listen" : "remote");
+            list.add(row);
+        }
+        o.add("people", list);
+        return o;
+    }
+
+    /** The actors behind these actor keys ({@code u:<id>}, {@code g:<id>}); unknown ones are left out. */
+    Map<String, ActorRef> actors(Collection<String> actorKeys) throws SQLException {
+        Set<String> userIds = new LinkedHashSet<>();
+        Set<String> guestIds = new LinkedHashSet<>();
+        for (String key : actorKeys) {
+            if (key.startsWith("u:")) {
+                userIds.add(key.substring(2));
+            } else if (key.startsWith("g:")) {
+                guestIds.add(key.substring(2));
+            }
+        }
+        if (userIds.isEmpty() && guestIds.isEmpty()) {
+            return Map.of();
+        }
+        return db.read(c -> {
+            Map<String, ActorRef> actors = new HashMap<>();
+            names(c, "users", userIds, (id, name) -> actors.put("u:" + id, ActorRef.user(id, name)));
+            names(c, "guests", guestIds, (id, name) -> actors.put("g:" + id, ActorRef.guest(id, name)));
+            return actors;
+        });
+    }
+
     /** {@code {votes, needed}} for the current entry in {@code vote} mode with vote-skip on, else {@code null}. */
     static JsonObject skipVotes(RoomSnapshot s) {
         if (s.controlMode() != Rooms.ControlMode.VOTE || s.skipVotesNeeded() == null || s.current() == null) {

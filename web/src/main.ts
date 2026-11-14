@@ -1,10 +1,10 @@
 // The front page's view (/). Until the first account exists, every visit goes to the setup view;
-// a user with a temporary password goes to the change-password view.
+// a user with a temporary password goes to the change-password view; a signed-in user goes on to
+// All My Songs (/songs).
 import { setupNeeded } from "./api.js";
 import { actorLabel } from "./actor.js";
 import {
-  ACCOUNT_PAGE, ADMIN_PAGE, checkPasswordChange, isAdmin, LIBRARY_PAGE, loadMe, LOGIN_PAGE, message, onReady,
-  PLAYLISTS_PAGE, REGISTER_PAGE, renderNav, ROOMS_PAGE, SETUP_PAGE,
+  checkPasswordChange, loadMe, LOGIN_PAGE, message, onReady, REGISTER_PAGE, renderNav, ROOMS_PAGE, SETUP_PAGE,
 } from "./session.js";
 import { navigate } from "./nav.js";
 import { describeVersion } from "./version.js";
@@ -26,6 +26,11 @@ async function start(): Promise<void> {
     }
     const me = await loadMe();
     if (!checkPasswordChange(me)) return;
+    // Signed-in users start in their library (the desktop layout's All My Songs).
+    if (me.kind === "user") {
+      navigate("/songs", true);
+      return;
+    }
     renderNav(me);
     if (status !== null) {
       status.replaceChildren();
@@ -36,14 +41,8 @@ async function start(): Promise<void> {
       }
     }
     if (links !== null) {
-      const items: (Node | string)[] = [link(ROOMS_PAGE, "Rooms"), " · "];
-      if (me.kind === "user") {
-        items.push(link(LIBRARY_PAGE, "Your library"), " · ", link(PLAYLISTS_PAGE, "Playlists"), " · ",
-          link(ACCOUNT_PAGE, "Your account"));
-        if (isAdmin(me)) items.push(" · ", link(ADMIN_PAGE, "Administration"));
-      } else {
-        items.push(link(LOGIN_PAGE, "Log in"), " · ", link(REGISTER_PAGE, "Register"));
-      }
+      const items: (Node | string)[] = [link(ROOMS_PAGE, "Rooms"), " · ", link(LOGIN_PAGE, "Log in"), " · ",
+        link(REGISTER_PAGE, "Register")];
       links.replaceChildren(...items);
       links.hidden = false;
     }

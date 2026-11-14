@@ -13,7 +13,13 @@
 
 /** The views of the app. Each has a `<template id="view-…">` in index.html and (most) a module. */
 export type ViewName = "home" | "login" | "register" | "password" | "setup" | "rooms" | "room" | "roomManage"
-  | "library" | "playlists" | "encodes" | "account" | "admin" | "item" | "notFound";
+  | "library" | "playlists" | "encodes" | "account" | "admin" | "item" | "list" | "notFound";
+
+/**
+ * The desktop layout's middle lists (docs/ui.md#layout-desktop), all shown by the `list` view:
+ * All My Songs, Movies/Shows, Liked Songs, Uncategorized Videos, search results and one playlist.
+ */
+export type ListName = "songs" | "shows" | "liked" | "uncategorized" | "search" | "playlist";
 
 /** A URL that shows a view: which one, its path parameters, and the path to show for it. */
 export interface ViewRoute {
@@ -53,6 +59,7 @@ export const VIEWS: Readonly<Record<ViewName, ViewInfo>> = {
   account: { template: "view-account", module: "account" },
   admin: { template: "view-admin", module: "admin" },
   item: { template: "view-item", module: "item" },
+  list: { template: "view-list", module: "libview" },
   notFound: { template: "view-not-found" },
 };
 
@@ -88,6 +95,20 @@ const FIXED: Record<string, [ViewName, string]> = {
   "/admin/": ["admin", "/admin/"],
 };
 
+/** The `list` view's fixed paths (a playlist is `/playlists/{id}`). */
+const LISTS: Record<string, [ListName, string]> = {
+  "/songs": ["songs", "/songs"],
+  "/songs/": ["songs", "/songs"],
+  "/shows": ["shows", "/shows"],
+  "/shows/": ["shows", "/shows"],
+  "/liked": ["liked", "/liked"],
+  "/liked/": ["liked", "/liked"],
+  "/uncategorized": ["uncategorized", "/uncategorized"],
+  "/uncategorized/": ["uncategorized", "/uncategorized"],
+  "/search": ["search", "/search"],
+  "/search/": ["search", "/search"],
+};
+
 function decodeSegment(s: string): string | undefined {
   try {
     return decodeURIComponent(s);
@@ -121,6 +142,8 @@ export function routeOf(pathname: string): Route {
   if (!isAppPath(pathname)) return { kind: "other" };
   const fixed = FIXED[pathname];
   if (fixed !== undefined) return { kind: "view", view: fixed[0], params: {}, path: fixed[1] };
+  const list = LISTS[pathname];
+  if (list !== undefined) return { kind: "view", view: "list", params: { list: list[0] }, path: list[1] };
   let m = /^\/rooms\/([^/]+)\/?$/.exec(pathname);
   if (m !== null && m[1] !== undefined) {
     const ref = decodeSegment(m[1]);
@@ -142,13 +165,13 @@ export function routeOf(pathname: string): Route {
   if (m !== null && m[1] !== undefined) {
     const id = decodeSegment(m[1]);
     if (id !== undefined && id !== "") {
-      return { kind: "view", view: "playlists", params: { id }, path: "/playlists/" + m[1] };
+      return { kind: "view", view: "list", params: { list: "playlist", id }, path: "/playlists/" + m[1] };
     }
   }
   return { kind: "view", view: "notFound", params: {}, path: pathname };
 }
 
-/** The path of a playlist's view. */
+/** The path of a playlist's view (the `list` view; the old `/playlists/?id=` editor stays for now). */
 export function playlistPath(id: string): string {
   return "/playlists/" + encodeURIComponent(id);
 }

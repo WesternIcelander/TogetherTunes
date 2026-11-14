@@ -127,22 +127,36 @@ function link(href: string, text: string): HTMLAnchorElement {
 }
 
 /**
- * Fills `<nav id="site-nav">`: the front page and Rooms (for everyone), then Library / Playlists / Encodes / Account /
- * Administration / Log out for a user, or Log in / Register otherwise. Names are set as text, never parsed as HTML.
+ * Fills `<nav id="site-nav">`, the header's account part (docs/ui.md#layout-desktop): for a user an
+ * account button (their name) opening a menu with Account, Library (the full library page with
+ * uploads), Playlists, Rooms, Encodes, Administration (any `admin.*` permission) and Log out; for
+ * everyone else Rooms, Log in and Register. Names are set as text, never parsed as HTML.
  */
 export function renderNav(me: Me): void {
   const nav = document.getElementById("site-nav");
   if (nav === null) return;
-  const items: Node[] = [link("/", "TogetherTunes"), link(ROOMS_PAGE, "Rooms")];
   if (me.kind === "user") {
-    items.push(link(LIBRARY_PAGE, "Library"), link(PLAYLISTS_PAGE, "Playlists"), link(ENCODES_PAGE, "Encodes"),
-      link(ACCOUNT_PAGE, "Account"));
+    const menu = document.createElement("details");
+    menu.className = "account-menu";
+    const summary = document.createElement("summary");
+    summary.className = "account-button";
+    summary.title = "Account";
+    const icon = document.createElement("span");
+    icon.className = "account-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = "👤";
+    const who = document.createElement("span");
+    who.className = "nav-who";
+    who.textContent = me.name;
+    summary.append(icon, who);
+    const list = document.createElement("div");
+    list.className = "menu account-items";
+    list.setAttribute("role", "menu");
+    const items: Node[] = [link(ACCOUNT_PAGE, "Account"), link(LIBRARY_PAGE, "Manage library"),
+      link(PLAYLISTS_PAGE, "Playlists"), link(ROOMS_PAGE, "Rooms"), link(ENCODES_PAGE, "Encodes")];
     if (isAdmin(me)) {
       items.push(link(ADMIN_PAGE, "Administration"));
     }
-    const who = document.createElement("span");
-    who.className = "muted nav-who";
-    who.textContent = me.name;
     const out = document.createElement("button");
     out.type = "button";
     out.className = "link";
@@ -151,11 +165,18 @@ export function renderNav(me: Me): void {
       out.disabled = true;
       logout().catch(() => { out.disabled = false; });
     });
-    items.push(who, out);
+    items.push(out);
+    list.append(...items);
+    // A link chosen from the menu closes it (the view changes in place, the header stays).
+    list.addEventListener("click", (ev) => {
+      if ((ev.target as Element).closest("a") !== null) menu.open = false;
+    });
+    menu.append(summary, list);
+    nav.replaceChildren(menu);
   } else {
-    items.push(link(withNext(LOGIN_PAGE, here()), "Log in"), link(REGISTER_PAGE, "Register"));
+    nav.replaceChildren(link(ROOMS_PAGE, "Rooms"), link(withNext(LOGIN_PAGE, here()), "Log in"),
+      link(REGISTER_PAGE, "Register"));
   }
-  nav.replaceChildren(...items);
   // After a full load that stopped a room's playback: say so (nav.ts).
   showStoppedNote();
 }
