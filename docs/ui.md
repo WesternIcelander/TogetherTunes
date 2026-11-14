@@ -25,6 +25,10 @@ From [`drawings/room_view.png`](../drawings/room_view.png) (2026-11-14):
 - **Video area** large at the top left.
 - Below it: **Now Playing** (heart, ×), **Requests** (votes ↑, ×), **From Playlist** (↑, ×), and beside them a **Request Link** box (URL field + Request button).
 - On the right: the **people** in the room, each with a **⋯** button that opens the moderation menu, and below them **Earlier** (the room's history, with hearts).
+- **Who gets it:** unauthenticated visitors (guests, anonymous) have no library and only ever get the room view, when they open a room by its link. Logged-in users enter it by **double-clicking Queue, Recents or Room** at the top of the right panel, and leave it by opening the left sidebar and clicking a playlist.
+- The **right panel is hidden** in the room view. The **☰** button reveals the left sidebar, which **pushes the page aside** (no overlay).
+- The **player bar stays** at the bottom (not drawn).
+- **During an audio item** the video area shows the cover and title like the stream's item card, and the title line under the video collapses away.
 
 ## Mobile (narrow windows)
 
@@ -32,7 +36,17 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 
 - One column. A **top bar** with a back button (e.g. "‹ Library") and the page title; the title is hidden from the top bar while the page is scrolled to the top (the page's own large title shows instead) and appears once it scrolls away.
 - Lists drop the extra columns: number, cover, title and artist.
-- A **bottom tab bar**: **Library**, **Queue** (sub-tabs **Up Next** | **Recents**), **Room** (sub-tabs **Rooms** | **This Room**).
+- A **bottom tab bar**: **Library**, **Now Playing**, **Room** (sub-tabs **Rooms** | **This Room**), **Search**, **Account**.
+- A **mini now-playing bar** just above the tabs.
+- **Now Playing** tab: the video (or the card view for audio) at the top, then sub-tabs **Up Next** | **Recents** below it; scrolling down moves the video up off the screen.
+- **Library** tab: the same list as the desktop sidebar.
+- Switches to this layout below about **800 px** wide (a phone always, an iPad in landscape gets the desktop layout).
+
+## Interaction rules (all layouts)
+
+- **Requesting:** double-click (double-tap) an item in a playlist or in search results to request it in the current room.
+- **Touch:** everything on a right-click menu is also on a **⋯** button (people, songs, the mute button). **Long press** a playlist toggles it for autoplay; its ⋯ menu has **Use only this one for autoplay** (the double-click's job).
+- **Multi-select:** select several items (Shift/Ctrl/Cmd-click on desktop; a **Select** mode with checkboxes on touch) for **Add to Queue** and similar actions.
 
 ## Alone and in rooms
 
