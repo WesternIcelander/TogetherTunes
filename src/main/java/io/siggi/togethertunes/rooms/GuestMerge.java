@@ -39,8 +39,9 @@ import java.util.Objects;
  *       offer it). A user only ({@code 401 not_authenticated}); {@code guest} is left out for a
  *       bearer request (no cookies), no or a stale {@code gid} cookie, or a banned guest.</li>
  *   <li>{@code POST /api/me/merge-guest} (no body) → {@code 200 {"guest": actor, "moved":
- *       {"entries", "votes", "items"}}} ({@code votes} counts votes and skip votes, {@code items}
- *       the items the guest added, now the user's and in their library) and clears
+ *       {"entries", "votes", "items", "requestedItems"}}} ({@code votes} counts votes and skip votes,
+ *       {@code items} the items the guest added, now the user's and in their library,
+ *       {@code requestedItems} the items of the guest's link and file requests newly put into it) and clears
  *       the {@code gid} cookie. Errors: {@code 401 not_authenticated} (not a logged-in user),
  *       {@code 403 cookie_session_required} (a bearer request: only the browser holding the cookie
  *       can merge), {@code 404 guest_not_found} (no {@code gid} cookie, or none of a current
@@ -74,11 +75,19 @@ public final class GuestMerge {
 
     /**
      * What a merge moved. {@code votes} counts votes and skip votes, {@code items} the items the
-     * guest had added ({@code items.added_by_guest_id}), which now are the user's and in their library.
+     * guest had added ({@code items.added_by_guest_id}), which now are the user's and in their library,
+     * {@code requestedItems} the items of the guest's requests by link or file ({@code queue_entries.via}
+     * {@code youtube}/{@code upload}) that the merge newly put into the user's library (as a signed-in
+     * user's such request does, {@link Library#addRequested}).
      */
-    public record Moved(int entries, int votes, int items) {
+    public record Moved(int entries, int votes, int items, int requestedItems) {
+        public Moved(int entries, int votes, int items) {
+            this(entries, votes, items, 0);
+        }
+
         Moved plus(Moved o) {
-            return new Moved(entries + o.entries, votes + o.votes, items + o.items);
+            return new Moved(entries + o.entries, votes + o.votes, items + o.items,
+                    requestedItems + o.requestedItems);
         }
     }
 
@@ -145,6 +154,7 @@ public final class GuestMerge {
         counts.put("entries", moved.entries());
         counts.put("votes", moved.votes());
         counts.put("items", moved.items());
+        counts.put("requestedItems", moved.requestedItems());
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("guest", ActorRef.guest(guest.id(), guest.name()));
         out.put("moved", counts);
@@ -182,6 +192,7 @@ public final class GuestMerge {
         Objects.requireNonNull(guestId);
         Objects.requireNonNull(userId);
         Moved total = new Moved(0, 0, 0);
+        Map<String, String> requested = new LinkedHashMap<>();
         for (int pass = 0; pass < PASSES; pass++) {
             List<String> roomIds = roomsOf(guestId);
             if (roomIds.isEmpty()) {
@@ -189,7 +200,9 @@ public final class GuestMerge {
             }
             for (String roomId : roomIds) {
                 try {
-                    total = total.plus(registry.call(roomId, tx -> mergeRoom(tx, guestId, userId)).get());
+                    Counter counter = registry.call(roomId, tx -> mergeRoom(tx, guestId, userId));
+                    total = total.plus(counter.get());
+                    counter.requested.forEach(requested::putIfAbsent);
                 } catch (HttpError e) {
                     if (e.status() != 404) {
                         throw e;
@@ -200,18 +213,55 @@ public final class GuestMerge {
         }
         Moved done = total;
         long now = EpochMs.now(clock);
+        int[] requestedAdded = new int[1];
         int items = db.write(c -> {
             int n = moveItems(c, guestId, userId, now);
+            requestedAdded[0] = addRequested(c, requested, userId, now);
             try (PreparedStatement ps = c.prepareStatement("UPDATE guests SET key_hash = ? WHERE id = ?")) {
                 ps.setString(1, Tokens.hash(Tokens.newToken()));
                 ps.setString(2, guestId);
                 ps.executeUpdate();
             }
             AuditLog.write(c, now, userId, null, clientIp, AUDIT_MERGED, guestId,
-                    Map.of("entries", done.entries(), "votes", done.votes(), "items", n));
+                    Map.of("entries", done.entries(), "votes", done.votes(), "items", n,
+                            "requestedItems", requestedAdded[0]));
             return n;
         });
-        return new Moved(done.entries(), done.votes(), items);
+        return new Moved(done.entries(), done.votes(), items, requestedAdded[0]);
+    }
+
+    /**
+     * The items of the guest's requests by link or file ({@code item id → via}) go into the user's
+     * library like a signed-in user's such request ({@code via} {@code youtube}/{@code upload}, no
+     * classify question, an existing entry stays): items that still exist and haven't failed.
+     *
+     * @return how many were newly added
+     */
+    private int addRequested(Connection c, Map<String, String> requested, String userId, long now)
+            throws SQLException {
+        int added = 0;
+        try (PreparedStatement check = c.prepareStatement("SELECT 1 FROM items WHERE id = ? AND status <> 'failed'");
+             PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
+                     List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
+            for (Map.Entry<String, String> e : requested.entrySet()) {
+                check.setString(1, e.getKey());
+                try (ResultSet rs = check.executeQuery()) {
+                    if (!rs.next()) {
+                        continue;
+                    }
+                }
+                ps.setString(1, userId);
+                ps.setString(2, e.getKey());
+                ps.setLong(3, now);
+                ps.setString(4, e.getValue());
+                if (ps.executeUpdate() > 0) {
+                    added++;
+                    References.touch(c, e.getKey(), now);
+                    libraryAddListener.addedToLibrary(e.getKey());
+                }
+            }
+        }
+        return added;
     }
 
     /**
@@ -285,6 +335,8 @@ public final class GuestMerge {
     private static final class Counter {
         private int entries;
         private int votes;
+        /** The items of the guest's link and file requests in this room → their {@code via}. */
+        private final Map<String, String> requested = new LinkedHashMap<>();
 
         Moved get() {
             return new Moved(entries, votes, 0);
@@ -309,6 +361,16 @@ public final class GuestMerge {
         s.mergeVoter(RoomStore.voterKey(null, guestId), RoomStore.voterKey(userId, null));
         Counter counter = new Counter();
         tx.persist(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT item_id, via FROM queue_entries"
+                    + " WHERE added_by_guest_id = ? AND room_id = ? AND via IN ('youtube', 'upload') ORDER BY id")) {
+                ps.setString(1, guestId);
+                ps.setString(2, roomId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        counter.requested.putIfAbsent(rs.getString(1), rs.getString(2));
+                    }
+                }
+            }
             counter.entries += update(c, "UPDATE queue_entries SET added_by_user_id = ?, added_by_guest_id = NULL"
                     + " WHERE added_by_guest_id = ? AND room_id = ?", userId, guestId, roomId);
             for (String table : new String[] {"votes", "skip_votes"}) {

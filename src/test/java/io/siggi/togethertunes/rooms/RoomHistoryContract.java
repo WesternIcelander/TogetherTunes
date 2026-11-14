@@ -309,6 +309,9 @@ abstract class RoomHistoryContract {
         assertEquals(0, page.noRepeatWindow());
 
         // Everyone who may open the room sees it, each with their own library flag.
+        // Bob's link request put it into his library (docs/libraries.md); without it, it isn't.
+        assertEquals(Boolean.TRUE, all(bobActor).items().get(0).inYourLibrary());
+        sql("DELETE FROM library_entries WHERE user_id = ? AND item_id = ?", bobId, yt);
         assertEquals(Boolean.FALSE, all(bobActor).items().get(0).inYourLibrary());
         sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 1, 'manual')", bobId, yt);
         assertEquals(Boolean.TRUE, all(bobActor).items().get(0).inYourLibrary());

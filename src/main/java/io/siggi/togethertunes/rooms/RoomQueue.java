@@ -31,6 +31,7 @@ import java.util.Random;
  * {@link RoomActor} (its room role and effective capabilities, built by the caller).
  */
 public final class RoomQueue {
+    private static final System.Logger LOG = System.getLogger(RoomQueue.class.getName());
     private final RoomRegistry registry;
     private final Database db;
     private final Uploads uploads;
@@ -87,7 +88,9 @@ public final class RoomQueue {
      * {@code queue.add}: see {@link QueueOps#add}. The entry records how it was added
      * ({@link Source#via}). A history entry's item is added like a library request (the same guest
      * capability, {@code requestsPerActor}, {@code noRepeatWindow}, control mode). Any item on the
-     * server may be requested by id: there is no scope check (only {@code libraryRequests}).
+     * server may be requested by id: there is no scope check (only {@code libraryRequests}). A
+     * signed-in user's request by upload or YouTube link also adds the item to their library
+     * afterwards ({@link Library#addRequested}; a failure there is only logged).
      *
      * @throws HttpError {@code 400 invalid_source} (not exactly one source), {@code 404
      *                   history_entry_not_found} (not an entry of this room that started playing), as
@@ -148,7 +151,24 @@ public final class RoomQueue {
             addMedia.requireYoutube(actor, roomId);
             itemId = youtube.importUrl(actor, source.youtubeUrl(), null, false, lookup).itemId();
         }
-        return registry.call(roomId, tx -> QueueOps.add(tx, a, itemId, source.via()));
+        QueueOps.Added added = registry.call(roomId, tx -> QueueOps.add(tx, a, itemId, source.via()));
+        if (!byId && actor instanceof Actor.User user) {
+            addToLibrary(user.userId(), itemId, source.via());
+        }
+        return added;
+    }
+
+    /**
+     * A signed-in user's request by link or file also puts the item in their library
+     * ({@link Library#addRequested}: no classify question, an existing entry stays). The request
+     * has been made already and doesn't depend on this: a failure is only logged.
+     */
+    private void addToLibrary(String userId, String itemId, String via) {
+        try {
+            playlists.library().addRequested(userId, itemId, via);
+        } catch (Exception e) {
+            LOG.log(System.Logger.Level.WARNING, "Adding requested item " + itemId + " to a library failed", e);
+        }
     }
 
     /**

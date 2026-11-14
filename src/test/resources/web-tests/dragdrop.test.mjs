@@ -135,6 +135,34 @@ test("dropping on the queue: entries move with the rights, songs are requested",
   assert.equal(D.queueShowsPosition(owner, songs), false);
 });
 
+test("links and files from outside on the queue: by the request rules", () => {
+  const r = room("open", { canYoutube: true, canUpload: true });
+  assert.equal(D.queueExternalDrop(r, "link"), "link");
+  assert.equal(D.queueExternalDrop(r, "files"), "files");
+  assert.equal(D.queueExternalDrop(r, "none"), "none");
+  assert.equal(D.queueExternalDrop(r, "internal"), "none");
+  assert.equal(D.queueExternalDrop(room("open", { canYoutube: false, canUpload: true }), "link"), "none");
+  assert.equal(D.queueExternalDrop(room("open", { canYoutube: true }), "files"), "none");
+  assert.equal(D.queueExternalDrop(room("open", { canYoutube: true, canUpload: false }), "files"), "none");
+  // anonymous visitors (the room view's upload box) and banned or timed-out people: no drop target
+  assert.equal(D.queueExternalDrop(room("open", { canYoutube: true, canUpload: true, identified: false }), "link"),
+    "none");
+  assert.equal(D.queueExternalDrop(room("open", { canYoutube: true, canUpload: true,
+    restriction: { kind: "timeout" } }), "files"), "none");
+  // the alone room and vote/owner modes request the same way (the server decides queued or suggested)
+  assert.equal(D.queueExternalDrop(room("vote", { canYoutube: true }, true), "link"), "link");
+});
+
+test("which dropped files the queue takes", () => {
+  assert.equal(D.isMediaFile({ name: "a.mp3", type: "audio/mpeg" }), true);
+  assert.equal(D.isMediaFile({ name: "a.mp4", type: "video/mp4" }), true);
+  assert.equal(D.isMediaFile({ name: "a.flac", type: "" }), true);
+  assert.equal(D.isMediaFile({ name: "a.mkv", type: "application/octet-stream" }), true);
+  assert.equal(D.isMediaFile({ name: "a.pdf", type: "application/pdf" }), false);
+  assert.equal(D.isMediaFile({ name: "a.txt", type: "" }), false);
+  assert.equal(D.isMediaFile({ name: "noext", type: "" }), false);
+});
+
 test("which dropped files are videos, and the type question", () => {
   assert.equal(D.isVideoFile({ name: "a.mp4", type: "video/mp4" }), true);
   assert.equal(D.isVideoFile({ name: "a.mkv", type: "" }), true);

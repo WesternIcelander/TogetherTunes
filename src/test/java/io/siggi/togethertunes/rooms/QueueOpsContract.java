@@ -416,8 +416,8 @@ abstract class QueueOpsContract {
         String yt = item("ready", "dQw4w9WgXcQ");
         QueueOps.Added a = queue.add(roomId, bobActor, bob, RoomQueue.Source.youtube("https://youtu.be/dQw4w9WgXcQ?t=5"));
         assertEquals(yt, a.itemId(), "a cached YouTube item is reused (no yt-dlp here)");
-        assertEquals(List.of(), row("SELECT item_id FROM library_entries WHERE user_id = ?", bobId),
-                "a room request doesn't add to the requester's library");
+        assertEquals(List.of(yt), row("SELECT item_id FROM library_entries WHERE user_id = ?", bobId),
+                "a link request adds to the requester's library");
         assertEquals("invalid_youtube_url", refused(() -> queue.add(roomId, bobActor, bob,
                 RoomQueue.Source.youtube("https://example.com/"))));
         settings.set(Settings.YTDLP_ENABLED, false);
@@ -445,6 +445,58 @@ abstract class QueueOpsContract {
                 RoomQueue.Source.upload(open))));
         assertEquals("upload_not_found", refused(() -> queue.add(roomId, aliceActor, owner,
                 RoomQueue.Source.upload(done))));
+    }
+
+    /** An item of {@code kind} and {@code mediaType} that alice fetched or uploaded first (not in bob's library). */
+    private String typed(String kind, String mediaType, String youtubeId) throws SQLException {
+        String id = UuidV7.newId();
+        sql("INSERT INTO items (id, kind, title, source, youtube_id, added_by_user_id, added_at, status,"
+                + " output_profile, last_referenced_at, duration_ms, media_type) VALUES (?, ?, 'Clip', ?, ?, ?, 1,"
+                + " 'ready', '720p30', 1, 60000, ?)", id, kind, youtubeId == null ? "upload" : "youtube", youtubeId,
+                aliceId, mediaType);
+        return id;
+    }
+
+    private List<Object> bobsEntry(String itemId) throws SQLException {
+        return row("SELECT via, added_at FROM library_entries WHERE user_id = ? AND item_id = ?", bobId, itemId);
+    }
+
+    @Test
+    void linkAndFileRequestsAddToTheRequestersLibrary() throws Exception {
+        settings("{\"noRepeatWindow\":0,\"requestsPerActor\":100}");
+        // A video of unknown type goes in as it is (no classify question), the item keeps its type.
+        String video = typed("video", "uncategorized", "vvvvvvvvvv1");
+        queue.add(roomId, bobActor, bob, RoomQueue.Source.youtube("https://youtu.be/vvvvvvvvvv1"));
+        assertEquals("youtube", bobsEntry(video).get(0));
+        assertEquals(List.of("uncategorized"), row("SELECT media_type FROM items WHERE id = ?", video));
+        // An audio item stays audio.
+        String song = typed("audio", "audio", "aaaaaaaaaa1");
+        queue.add(roomId, bobActor, bob, RoomQueue.Source.youtube("https://www.youtube.com/watch?v=aaaaaaaaaa1"));
+        assertEquals("youtube", bobsEntry(song).get(0));
+        assertEquals(List.of("audio"), row("SELECT media_type FROM items WHERE id = ?", song));
+        // Already in the library: nothing changes.
+        String known = typed("video", "music_video", "kkkkkkkkkk1");
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 7, 'manual')", bobId, known);
+        queue.add(roomId, bobActor, bob, RoomQueue.Source.youtube("https://youtu.be/kkkkkkkkkk1"));
+        assertEquals(List.of("manual", 7L), List.of(bobsEntry(known).get(0), ((Number) bobsEntry(known).get(1)).longValue()));
+        // An upload request: via upload.
+        String uploaded = typed("video", "uncategorized", null);
+        String done = UuidV7.newId();
+        sql("INSERT INTO uploads (id, user_id, filename, size, created_at, updated_at, item_id)"
+                + " VALUES (?, ?, 'a.mp4', 10, 1, 1, ?)", done, bobId, uploaded);
+        queue.add(roomId, bobActor, bob, RoomQueue.Source.upload(done));
+        assertEquals("upload", bobsEntry(uploaded).get(0));
+        // A request by id doesn't add.
+        String byId = typed("audio", "audio", null);
+        add(bob, byId);
+        assertEquals(List.of(), bobsEntry(byId));
+        // Guests have no library: nothing is added for anyone.
+        String guestFile = typed("audio", "audio", null);
+        String guestUpload = UuidV7.newId();
+        sql("INSERT INTO uploads (id, guest_id, filename, size, created_at, updated_at, item_id)"
+                + " VALUES (?, ?, 'g.mp3', 10, 1, 1, ?)", guestUpload, guestId, guestFile);
+        queue.add(roomId, guestActor, guest, RoomQueue.Source.upload(guestUpload));
+        assertEquals(List.of(), row("SELECT user_id FROM library_entries WHERE item_id = ?", guestFile));
     }
 
     @Test

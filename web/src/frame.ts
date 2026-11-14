@@ -27,9 +27,9 @@ import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { withClassification } from "./classifyprompt.js";
 import { draggable, dropZone } from "./dnd.js";
-import { draggedKeys, moveIsNoop, playlistDrop, playlistOrderBody, queueDrop, queueShowsPosition, type DragPayload,
-  type QueueSection } from "./dragdrop.js";
-import { dropFiles } from "./filedrop.js";
+import { draggedKeys, moveIsNoop, playlistDrop, playlistOrderBody, queueDrop, queueExternalDrop, queueShowsPosition,
+  type DragPayload, type QueueSection } from "./dragdrop.js";
+import { dropFiles, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
@@ -1024,7 +1024,8 @@ export class Frame {
     dropZone(el, {
       accepts: (content, payload) => {
         const s = room.state();
-        if (content !== "internal" || s === undefined) return false;
+        if (s === undefined) return false;
+        if (content !== "internal") return content !== "none" && queueExternalDrop(s, content) === content;
         const what = queueDrop(s, payload, section, null).kind;
         return what === "move" || what === "add";
       },
@@ -1036,6 +1037,10 @@ export class Frame {
       onDrop: (d) => {
         const s = room.state();
         if (s === undefined) return;
+        if (d.content === "link" || d.content === "files") {
+          this.#requestDropped(room, d.content, d.files, d.link);
+          return;
+        }
         const what = queueDrop(s, d.payload, section, d.before);
         if (what.kind === "move") {
           const ids = Array.from(el.querySelectorAll<HTMLElement>("li[data-entry]")).map((li) => li.dataset["entry"] ?? "");
@@ -1047,6 +1052,25 @@ export class Frame {
         }
       },
     });
+  }
+
+  /**
+   * A link or files dragged in from outside dropped on the queue: the link is requested
+   * (`queue.add {youtubeUrl}`), the files are uploaded in the background and requested
+   * (filedrop.ts `dropFilesOnQueue`). No type question; the server's request rules apply.
+   */
+  #requestDropped(room: ShellRoom, content: "link" | "files", files: File[], link: string | undefined): void {
+    this.#showError("");
+    if (content === "files") {
+      dropFilesOnQueue(files, room.id(), (msg) => room.request(msg),
+        (text, error) => { if (error === true) this.#showError(text); });
+      return;
+    }
+    if (link === undefined) {
+      this.#showError("That isn't a link.");
+      return;
+    }
+    room.request({ type: "queue.add", youtubeUrl: link }).catch((e: unknown) => this.#showError(e));
   }
 
   /** Requests songs dropped on the queue, in order (the room's request rules apply). */

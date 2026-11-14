@@ -5,11 +5,14 @@
 // while the pre-check and the upload already run in the background; an upload waits for the answer
 // only before its `complete`. Cancel stops them all. A small box at the bottom of the page shows
 // how each file is doing. Rules (which files are videos, the lines' text) in the DOM-free dragdrop.ts.
+// Files dropped on a room's queue (dropFilesOnQueue) are uploaded as requests in the room and then
+// requested (queue.add {uploadId}); no type question: the server puts a signed-in user's request into
+// their library, a video of unknown type as uncategorized.
 import { api } from "./api.js";
 import { CLASSIFY_TYPES, needsClassification, type ClassifyBody } from "./classify.js";
 import { askClassification, askType } from "./classifyprompt.js";
 import { h } from "./dom.js";
-import { fileDropQuestion, isVideoFile, uploadLine } from "./dragdrop.js";
+import { fileDropQuestion, isMediaFile, isVideoFile, uploadLine } from "./dragdrop.js";
 import { refreshLibrary } from "./nav.js";
 import { message } from "./session.js";
 import { Upload, type Completed } from "./uploads.js";
@@ -138,6 +141,68 @@ export function dropFiles(files: readonly File[], t: FileDropTarget, report: (te
     refreshLibrary();
     report((added === 1 ? "1 file" : added + " files") + " added to " + t.playlistName + "."
       + (failed.length > 0 ? " Not added: " + failed.join("; ") : ""), failed.length > 0);
+    if (failed.length === 0) window.setTimeout(() => box.remove(), 4000);
+  })();
+}
+
+/**
+ * Uploads `files` (audio and video only; others are skipped) as requests in room `roomId` and
+ * requests each once it is uploaded (`request`: `queue.add {uploadId}`), in the background, with the
+ * same box as playlist drops. No type question (the server adds a signed-in user's request to their
+ * library as it is). `report` gets a summary line when all are through.
+ */
+export function dropFilesOnQueue(files: readonly File[], roomId: string,
+    request: (msg: Record<string, unknown>) => Promise<Record<string, unknown>>,
+    report: (text: string, error?: boolean) => void): void {
+  const media = files.filter(isMediaFile);
+  const skipped = files.filter((f) => !isMediaFile(f)).map((f) => f.name + ": not an audio or video file");
+  if (media.length === 0) {
+    if (skipped.length > 0) report("Not requested: " + skipped.join("; "), true);
+    return;
+  }
+  const lines = h("ul", { class: "drop-upload-lines" });
+  const close = h("button", { type: "button", class: "icon", text: "×", title: "Close", "aria-label": "Close" });
+  const box = h("section", { class: "drop-uploads", role: "status", "aria-label": "Uploads" },
+    h("div", { class: "row" }, h("strong", { class: "grow", text: "Uploading requests" }), close), lines);
+  close.hidden = true;
+  close.addEventListener("click", () => box.remove());
+  document.body.append(box);
+  const uploads = media.map((file) => {
+    const text = h("span", { class: "muted small", text: "Waiting…" });
+    lines.append(h("li", {}, h("span", { class: "drop-upload-name", text: file.name }), " ", text));
+    let error: string | undefined;
+    const u = new Upload(file, (p) => {
+      text.textContent = uploadLine(p.state, p.sentBytes, p.size, p.checked)
+        + (p.error !== undefined ? ": " + p.error : "");
+      if (p.state === "failed") error = p.error;
+    });
+    // The request (queue.add) puts it into the library; complete itself doesn't (no type question).
+    u.addToLibrary = false;
+    u.roomId = roomId;
+    return { file, u, text, error: () => error };
+  });
+  void (async () => {
+    let requested = 0;
+    const failed: string[] = [...skipped];
+    for (const x of uploads) {
+      await x.u.start();
+      if (x.u.state !== "done" || x.u.uploadId === undefined) {
+        failed.push(x.file.name + ": " + (x.error() ?? "stopped"));
+        continue;
+      }
+      try {
+        const ack = await request({ type: "queue.add", uploadId: x.u.uploadId });
+        requested++;
+        x.text.textContent = ack["state"] === "suggested" ? "Suggested" : "Requested";
+      } catch (e) {
+        x.text.textContent = "Not requested: " + message(e);
+        failed.push(x.file.name + ": " + message(e));
+      }
+    }
+    close.hidden = false;
+    refreshLibrary();
+    report((requested === 1 ? "1 file" : requested + " files") + " requested."
+      + (failed.length > 0 ? " Not requested: " + failed.join("; ") : ""), failed.length > 0);
     if (failed.length === 0) window.setTimeout(() => box.remove(), 4000);
   })();
 }

@@ -38,6 +38,10 @@ public final class Library {
     public static final String VIA_MANUAL = "manual";
     /** {@code library_entries.via} of an item a room owner added from the old request history (no longer written). */
     public static final String VIA_REQUEST = "request";
+    /** {@code library_entries.via} of an item a user fetched from a YouTube link (also a link request in a room). */
+    public static final String VIA_YOUTUBE = "youtube";
+    /** {@code library_entries.via} of an item a user uploaded (also a file request in a room). */
+    public static final String VIA_UPLOAD = "upload";
 
     private final Database db;
     private final YoutubeImports youtube;
@@ -408,6 +412,60 @@ public final class Library {
             playlistsChanged(userId);
         }
         return removed;
+    }
+
+    /**
+     * A signed-in user's request by link or file in a room ({@code queue.add} with a
+     * {@code youtubeUrl} or an {@code uploadId}, or a guest's such request on a guest merge) also
+     * puts the item in their library ({@code docs/libraries.md}), with {@code via} {@code youtube}
+     * or {@code upload} as for library adds, and without a classify question: an
+     * {@code uncategorized} video goes in as it is ({@link Classify.Classification#LEAVE}), a known
+     * type stays. Nothing changes if it is already there, or if the item doesn't exist (any more).
+     * Never fetches anything: the request already took care of the media.
+     *
+     * @return whether an entry was added
+     */
+    public boolean addRequested(String userId, String itemId, String via) throws SQLException {
+        if (!VIA_YOUTUBE.equals(via) && !VIA_UPLOAD.equals(via)) {
+            throw new IllegalArgumentException("via must be youtube or upload: " + via);
+        }
+        long now = EpochMs.now(clock);
+        boolean added = db.write(c -> addRequested(c, userId, itemId, via, now));
+        if (added) {
+            libraryAddListener.addedToLibrary(itemId);
+        }
+        return added;
+    }
+
+    /** {@link #addRequested(String, String, String)} in a write transaction (no listener call). */
+    public boolean addRequested(Connection c, String userId, String itemId, String via, long now)
+            throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items WHERE id = ?")) {
+            ps.setString(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return false;
+                }
+            }
+        }
+        int n;
+        try (PreparedStatement ps = c.prepareStatement(db.dialect().insertOrIgnore("library_entries",
+                List.of("user_id", "item_id", "added_at", "via"), List.of("user_id", "item_id")))) {
+            ps.setString(1, userId);
+            ps.setString(2, itemId);
+            ps.setLong(3, now);
+            ps.setString(4, via);
+            n = ps.executeUpdate();
+        }
+        if (n > 0) {
+            References.touch(c, itemId, now);
+        }
+        return n > 0;
+    }
+
+    /** The server's add listener, for callers that add with {@link #addRequested(Connection, String, String, String, long)}. */
+    public LibraryAddListener addListener() {
+        return libraryAddListener;
     }
 
     /**

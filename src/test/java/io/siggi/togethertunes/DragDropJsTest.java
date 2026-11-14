@@ -43,11 +43,13 @@ class DragDropJsTest {
         String frame = read("web/js/frame.js");
         for (String s : List.of("draggable(", "dropZone(", "\"/api/playlists/order\"", "playlistOrderBody(", "queueDrop(",
                 "queueShowsPosition(", "\"queue.add\"", "\"recents\"", "dropFiles(", "openAddLink(",
-                "#selRows(", "draggedKeys(", "clickSelect(")) {
+                "#selRows(", "draggedKeys(", "clickSelect(", "queueExternalDrop(", "dropFilesOnQueue(",
+                "youtubeUrl: link")) {
             assertTrue(frame.contains(s), s);
         }
         String files = read("web/js/filedrop.js");
-        for (String s : List.of("new Upload(", "beforeComplete", "askType(", "allowLeave: true", "\"/entries\"")) {
+        for (String s : List.of("new Upload(", "beforeComplete", "askType(", "allowLeave: true", "\"/entries\"",
+                "uploadId: x.u.uploadId", "u.roomId = roomId", "u.addToLibrary = false")) {
             assertTrue(files.contains(s), s);
         }
         assertTrue(read("web/js/uploads.js").contains("beforeComplete"));

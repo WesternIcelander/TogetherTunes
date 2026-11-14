@@ -21,6 +21,8 @@ export interface YouLike {
   canVote: boolean;
   canRequest: boolean;
   canYoutube: boolean;
+  /** May request by uploading a file here (absent: no). */
+  canUpload?: boolean;
   canSkip: boolean;
   canModerate: boolean;
   canRequestLibrary?: boolean;

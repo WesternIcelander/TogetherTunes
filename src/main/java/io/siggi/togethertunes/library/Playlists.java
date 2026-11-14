@@ -125,6 +125,11 @@ public final class Playlists {
         this.clock = Objects.requireNonNull(clock);
     }
 
+    /** The library this instance adds to (its owners' library entries). */
+    public Library library() {
+        return library;
+    }
+
     /**
      * Sets who is told when a user's playlists change in a way that matters to autoplay: the
      * {@link Library#playlistsChangeListener} of this instance's library (the same one for the

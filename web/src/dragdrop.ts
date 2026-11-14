@@ -226,6 +226,21 @@ export function queueShowsPosition(s: QueueRoomLike, p: DragPayload | undefined)
   return p !== undefined && p.kind === "items" && p.source === "queue" && canMoveQueue(s);
 }
 
+/**
+ * What a link or files dragged in from outside the page do on the queue: a link is requested
+ * (`queue.add {youtubeUrl}`, needs `you.canYoutube`), files are uploaded as requests in the room
+ * and then requested (`queue.add {uploadId}`, needs `you.canUpload`). Only for people the room
+ * knows (`identified`: anonymous visitors have the room view's upload box) and who aren't banned
+ * or timed out. "none": the queue isn't a drop target for it. The server checks everything again.
+ */
+export function queueExternalDrop(s: QueueRoomLike, content: DropContent): "link" | "files" | "none" {
+  const you = s.room.you;
+  if (!you.identified || you.restriction !== undefined) return "none";
+  if (content === "link") return you.canYoutube ? "link" : "none";
+  if (content === "files") return you.canUpload === true ? "files" : "none";
+  return "none";
+}
+
 // ------------------------------------------------------------------ dropped files
 
 const VIDEO_EXTENSIONS = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts",
@@ -237,6 +252,17 @@ export function isVideoFile(f: { name: string; type: string }): boolean {
   if (f.type !== "" && f.type !== "application/octet-stream") return false;
   const dot = f.name.lastIndexOf(".");
   return dot >= 0 && VIDEO_EXTENSIONS.includes(f.name.substring(dot + 1).toLowerCase());
+}
+
+const AUDIO_EXTENSIONS = ["mp3", "m4a", "aac", "flac", "wav", "ogg", "oga", "opus", "wma", "aif", "aiff", "alac",
+  "mka", "ape", "wv"];
+
+/** Whether a dropped file looks like audio or video (its type, else its extension): what the queue takes. */
+export function isMediaFile(f: { name: string; type: string }): boolean {
+  if (f.type.startsWith("audio/") || isVideoFile(f)) return true;
+  if (f.type !== "" && f.type !== "application/octet-stream") return false;
+  const dot = f.name.lastIndexOf(".");
+  return dot >= 0 && AUDIO_EXTENSIONS.includes(f.name.substring(dot + 1).toLowerCase());
 }
 
 /** The type question for dropped files: none (no videos), for one video, or one type for several. */

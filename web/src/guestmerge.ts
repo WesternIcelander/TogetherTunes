@@ -4,10 +4,14 @@
 import { api } from "./api.js";
 import type { ActorRef } from "./actor.js";
 
-/** `POST /api/me/merge-guest`'s answer. `votes` counts votes and skip votes. */
+/**
+ * `POST /api/me/merge-guest`'s answer. `votes` counts votes and skip votes, `items` the items the
+ * guest added (now the account's), `requestedItems` the items of the guest's link and file requests
+ * newly put into the account's library.
+ */
 export interface MergeResult {
   guest: ActorRef;
-  moved: { entries: number; votes: number };
+  moved: { entries: number; votes: number; items?: number; requestedItems?: number };
 }
 
 /** The guest this browser holds that could be merged into the logged-in account, if any. */

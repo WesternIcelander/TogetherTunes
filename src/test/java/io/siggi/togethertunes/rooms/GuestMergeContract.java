@@ -286,7 +286,7 @@ abstract class GuestMergeContract {
                 GuestMerge.AUDIT_MERGED));
         String details = (String) row("SELECT details_json FROM audit_log WHERE action = ?", GuestMerge.AUDIT_MERGED)
                 .get(0);
-        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":4,\"votes\":5,\"items\":0}"),
+        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":4,\"votes\":5,\"items\":0,\"requestedItems\":0}"),
                 com.google.gson.JsonParser.parseString(details));
 
         // A reload reads what the live state had.
@@ -340,8 +340,57 @@ abstract class GuestMergeContract {
         assertEquals(0L, count("SELECT COUNT(*) FROM library_entries WHERE item_id IN (?, ?)", others, alices));
         String details = (String) row("SELECT details_json FROM audit_log WHERE action = ?", GuestMerge.AUDIT_MERGED)
                 .get(0);
-        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":0,\"votes\":0,\"items\":4}"),
+        assertEquals(com.google.gson.JsonParser.parseString("{\"entries\":0,\"votes\":0,\"items\":4,"
+                        + "\"requestedItems\":0}"),
                 com.google.gson.JsonParser.parseString(details));
         assertEquals(new GuestMerge.Moved(0, 0, 0), new GuestMerge(registry).merge(guestId, bobId, null));
+    }
+    @Test
+    void addsTheItemsOfTheGuestsLinkAndFileRequestsToTheLibrary() throws Exception {
+        String party = room("Party");
+        // A link request of a video Alice fetched first (its type unknown), still queued.
+        String linked = item("video", "uncategorized", aliceId, null, "ready");
+        String e1 = UuidV7.newId();
+        // A file request that already played (history).
+        String uploaded = item("audio", "audio", aliceId, null, "ready");
+        String e2 = UuidV7.newId();
+        // A request by id (not added), a failed link request (not added), one already in Bob's library.
+        String byId = item("audio", "audio", aliceId, null, "ready");
+        String e3 = UuidV7.newId();
+        String failed = item("video", "music_video", aliceId, null, "failed");
+        String e4 = UuidV7.newId();
+        String already = item("audio", "audio", aliceId, null, "ready");
+        String e5 = UuidV7.newId();
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, 5, 'manual')", bobId, already);
+        // Another guest's link request (not added).
+        String others = item("audio", "audio", aliceId, null, "ready");
+        String e6 = UuidV7.newId();
+        Object[][] rows = {{e1, linked, guestId, "queued", "youtube"}, {e2, uploaded, guestId, "played", "upload"},
+                {e3, byId, guestId, "queued", "library"}, {e4, failed, guestId, "queued", "youtube"},
+                {e5, already, guestId, "queued", "youtube"}, {e6, others, otherGuestId, "queued", "youtube"}};
+        for (Object[] r : rows) {
+            sql("INSERT INTO queue_entries (id, room_id, item_id, added_by_guest_id, added_at, state, position,"
+                    + " pinned, via) VALUES (?, ?, ?, ?, 1, ?, ?, 0, ?)", r[0], party, r[1], r[2], r[3], nextPosition++,
+                    r[4]);
+        }
+        reload();
+        clock.advance(1000);
+        List<String> told = new ArrayList<>();
+
+        GuestMerge.Moved moved = new GuestMerge(registry).libraryAddListener(told::add).merge(guestId, bobId, null);
+
+        assertEquals(new GuestMerge.Moved(5, 0, 0, 2), moved);
+        assertEquals(List.of("youtube"), row("SELECT via FROM library_entries WHERE user_id = ? AND item_id = ?",
+                bobId, linked), "a link request of an item someone else fetched first");
+        assertEquals(List.of("uncategorized"), row("SELECT media_type FROM items WHERE id = ?", linked));
+        assertEquals(List.of("upload"), row("SELECT via FROM library_entries WHERE user_id = ? AND item_id = ?",
+                bobId, uploaded));
+        assertEquals(List.of("manual"), row("SELECT via FROM library_entries WHERE user_id = ? AND item_id = ?",
+                bobId, already), "an entry already there stays");
+        assertEquals(0L, count("SELECT COUNT(*) FROM library_entries WHERE user_id = ? AND item_id IN (?, ?, ?)",
+                bobId, byId, failed, others));
+        assertEquals(Set.of(linked, uploaded), Set.copyOf(told));
+        assertEquals(List.of(aliceId), row("SELECT added_by_user_id FROM items WHERE id = ?", linked),
+                "the item stays Alice's");
     }
 }
