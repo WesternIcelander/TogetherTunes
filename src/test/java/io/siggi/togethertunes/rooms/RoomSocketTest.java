@@ -122,7 +122,7 @@ class RoomSocketTest {
         wiring.api().register(router);
         jobs = new IngestJobs(db, clock);
         jobs.statusListener(wiring.registry()); // as Main wires it
-        TestUploads.mediaApi(db, dir, settings, wiring.registry().playingItems()).register(router);
+        TestUploads.mediaApi(db, dir, wiring.registry().mediaAccess()).register(router);
         new MeApi(accounts, new Users(db, passwords, clock), permissions, new Guests(db, settings, false), settings,
                 tickets).register(router);
         wiring.socket().register(router, new WebSockets(new Csrf(ORIGIN, List.of("sid", "gid"))));
@@ -594,6 +594,8 @@ class RoomSocketTest {
         if (cookie != null) {
             b.header("Cookie", cookie);
         }
+        // from the same client as the sockets (connect() sends this header too)
+        b.header("X-Forwarded-For", CLIENT_IP);
         return http.send(b.build(), HttpResponse.BodyHandlers.discarding()).statusCode();
     }
 
@@ -604,8 +606,9 @@ class RoomSocketTest {
 
     /**
      * M3 acceptance: a guest votes and requests as the server AND room policy allow, and gets
-     * {@code 403} for media of an item that is neither current nor next anywhere while
-     * {@code guests.download} is off (the live current/next set of the room executors).
+     * {@code 403} for media of an item that is neither current nor next in a room it is in (the
+     * live current/next sets of the room executors and who is in which room; M9: no
+     * {@code guests.download}).
      */
     @Test
     void guestsVoteAndRequestByPolicyAndOnlyStreamCurrentAndNext() throws Exception {
@@ -635,15 +638,38 @@ class RoomSocketTest {
         assertTrue(you.get("canRequestLibrary").getAsBoolean()); // guests.canRequestLibrary is on by default
         assertFalse(you.get("canSkip").getAsBoolean());
 
-        // --- media: current and next only, while guests.download is off
-        assertFalse(settings.guestsDownload());
+        // --- media: current and next of the guest's room only
         assertEquals(200, media(cookie, song1), "current");
         assertEquals(200, media(cookie, song2), "next");
         assertEquals(403, media(cookie, song3), "queued but not next");
         assertEquals(403, media(cookie, elsewhere), "not in any room");
-        assertEquals(403, media(null, song3), "anonymous too");
-        assertEquals(200, media(null, song1));
         assertEquals(200, call(alice, "GET", "/media/" + elsewhere + "/audio.m4a", null).statusCode(), "users always");
+        // current in another room the guest isn't in: refused
+        room("elsewhere", "public", "vote");
+        owner.ok("{\"type\":\"join\",\"room\":\"elsewhere\"}");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + elsewhere + "\"}");
+        assertTrue(wiring.registry().playingItems().isCurrentOrNext(elsewhere));
+        assertEquals(403, media(cookie, elsewhere), "playing, but in a room the guest isn't in");
+        owner.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        // an anonymous visitor: only while it is in the room (recognised by its address)
+        assertEquals(403, media(null, song1), "anonymous, not in the room");
+        Client anon = connect(null, null);
+        anon.next("identity");
+        anon.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        assertEquals(200, media(null, song1));
+        assertEquals(200, media(null, song2));
+        assertEquals(403, media(null, song3), "anonymous: not next either");
+        assertEquals(403, media(null, elsewhere));
+        anon.ok("{\"type\":\"leave\"}");
+        assertEquals(403, media(null, song1), "left the room");
+        anon.ok("{\"type\":\"join\",\"room\":\"policy\"}");
+        assertEquals(200, media(null, song1));
+        anon.close();
+        long closedBy = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (media(null, song1) != 403 && System.nanoTime() < closedBy) {
+            Thread.sleep(20);
+        }
+        assertEquals(403, media(null, song1), "socket closed");
 
         // --- defaults (server and room on): the guest votes, vote-skips and requests
         assertEquals(1, guest.ok("{\"type\":\"vote\",\"entryId\":\"" + entry3 + "\",\"value\":1}").get("votes")
@@ -752,11 +778,11 @@ class RoomSocketTest {
         assertEquals(200, media(cookie, req1));
         assertEquals(403, media(cookie, song1));
 
-        // guests.download on: every item
-        settings.set(Settings.GUESTS_DOWNLOAD, true);
-        assertEquals(200, media(cookie, song1));
-        assertEquals(200, media(cookie, elsewhere));
-        assertEquals(200, media(null, elsewhere));
+        // the guest leaves the room: nothing any more
+        guest.ok("{\"type\":\"leave\"}");
+        assertEquals(403, media(cookie, song2));
+        assertEquals(403, media(cookie, req1));
+        assertEquals(403, media(cookie, elsewhere));
     }
 
     private HttpResponse<String> callCookie(String cookie, String path) throws Exception {

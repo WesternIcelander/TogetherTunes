@@ -102,7 +102,7 @@ public record UploadMetadata(String title, String artist, String album) {
     }
 
     /**
-     * Cleans multi-line text (a playlist description, a share message): line breaks are kept
+     * Cleans multi-line text (a playlist description): line breaks are kept
      * (normalised to {@code \n}, at most two in a row), tabs and other spaces become a space,
      * other control and format characters (except ZWJ) are removed, each line is trimmed at its
      * end and the whole is trimmed.

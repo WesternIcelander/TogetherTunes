@@ -809,8 +809,6 @@ abstract class ItemsContract {
         exec("UPDATE items SET source = 'youtube', youtube_id = 'dQw4w9WgXcQ', title = 'Never' WHERE id = ?", id);
         entry(bob, id);
         String playlist = playlist(bob, id);
-        exec("INSERT INTO shares (id, item_id, from_user_id, to_user_id, created_at) VALUES (?, ?, ?, ?, 1)",
-                UuidV7.newId(), id, alice.userId(), bob.userId());
         String room = room(alice);
         String played = queueEntry(room, id, "played");
         String skipped = queueEntry(room, id, "skipped");
@@ -836,7 +834,7 @@ abstract class ItemsContract {
         clock.advance(1000);
         items.deleteRecord(bob, id, "2001:db8::2");
 
-        for (String table : List.of("library_entries", "playlist_entries", "shares", "queue_entries", "uploads",
+        for (String table : List.of("library_entries", "playlist_entries", "queue_entries", "uploads",
                 "ingest_jobs", "media_versions", "media_undo")) {
             assertEquals(0, count("SELECT COUNT(*) FROM " + table + " WHERE item_id = ?", id), table);
         }

@@ -76,7 +76,9 @@ abstract class SettingsContract {
         assertFalse(settings.guestsCanUpload());
         assertFalse(settings.guestsCanYoutube());
         assertEquals(new UploadQuota(3, 500L * 1024 * 1024), settings.guestsUploadQuota());
-        assertFalse(settings.guestsDownload());
+        // guests.download is gone (M9): guests get media only for what a room they are in plays
+        assertFalse(Settings.KEYS.containsKey("guests.download"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("guests.download", "true"));
         assertTrue(settings.ytdlpEnabled());
         assertNull(settings.ytdlpCookiesFile());
         assertEquals(14, settings.retentionUnreferencedDays());
@@ -110,7 +112,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(42, all.size());
+        assertEquals(41, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -246,7 +248,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(42, settings.all().size());
+        assertEquals(41, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

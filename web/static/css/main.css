@@ -334,25 +334,18 @@ button.danger {
   margin: 0.5rem 0;
 }
 
-ul.activity,
-ul.shares {
+ul.activity {
   list-style: none;
   padding: 0;
 }
 
-ul.activity > li,
-ul.shares > li {
+ul.activity > li {
   padding: 0.4rem 0;
   border-bottom: 1px solid rgba(128, 128, 128, 0.3);
 }
 
 ul.activity progress {
   width: 10rem;
-}
-
-.share-message {
-  margin: 0.25rem 0 0 1rem;
-  white-space: pre-line;
 }
 
 .description {

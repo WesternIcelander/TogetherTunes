@@ -108,8 +108,6 @@ import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.PlaylistsApi;
-import io.siggi.togethertunes.library.Shares;
-import io.siggi.togethertunes.library.SharesApi;
 import io.siggi.togethertunes.library.UserLibraries;
 import io.siggi.togethertunes.library.UserLibrariesApi;
 import io.siggi.togethertunes.library.UploadsApi;
@@ -414,11 +412,8 @@ public final class Main {
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
-        Shares shares = new Shares(database, youtubeImports, Clock.systemUTC());
-        shares.libraryAddListener(qualityOnLibraryAdd);
-        SharesApi sharesApi = new SharesApi(shares, addMedia);
-        // Guests may fetch the current and next items of any room (the room executors' live set).
-        MediaApi mediaApi = new MediaApi(database, dataDir, settings, roomRegistry.playingItems());
+        // Guests and anonymous visitors may fetch the current and next items of the rooms they are in.
+        MediaApi mediaApi = new MediaApi(database, dataDir, roomRegistry.mediaAccess());
         // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).
         ingest.jobs().statusListener(roomRegistry);
         // An old media version is kept while its item is current or next in a room (and for its duration + 5 min).
@@ -451,7 +446,7 @@ public final class Main {
                 roomRegistry, roomQueue, database, Clock.systemUTC());
         roomSocket.covers(new io.siggi.togethertunes.library.Covers(dataDir));
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, providersApi, activity,
-                uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, sharesApi, userLibrariesApi, mediaApi,
+                uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
         // http.insecureBaseUrl: plain HTTP serves only stream URLs (by slug, or a private room's
         // token); the rest gets a 301 to https (docs/architecture.md#plain-http).
@@ -1264,8 +1259,7 @@ public final class Main {
      * {@link UploadsApi} chunked uploads ({@code /api/uploads...}), {@link YoutubeImportsApi} YouTube
      * imports ({@code /api/imports/youtube}), {@link LibraryApi} the caller's library
      * ({@code /api/library...}), {@link ItemsApi} items by id ({@code /api/items/...}),
-     * {@link PlaylistsApi} the caller's playlists ({@code /api/playlists...}), {@link SharesApi}
-     * sharing items ({@code /api/shares...}), {@link UserLibrariesApi} other users' libraries and
+     * {@link PlaylistsApi} the caller's playlists ({@code /api/playlists...}), {@link UserLibrariesApi} other users' libraries and
      * playlists for {@code library.viewAll} ({@code /api/users...}), {@link MediaApi} the items'
      * media files ({@code /media/{id}/{file}}), {@link RoomsApi} rooms and room roles
      * ({@code /api/rooms...}), {@link DiagnosticsApi} the room page's listen-mode diagnostics report
@@ -1277,7 +1271,7 @@ public final class Main {
                          SessionsApi sessions, MeApi me, AdminApi admin, ProvidersApi providers,
                          AdminActivityApi activity,
                          UploadsApi uploads, YoutubeImportsApi youtube, LibraryApi library,
-                         ItemsApi items, PlaylistsApi playlists, SharesApi shares,
+                         ItemsApi items, PlaylistsApi playlists,
                          UserLibrariesApi userLibraries, MediaApi media, RoomsApi rooms, RoomSocket roomSocket) {
         Csrf csrf = new Csrf(config.publicBaseUrl(),
                 List.of(ActorResolver.SESSION_COOKIE, ActorResolver.GUEST_COOKIE));
@@ -1294,7 +1288,6 @@ public final class Main {
         library.register(router);
         items.register(router);
         playlists.register(router);
-        shares.register(router);
         userLibraries.register(router);
         media.register(router);
         rooms.register(router);

@@ -512,6 +512,12 @@ public final class RoomSocket {
             actor = guest.actor();
             credentials = null;
             sendIdentity();
+            synchronized (lock) {
+                if (joined != null) {
+                    // From now on the guest's media requests count for this room (not its address's).
+                    registry.mediaAccess().enter(id, actor, clientIp, joined.roomId());
+                }
+            }
             Joined j = joined();
             if (j != null) {
                 RoomActor a;
@@ -558,6 +564,7 @@ public final class RoomSocket {
                 }
                 synchronized (lock) {
                     joined = j;
+                    registry.mediaAccess().enter(id, who, clientIp, roomId);
                 }
                 try {
                     ex.call(tx -> {
@@ -574,6 +581,7 @@ public final class RoomSocket {
                     synchronized (lock) {
                         if (joined == j) {
                             joined = null;
+                            registry.mediaAccess().exit(id);
                         }
                     }
                     if (e instanceof RoomClosedException && attempt < 3) {
@@ -727,6 +735,7 @@ public final class RoomSocket {
             synchronized (lock) {
                 j = joined;
                 joined = null;
+                registry.mediaAccess().exit(id);
             }
             if (j == null) {
                 return;
@@ -740,6 +749,7 @@ public final class RoomSocket {
             synchronized (lock) {
                 if (joined != null && joined.broadcaster() == from) {
                     joined = null;
+                    registry.mediaAccess().exit(id);
                 }
             }
         }

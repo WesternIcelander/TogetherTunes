@@ -172,9 +172,9 @@ class JobsApiTest {
         String b = item("Bob video", bobId, "youtube", "pending");
         jobs.enqueue(b, Kind.YOUTUBE);
         clock.advance(1);
-        // Bob shared his item with Alice: it is in her library too
+        // Bob's item, which Alice added to her library too
         String s = item("Shared", bobId, "upload", "ready");
-        library(s, aliceId, "share");
+        library(s, aliceId, "manual");
         jobs.enqueue(s, Kind.QUALITY, IngestJob.Tier.QUALITY);
         clock.advance(1);
         // a guest's request: in nobody's library

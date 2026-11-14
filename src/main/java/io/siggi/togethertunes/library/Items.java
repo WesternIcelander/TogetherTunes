@@ -933,7 +933,7 @@ public final class Items {
     /**
      * Delete record ({@code docs/media-types.md#after-media-is-deleted}): removes the item as if it
      * had never existed: its files (and, through the purge listener, its overlay re-encodes and
-     * cards), media versions and undo, library, playlist and share entries, its queue entries
+     * cards), media versions and undo, library and playlist entries, its queue entries
      * (room history, with their votes), uploads that produced it, every ingest job, and the
      * item row. Only the audit row {@code item.deleted} (with its title) stays. A YouTube item's
      * video ID is free afterwards: adding the link again creates a new item. The caller checks
@@ -973,8 +973,7 @@ public final class Items {
             MediaVersions.forgetAll(c, itemId);
             PurgedEntries.removeForItem(c, itemId, now);
             // Votes and skip votes go with their entries (ON DELETE CASCADE).
-            for (String sql : List.of("DELETE FROM shares WHERE item_id = ?",
-                    "DELETE FROM queue_entries WHERE item_id = ?",
+            for (String sql : List.of("DELETE FROM queue_entries WHERE item_id = ?",
                     "DELETE FROM uploads WHERE item_id = ?",
                     "DELETE FROM ingest_jobs WHERE item_id = ?",
                     "DELETE FROM items WHERE id = ?")) {

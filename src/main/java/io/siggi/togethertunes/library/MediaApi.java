@@ -13,8 +13,7 @@ import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.ingest.MediaVersions;
-import io.siggi.togethertunes.rooms.PlayingItems;
-import io.siggi.togethertunes.settings.Settings;
+import io.siggi.togethertunes.rooms.GuestMediaAccess;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -50,10 +49,12 @@ import java.util.regex.Pattern;
  *       {@code handleRequestWithFile} (see CLAUDE.md).</li>
  *   <li><b>Access</b>, decided once when the request starts (a response that is already streaming
  *       isn't cut off): {@code cover.jpg} for anyone (item metadata is visible by direct link). The
- *       other files for logged-in users; for guests and anonymous visitors only if
- *       {@code guests.download} is on or the item is the current or next entry of some room
- *       ({@link PlayingItems}), else {@code 403 forbidden}. Access is decided before the item is
- *       looked up, so a refused caller learns nothing about which items exist.</li>
+ *       other files for logged-in users; for guests and anonymous visitors only while the item is
+ *       the current or next entry of a room they are in ({@link GuestMediaAccess}: one of their
+ *       sockets joined it; an anonymous visitor is recognised by its IP key), else
+ *       {@code 403 forbidden}. There is no setting that lets guests download anything else.
+ *       Access is decided before the item is looked up, so a refused caller learns nothing about
+ *       which items exist.</li>
  *   <li><b>Not found:</b> {@code 404 item_not_found} (unknown or malformed id),
  *       {@code 404 not_found} (an unknown file name), {@code 404 file_not_found} (the item has no
  *       such file: not ingested yet, failed, purged, an audio item's {@code mezz.mp4}, no cover, or
@@ -120,20 +121,18 @@ public final class MediaApi {
 
     private final Database db;
     private final Path mediaDir;
-    private final Settings settings;
-    private final PlayingItems playing;
+    private final GuestMediaAccess access;
     private final Clock clock;
     private final RateLimiter views;
 
-    public MediaApi(Database db, DataDir dataDir, Settings settings, PlayingItems playing) {
-        this(db, dataDir, settings, playing, Clock.systemUTC());
+    public MediaApi(Database db, DataDir dataDir, GuestMediaAccess access) {
+        this(db, dataDir, access, Clock.systemUTC());
     }
 
-    public MediaApi(Database db, DataDir dataDir, Settings settings, PlayingItems playing, Clock clock) {
+    public MediaApi(Database db, DataDir dataDir, GuestMediaAccess access, Clock clock) {
         this.db = Objects.requireNonNull(db);
         this.mediaDir = dataDir.media().toAbsolutePath().normalize();
-        this.settings = Objects.requireNonNull(settings);
-        this.playing = Objects.requireNonNull(playing);
+        this.access = Objects.requireNonNull(access);
         this.clock = Objects.requireNonNull(clock);
         this.views = new RateLimiter("views", 1, VIEW_INTERVAL_MS, clock);
     }
@@ -148,8 +147,8 @@ public final class MediaApi {
     void view(Request request, Response response) throws IOException, SQLException {
         Actor actor = ActorResolver.actor(request);
         String itemId = request.pathParam("id");
-        if (!allowed(actor, itemId, "audio.m4a")) {
-            throw new HttpError(403, "forbidden", "Guests can only play what a room is playing");
+        if (!allowed(actor, request.clientIp(), itemId, "audio.m4a")) {
+            throw forbidden();
         }
         if (!UuidV7.isValid(itemId)) {
             throw itemNotFound();
@@ -213,8 +212,8 @@ public final class MediaApi {
         if (versionParam != null && !VERSION.matcher(versionParam).matches()) {
             throw HttpError.notFound();
         }
-        if (!allowed(ActorResolver.actor(request), itemId, name)) {
-            throw new HttpError(403, "forbidden", "Guests can only play what a room is playing");
+        if (!allowed(ActorResolver.actor(request), request.clientIp(), itemId, name)) {
+            throw forbidden();
         }
         if (!UuidV7.isValid(itemId)) {
             throw itemNotFound();
@@ -236,11 +235,15 @@ public final class MediaApi {
     }
 
     /** The access rule for {@code actor} (see the class comment). */
-    boolean allowed(Actor actor, String itemId, String name) throws SQLException {
+    boolean allowed(Actor actor, String clientIp, String itemId, String name) {
         if (name.equals("cover.jpg") || actor instanceof Actor.User) {
             return true;
         }
-        return playing.isCurrentOrNext(itemId) || settings.guestsDownload();
+        return access.allowed(actor, clientIp, itemId);
+    }
+
+    private static HttpError forbidden() {
+        return new HttpError(403, "forbidden", "Guests can only play what a room they are in is playing");
     }
 
     /** A served name's file name, and the item's current media version. */

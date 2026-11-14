@@ -16,8 +16,6 @@ import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.PlaylistsApi;
-import io.siggi.togethertunes.library.Shares;
-import io.siggi.togethertunes.library.SharesApi;
 import io.siggi.togethertunes.library.UserLibraries;
 import io.siggi.togethertunes.library.UserLibrariesApi;
 import io.siggi.togethertunes.library.Uploads;
@@ -96,12 +94,6 @@ public final class TestUploads {
                 policy(permissions, new Settings(db, config)));
     }
 
-    /** The shares API over YouTube imports with the configured tools. */
-    public static SharesApi sharesApi(Database db, Config config, Permissions permissions, Clock clock) {
-        return new SharesApi(new Shares(db, youtube(db, config, Tools.from(config), clock), clock),
-                policy(permissions, new Settings(db, config)));
-    }
-
     /** The {@code library.viewAll} API over YouTube imports with the configured tools. */
     public static UserLibrariesApi userLibrariesApi(Database db, Config config, Permissions permissions, Clock clock) {
         YoutubeImports youtube = youtube(db, config, Tools.from(config), clock);
@@ -126,17 +118,16 @@ public final class TestUploads {
         }
     }
 
-    /** The media files API with data in {@code <dir>/data}, rooms stubbed by {@code playing}. */
-    public static MediaApi mediaApi(Database db, Path dir, Settings settings,
-                                    io.siggi.togethertunes.rooms.PlayingItems playing) {
-        return mediaApi(db, dir, settings, playing, java.time.Clock.systemUTC());
+    /** The media files API with data in {@code <dir>/data}, the rooms' guest access stubbed by {@code access}. */
+    public static MediaApi mediaApi(Database db, Path dir, io.siggi.togethertunes.rooms.GuestMediaAccess access) {
+        return mediaApi(db, dir, access, java.time.Clock.systemUTC());
     }
 
-    /** {@link #mediaApi(Database, Path, Settings, io.siggi.togethertunes.rooms.PlayingItems)} on {@code clock} (views). */
-    public static MediaApi mediaApi(Database db, Path dir, Settings settings,
-                                    io.siggi.togethertunes.rooms.PlayingItems playing, java.time.Clock clock) {
+    /** {@link #mediaApi(Database, Path, io.siggi.togethertunes.rooms.GuestMediaAccess)} on {@code clock} (views). */
+    public static MediaApi mediaApi(Database db, Path dir, io.siggi.togethertunes.rooms.GuestMediaAccess access,
+                                    java.time.Clock clock) {
         try {
-            return new MediaApi(db, DataDir.create(dir.resolve("data")), settings, playing, clock);
+            return new MediaApi(db, DataDir.create(dir.resolve("data")), access, clock);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

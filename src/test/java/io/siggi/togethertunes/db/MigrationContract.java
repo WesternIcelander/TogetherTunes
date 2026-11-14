@@ -389,6 +389,51 @@ abstract class MigrationContract {
         });
     }
 
+    /**
+     * 0027 removes item sharing and {@code guests.download} (docs/ui.md#existing-features-in-the-new-ui):
+     * entries a share made become ordinary ({@code via='manual'}) library entries, the other entries
+     * are untouched, {@code shared_by_user_id} and {@code shares} are gone, the stored setting is
+     * deleted (other settings kept).
+     */
+    @Test
+    void removeSharingKeepsSharedEntriesAsOrdinaryOnes() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration removal = files.stream().filter(m -> m.name().contains("remove_sharing")).findFirst().orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < removal.version()).toList()).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u1', 'U1', 1), ('u2', 'u2', 'U2', 1)");
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ('i1', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1),"
+                + " ('i2', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        exec("INSERT INTO library_entries (user_id, item_id, added_at, via, shared_by_user_id) VALUES"
+                + " ('u1', 'i1', 5, 'upload', NULL), ('u2', 'i1', 7, 'share', 'u1'), ('u2', 'i2', 9, 'youtube', NULL)");
+        exec("INSERT INTO shares (id, item_id, from_user_id, to_user_id, message, created_at, seen)"
+                + " VALUES ('s1', 'i1', 'u1', 'u2', 'hi', 7, 0)");
+        exec("INSERT INTO settings (key, value_json) VALUES ('guests.download', 'true'), ('guests.canVote', 'false')");
+        new MigrationRunner(db, files).migrate();
+        Map<String, String> entries = new java.util.HashMap<>();
+        Map<String, String> settings = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement()) {
+                try (ResultSet rs = st.executeQuery("SELECT user_id, item_id, added_at, via FROM library_entries")) {
+                    while (rs.next()) {
+                        entries.put(rs.getString(1) + "/" + rs.getString(2), rs.getLong(3) + " " + rs.getString(4));
+                    }
+                }
+                try (ResultSet rs = st.executeQuery("SELECT key, value_json FROM settings")) {
+                    while (rs.next()) {
+                        settings.put(rs.getString(1), rs.getString(2));
+                    }
+                }
+            }
+            return null;
+        });
+        assertEquals(Map.of("u1/i1", "5 upload", "u2/i1", "7 manual", "u2/i2", "9 youtube"), entries);
+        assertEquals(Map.of("guests.canVote", "false"), settings);
+        assertFalse(tableExists("shares"));
+        assertThrows(SQLException.class, () -> exec("SELECT shared_by_user_id FROM library_entries"));
+    }
+
     /** Runs {@code sql} on the write connection. */
     protected void exec(String sql) throws SQLException {
         db.write((Connection c) -> {

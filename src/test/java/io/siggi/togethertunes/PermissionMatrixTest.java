@@ -279,7 +279,7 @@ class PermissionMatrixTest {
             // A view (playback outside a room): whoever may play the item, as for its media files.
             row("POST /api/items/{id}/view", c -> Call.post("/api/items/" + c.itemId() + "/view", null),
                     403, 403, 204, 204),
-            // Media files: users always; guests only with guests.download (off) or a playing item (no rooms yet).
+            // Media files: users always; guests and anonymous only for what a room they are in plays (none here).
             row("GET /media/{id}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/audio.m4a"), 403, 403, 200, 200),
             row("GET /media/{id}/v/{version}/{file}", c -> Call.get("/media/" + c.mediaItemId() + "/v/0/audio.m4a"),
                     403, 403, 200, 200),
@@ -298,13 +298,6 @@ class PermissionMatrixTest {
                     "{\"beforeEntryId\":null}"), 401, 401, 200, 200),
             row("DELETE /api/playlists/{id}/entries/{entryId}", c -> Call.delete(c.playlistEntryPath()),
                     401, 401, 204, 204),
-
-            // Sharing: users only (users can't share with guests, and guests have no library to
-            // receive into). Any user may share any item. SharesContract covers the rules.
-            row("GET /api/shares", c -> Call.get("/api/shares?direction=in&limit=10"), 401, 401, 200, 200),
-            row("POST /api/shares", c -> Call.post("/api/shares", "{\"itemId\":\"" + c.itemId()
-                    + "\",\"toUsername\":\"" + c.targetUsername() + "\"}"), 401, 401, 201, 201),
-            row("POST /api/shares/seen", c -> Call.post("/api/shares/seen", "{\"all\":true}"), 401, 401, 200, 200),
 
             // Other users' libraries and playlists, read-only: library.viewAll (admins only by
             // default). UserLibrariesContract covers the contents.
@@ -425,9 +418,8 @@ class PermissionMatrixTest {
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
-                TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
-                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
+                TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),
                 roomsWiring.api(), roomsWiring.socket());
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
 

@@ -34,6 +34,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public final class LivePlayingItems implements PlayingItems, WantedItems {
     /** item id -> how many rooms list it (absent: none). */
     private final ConcurrentHashMap<String, Integer> counts = new ConcurrentHashMap<>();
+    /** room id -> the items it lists, for the per-room check; replaced (never changed) under {@link #lock}. */
+    private final ConcurrentHashMap<String, Set<String>> roomItems = new ConcurrentHashMap<>();
     /** room id -> what the room published and which executor published it. Guarded by {@link #lock}. */
     private final Map<String, Published> byRoom = new HashMap<>();
     /** A ReentrantLock, not synchronized: the critical sections are short but run on virtual threads. */
@@ -84,8 +86,17 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
         return itemId != null && counts.containsKey(itemId);
     }
 
+    @Override
+    public boolean isCurrentOrNextIn(String roomId, String itemId) {
+        if (roomId == null || itemId == null) {
+            return false;
+        }
+        Set<String> items = roomItems.get(roomId);
+        return items != null && items.contains(itemId);
+    }
+
     /**
-     * The items of a room that guests may fetch right now: the current entry's item (playing or
+     * The items of a room that its guests and anonymous visitors may fetch right now: the current entry's item (playing or
      * paused), the first queued entry in play order, and the first queued entry that is ready to
      * play ({@link Playback#nextEligible}; it differs from the first one when that one is still
      * being ingested and would be skipped over). Suggestions don't count: they don't play until
@@ -134,6 +145,7 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
             }
             ranksChanged = old == null ? !rankCopy.isEmpty() : !old.ranks.equals(rankCopy);
             byRoom.put(roomId, new Published(owner, copy, rankCopy));
+            roomItems.put(roomId, copy);
             for (String item : copy) {
                 if (old == null || !old.items.contains(item)) {
                     counts.merge(item, 1, Integer::sum);
@@ -167,6 +179,7 @@ public final class LivePlayingItems implements PlayingItems, WantedItems {
                 return;
             }
             byRoom.remove(roomId);
+            roomItems.remove(roomId);
             for (String item : old.items) {
                 decrement(item);
             }

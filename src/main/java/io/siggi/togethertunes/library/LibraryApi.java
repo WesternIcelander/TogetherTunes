@@ -37,7 +37,7 @@ import java.util.Objects;
  *   <li>{@code DELETE /api/library/{itemId}} → {@code 204}; {@code 404 not_in_library}.</li>
  * </ul>
  * An entry is {@code {"item": {"id", "kind", "title", "artist"?, "album"?, "durationMs"?,
- * "source", "youtubeId"?, "status", "presentAsAudio"}, "addedAt", "via", "sharedBy"?: actor}}.
+ * "source", "youtubeId"?, "status", "presentAsAudio"}, "addedAt", "via"}}.
  */
 public final class LibraryApi {
     private final Library library;

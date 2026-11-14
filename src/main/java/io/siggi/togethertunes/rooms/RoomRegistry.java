@@ -31,6 +31,7 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
     private final Clock clock;
     private final PackagerHook packager;
     private final LivePlayingItems playing = new LivePlayingItems();
+    private final RoomViewers viewers = new RoomViewers(playing);
     private final Map<String, RoomExecutor> executors = new ConcurrentHashMap<>();
     /** Serialises loading (a ReentrantLock, not synchronized: loading does JDBC on virtual threads). */
     private final ReentrantLock loadLock = new ReentrantLock();
@@ -144,10 +145,19 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
 
     /**
      * The current and next items of every loaded room, kept up to date by the room executors:
-     * what guests may fetch from {@code /media} when {@code guests.download} is off.
+     * what the guests and anonymous visitors in each room may fetch from {@code /media}.
      */
     public PlayingItems playingItems() {
         return playing;
+    }
+
+    /**
+     * Who is in which room, and the media access rule built on it ({@link GuestMediaAccess}): a
+     * guest or anonymous visitor gets an item's media only while a room they are in plays it or
+     * plays it next. The room socket keeps it up to date.
+     */
+    public RoomViewers mediaAccess() {
+        return viewers;
     }
 
     /**

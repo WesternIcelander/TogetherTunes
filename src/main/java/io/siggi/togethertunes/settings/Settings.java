@@ -57,7 +57,6 @@ public final class Settings {
     public static final SettingKey<Boolean> GUESTS_CAN_YOUTUBE = SettingKey.bool("guests.canYoutube", false);
     public static final SettingKey<UploadQuota> GUESTS_UPLOAD_QUOTA = SettingKey.uploadQuota(
             "guests.uploadQuota", new UploadQuota(3, 500L * 1024 * 1024));
-    public static final SettingKey<Boolean> GUESTS_DOWNLOAD = SettingKey.bool("guests.download", false);
     /**
      * Words and phrases custom guest names must not contain (compared ignoring case, NFKC
      * normalisation, spaces and punctuation; see {@code auth.GuestNameRules}). Empty by default.
@@ -220,7 +219,6 @@ public final class Settings {
         for (SettingKey<?> k : List.of(REGISTRATION_MODE,
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
-                GUESTS_DOWNLOAD,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS,
                 RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, RETENTION_PURGED_ENTRY_DAYS,
                 INGEST_MAX_DURATION_SECONDS,
@@ -469,10 +467,6 @@ public final class Settings {
 
     public UploadQuota guestsUploadQuota() throws SQLException {
         return get(GUESTS_UPLOAD_QUOTA);
-    }
-
-    public boolean guestsDownload() throws SQLException {
-        return get(GUESTS_DOWNLOAD);
     }
 
     public boolean ytdlpEnabled() throws SQLException {

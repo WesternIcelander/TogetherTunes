@@ -108,15 +108,14 @@ abstract class LibraryContract {
         return item("audio", title, artist, album, "ready", null);
     }
 
-    private void entry(Actor.User user, String itemId, long addedAt, String via, String sharedBy) throws SQLException {
+    private void entry(Actor.User user, String itemId, long addedAt, String via) throws SQLException {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO library_entries (user_id, item_id, added_at,"
-                    + " via, shared_by_user_id) VALUES (?, ?, ?, ?, ?)")) {
+                    + " via) VALUES (?, ?, ?, ?)")) {
                 ps.setString(1, user.userId());
                 ps.setString(2, itemId);
                 ps.setLong(3, addedAt);
                 ps.setString(4, via);
-                ps.setString(5, sharedBy);
                 ps.executeUpdate();
             }
             return null;
@@ -158,7 +157,7 @@ abstract class LibraryContract {
         for (long t : at) {
             String id = song("Song " + t, null, null);
             created.add(id);
-            entry(alice, id, t, "upload", null);
+            entry(alice, id, t, "upload");
         }
         expected.add(created.get(6));
         expected.add(created.get(5));
@@ -168,7 +167,7 @@ abstract class LibraryContract {
         expected.add(created.get(1));
         expected.add(created.get(0));
         // bob's library is separate
-        entry(bob, song("Bob's", null, null), 999, "upload", null);
+        entry(bob, song("Bob's", null, null), 999, "upload");
 
         assertEquals(expected, all(alice, null, null));
         List<String> paged = new ArrayList<>();
@@ -200,16 +199,13 @@ abstract class LibraryContract {
     @Test
     void entriesCarryTheItemAndHowItCameThere() throws Exception {
         String id = item("video", "Clip", "Band", "LP", "ready", "dQw4w9WgXcQ");
-        entry(alice, id, 50, "share", bob.userId());
+        entry(alice, id, 50, "youtube");
         Library.Entry e = library.list(alice.userId(), null, null, null, 10).items().get(0);
         assertEquals(new Library.ItemView(id, "video", "Clip", "Band", "LP", 1000L, "youtube", "dQw4w9WgXcQ",
                 "ready", "uncategorized", null), e.item());
         assertFalse(e.item().presentAsAudio());
         assertEquals(50, e.addedAt());
-        assertEquals("share", e.via());
-        assertEquals(bob.userId(), e.sharedBy().id());
-        assertEquals("Bob", e.sharedBy().name());
-        assertFalse(e.sharedBy().isGuest());
+        assertEquals("youtube", e.via());
         assertEquals(e, library.get(alice.userId(), id));
         assertNull(library.get(bob.userId(), id));
     }
@@ -223,9 +219,9 @@ abstract class LibraryContract {
         String e = item("video", "Opera Video", "Somebody", null, "ready", null);
         long t = 1;
         for (String id : List.of(a, b, c, d, e)) {
-            entry(alice, id, t++, "upload", null);
+            entry(alice, id, t++, "upload");
         }
-        entry(bob, song("Queen B-side", "Queen", null), 1, "upload", null);
+        entry(bob, song("Queen B-side", "Queen", null), 1, "upload");
 
         assertEquals(List.of(b, a), all(alice, "queen", null));
         assertEquals(List.of(a), all(alice, "  QUEEN   opera ", null)); // words in different columns
@@ -297,7 +293,7 @@ abstract class LibraryContract {
         assertFalse(again.created());
         assertEquals(added.entry(), again.entry());
         // an existing "upload" entry keeps its via
-        entry(bob, ready, 7, "upload", null);
+        entry(bob, ready, 7, "upload");
         assertEquals("upload", library.add(bob, ready, () -> {
         }).entry().via());
 
@@ -325,7 +321,7 @@ abstract class LibraryContract {
         assertEquals(List.of(), all(alice, null, null));
         assertTrue(jobs.latestForItem(purged).isEmpty());
         // already in the library (from before it expired): just reported
-        entry(alice, purged, 3, "upload", null);
+        entry(alice, purged, 3, "upload");
         assertFalse(library.add(alice, purged, () -> {
         }).created());
     }
@@ -429,8 +425,8 @@ abstract class LibraryContract {
     @Test
     void removeDeletesOnlyTheEntryAndMarksTheItem() throws Exception {
         String id = song("Song", null, null);
-        entry(alice, id, 10, "upload", null);
-        entry(bob, id, 11, "share", alice.userId());
+        entry(alice, id, 10, "upload");
+        entry(bob, id, 11, "manual");
         clock.set(1_800_000_300_000L);
         assertTrue(library.remove(alice.userId(), id));
         assertEquals(1_800_000_300_000L, lastReferenced(id));

@@ -1001,7 +1001,7 @@ abstract class IngestJobsContract {
         }
     }
 
-    /** A user's lists hold only items in their library (shares count); positions stay global. */
+    /** A user's lists hold only items in their library (any entry); positions stay global. */
     @Test
     void aUsersListHoldsOnlyTheirLibrarysItems() throws SQLException {
         JobList list = new JobList(db, jobs, clock);
@@ -1017,7 +1017,7 @@ abstract class IngestJobsContract {
         clock.advance(1);
         String shared = fixtures.item("ready");
         fixtures.addToLibrary(shared, carol, "upload");
-        fixtures.addToLibrary(shared, bob, "share");
+        fixtures.addToLibrary(shared, bob, "manual");
         IngestJob sharedJob = jobs.enqueue(shared, Kind.QUALITY, Tier.QUALITY);
         clock.advance(1);
         IngestJob nobodys = jobs.enqueue(fixtures.item("pending"), Kind.UPLOAD);

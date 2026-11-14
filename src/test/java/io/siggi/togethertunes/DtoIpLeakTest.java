@@ -47,7 +47,6 @@ import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.Playlists;
-import io.siggi.togethertunes.library.Shares;
 import io.siggi.togethertunes.library.UserLibraries;
 import io.siggi.togethertunes.settings.GuestIdentity;
 import io.siggi.togethertunes.settings.Settings;
@@ -151,8 +150,6 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Playlists$Page",
             "io.siggi.togethertunes.library.Playlists$Playlist",
             "io.siggi.togethertunes.library.Playlists$PlaylistPage",
-            "io.siggi.togethertunes.library.Shares$Page",
-            "io.siggi.togethertunes.library.Shares$Share",
             "io.siggi.togethertunes.library.UserLibraries$UserPage",
             "io.siggi.togethertunes.library.UserLibraries$UserSummary",
             "io.siggi.togethertunes.rooms.Rooms$Member",
@@ -354,7 +351,6 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
             Map.entry("io.siggi.togethertunes.library.Playlists$ItemRow", "item lookup"),
-            Map.entry("io.siggi.togethertunes.library.Shares$ItemRow", "item lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Completed", "complete's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.Uploads$ChunkRange", "parsed Content-Range"),
@@ -379,6 +375,11 @@ class DtoIpLeakTest {
                     + " messages"),
             Map.entry("io.siggi.togethertunes.rooms.RoomChange", "executor -> listeners/packager, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.LivePlayingItems$Published", "a room's current/next item ids, in memory only"),
+            Map.entry("io.siggi.togethertunes.auth.UserSettings$Prefs",
+                    "a user's preferences; the API sends toJson() (three preference values, no IP)"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomViewers$Seat",
+                    "which room a guest's or anonymous socket is in (a guest id or an IP key), in memory only for"
+                    + " the media access check; never sent"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$RoomUpdated", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$TimelineChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryStateChanged", "executor -> listeners, in memory only"),
@@ -481,7 +482,6 @@ class DtoIpLeakTest {
     private Library library;
     private Items items;
     private Playlists playlists;
-    private Shares shares;
     private io.siggi.togethertunes.rooms.Rooms rooms;
     private io.siggi.togethertunes.rooms.RoomRegistry roomRegistry;
     private io.siggi.togethertunes.rooms.RoomGuests roomGuests;
@@ -535,7 +535,6 @@ class DtoIpLeakTest {
         roomRegistry = new io.siggi.togethertunes.rooms.RoomRegistry(database, clock,
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
         roomGuests = new io.siggi.togethertunes.rooms.RoomGuests(database, settings, permissions, rooms, roomRegistry);
-        shares = new Shares(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
         AuthRateLimits limits = new AuthRateLimits(new RateLimiter("setup", 1000, 1, clock),
                 new RateLimiter("register", 1000, 1, clock), new RateLimiter("login", 1000, 1, clock));
         TestUploads.RoomsWiring roomsWiring = TestUploads.rooms(database, dir, config, settings,
@@ -553,9 +552,8 @@ class DtoIpLeakTest {
                 TestUploads.libraryApi(database, config, permissions, clock),
                 TestUploads.itemsApi(database, dir, permissions, clock),
                 TestUploads.playlistsApi(database, config, permissions, clock),
-                TestUploads.sharesApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
-                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
+                TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),
                 roomsWiring.api(), roomsWiring.socket());
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
@@ -752,9 +750,6 @@ class DtoIpLeakTest {
         for (Playlists.Playlist p : playlistPage.items()) {
             produced.add(playlists.get(aliceId, p.id()));
         }
-        produced.add(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX));
-        produced.add(shares.list(adminId, Shares.Direction.OUT, null, Shares.LIST_MAX));
-        assertFalse(shares.list(aliceId, Shares.Direction.IN, null, Shares.LIST_MAX).items().isEmpty());
         UserLibraries userLibraries = new UserLibraries(database, library, playlists);
         UserLibraries.UserPage browse = userLibraries.users(null, null, UserLibraries.LIST_MAX);
         produced.add(browse);
@@ -935,7 +930,7 @@ class DtoIpLeakTest {
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/items/search", "/api/items/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
-                "/api/playlists", "/api/playlists/" + f.playlistId, "/api/shares", "/api/shares?direction=out",
+                "/api/playlists", "/api/playlists/" + f.playlistId,
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
                 "/api/users/" + f.aliceId + "/library?q=video", "/api/users/" + f.aliceId + "/playlists",
                 "/api/users/" + f.aliceId + "/playlists/" + f.playlistId, "/media/" + f.itemId + "/audio.m4a",
@@ -1117,18 +1112,12 @@ class DtoIpLeakTest {
                 "{\"url\":\"https://youtu.be/dQw4w9WgXcQ?t=3\",\"mediaType\":\"music_video\"}"))
                 .get("cached").getAsBoolean());
 
-        // alice's library: listed, an item added by id and removed again, one shared by the admin
+        // alice's library: listed, an item added by id and removed again, another added by id and kept
         String extra = insertItem(adminId);
         expect(201, alice, "PUT", "/api/library/" + extra, null);
         expectOk(alice, "DELETE", "/api/library/" + extra, null);
-        // the admin shares an item with alice (with a message, the username in another case); alice
-        // lists her shares and marks them seen, the admin lists his outgoing ones
-        String shared = insertItem(adminId);
-        expect(201, admin, "POST", "/api/shares", "{\"itemId\":\"" + shared
-                + "\",\"toUsername\":\"ALICE\",\"message\":\"Listen to this\"}");
-        expect(200, alice, "GET", "/api/shares", null);
-        expect(200, alice, "POST", "/api/shares/seen", "{\"all\":true}");
-        expect(200, admin, "GET", "/api/shares?direction=out", null);
+        String kept = insertItem(adminId);
+        expect(201, alice, "PUT", "/api/library/" + kept, null);
         assertTrue(json(expect(200, alice, "GET", "/api/library", null)).getAsJsonArray("items").size() >= 3);
 
         // items by id: alice's upload (deduplicated onto the admin's item, so it has no job of its
@@ -1193,7 +1182,7 @@ class DtoIpLeakTest {
                 "{\"itemId\":\"" + itemId + "\"}")).get("id").getAsString();
         String second = json(expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries",
                 "{\"itemId\":\"" + itemId + "\",\"beforeEntryId\":\"" + first + "\"}")).get("id").getAsString();
-        expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries", "{\"itemId\":\"" + shared + "\"}");
+        expect(201, alice, "POST", "/api/playlists/" + playlistId + "/entries", "{\"itemId\":\"" + kept + "\"}");
         expect(200, alice, "PATCH", "/api/playlists/" + playlistId + "/entries/" + second, "{\"beforeEntryId\":null}");
         expect(204, alice, "DELETE", "/api/playlists/" + playlistId + "/entries/" + first, null);
         String doomed = json(expect(201, alice, "POST", "/api/playlists", "{\"name\":\"Doomed\"}"))

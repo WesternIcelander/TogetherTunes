@@ -16,8 +16,8 @@ import java.util.Objects;
  * Every event that makes an item referenced, or <b>stops</b> it being referenced, calls one of
  * these methods inside the transaction that makes the change:
  * <ul>
- *   <li>library entry added or removed ({@code Library}, {@code Uploads}, {@code YoutubeImports},
- *       {@code Shares});</li>
+ *   <li>library entry added or removed ({@code Library}, {@code Uploads},
+ *       {@code YoutubeImports});</li>
  *   <li>playlist entry added or removed, playlist deleted ({@code Playlists});</li>
  *   <li>ingest job finished or failed ({@code IngestJobs});</li>
  *   <li>queue entry added, or changing state ({@code RoomStore.setEntryState}: played, skipped,

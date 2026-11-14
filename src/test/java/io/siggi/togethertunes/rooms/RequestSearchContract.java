@@ -109,14 +109,14 @@ abstract class RequestSearchContract {
         failedUpload = item("Broken", "New Order", "upload", null, "failed", "audio");
         purgedYoutube = item("Old Video", "Tuber", "youtube", "dQw4w9WgXcQ", "purged", "video");
         video = item("Music Video", "New Order", "upload", null, "ready", "video");
-        library(aliceId, ownLib, "upload", null);
-        library(aliceId, shared, "share", carolId);
-        library(aliceId, failedUpload, "upload", null);
-        library(aliceId, purgedYoutube, "youtube", null);
-        library(aliceId, video, "upload", null);
-        library(carolId, shared, "upload", null);
-        library(carolId, carolOnly, "upload", null);
-        library(daveId, daveOnly, "upload", null);
+        library(aliceId, ownLib, "upload");
+        library(aliceId, shared, "manual");
+        library(aliceId, failedUpload, "upload");
+        library(aliceId, purgedYoutube, "youtube");
+        library(aliceId, video, "upload");
+        library(carolId, shared, "upload");
+        library(carolId, carolOnly, "upload");
+        library(daveId, daveOnly, "upload");
         String playlist = UuidV7.newId();
         sql("INSERT INTO playlists (id, owner_id, name, created_at, updated_at) VALUES (?, ?, 'Mix', 1, 1)",
                 playlist, aliceId);
@@ -151,9 +151,9 @@ abstract class RequestSearchContract {
         return id;
     }
 
-    private void library(String userId, String itemId, String via, String sharedBy) throws SQLException {
-        sql("INSERT INTO library_entries (user_id, item_id, added_at, via, shared_by_user_id) VALUES (?, ?, ?, ?, ?)",
-                userId, itemId, clock.millis(), via, sharedBy);
+    private void library(String userId, String itemId, String via) throws SQLException {
+        sql("INSERT INTO library_entries (user_id, item_id, added_at, via) VALUES (?, ?, ?, ?)",
+                userId, itemId, clock.millis(), via);
         clock.advance(1000);
     }
 

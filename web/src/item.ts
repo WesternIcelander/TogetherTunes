@@ -1,6 +1,6 @@
 // The item page (/items/{id}, a direct link anyone may open; docs/libraries.md#visibility):
 // metadata, cover, a player once the item is ready, the ingest job's status (and log, for those
-// who may edit), and for users: add to / remove from the library, add to a playlist, share, edit
+// who may edit), and for users: add to / remove from the library, add to a playlist, edit
 // the metadata, purge.
 import { withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
@@ -339,34 +339,6 @@ function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
   }), audioPanel];
 }
 
-function shareForm(item: ItemPage): HTMLElement {
-  const form = h("form", { class: "form" },
-    h("label", {}, "Username", h("input", { name: "toUsername", required: true, autocomplete: "off", maxlength: "64" })),
-    h("label", {}, "Message (optional)", h("textarea", { name: "message", maxlength: "500", rows: "2" })),
-    h("button", { type: "submit", text: "Share" }));
-  const error = h("p", { class: "error", role: "alert" });
-  form.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    error.textContent = "";
-    const data = new FormData(form);
-    const text = String(data.get("message") ?? "").trim();
-    const body: Record<string, unknown> = { itemId: item.id, toUsername: String(data.get("toUsername") ?? "").trim() };
-    if (text !== "") body["message"] = text;
-    const submit = form.querySelector("button");
-    if (submit !== null) submit.disabled = true;
-    // An uncategorized video goes into their library, so it needs a type first (classifyprompt.ts).
-    withClassification((c) => api("POST", "/api/shares", { ...body, ...c }), item.title)
-      .then((r) => {
-        if (r === null) return;
-        showNotice("Shared with " + String(body["toUsername"]) + ".");
-        form.reset();
-      })
-      .catch((e: unknown) => { error.textContent = message(e); })
-      .finally(() => { if (submit !== null) submit.disabled = false; });
-  });
-  return h("details", { class: "panel" }, h("summary", { text: "Share with someone" }), form, error);
-}
-
 function render(item: ItemPage, job: JobView | undefined): void {
   document.title = item.title + " · TogetherTunes";
   const body = element("item-body");
@@ -484,15 +456,14 @@ function render(item: ItemPage, job: JobView | undefined): void {
 }
 
 /**
- * The edit and share forms, in their own container so the status polling (which re-renders the
+ * The edit and trim forms, in their own container so the status polling (which re-renders the
  * rest) doesn't throw away what the user is typing.
  */
 function renderForms(item: ItemPage, job: JobView | undefined): void {
   element("item-forms").replaceChildren(
     ...nodes(item.you.canEdit ? editForm(item, (updated) => { render(updated, job); renderForms(updated, job); }) : null,
       ...(item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
-        ? trimPanels(item, item.trim) : []),
-      me.kind === "user" && item.status !== "failed" ? shareForm(item) : null));
+        ? trimPanels(item, item.trim) : [])));
 }
 
 function formsKeyOf(item: ItemPage, job: JobView | undefined): string {

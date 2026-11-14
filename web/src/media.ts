@@ -2,14 +2,13 @@
 // plus the pieces several pages share: the item status badge, job polling and the
 // "add to playlist" picker.
 import { api } from "./api.js";
-import type { ActorRef } from "./actor.js";
 import { h } from "./dom.js";
 import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
 import { mediaTypeLabel, type MediaType, type ShowInfo } from "./mediatypes.js";
 
 export type ItemStatus = "pending" | "processing" | "ready" | "failed" | "purged";
 
-/** An item as listed in a library, playlist or share. */
+/** An item as listed in a library or playlist. */
 export interface ItemSummary {
   id: string;
   kind: "audio" | "video";
@@ -58,8 +57,7 @@ export interface ItemPage extends ItemSummary {
 export interface LibraryEntry {
   item: ItemSummary;
   addedAt: number;
-  via: "upload" | "youtube" | "share" | "manual" | string;
-  sharedBy?: ActorRef;
+  via: "upload" | "youtube" | "manual" | string;
 }
 
 export interface Page<T> { items: T[]; nextCursor?: string }

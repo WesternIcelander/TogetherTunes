@@ -1,11 +1,10 @@
 // The library page (/library/): the caller's library (`GET /api/library`) with search, kind
-// filter and paging, items still being ingested with their job status, received shares, and the
+// filter and paging, items still being ingested with their job status, and the
 // "Add media" panel (uploads and YouTube imports). "Search the whole server" switches the list to
 // every item on the server (`GET /api/items/search`): item metadata only, never whose libraries
 // hold an item, with Add to Library on the ones not in the caller's library.
 import { withClassification } from "./classifyprompt.js";
 import { api } from "./api.js";
-import { actorLabel } from "./actor.js";
 import { renderAddMedia } from "./addmedia.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
@@ -15,17 +14,6 @@ import {
 import { element, message, onReady, renderNav, requireUser } from "./session.js";
 import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 import { episodeCode, filterShows, seasonLabel, type ShowGroup } from "./shows.js";
-
-interface Share {
-  id: string;
-  item: ItemSummary;
-  from: { kind: "user" | "guest"; id: string; name: string; isGuest: boolean };
-  message?: string;
-  createdAt: number;
-  seen?: boolean;
-}
-
-interface SharePage extends Page<Share> { unseenCount: number }
 
 let cursor: string | undefined;
 let query = "";
@@ -46,7 +34,7 @@ function showNotice(text: string): void {
   notice.hidden = text === "";
 }
 
-const VIA: Record<string, string> = { upload: "Uploaded", youtube: "YouTube", share: "Shared", manual: "Added" };
+const VIA: Record<string, string> = { upload: "Uploaded", youtube: "YouTube", manual: "Added" };
 
 function entryRow(entry: LibraryEntry): HTMLTableRowElement {
   const item = entry.item;
@@ -61,7 +49,6 @@ function entryRow(entry: LibraryEntry): HTMLTableRowElement {
     }));
   }
   const via = h("td", { class: "muted small" }, VIA[entry.via] ?? entry.via);
-  if (entry.sharedBy !== undefined) via.append(" by ", actorLabel(entry.sharedBy));
   via.title = formatTime(entry.addedAt);
 
   const tr = h("tr");
@@ -168,19 +155,6 @@ function reloadSoon(): void {
   }, 500);
 }
 
-async function loadShares(): Promise<void> {
-  const page = await api<SharePage>("GET", "/api/shares?direction=in&limit=20");
-  const section = element("shares");
-  const list = element("share-rows");
-  const unseen = page.items.filter((s) => s.seen === false);
-  section.hidden = unseen.length === 0;
-  element("share-count").textContent = page.unseenCount > 0 ? String(page.unseenCount) : "";
-  list.replaceChildren(...unseen.map((s) => h("li", {},
-    itemTitleCell(s.item),
-    h("div", { class: "muted small" }, "from ", actorLabel(s.from), " · " + formatTime(s.createdAt)),
-    s.message !== undefined ? h("blockquote", { class: "share-message", text: s.message }) : null)));
-}
-
 async function start(): Promise<void> {
   const status = element("library-status");
   const me = await requireUser().catch((e: unknown) => {
@@ -215,9 +189,6 @@ async function start(): Promise<void> {
     more.disabled = true;
     load(false).catch(showError).finally(() => { more.disabled = false; });
   });
-  element<HTMLButtonElement>("shares-seen").addEventListener("click", () => {
-    api("POST", "/api/shares/seen", { all: true }).then(() => loadShares()).catch(showError);
-  });
 
   renderAddMedia(element("add-media"), {
     canUpload: me.permissions.includes("library.upload"),
@@ -226,7 +197,7 @@ async function start(): Promise<void> {
   });
 
   try {
-    await Promise.all([load(true), loadShares()]);
+    await load(true);
   } catch (e) {
     showError(e);
   }

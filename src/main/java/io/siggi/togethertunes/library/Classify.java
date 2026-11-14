@@ -21,7 +21,7 @@ import java.util.regex.Pattern;
  * Classify on library add ({@code docs/media-types.md#media-types}): whoever adds an
  * {@code uncategorized} video to a library must give it a media type first. Every path that makes
  * a library entry ({@code PUT /api/library/{itemId}}, YouTube imports and uploads with
- * {@code addToLibrary}, shares) goes through {@link #prepareAdd} in the transaction that adds it:
+ * {@code addToLibrary}) goes through {@link #prepareAdd} in the transaction that adds it:
  * with a {@link Classification} the item gets that type (and show details) and the add goes ahead;
  * without one the add is left out and the API answers {@link NeedsClassification} ({@code 409
  * needs_classification} with the item's id and a {@link Suggestion}). An item that is already
@@ -105,7 +105,7 @@ public final class Classify {
      * needs a media type. The error carries {@code itemId} (the item exists; an import or upload
      * has already made or fetched it) and {@code suggested} ({@link Suggestion}, absent when
      * nothing is known). The client asks and then adds again with {@code mediaType}/{@code show}
-     * ({@code PUT /api/library/{itemId}}, or the same share).
+     * ({@code PUT /api/library/{itemId}}).
      */
     public static final class NeedsClassification extends HttpError {
         private static final long serialVersionUID = 1L;

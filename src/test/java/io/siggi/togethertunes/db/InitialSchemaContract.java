@@ -56,10 +56,9 @@ abstract class InitialSchemaContract {
                 "pinned_by_user_id", "loudness_normalized");
         t("ingest_jobs", "id", "item_id", "kind", "state", "attempts", "progress", "created_at", "started_at",
                 "finished_at", "log", "tier", "edit_json");
-        t("library_entries", "user_id", "item_id", "added_at", "via", "shared_by_user_id");
+        t("library_entries", "user_id", "item_id", "added_at", "via");
         t("playlists", "id", "owner_id", "name", "description", "created_at", "updated_at");
         t("playlist_entries", "id", "playlist_id", "item_id", "position", "added_at");
-        t("shares", "id", "item_id", "from_user_id", "to_user_id", "message", "created_at", "seen");
         t("rooms", "id", "slug", "name", "owner_id", "created_at", "visibility", "control_mode", "settings_json",
                 "playback_state", "current_entry_id", "anchor_server_ms", "anchor_position_ms", "version",
                 "current_audio_only");

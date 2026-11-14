@@ -170,7 +170,7 @@ public final class JobList {
     /**
      * A page of {@code view}, starting at row {@code offset}.
      *
-     * @param userId only items in this user's library (any entry, shares included), or null for every job
+     * @param userId only items in this user's library (any entry), or null for every job
      */
     public Page list(View view, String userId, int offset, int limit) throws SQLException {
         if (offset < 0 || limit < 1) {

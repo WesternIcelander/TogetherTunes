@@ -124,9 +124,8 @@ class AdminApiTest {
                 TestUploads.libraryApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.itemsApi(database, dir, new Permissions(database, settings), clock),
                 TestUploads.playlistsApi(database, config, new Permissions(database, settings), clock),
-                TestUploads.sharesApi(database, config, new Permissions(database, settings), clock),
                 TestUploads.userLibrariesApi(database, config, new Permissions(database, settings), clock),
-                TestUploads.mediaApi(database, dir, settings, io.siggi.togethertunes.rooms.PlayingItems.NO_ROOMS),
+                TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),
                 roomsWiring.api(), roomsWiring.socket()), dir.toFile());
 
         HttpResponse<String> created = send("POST", "/api/setup", "{\"username\":\"siggi\",\"password\":\"correct horse\"}", null);

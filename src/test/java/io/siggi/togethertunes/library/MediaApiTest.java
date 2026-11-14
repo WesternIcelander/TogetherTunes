@@ -22,6 +22,8 @@ import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.http.WebServer;
 import io.siggi.togethertunes.settings.GuestIdentity;
+import io.siggi.togethertunes.rooms.PlayingItems;
+import io.siggi.togethertunes.rooms.RoomViewers;
 import io.siggi.togethertunes.settings.Settings;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -53,8 +55,12 @@ class MediaApiTest {
     private MediaApi api;
     private final HttpClient http = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
-    /** The stubbed room state: items that are current or next somewhere. */
+    /** The stubbed rooms: room id -> its current and next items. */
+    private final Map<String, Set<String>> roomItems = new ConcurrentHashMap<>();
+    /** What room {@code r1} plays now or next; the anonymous test client (127.0.0.1) is in it. */
     private final Set<String> playing = ConcurrentHashMap.newKeySet();
+    /** Who is in which room (the real tracker, over the stubbed rooms). */
+    private RoomViewers viewers;
     private String aliceId;
     private String alice;
     private Path media;
@@ -68,7 +74,22 @@ class MediaApiTest {
         BuiltinRoles.ensure(db);
         settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        api = TestUploads.mediaApi(db, dir, settings, playing::contains, clock);
+        roomItems.put("r1", playing);
+        viewers = new RoomViewers(new PlayingItems() {
+            @Override
+            public boolean isCurrentOrNext(String itemId) {
+                return roomItems.values().stream().anyMatch(s -> s.contains(itemId));
+            }
+
+            @Override
+            public boolean isCurrentOrNextIn(String roomId, String itemId) {
+                Set<String> items = roomItems.get(roomId);
+                return items != null && items.contains(itemId);
+            }
+        });
+        // the HTTP client below: an anonymous socket from the same address is in room r1
+        viewers.enter("anon-socket", Actor.ANONYMOUS, "127.0.0.1", "r1");
+        api = TestUploads.mediaApi(db, dir, viewers, clock);
         api.register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         media = dir.resolve("data").resolve("media");
@@ -194,7 +215,7 @@ class MediaApiTest {
     }
 
     @Test
-    void guestsAndAnonymousNeedTheSettingOrAPlayingItem() throws Exception {
+    void guestsAndAnonymousOnlyGetWhatTheirRoomPlays() throws Exception {
         String id = item("video", "ready", null);
         write(id, "mezz.mp4", 1000);
         write(id, "audio.m4a", 1000);
@@ -211,36 +232,88 @@ class MediaApiTest {
         // covers are always allowed: metadata is visible by direct link
         assertEquals(200, get("/media/" + id + "/cover.jpg", null).statusCode());
 
-        playing.add(id); // current or next in some room
+        // current or next in a room the visitor isn't in: still refused
+        roomItems.put("r2", Set.of(id));
+        assertEquals(403, get("/media/" + id + "/mezz.mp4", null).statusCode());
+        assertEquals(403, get(MediaApi.url(id, 0, "mezz.mp4"), null).statusCode());
+
+        playing.add(id); // current or next in the visitor's room
         assertEquals(200, get("/media/" + id + "/mezz.mp4", null).statusCode());
         assertEquals(206, call("GET", "/media/" + id + "/audio.m4a", null, "bytes=0-9").statusCode());
         playing.remove(id); // the next Range request is refused
         assertEquals(403, call("GET", "/media/" + id + "/audio.m4a", null, "bytes=10-19").statusCode());
 
-        settings.set(Settings.GUESTS_DOWNLOAD, true);
+        // the visitor leaves its room while the item plays there: refused
+        playing.add(id);
         assertEquals(200, get("/media/" + id + "/audio.m4a", null).statusCode());
-        assertEquals(200, get("/media/" + id + "/mezz.mp4", null).statusCode());
+        viewers.exit("anon-socket");
+        assertEquals(403, get("/media/" + id + "/audio.m4a", null).statusCode());
+        assertEquals(403, get(MediaApi.url(id, 0, "audio.m4a"), null).statusCode());
+        // and the original: never for a visitor whose room doesn't play it
+        assertEquals(403, get("/media/" + id + "/original", null).statusCode());
     }
 
     @Test
     void theRuleByActor() throws Exception {
         String id = UuidV7.newId();
+        String other = UuidV7.newId();
         Actor guest = new Actor.Guest(UuidV7.newId(), GuestIdentity.COOKIE, false);
+        Actor guest2 = new Actor.Guest(UuidV7.newId(), GuestIdentity.COOKIE, false);
         Actor user = new Actor.User(aliceId, UuidV7.newId(), Actor.Via.COOKIE);
-        for (String file : new String[] {"audio.m4a", "mezz.mp4", "original"}) {
-            assertTrue(api.allowed(user, id, file));
-            assertFalse(api.allowed(guest, id, file));
-            assertFalse(api.allowed(Actor.ANONYMOUS, id, file));
+        String away = "10.0.0.9";
+        // the media access matrix: user / guest / anonymous x in the room or not x playing or not
+        for (String file : new String[] {"audio.m4a", "mezz.mp4", "original", "audio-only.m4a"}) {
+            assertTrue(api.allowed(user, away, id, file), "users: any item, in a room or not");
+            assertTrue(api.allowed(user, null, id, file));
+            assertFalse(api.allowed(guest, away, id, file));
+            assertFalse(api.allowed(Actor.ANONYMOUS, "127.0.0.1", id, file), "in r1, but r1 doesn't play it");
+            assertFalse(api.allowed(Actor.ANONYMOUS, away, id, file));
         }
-        assertTrue(api.allowed(guest, id, "cover.jpg"));
-        assertTrue(api.allowed(Actor.ANONYMOUS, id, "cover.jpg"));
-        playing.add(id);
-        assertTrue(api.allowed(guest, id, "audio.m4a"));
-        assertFalse(api.allowed(guest, UuidV7.newId(), "audio.m4a"), "only the playing item");
-        playing.clear();
-        settings.set(Settings.GUESTS_DOWNLOAD, true);
-        assertTrue(api.allowed(guest, id, "mezz.mp4"));
-        assertTrue(api.allowed(Actor.ANONYMOUS, id, "original"));
+        assertTrue(api.allowed(guest, away, id, "cover.jpg"));
+        assertTrue(api.allowed(Actor.ANONYMOUS, away, id, "cover.jpg"));
+
+        playing.add(id); // r1 plays it
+        assertTrue(api.allowed(Actor.ANONYMOUS, "127.0.0.1", id, "audio.m4a"), "the anonymous visitor in r1");
+        assertFalse(api.allowed(Actor.ANONYMOUS, "127.0.0.1", other, "audio.m4a"), "only what r1 plays");
+        assertFalse(api.allowed(Actor.ANONYMOUS, away, id, "audio.m4a"), "another address isn't in r1");
+        assertFalse(api.allowed(Actor.ANONYMOUS, null, id, "audio.m4a"));
+        assertFalse(api.allowed(guest, away, id, "audio.m4a"), "a guest not in r1");
+        // a guest's request from the address of an anonymous visitor in r1 counts as that visitor's
+        assertTrue(api.allowed(guest, "127.0.0.1", id, "audio.m4a"));
+
+        // the guest joins r1 (from another address): its requests count from anywhere, other guests' don't
+        viewers.enter("guest-socket", guest, away, "r1");
+        assertTrue(api.allowed(guest, away, id, "mezz.mp4"));
+        assertTrue(api.allowed(guest, "192.0.2.1", id, "mezz.mp4"));
+        assertFalse(api.allowed(guest2, away, id, "mezz.mp4"), "a guest is recorded by its id, not its address");
+        assertFalse(api.allowed(Actor.ANONYMOUS, away, id, "mezz.mp4"));
+        assertFalse(api.allowed(guest, away, other, "mezz.mp4"));
+
+        // the guest's socket moves to r2: only what r2 plays
+        roomItems.put("r2", Set.of(other));
+        viewers.enter("guest-socket", guest, away, "r2");
+        assertTrue(api.allowed(guest, away, other, "audio.m4a"));
+        assertFalse(api.allowed(guest, away, id, "audio.m4a"), "no longer in r1");
+        // two sockets of one guest: leaving with one keeps the other's room
+        viewers.enter("guest-socket-2", guest, away, "r1");
+        assertTrue(api.allowed(guest, away, id, "audio.m4a"));
+        viewers.exit("guest-socket");
+        assertFalse(api.allowed(guest, away, other, "audio.m4a"));
+        assertTrue(api.allowed(guest, away, id, "audio.m4a"));
+        viewers.exit("guest-socket-2");
+        assertFalse(api.allowed(guest, away, id, "audio.m4a"));
+
+        // an anonymous visitor is recognised by its IP key: one IPv6 /64
+        viewers.enter("v6-socket", Actor.ANONYMOUS, "2001:db8:1:2::1", "r1");
+        assertTrue(api.allowed(Actor.ANONYMOUS, "2001:db8:1:2::abcd", id, "audio.m4a"));
+        assertFalse(api.allowed(Actor.ANONYMOUS, "2001:db8:1:3::1", id, "audio.m4a"));
+        viewers.exit("v6-socket");
+        assertFalse(api.allowed(Actor.ANONYMOUS, "2001:db8:1:2::abcd", id, "audio.m4a"));
+
+        // a user's sockets aren't recorded (users need no room)
+        viewers.enter("user-socket", user, away, "r1");
+        assertFalse(api.allowed(Actor.ANONYMOUS, away, id, "audio.m4a"));
+        viewers.exit("user-socket");
     }
 
     @Test
@@ -441,9 +514,13 @@ class MediaApiTest {
         // the limit is per actor too: alice's recent view doesn't hold back an anonymous one
         assertEquals(204, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
         assertEquals(t0 + 61_000, lastViewedAt(id));
-        playing.clear();
-        settings.set(Settings.GUESTS_DOWNLOAD, true);
+        playing.clear(); // no longer played in the visitor's room: refused
         clock.advance(60_000);
+        assertEquals(403, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
+        assertEquals(t0 + 61_000, lastViewedAt(id));
+        roomItems.put("r2", Set.of(id)); // played in a room the visitor isn't in: refused too
+        assertEquals(403, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
+        playing.add(id);
         assertEquals(204, call("POST", "/api/items/" + id + "/view", null, null).statusCode());
         assertEquals(t0 + 121_000, lastViewedAt(id));
 

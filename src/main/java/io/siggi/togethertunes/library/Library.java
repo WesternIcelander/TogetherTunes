@@ -1,7 +1,6 @@
 package io.siggi.togethertunes.library;
 
 import io.siggi.togethertunes.auth.Actor;
-import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.Dialect;
 import io.siggi.togethertunes.db.EpochMs;
@@ -86,11 +85,10 @@ public final class Library {
     /**
      * One library entry.
      *
-     * @param via      how it got there: {@code upload}, {@code youtube}, {@code request},
-     *                 {@code share} or {@code manual}
-     * @param sharedBy the user who shared it ({@code via='share'}), else {@code null}
+     * @param via how it got there: {@code upload}, {@code youtube}, {@code request} or
+     *            {@code manual} (entries of the former item sharing became {@code manual})
      */
-    public record Entry(ItemView item, long addedAt, String via, ActorRef sharedBy) {
+    public record Entry(ItemView item, long addedAt, String via) {
     }
 
     /** One page; {@code nextCursor} is {@code null} on the last page. */
@@ -107,9 +105,8 @@ public final class Library {
         this.clock = Objects.requireNonNull(clock);
     }
 
-    private static final String SELECT = "SELECT " + ItemView.COLUMNS + ", e.added_at, e.via, e.shared_by_user_id, s.display_name"
-            + " FROM library_entries e JOIN items i ON i.id = e.item_id"
-            + " LEFT JOIN users s ON s.id = e.shared_by_user_id";
+    private static final String SELECT = "SELECT " + ItemView.COLUMNS + ", e.added_at, e.via"
+            + " FROM library_entries e JOIN items i ON i.id = e.item_id";
 
     /**
      * The user's entries, most recently added first (then by item id, descending).
@@ -243,10 +240,7 @@ public final class Library {
 
     private static Entry entry(ResultSet rs) throws SQLException {
         ItemView item = ItemView.read(rs, 1);
-        String sharedById = rs.getString(16);
-        String sharedByName = rs.getString(17);
-        ActorRef sharedBy = sharedById != null && sharedByName != null ? ActorRef.user(sharedById, sharedByName) : null;
-        return new Entry(item, rs.getLong(14), rs.getString(15), sharedBy);
+        return new Entry(item, rs.getLong(14), rs.getString(15));
     }
 
     private record ItemRow(String source, String youtubeId, String status) {
