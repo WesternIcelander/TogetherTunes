@@ -118,6 +118,42 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 - **Remote mode** is renamed **Requests-only mode**: the page plays nothing and is used for requests and votes (e.g. for people hearing the room through a stream).
 - The room owner can **force** everyone into it (e.g. a party where the room plays on one speaker). Then the room's pages play nothing. **Authenticated users are never refused media.** Only **unauthenticated** visitors (guests, anonymous) get `403` for the room's media when they have no other reason to access the file.
 
+## Existing features in the new UI
+
+(Siggi, 2026-11-14, answering what the drawings left out.)
+
+**Rooms**
+
+- **Suggestions** (owner control mode): pending suggestions show **above the queue** for people who may edit the queue (with Accept / Reject), and **below the queue** for everyone else.
+- **Vote to skip:** a button below the video in the room view, and below the Now Playing item in Queue / Recents.
+- **Pin to top** (vote mode): in the entry's right-click menu (⋯ on touch).
+- **Entries that aren't ready:** a third line under the title and artist shows the status (downloading, encoding, …). A failed one shows **Failed** in red with a **Retry** button.
+- **Add a whole playlist to the queue:** in the playlist view, "Add All:" with two buttons, **In Order** and **Shuffled**.
+- **Guests:** under the request section, **Join as guest**; once joined, the guest's assigned name with an **edit** button (where the admin allows choosing a name).
+- **Sound blocked by the browser:** a translucent dark layer over the **video area only**, with "Click to enable sound" in the middle. Clicking anywhere else on the page works normally and doesn't start sound.
+- **Manage Room** button above the people list, in the room view and in the right sidebar's Room tab. The management page holds members and roles, moderators, handing over, leaving, bans and Unban, visibility, link name, deleting the room, and all room settings including the **stream outputs** (URLs, private-token rotation, the plain-HTTP warning).
+- **Quick output buttons:** for the owner and moderators, below the room's title in the room view: an output the server allows but the room has off gets a **Turn on** button; one that is on gets **Copy link**.
+- **Upload requests** have no place on phones for now (drag and drop is desktop only); revisit later.
+
+**Library**
+
+- **Add from link** also on **All My Songs** (adds to the library only). Uploading from phones: later.
+- **Song ⋯ button** beside each song in playlists: remove from library, remove from playlist, copy link, open the item page (and the actions above where they apply).
+- **Rename a playlist:** right-click → Rename (long press on touch opens a menu with Rename). Deleting likewise.
+- **Sharing songs with another user is dropped**: people copy the link and send it however they like. The share API and UI go; existing shared library entries stay as ordinary library entries.
+- **Browsing other users' libraries** (`library.viewAll`): no place yet; decided later.
+- **Guests never download.** The `guests.download` setting goes. A guest (or anonymous visitor) gets media only while they have a reason to: in a room where that item is playing or up next. Otherwise `403`.
+
+**Accounts**
+
+- **User settings** has tabs: preferences (double-click behaviour, **Web Audio** (only here), **debug mode**), account (password, linked logins), and **sessions** (devices with Revoke, API tokens).
+- **Debug mode** shows a **Send diagnostics** button at the top of the page.
+- **Invites:** invite-only registration needs a UI to create and hand out invites (admins; who else gets it is decided when the step is written).
+
+**Routing**
+
+- Every page URL serves the same document, **except `/test/`**, which keeps its own pages.
+
 ## Not designed yet
 
 Until Siggi draws them (2026-11-14), screens without a drawing **follow the existing design**: same header, sidebars, lists, ⋯ menus and dialogs as the drawn screens, and the mobile rules above. Missing so far: room settings, item page, search results, Movies/Shows, the classify dialog, login/signup/setup and the guest name prompt, account and user settings, New Room, the song ⋯ menu, admin pages, loading/failed/empty states, colours and theme.
