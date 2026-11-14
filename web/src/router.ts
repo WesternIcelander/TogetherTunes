@@ -8,7 +8,7 @@
 // and the static files) are never views.
 //
 // While a room plays in the background (listen mode, another view shown), a link to another room
-// and the identity views (login, register, password, setup: they change who is listening) still
+// switches rooms in place, and the identity views (login, register, password, setup: they change who is listening) still
 // load a new document, which leaves the room; everything else is shown in place.
 
 /** The views of the app. Each has a `<template id="view-…">` in index.html and (most) a module. */
@@ -230,7 +230,8 @@ export function decide(href: string, current: string, playingRoom: ((ref: string
   const route = routeOf(to.pathname);
   if (route.kind !== "view") return "browser";
   if (playingRoom !== undefined) {
-    if (route.view === "room") return playingRoom(route.params["ref"] ?? "") ? "room" : "browser";
+    // Another room: switched in place (the shell takes the playing one away and the new view joins).
+    if (route.view === "room") return playingRoom(route.params["ref"] ?? "") ? "room" : "view";
     if (VIEWS[route.view].identity === true) return "browser";
   }
   return "view";

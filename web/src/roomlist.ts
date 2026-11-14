@@ -12,6 +12,8 @@ export interface RoomListEntry {
   controlMode: string;
   createdAt: number;
   you: { role?: string; canEdit: boolean; canDelete: boolean; canModerate: boolean };
+  /** People in the room now (only in the list). */
+  listeners?: number;
 }
 
 export const VISIBILITY_LABELS: Record<string, string> = {

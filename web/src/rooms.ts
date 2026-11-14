@@ -1,7 +1,9 @@
 // The rooms page (/rooms/): the rooms the caller can find (`GET /api/rooms`: public rooms plus the
-// caller's own, moderated and member rooms; guests and anonymous visitors get the public ones) with
-// "Load more", each linking to its room page, and for users with rooms.create a "Create room" form
-// (`POST /api/rooms`) that shows field errors and then goes to the new room.
+// caller's own, moderated and member rooms; guests and anonymous visitors get the public ones), each
+// with its listener count, a search box (`?q=`: an unlisted room's exact link name or link comes
+// first) and "Load more", each linking to its room page, and for users with rooms.create a "Create
+// room" form (`POST /api/rooms`; a user's alone state moves into the new room, `moveAloneSession`)
+// that shows field errors and then goes to the new room (switched to in place).
 import { api, ApiError } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { h } from "./dom.js";
@@ -11,9 +13,13 @@ import {
   type CreateField, type RoomListEntry,
 } from "./roomlist.js";
 import { navigate } from "./nav.js";
+import { createRoomBody } from "./alone.js";
 import { checkPasswordChange, element, formValue, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 
 let cursor: string | undefined;
+let me: Me | undefined;
+/** The search the list shows. */
+let query = "";
 
 function showError(e: unknown): void {
   element("rooms-error").textContent = message(e);
@@ -26,15 +32,19 @@ function roomRow(room: RoomListEntry): HTMLTableRowElement {
     h("td", {}, actorLabel(room.owner)),
     h("td", { class: "small", text: visibilityLabel(room.visibility) }),
     h("td", { class: "small", text: controlModeLabel(room.controlMode) }),
-    h("td", { class: "small" + (role === "" ? " muted" : ""), text: role === "" ? "–" : role }));
+    h("td", { class: "small" + (role === "" ? " muted" : ""), text: role === "" ? "–" : role }),
+    h("td", { class: "small num", title: "In the room now", text: String(room.listeners ?? 0) }));
 }
 
 async function load(reset: boolean): Promise<void> {
   const tbody = element<HTMLTableSectionElement>("rooms-rows");
   if (reset) cursor = undefined;
+  const q = query;
   const params = new URLSearchParams({ limit: "50" });
   if (cursor !== undefined) params.set("cursor", cursor);
+  if (q !== "") params.set("q", q);
   const page = await api<Page<RoomListEntry>>("GET", "/api/rooms?" + params.toString());
+  if (q !== query) return; // overtaken by a newer search
   if (reset) tbody.replaceChildren();
   for (const room of page.items) tbody.append(roomRow(room));
   cursor = page.nextCursor;
@@ -80,7 +90,7 @@ function setupCreateForm(): void {
     }
     const buttons = Array.from(form.querySelectorAll("button"));
     buttons.forEach((b) => { b.disabled = true; });
-    api<RoomListEntry>("POST", "/api/rooms", body).then((room) => {
+    api<RoomListEntry>("POST", "/api/rooms", createRoomBody(body, me)).then((room) => {
       navigate(roomPagePath(room));
     }).catch((e: unknown) => {
       buttons.forEach((b) => { b.disabled = false; });
@@ -92,22 +102,23 @@ function setupCreateForm(): void {
 
 async function start(): Promise<void> {
   const status = element("rooms-status");
-  let me: Me;
+  let who: Me;
   try {
-    me = await loadMe();
+    who = await loadMe();
   } catch (e) {
     status.textContent = message(e);
     return;
   }
-  if (!checkPasswordChange(me)) return;
-  renderNav(me);
+  me = who;
+  if (!checkPasswordChange(who)) return;
+  renderNav(who);
 
   const intro = element("rooms-intro");
-  intro.textContent = me.kind === "user"
+  intro.textContent = who.kind === "user"
     ? "Public rooms and the rooms you own, moderate or are a member of."
     : "Public rooms. Unlisted rooms are reached through their link.";
 
-  if (canCreateRooms(me)) {
+  if (canCreateRooms(who)) {
     element("create-panel").hidden = false;
     setupCreateForm();
   }
@@ -116,6 +127,17 @@ async function start(): Promise<void> {
   more.addEventListener("click", () => {
     more.disabled = true;
     load(false).catch(showError).finally(() => { more.disabled = false; });
+  });
+
+  const search = element<HTMLInputElement>("rooms-search");
+  let timer: number | undefined;
+  search.addEventListener("input", () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      query = search.value.trim();
+      element("rooms-error").textContent = "";
+      load(true).catch(showError);
+    }, 250);
   });
 
   try {

@@ -13,12 +13,24 @@
 // - the room view, while it plays in listen mode, is kept (hidden, with its media elements, socket
 //   and clock sync running) when another view is shown; the desktop frame around the views
 //   (frame.ts: sidebars, right panel, player bar) follows that room meanwhile, and a link back shows
-//   the room view again. Another room and the identity views (login, register, password, setup) then
-//   load a new document, which leaves the room; Leave (in the right panel) takes the room view away
-//   in place.
+//   the room view again. Another room's link switches rooms in place (the old room view goes, the new
+//   one joins); the identity views (login, register, password, setup) still load a new document;
+//   Leave (in the right panel) takes the room view away in place;
+// - alone and switching rooms (docs/ui.md#alone-and-in-rooms, rules in alone.ts): a signed-in user
+//   is always in a room or alone, so whenever no room view is open the shell starts the play
+//   session's room (the room they are in, otherwise their alone room) as a background room view
+//   (hidden from the start, with its own signal and path, nav.ts `viewStart`). Leave asks fork or
+//   restore and then plays the alone room; a room deleted while the user is in it asks the same.
 import { decide, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
-import { navigate, rememberPlaying, setNavigator, setRoomHost, startPageSignal, type RoomHandle,
-  type ShellRoom } from "./nav.js";
+import { navigate, registerViewStart, rememberPlaying, setNavigator, setRoomHost, startPageSignal,
+  type RoomHandle, type ShellRoom } from "./nav.js";
+import {
+  canBeAlone, leaveKind, leaveOffer, needsLeaveChoice, roomPath, sessionRoom, type LeaveChoice, type LeaveOffer,
+  type PlaySession,
+} from "./alone.js";
+import { api, ApiError } from "./api.js";
+import { h } from "./dom.js";
+import { loadMe, message, type Me } from "./session.js";
 import { Frame } from "./frame.js";
 import { recordEvent } from "./diagnostics.js";
 
@@ -52,6 +64,10 @@ export class Shell {
   readonly #frame: Frame;
   /** Leave was clicked while the room view was shown: don't keep it when the next view comes. */
   #leaving = false;
+  /** Who is here (loaded when the shell first needs it, again until it is a user). */
+  #me: Me | undefined;
+  /** A background room is being looked up or asked about (fork / restore): don't start another. */
+  #ensuring = false;
 
   constructor(app: HTMLElement) {
     this.#app = app;
@@ -63,7 +79,7 @@ export class Shell {
     this.#frame = new Frame({
       room: () => this.#followed(),
       roomShown: () => this.#view?.route.view === "room",
-      leave: () => this.leave(),
+      leave: () => { void this.leave(); },
     });
     document.addEventListener("click", (ev) => this.#onClick(ev));
     document.addEventListener("submit", (ev) => this.#onSubmit(ev));
@@ -87,7 +103,7 @@ export class Shell {
       this.#replaceState({}, url.pathname + url.search + url.hash);
     }
     void this.#frame.start();
-    void this.#show(url, 0);
+    void this.#show(url, 0).then(() => this.#ensureRoom());
   }
 
   /** The room the frame follows: the room view's room, shown or kept in the background. */
@@ -96,8 +112,36 @@ export class Shell {
     return this.#view?.route.view === "room" ? this.#view.room : undefined;
   }
 
-  /** Leave (right panel): stop the room, shown or playing in the background (leaves the room). */
-  leave(): void {
+  /**
+   * Leave (right panel): a user chooses fork or restore and then plays alone; guests and anonymous
+   * visitors just stop the room here. The alone room has nothing to leave.
+   */
+  async leave(): Promise<void> {
+    const room = this.#followed();
+    if (room === undefined) return;
+    const me = await this.#loadMe();
+    const kind = leaveKind(me, room.state()?.room.alone === true);
+    if (kind === "none") return;
+    if (kind === "ask") {
+      const choice = await askLeaveChoice(leaveOffer(room.name(), false));
+      if (choice === null) return;
+      try {
+        await api("POST", "/api/me/play-session/leave", { choice });
+      } catch (e) {
+        // Already alone (left on another device): stopping here is all that is left to do.
+        if (!(e instanceof ApiError && e.code === "not_in_room")) {
+          window.alert("Couldn't leave the room: " + message(e));
+          return;
+        }
+      }
+      if (this.#followed() !== room) return; // something else happened meanwhile
+    }
+    this.#stopRoom();
+    void this.#ensureRoom();
+  }
+
+  /** Takes the room view away, shown or playing in the background. */
+  #stopRoom(): void {
     const kept = this.#kept;
     if (kept === undefined) {
       if (this.#view?.route.view !== "room") return;
@@ -113,6 +157,112 @@ export class Shell {
     this.update();
   }
 
+  async #loadMe(): Promise<Me | undefined> {
+    if (this.#me?.kind === "user") return this.#me;
+    try {
+      this.#me = await loadMe();
+    } catch {
+      // Offline or the server restarting: try again with the next navigation.
+    }
+    return this.#me;
+  }
+
+  /**
+   * A signed-in user with no room view open: plays the play session's room (the room they are in,
+   * otherwise their alone room) in the background, after asking fork or restore if their room was
+   * deleted.
+   */
+  async #ensureRoom(): Promise<void> {
+    if (this.#ensuring || this.#roomOpen()) return;
+    this.#ensuring = true;
+    try {
+      const me = await this.#loadMe();
+      if (!canBeAlone(me)) return;
+      let session = await api<PlaySession>("GET", "/api/me/play-session");
+      if (needsLeaveChoice(session)) {
+        const choice = await askLeaveChoice(leaveOffer(session.deletedRoom?.name ?? "", true));
+        session = await api<PlaySession>("POST", "/api/me/play-session/leave", { choice: choice ?? "restore" });
+      }
+      if (this.#roomOpen()) return; // a room view came meanwhile
+      await this.#startBackground(roomPath(sessionRoom(session)));
+    } catch (e) {
+      recordEvent("shell", { sessionFailed: String(e) });
+    } finally {
+      this.#ensuring = false;
+    }
+  }
+
+  /** Whether a room view is open (shown, or in the background). */
+  #roomOpen(): boolean {
+    return this.#kept !== undefined || this.#view?.route.view === "room";
+  }
+
+  /** The room view stopped for good (the socket's reason): a deleted room asks fork or restore. */
+  #gone(m: Mounted | undefined, reason: string): void {
+    if (reason !== "room_deleted") return;
+    if (m === undefined || !canBeAlone(this.#me)) return;
+    if (m === this.#kept) {
+      this.#kept = undefined;
+      this.#unmount(m);
+      this.update();
+      void this.#ensureRoom();
+    } else if (m === this.#view) {
+      // The room view says what happened; the alone state starts once another view is shown.
+      void this.#ensureRoomBeside();
+    }
+  }
+
+  /** The dead room view stays shown with its message: ask now, play once the user moves on. */
+  async #ensureRoomBeside(): Promise<void> {
+    if (this.#ensuring) return;
+    this.#ensuring = true;
+    try {
+      const session = await api<PlaySession>("GET", "/api/me/play-session");
+      if (!needsLeaveChoice(session)) return;
+      const choice = await askLeaveChoice(leaveOffer(session.deletedRoom?.name ?? "", true));
+      await api("POST", "/api/me/play-session/leave", { choice: choice ?? "restore" });
+    } catch (e) {
+      recordEvent("shell", { sessionFailed: String(e) });
+    } finally {
+      this.#ensuring = false;
+    }
+    // Moved on while the question was up: play the alone state now.
+    if (this.#view?.route.view !== "room") void this.#ensureRoom();
+  }
+
+  /** Starts the room view for `path` hidden, as the room playing in the background. */
+  async #startBackground(path: string): Promise<void> {
+    const route = routeOf(path);
+    if (route.kind !== "view" || route.view !== "room") return;
+    const info = VIEWS.room;
+    const template = document.getElementById(info.template);
+    if (!(template instanceof HTMLTemplateElement) || info.module === undefined) return;
+    const el = document.createElement("div");
+    el.className = "view view-room";
+    el.tabIndex = -1;
+    el.hidden = true;
+    el.append(template.content.cloneNode(true));
+    const controller = new AbortController();
+    const mount = ++this.#mounts;
+    const m: Mounted = { route, key: path, el, controller, mount };
+    this.#kept = m;
+    this.#app.append(el);
+    registerViewStart(mount, { path, search: "", signal: controller.signal });
+    recordEvent("shell", { background: path });
+    const moduleUrl = new URL("/js/" + info.module + ".js", location.href);
+    moduleUrl.searchParams.set("mount", String(mount));
+    try {
+      await import(moduleUrl.href);
+    } catch (e) {
+      recordEvent("shell", { importFailed: moduleUrl.pathname, error: String(e) });
+      if (this.#kept === m) {
+        this.#kept = undefined;
+        this.#unmount(m);
+      }
+    }
+    this.update();
+  }
+
   /** Refreshes the frame's room parts (the room calls it on every state). */
   update(): void {
     const room = this.#kept?.room;
@@ -125,15 +275,15 @@ export class Shell {
 
   /** The room view's module tells the shell about itself (nav.ts `attachRoom`). */
   #attach(room: ShellRoom): RoomHandle {
-    // The view being started is the room view whose module calls this.
-    const m = this.#view !== undefined && this.#view.route.view === "room" && this.#view.room === undefined
-      ? this.#view : undefined;
+    // The room view being started (shown, or in the background) is the one whose module calls this.
+    const m = [this.#view, this.#kept].find((v) => v !== undefined && v.route.view === "room" && v.room === undefined);
     if (m !== undefined) m.room = room;
     return {
       get away(): boolean {
         return m !== undefined && m.el.hidden === true;
       },
       update: () => this.update(),
+      gone: (reason) => this.#gone(m, reason),
     };
   }
 
@@ -223,7 +373,7 @@ export class Shell {
         // Not allowed (a file:// page): the view changes, the address doesn't.
       }
     }
-    void this.#show(url, 0);
+    void this.#show(url, 0).then(() => this.#ensureRoom());
   }
 
   #onPopState(): void {
@@ -237,7 +387,7 @@ export class Shell {
       location.reload();
       return;
     }
-    void this.#show(new URL(location.href), scrollY);
+    void this.#show(new URL(location.href), scrollY).then(() => this.#ensureRoom());
   }
 
   #saveScroll(): void {
@@ -341,6 +491,7 @@ export class Shell {
       // The view's module, run afresh: a new URL is a new module instance, which starts like on a page load.
       const mount = ++this.#mounts;
       m.mount = mount;
+      registerViewStart(mount, { path: url.pathname, search: url.search, signal: controller.signal });
       const moduleUrl = new URL("/js/" + info.module + ".js", location.href);
       moduleUrl.searchParams.set("mount", String(mount));
       try {
@@ -393,4 +544,32 @@ export class Shell {
       target.focus();
     }
   }
+}
+
+/**
+ * Asks fork or restore (docs/ui.md#alone-and-in-rooms). Resolves with the choice, or null when
+ * cancelled (only when `offer.cancellable`).
+ */
+function askLeaveChoice(offer: LeaveOffer): Promise<LeaveChoice | null> {
+  return new Promise((resolve) => {
+    const fork = h("button", { type: "button", text: offer.fork,
+      title: "Your own queue gets the room's current song, position and queue" });
+    const restore = h("button", { type: "button", text: offer.restore,
+      title: "Your own song and queue from before you joined come back" });
+    const cancel = offer.cancellable ? h("button", { type: "button", text: "Cancel" }) : null;
+    const form = h("div", { class: "form", role: "dialog", "aria-modal": "true", "aria-label": "Leave the room" },
+      h("p", { text: offer.question }),
+      h("div", { class: "row" }, fork, restore, cancel));
+    const overlay = h("div", { class: "classify-prompt leave-prompt" }, form);
+    const close = (v: LeaveChoice | null): void => {
+      overlay.remove();
+      resolve(v);
+    };
+    fork.addEventListener("click", () => close("fork"));
+    restore.addEventListener("click", () => close("restore"));
+    cancel?.addEventListener("click", () => close(null));
+    if (cancel !== null) overlay.addEventListener("keydown", (ev) => { if (ev.key === "Escape") close(null); });
+    document.body.append(overlay);
+    fork.focus();
+  });
 }

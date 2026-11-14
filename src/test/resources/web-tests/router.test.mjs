@@ -88,7 +88,7 @@ test("without a playing room, every view is shown in place", () => {
   assert.equal(R.decide("?id=y", "https://tt.example/playlists/?id=x", undefined, click()), "view");
 });
 
-test("while a room plays: other views in place, its own view shown again, another room and identity views load", () => {
+test("while a room plays: other views and other rooms in place, its own view shown again, identity views load", () => {
   for (const href of ["/library/", "/playlists/", "/playlists/?id=x", "/account/", "/admin/#roles", "/", "/rooms/",
     "/items/abc", "/rooms/lounge/manage", "/rooms/other/manage", "/nope", "https://tt.example/library/"]) {
     assert.equal(R.decide(href, HERE, isLounge, click()), "view", href);
@@ -96,7 +96,12 @@ test("while a room plays: other views in place, its own view shown again, anothe
   }
   assert.equal(R.decide("/rooms/lounge", "https://tt.example/library/", isLounge, click()), "room");
   assert.equal(R.decide("/rooms/" + ID + "/", "https://tt.example/library/", isLounge), "room");
-  for (const href of ["/rooms/other", "/rooms/other?mode=remote", "/login?next=%2F", "/login.html", "/register",
+  // another room: switched to in place (the shell takes the playing one away)
+  for (const href of ["/rooms/other", "/rooms/other?mode=remote", "/rooms/~0190a0b0-0000-7000-8000-000000000001"]) {
+    assert.equal(R.decide(href, "https://tt.example/library/", isLounge, click()), "view", href);
+    assert.equal(R.decide(href, "https://tt.example/library/", isLounge), "view", href + " (script)");
+  }
+  for (const href of ["/login?next=%2F", "/login.html", "/register",
     "/password.html", "/setup"]) {
     assert.equal(R.decide(href, "https://tt.example/library/", isLounge, click()), "browser", href);
   }

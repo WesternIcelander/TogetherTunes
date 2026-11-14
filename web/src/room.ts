@@ -59,7 +59,8 @@ import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
 } from "./session.js";
 import { Upload, type UploadProgress } from "./uploads.js";
-import { attachRoom, pageSignal, rememberPlaying, type RoomHandle } from "./nav.js";
+import { attachRoom, pageSignal, rememberPlaying, viewStart, type RoomHandle } from "./nav.js";
+import { shouldJoin } from "./alone.js";
 import { OutputsPanel } from "./outputspanel.js";
 import { offersNextEpisode } from "./shows.js";
 import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
@@ -67,8 +68,14 @@ import { rememberedWholeServer, rememberWholeServer } from "./searchscope.js";
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
 
+/**
+ * What the shell started this view for: shown, or (the user's room, alone or not) playing in the
+ * background from the start, while `location` is another view's.
+ */
+const START = viewStart(import.meta.url);
+
 /** This view's signal: aborted when the shell takes the room view away (leaving the room). */
-const ROOM_SIGNAL = pageSignal();
+const ROOM_SIGNAL = START?.signal ?? pageSignal();
 
 /** `setInterval` until the room view is taken away. */
 function every(f: () => void, ms: number): void {
@@ -80,15 +87,17 @@ function every(f: () => void, ms: number): void {
  * The room page's own query (`?mode=`, `?sync=`, `?webaudio=`), kept from the load: while the
  * shell shows another page, `location` is that page's.
  */
-const PAGE_SEARCH = location.search;
+const PAGE_SEARCH = START?.search ?? location.search;
 /** The room view's path, kept from its start for the same reason. */
-const PAGE_PATH = location.pathname;
+const PAGE_PATH = START?.path ?? location.pathname;
 
 interface RoomResponse {
   id: string;
   slug: string;
   name: string;
   settings?: Record<string, unknown>;
+  /** The user's alone room (docs/rooms.md#alone). */
+  alone?: boolean;
 }
 
 /** The room from `/rooms/{idOrSlug}` (or `?room=` when the page is opened as a plain file). */
@@ -1391,7 +1400,17 @@ async function start(): Promise<void> {
   roomRef = ref;
   roomName = room.name;
   shell = createShell();
-  document.title = room.name + " · TogetherTunes";
+  if (!shell.away) document.title = room.name + " · TogetherTunes";
+  if (shouldJoin(me, room)) {
+    // Opening a room joins it (docs/rooms.md#alone): coming from the alone state saves it. The room
+    // plays here either way; a refusal (a ban) shows up on the socket.
+    try {
+      await api("POST", "/api/me/play-session/join", { room: room.id });
+    } catch (e) {
+      recordEvent("room", { joinFailed: String(e) });
+    }
+    if (ROOM_SIGNAL.aborted) return;
+  }
   element("room-name").textContent = room.name;
   mode = chooseMode(modeFromLocation(), storageGet(modeKey(room.id)));
   forced = forcedRequestsOnly(room.settings);
@@ -1425,6 +1444,8 @@ async function start(): Promise<void> {
       const status = element("room-status");
       status.hidden = false;
       status.textContent = kickedText;
+      // Last: the shell may take the view away (a deleted room the user was in).
+      shell?.gone(reason);
     },
     request: onRequest,
     identity: () => renderIdentity(),

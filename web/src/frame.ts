@@ -22,6 +22,7 @@
 // Shift / Ctrl / Cmd-click) and the queue's two sections take moves (queue.move, by rights, never
 // in vote mode) and songs from elsewhere (queue.add).
 import { openAddLink } from "./addlink.js";
+import { historyPlace, historyRoomPath, leaveKind, recentsFromHistory, type PlayHistoryRow } from "./alone.js";
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { withClassification } from "./classifyprompt.js";
@@ -125,6 +126,9 @@ export class Frame {
   #roomId = "";
   #roomsTimer: number | undefined;
   #roomsQuery = "";
+  /** Recents alone: the user's own play history, and the current entry it was loaded for. */
+  #playHistory: PlayHistoryRow[] | undefined;
+  #playHistoryKey: string | undefined;
   /** The mobile layout's media query (below 800 px). */
   readonly #mobileQuery: MediaQueryList | undefined = typeof window.matchMedia === "function"
     ? window.matchMedia(MOBILE_QUERY) : undefined;
@@ -1107,10 +1111,16 @@ export class Frame {
       head.replaceChildren();
       return;
     }
-    const roomLink = h("a", { href: room.path(), text: room.name(), title: "Open the room view" });
-    const leave = h("button", { type: "button", class: "link small", text: "Leave", title: "Stop and leave the room" });
-    leave.addEventListener("click", () => this.#host.leave());
-    head.replaceChildren(roomLink, " ", leave);
+    const alone = s?.room.alone === true;
+    const roomLink = h("a", { href: room.path(), text: alone ? "On your own" : room.name(), title: "Open the room view" });
+    if (leaveKind(this.#me, alone) === "none") {
+      head.replaceChildren(roomLink);
+    } else {
+      const leave = h("button", { type: "button", class: "link small", text: "Leave",
+        title: this.#me?.kind === "user" ? "Leave the room and play on your own" : "Stop and leave the room" });
+      leave.addEventListener("click", () => this.#host.leave());
+      head.replaceChildren(roomLink, " ", leave);
+    }
     const queue = byId("app-queue");
     const recents = byId("app-recents");
     const people = byId("app-room");
@@ -1122,7 +1132,7 @@ export class Frame {
       return;
     }
     queue.replaceChildren(...this.#queueParts(room, s, true));
-    recents.replaceChildren(...this.#recentsParts(s));
+    recents.replaceChildren(...(recentsFromHistory(s) ? this.#aloneRecentsParts(s) : this.#recentsParts(s)));
     people.replaceChildren(...this.#peopleParts(room, s));
   }
 
@@ -1173,10 +1183,48 @@ export class Frame {
       ...this.#earlierParts(s)];
   }
 
+  /**
+   * Recents alone (docs/ui.md#alone-and-in-rooms): Now Playing, then the user's own play history
+   * (`GET /api/me/history`), each song that played in a room saying which; loaded again whenever
+   * another song starts.
+   */
+  #aloneRecentsParts(s: RoomState): HTMLElement[] {
+    const key = s.current?.entryId ?? "";
+    if (key !== this.#playHistoryKey) {
+      this.#playHistoryKey = key;
+      void api<Page<PlayHistoryRow>>("GET", "/api/me/history?limit=50").then((page) => {
+        if (this.#playHistoryKey !== key) return;
+        this.#playHistory = page.items;
+        this.update();
+      }, () => undefined);
+    }
+    const parts = this.#recentsParts(s).slice(0, 2);
+    const rows = this.#playHistory;
+    const earlier = h("ul", { class: "entries" });
+    for (const r of rows ?? []) {
+      // The song playing now is the newest row: Now Playing shows it already.
+      if (r === rows?.[0] && s.current !== undefined && r.room === undefined && r.item.id === s.current.item.id) continue;
+      const place = historyPlace(r);
+      const path = historyRoomPath(r);
+      const item = r.item as RoomItem;
+      const li = h("li", { class: "entry" }, cover(item, "cover entry-cover"),
+        h("div", { class: "grow" }, this.#entryText(item),
+          place === "" ? null : path !== undefined
+            ? h("a", { class: "muted small history-room", href: path, text: place })
+            : h("div", { class: "muted small history-room", text: place })),
+        h("span", { class: "entry-actions" }, this.#heart(item.id)));
+      this.#draggableItem(li, item, "recents", undefined, "h:" + r.id);
+      earlier.append(li);
+    }
+    parts.push(h("h3", { text: "Earlier" }), rows === undefined ? h("p", { class: "muted small", text: "Loading…" })
+      : earlier.childElementCount > 0 ? earlier : h("p", { class: "muted small", text: "Nothing played yet." }));
+    return parts;
+  }
+
   /** Room: Manage Room (owner and moderators) above the people, each with a ⋯ moderation menu. */
   #peopleParts(room: ShellRoom, s: RoomState): HTMLElement[] {
     const roomParts: HTMLElement[] = [];
-    if (s.room.you.canModerate) {
+    if (s.room.you.canModerate && s.room.alone !== true) {
       roomParts.push(h("p", {}, h("a", { class: "button-link", href: room.path() + "/manage", text: "Manage Room" })));
     }
     roomParts.push(h("p", { class: "muted small", text: presenceText(s.presence) }));

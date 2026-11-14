@@ -162,7 +162,7 @@ class ShellJsTest {
     @Test
     void shellMountsViewsAndKeepsThePlayingRoom() throws Exception {
         String room = read("web/js/room.js");
-        for (String s : List.of("attachRoom(", "const ROOM_SIGNAL = pageSignal()", "shell?.update()",
+        for (String s : List.of("attachRoom(", "const ROOM_SIGNAL = START?.signal ?? pageSignal()", "shell?.update()",
                 "rememberPlaying(null)", "new URLSearchParams(PAGE_SEARCH)", "shell?.away !== true",
                 "player?.dispose()", "conn.stop()", "clock?.stop()")) {
             assertTrue(room.contains(s), s);

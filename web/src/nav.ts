@@ -56,6 +56,33 @@ export function startPageSignal(): AbortController {
   return controller;
 }
 
+/** Where and with what signal a view's module was started (the shell's background room has its own). */
+export interface ViewStart {
+  /** The view's path and query (the room view reads its room from it; `location` may be another view's). */
+  path: string;
+  search: string;
+  /** Aborted when the shell takes the view away. */
+  signal: AbortSignal;
+}
+
+const starts = new Map<string, ViewStart>();
+
+/** For the shell: what the module imported under `?mount=N` gets from `viewStart()`. */
+export function registerViewStart(mount: number, start: ViewStart): void {
+  const key = String(mount);
+  starts.set(key, start);
+  start.signal.addEventListener("abort", () => starts.delete(key));
+}
+
+/**
+ * What the shell started this module for (pass `import.meta.url`), or undefined without the shell
+ * (then `location` and `pageSignal()` are the module's own).
+ */
+export function viewStart(moduleUrl: string): ViewStart | undefined {
+  const m = /[?&]mount=(\d+)/.exec(moduleUrl);
+  return m !== null && m[1] !== undefined ? starts.get(m[1]) : undefined;
+}
+
 /** What the shell needs from the room view, to keep it playing while other views are shown. */
 export interface ShellRoom {
   /** Whether the room plays here now (listen mode, not kicked): only then the shell keeps it. */
@@ -132,6 +159,8 @@ export interface RoomHandle {
   readonly away: boolean;
   /** Refreshes the frame's room parts (call on every room state). */
   update(): void;
+  /** The room stopped for good here (kicked, deleted: the socket's reason). */
+  gone(reason: string): void;
 }
 
 let roomHost: ((room: ShellRoom) => RoomHandle) | undefined;
@@ -144,7 +173,7 @@ export function setRoomHost(host: ((room: ShellRoom) => RoomHandle) | undefined)
 /** Called by the room view once it knows its room. Without the shell, a handle that does nothing. */
 export function attachRoom(room: ShellRoom): RoomHandle {
   if (roomHost !== undefined) return roomHost(room);
-  return { away: false, update: () => undefined };
+  return { away: false, update: () => undefined, gone: () => undefined };
 }
 
 /** Where the shell notes which room was playing while another page is shown (this tab only). */

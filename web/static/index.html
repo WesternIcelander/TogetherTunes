@@ -276,8 +276,10 @@
       </section>
 
       <p id="rooms-error" class="error" role="alert"></p>
+      <input id="rooms-search" type="search" maxlength="200" placeholder="Find a room (or paste its link)"
+             aria-label="Find a room">
       <table id="rooms-table" class="list rooms">
-        <thead><tr><th>Room</th><th>Owner</th><th>Visibility</th><th>Control</th><th>Your role</th></tr></thead>
+        <thead><tr><th>Room</th><th>Owner</th><th>Visibility</th><th>Control</th><th>Your role</th><th>Listening</th></tr></thead>
         <tbody id="rooms-rows"></tbody>
       </table>
       <p id="rooms-empty" class="muted" hidden>No rooms to show yet.</p>
