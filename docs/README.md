@@ -6,7 +6,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 
 ## Goals
 
-- **Libraries and playlists.** Media items are stored once on the server. Each user has a private library of references to them, and can make playlists and share items with other accounts. Nobody can browse another user's library without a role permission, but anyone with a direct link to an item can open it.
+- **Libraries and playlists.** Media items are stored once on the server. Each user has a private library of references to them, and can make playlists. (Sharing items with other accounts was removed in M9: people send an item's link instead.) Nobody can browse another user's library without a role permission, but anyone with a direct link to an item can open it.
 - **Adding media.** Upload a file, or paste a YouTube URL (fetched with yt-dlp and cached by video ID). Admins decide who may do each, including logged-out users.
 - **Rooms.** A user creates a room and others join it. The owner controls the queue, or lets listeners vote on songs or edit the queue directly. Each room keeps one history of what played; anyone in the room can add an item from it to their own library or (by the room's request rules) to the queue again.
 - **Guests.** Logged-out users can vote and request (from a library, by upload or by YouTube URL) where the admin and the room owner allow it. They get a generated name (adjective + noun) or, if the admin allows, a name of their choice. They are identified by a persistent cookie or by IP address (admin setting).
@@ -47,7 +47,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [architecture.md](architecture.md) | Components, threading, storage layout, configuration, deployment, requirements on the HTTP stack |
 | [data-model.md](data-model.md) | Tables, ID and time conventions, notes on the two SQL dialects |
 | [auth.md](auth.md) | Accounts, OIDC, sessions, roles and permissions, guests, IP policy, tokens on stream URLs |
-| [libraries.md](libraries.md) | Items vs. libraries, playlists, sharing, visibility, media access rules, retention |
+| [libraries.md](libraries.md) | Items vs. libraries, playlists, visibility, media access rules, retention (item sharing: removed in M9) |
 | [library-and-ingest.md](library-and-ingest.md) | Upload and yt-dlp import, YouTube caching, the mezzanine encoding profile, cards, sample index |
 | [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, the room's history, clock sync, web playback modes |
 | [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS / MP3 outputs |

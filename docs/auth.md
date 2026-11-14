@@ -125,9 +125,10 @@ A guest identity is created **lazily**: the first time an anonymous actor does s
 | `guests.canUpload` | false | Upload files as requests; only on while `guests.canRequestLibrary` is (below) |
 | `guests.canYoutube` | false | YouTube links as requests |
 | `guests.uploadQuota` | 3 per hour, 500 MiB per item | Per guest **and** per IP, whichever is hit first |
-| `guests.download` | false | Download any media item; see [libraries.md](libraries.md#media-access-rules) |
 
 Room owners control the same features for their own room, but only within these limits (see [rooms.md](rooms.md#guests-in-rooms)).
+
+There is no setting that lets guests download media (the former `guests.download` was removed in M9, migration `0027`): a guest or anonymous visitor gets an item's media only while a room they are in plays it or plays it next ([libraries.md](libraries.md#media-access-rules)).
 
 **Uploads need library requests** (2026-11-10, [rooms.md](rooms.md#uploads-need-library-requests)): `guests.canUpload` on needs `guests.canRequestLibrary` on. On the admin page, turning guest uploads on while guest library requests are off turns those on too, and turning guest library requests off while guest uploads are on turns uploads off too, with a notice; `PATCH /api/admin/settings` applies the same companion change and lists it in `"adjusted"` (both the wrong way in one patch: `400 invalid_setting`). A stored state that breaks it reads (and shows) as uploads off.
 

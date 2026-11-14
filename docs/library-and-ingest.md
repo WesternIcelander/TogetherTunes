@@ -1,6 +1,6 @@
 # Ingest
 
-How media gets onto the server and into the mezzanine format. Libraries, sharing and retention are in [libraries.md](libraries.md).
+How media gets onto the server and into the mezzanine format. Libraries and retention are in [libraries.md](libraries.md).
 
 ## Who can add media
 
@@ -141,7 +141,7 @@ Added 2026-11-10 (Siggi: "Allow the server admin to choose the preset ... two op
 **Which preset a job uses** (decided when the job starts):
 
 - A new item (upload, YouTube import, refetch) uses the **quick** preset when it is wanted in a room: the job was queued without a library entry (a request or paste in a room, a guest, a playlist), or a room has the item queued, suggested or playing when the job starts. It uses the **quality** preset directly when it was added straight to a library and no room wants it (`ingest_jobs.tier` records what the caller asked for, because a room's queue entry is only written after the import or upload has queued its job).
-- A **quick-encoded** item gets a `quality` job as soon as it is `ready` and in any library: added by the room owner, by anyone pasting the same YouTube link into their library, by an upload dedupe, a share, …, checked when the item's job finishes, when it is added to a library, and at startup (which also retries failed quality jobs). It re-encodes from the item's [original](#originals) (a YouTube item without one downloads again; an item with neither is left as it is, since re-encoding its quick encode would only lose quality).
+- A **quick-encoded** item gets a `quality` job as soon as it is `ready` and in any library: added by the room owner, by anyone pasting the same YouTube link into their library, by an upload dedupe, …, checked when the item's job finishes, when it is added to a library, and at startup (which also retries failed quality jobs). It re-encodes from the item's [original](#originals) (a YouTube item without one downloads again; an item with neither is left as it is, since re-encoding its quick encode would only lose quality).
 - Each item records the preset its files were made with (`items.encode_preset`) and whether they are its quality encode (`items.encode_quality`: the preset was the quality preset of the time). A quality encode never gets another one; equal quick and quality presets mean the first encode already is the quality encode, so there is no second job. Audio items have no video to improve: their encode always counts as the quality encode.
 - A profile/bitrate `reencode` uses the quality preset for an item that is in a library and not wanted in a room, else the quick preset (a quality job follows if needed).
 

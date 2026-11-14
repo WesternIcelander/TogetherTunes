@@ -67,7 +67,7 @@ The M3 browser tests showed that WebKit (Safari, and every browser on iOS) is th
 ### Open questions
 
 - May a device keep playing its copy of an item the server has purged (retention) or the user has lost access to?
-- Should offline downloading need its own permission or server switch (it amounts to downloading whole playlists), and how does it relate to `guests.download`?
+- Should offline downloading need its own permission or server switch (it amounts to downloading whole playlists), (Guests never download: `guests.download` was removed in M9.)
 - Video in offline playlists: per playlist, per item, or never?
 - How should the app handle a local copy whose version is outdated: stream the new one at once and replace the copy later on Wi-Fi?
 

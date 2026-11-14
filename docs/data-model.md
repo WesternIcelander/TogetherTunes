@@ -109,14 +109,13 @@ guest_upload_starts(id PK, guest_id FK,     -- one row per upload a guest starte
       created_at)                           -- counted over the last hour; older rows swept with the uploads
 
 library_entries(user_id FK, item_id FK, added_at,
-      via TEXT,                             -- 'upload'|'youtube'|'request'|'share'|'manual'
-      shared_by_user_id NULL,
+      via TEXT,                             -- 'upload'|'youtube'|'request'|'manual' (entries of the former
+                                            -- item sharing became 'manual'; migration 0027 dropped
+                                            -- shared_by_user_id and the shares table)
       PRIMARY KEY(user_id, item_id))
 
 playlists(id PK, owner_id FK, name, description NULL, created_at, updated_at)
 playlist_entries(id PK, playlist_id FK, item_id FK, position REAL, added_at)
-
-shares(id PK, item_id FK, from_user_id FK, to_user_id FK, message NULL, created_at, seen INTEGER)
 ```
 
 `purged` items keep their row (title, artist, `youtube_id`), so that history stays readable and a YouTube item can be fetched again. Their files are deleted. Their library and playlist entries are removed `retention.purgedEntryDays` after `purged_at` ([media-types.md](media-types.md#after-media-is-deleted)). Only an admin's **Delete record** removes an item row, together with every row referencing it (the foreign keys to `items` have no `ON DELETE` action, so it deletes them explicitly); `youtube_id` is then free for a new row.

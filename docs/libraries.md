@@ -1,4 +1,4 @@
-# Libraries, playlists, sharing and retention
+# Libraries, playlists and retention
 
 ## Items vs. libraries
 
@@ -20,22 +20,17 @@ An **item** is a media object stored once on the server: its files, metadata and
 - Adding follows the same item rules as adding to a library: a purged or failed upload can't be added; a purged or failed YouTube item is fetched again. Limits: 1000 playlists per user, 10 000 entries per playlist.
 - Adding an item to a playlist does **not** add it to your library, but it does protect the item from retention (see below).
 - In a room, the owner and moderators can enqueue a whole playlist, or shuffle it into the queue. In `vote` mode, playlist entries are added as normal queued entries with zero votes.
-- Sharing playlists is out of scope for v1; sharing works per item.
+- Sharing playlists is out of scope for v1 (items aren't shared either: see below).
 
-## Sharing
+## Sharing (removed)
 
-- A user can share an item with another account, picked by username, with an optional message.
-- The share adds the item to the recipient's library immediately (`via='share'`, `shared_by_user_id` set), and they get a notification. They can remove it like any other entry.
-- The recipient's library is not visible to the sender. The sender only sees "shared with X", in their own share history.
-- Users can't share with guests. To give a guest an item, send them the item's direct link.
-- The notification is the share itself: it stays unseen until the recipient marks it seen (`POST /api/shares/seen`); `GET /api/shares` returns the unseen count for a badge. (Pushing it live over the WebSocket can come with M3's socket; nothing else is needed for that.) Sharing an item the recipient already has makes a new notification but leaves their entry as it is.
-- Item rules are those of adding to a library: a purged or failed upload can't be shared; a purged or failed YouTube item is fetched again. A share references the item for retention. A sender can make at most 100 shares per rolling hour, so shares can't be used to flood someone with notifications.
+Sharing items with another account (`/api/shares`, a share adding the item to the recipient's library with a notification) was **removed in M9** (Siggi, 2026-11-14, [ui.md](ui.md#existing-features-in-the-new-ui)): people copy an item's link and send it however they like; anyone with the link can open the item page and add it to their library. Migration `0027_remove_sharing` turned the entries shares had made into ordinary library entries (`via='manual'`; `shared_by_user_id` dropped) and dropped the `shares` table (the senders' history and unseen notifications).
 
 ## Visibility
 
 | Who | Can see |
 |---|---|
-| Any user | Their own library and playlists; items shared with them |
+| Any user | Their own library and playlists |
 | `library.viewAll` | Every user's library and playlists (read-only), searchable by user (`/api/users?q=` finds users by username or display name; their library can be searched like your own) |
 | Room members (users and guests) | Inside a room: the **room owner's** library and playlists plus **their own** library, or with "Search the whole server" every item on the server (below) |
 | Any user | On the Library page, with "Search the whole server": every item on the server |
@@ -49,24 +44,23 @@ An **item** is a media object stored once on the server: its files, metadata and
 
 **Requests by item id** (`queue.add` with `itemId`): any item that exists and isn't a purged or failed upload, for anyone allowed to request from the library at all; there is no scope check (the former room setting `requestScope` and `403 not_in_request_scope` are gone; stored values are ignored). The other request rules stay: `requestsPerActor`, `noRepeatWindow`, guest capabilities (`guests.canRequestLibrary`), control mode (owner mode → suggestion), `libraryRequests`, and the item's own rules (unknown `404 item_not_found`, failed upload `409 item_failed`, purged upload `409 media_expired`; a purged or failed YouTube item is fetched again).
 
-As implemented (`library/ItemSearch`, used by `rooms/RequestSearch` and `GET /api/items/search`): one search implementation. A result is only item metadata (`Library.ItemView`), plus `inYourLibrary` on `/api/items/search`; no `addedAt`, `via`, `sharedBy` or "in X's library" hints. Results are ordered by item id (newest item first: the item's creation, the same for everyone), never by when a library got it, and the whole-server mode has no grouping, so neither the order nor the paging reveals library membership. Excluded: failed and purged uploads; in whole-server mode also purged YouTube items (failed and purged YouTube items in the owner's or requester's library are listed, since requesting one fetches it again). The item page (`GET /api/items/{id}`) shows the item's metadata, its first `addedAt`, and the viewer's own `you.inLibrary`/`canEdit`/`canPurge`/`canRetry`; it carries no adder and nothing about other users' libraries (`items.added_by_user_id` is only used server-side for the edit right, which requires the item to be in the adder's own library).
+As implemented (`library/ItemSearch`, used by `rooms/RequestSearch` and `GET /api/items/search`): one search implementation. A result is only item metadata (`Library.ItemView`), plus `inYourLibrary` on `/api/items/search`; no `addedAt`, `via` or "in X's library" hints. Results are ordered by item id (newest item first: the item's creation, the same for everyone), never by when a library got it, and the whole-server mode has no grouping, so neither the order nor the paging reveals library membership. Excluded: failed and purged uploads; in whole-server mode also purged YouTube items (failed and purged YouTube items in the owner's or requester's library are listed, since requesting one fetches it again). The item page (`GET /api/items/{id}`) shows the item's metadata, its first `addedAt`, and the viewer's own `you.inLibrary`/`canEdit`/`canPurge`/`canRetry`; it carries no adder and nothing about other users' libraries (`items.added_by_user_id` is only used server-side for the edit right, which requires the item to be in the adder's own library).
 
 ## Media access rules
 
-`GET /media/{itemId}/{file}` (`audio.m4a`, `mezz.mp4`, `original`, `cover.jpg`) is decided as follows:
+Every media route (`GET /media/{itemId}/{file}` and `GET /media/{itemId}/v/{N}/{file}` with `audio.m4a`, `audio-only.m4a`, `mezz.mp4`, `original`, `cover.jpg`, and the view report `POST /api/items/{id}/view`) is decided as follows:
 
 1. **Logged-in user:** allowed. A direct link is enough; the item doesn't have to be in their library.
-2. **Guest or anonymous:**
-   - If `guests.download` is on: allowed.
-   - Otherwise allowed **only if** the item is the **current** entry, or the **next** entry, in the queue of **any** room right now. The next entry is allowed so clients can preload it.
-   - Otherwise: `403`.
+2. **Guest or anonymous** (**guests never download**, M9: the former `guests.download` setting is gone): allowed **only if** the item is the **current** entry, or the **next** entry, in the queue of a room **they are in** right now. The next entry is allowed so clients can preload it. Otherwise: `403 forbidden`.
 3. Cover images are always allowed when metadata is visible. They are needed to render request search results and now-playing info.
+
+**"A room they are in"** means a room one of their WebSocket connections has joined (in listen or remote mode); leaving the room, joining another or closing the socket ends it. A guest is recognised by its guest id. An anonymous visitor has no identity, so it is recognised by its **IP key** (IPv4 address, IPv6 /64, as for IP-mode guests): an anonymous media request counts if an anonymous connection from the same IP key is in the room. A guest's media request also counts through its IP key (it could drop its cookie and ask anonymously anyway). These keys live only in memory (`rooms.RoomViewers`) and are never sent anywhere. Accepted consequence: people behind one NAT share an anonymous visitor's access, as they share an IP-mode guest.
 
 The check happens once, when the request starts. A Range response that is already streaming isn't cut off when the item stops being current; the client's following Range requests will be refused.
 
 "Next" is computed from live room state, so in `vote` mode it can change between the preload and playback. A refused preload simply falls back to loading at play time.
 
-To keep the check fast, maintain an in-memory `Set<itemId>` of all rooms' current and next items, updated by the room executors.
+To keep the check fast, the room executors maintain in memory each room's current and next items (`rooms.LivePlayingItems`), and the room socket maintains which rooms each guest and anonymous IP key is in (`rooms.RoomViewers`); the check looks up the caller's rooms and asks whether one of them lists the item.
 
 What counts per room: the current entry's item (playing or paused); the first queued entry in play order; and the first queued entry that is ready to play, if that's a different one (the first may still be ingesting and would be skipped over). Suggestions don't count. Each executor publishes its room's items after every change and withdraws them when it closes, so only loaded rooms count: every playing room is loaded at server start, and any room someone opens is loaded.
 
