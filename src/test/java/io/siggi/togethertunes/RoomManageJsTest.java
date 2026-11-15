@@ -46,6 +46,16 @@ class RoomManageJsTest {
             assertTrue(html.contains(s), s);
         }
         assertFalse(html.contains("tab-requests"), html);
+        // The output and QR overlay settings are in the Outputs tab, under the outputs themselves.
+        int outputsTab = html.indexOf("id=\"tab-outputs\"");
+        int outputsRoot = html.indexOf("id=\"outputs-root\"");
+        int outputSettings = html.indexOf("id=\"outputs-settings-groups\"");
+        assertTrue(outputsTab >= 0 && outputsTab < outputsRoot && outputsRoot < outputSettings, html);
+        assertTrue(outputSettings < html.indexOf("</section>", outputsTab), html);
+        for (String s : List.of("groupsOfTab(\"settings\")", "groupsOfTab(\"outputs\")", "renderOutputSettings()")) {
+            assertTrue(page.contains(s), s);
+        }
+        assertTrue(read("web/js/outputspanel.js").contains("manageHref + \"#outputs\""));
         assertTrue(NodeTests.view("view-room").contains("id=\"room-manage-link\""));
         assertTrue(read("web/js/room.js").contains("/manage"));
         assertTrue(read("web/css/main.css").contains(".server-disabled"));

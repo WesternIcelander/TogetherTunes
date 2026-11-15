@@ -1,12 +1,14 @@
 // The room's management view (/rooms/{idOrSlug}/manage; docs/rooms.md).
 //
-// Five tabs: settings (name, link name, visibility, control mode and every room setting; options
-// the server has turned off are greyed out with "disabled by the server admin"; only the owner
-// saves, moderators see them read-only; the owner or rooms.moderateAny may delete the room),
+// Five tabs: settings (name, link name, visibility, control mode and the room settings apart from
+// the output and QR overlay ones; options the server has turned off are greyed out with "disabled
+// by the server admin"; only the owner saves, moderators see them read-only; the owner or
+// rooms.moderateAny may delete the room),
 // members (roles as the viewer may give them, handing the room over for the owner, adding by
 // username, timeouts, leaving), bans (`/bans`: users and guests, bans and timeouts, with Unban; people
 // are banned from the room view's ⋯ menus), outputs (the stream outputs with their URLs, token
-// rotation, the plain-HTTP warning and the RTMP push: outputspanel.ts) and card images (the room's
+// rotation, the plain-HTTP warning and the RTMP push: outputspanel.ts; then the output settings and
+// the QR overlay settings with its preview, saved like the settings tab) and card images (the room's
 // custom card images, customcardsui.ts). A member who doesn't moderate gets only "Leave".
 import { api, ApiError } from "./api.js";
 import { roomCardsPath } from "./customcards.js";
@@ -18,7 +20,7 @@ import type { RoomState } from "./roomclient.js";
 import { button, formatTime, h } from "./dom.js";
 import { type Page } from "./media.js";
 import {
-  adjustedNotice, assignableRoles, buildPatch, canManageMember, coupledChange, describeDefault, getPath, GROUPS,
+  adjustedNotice, assignableRoles, buildPatch, canManageMember, coupledChange, describeDefault, getPath, groupsOfTab,
   OVERLAY_PREVIEW_KEYS, overlayNotes, overlayPreviewUrl, parseInput, serverCapNote, serverDisabledReason,
   SETTINGS, thresholdToPercent, type ServerSwitches, type SettingDef,
 } from "./roomsettings.js";
@@ -160,15 +162,28 @@ function renderSettings(): void {
   for (const id of ["room-field-name", "room-field-slug", "room-field-visibility", "room-field-control"]) {
     element<HTMLInputElement>(id).disabled = readOnly;
   }
-  inputs.clear();
-  const groups = element("settings-groups");
-  groups.replaceChildren();
-  for (const [group, title] of GROUPS) {
+  renderGroups(element("settings-groups"), groupsOfTab("settings"), readOnly);
+  element("room-delete").hidden = !room.you.canDelete;
+  form.hidden = false;
+}
+
+/** The output and QR overlay settings in the Outputs tab, under the outputs themselves. */
+function renderOutputSettings(): void {
+  const readOnly = !isOwner();
+  element("outputs-settings-readonly").hidden = !readOnly;
+  element("outputs-settings-save").hidden = readOnly;
+  renderGroups(element("outputs-settings-groups"), groupsOfTab("outputs"), readOnly);
+  element("outputs-settings-form").hidden = false;
+}
+
+/** Draws the setting groups into `container` (their inputs replace the old ones in `inputs`). */
+function renderGroups(container: HTMLElement, groups: Array<[string, string]>, readOnly: boolean): void {
+  for (const def of SETTINGS) {
+    if (groups.some(([g]) => g === def.group)) inputs.delete(def.key);
+  }
+  container.replaceChildren();
+  for (const [group, title] of groups) {
     const fieldset = h("fieldset", { class: "panel" }, h("legend", { text: title }));
-    if (group === "outputs") {
-      fieldset.append(h("p", { class: "muted small" }, "Turning outputs on and off, their stream URLs and the RTMP "
-        + "target and key are under ", h("a", { href: "#outputs", text: "Outputs" }), "."));
-    }
     for (const def of SETTINGS) {
       if (def.group !== group) continue;
       const reason = serverDisabledReason(def.key, switches);
@@ -188,10 +203,8 @@ function renderSettings(): void {
       fieldset.append(row);
     }
     if (group === "overlay") appendOverlayPreview(fieldset);
-    groups.append(fieldset);
+    container.append(fieldset);
   }
-  element("room-delete").hidden = !room.you.canDelete;
-  form.hidden = false;
 }
 
 /** The pending preview refresh (debounced while typing). */
@@ -264,17 +277,23 @@ function settingsChanges(): Record<string, unknown> {
   if (slug !== room.slug) body["slug"] = slug;
   if (visibility !== room.visibility) body["visibility"] = visibility;
   if (controlMode !== room.controlMode) body["controlMode"] = controlMode;
+  const patch = settingsPatch(groupsOfTab("settings"));
+  if (patch !== null) body["settings"] = patch;
+  return body;
+}
+
+/** The settings merge patch of the inputs in `groups`, or null when none changed. */
+function settingsPatch(groups: Array<[string, string]>): Record<string, unknown> | null {
   const values: Record<string, unknown> = {};
   for (const def of SETTINGS) {
+    if (!groups.some(([g]) => g === def.group)) continue;
     const input = inputs.get(def.key);
     // A greyed-out setting is left as it is (its stored value still counts once the server allows it).
     if (input === undefined || input.disabled) continue;
     const raw = input instanceof HTMLInputElement && input.type === "checkbox" ? input.checked : input.value;
     values[def.key] = parseInput(def, raw);
   }
-  const patch = buildPatch(room.settings, values);
-  if (patch !== null) body["settings"] = patch;
-  return body;
+  return buildPatch(room.settings, values);
 }
 
 function setUpSettings(): void {
@@ -311,6 +330,7 @@ function setUpSettings(): void {
       error.textContent = message(e);
     }).finally(() => { save.disabled = false; });
   });
+  setUpOutputSettings();
   element("room-delete-button").addEventListener("click", () => {
     if (!confirm("Delete the room \"" + room.name + "\"? Its queue, members and history are deleted too.")) return;
     const b = element<HTMLButtonElement>("room-delete-button");
@@ -319,6 +339,41 @@ function setUpSettings(): void {
       element("room-delete-error").textContent = message(e);
       b.disabled = false;
     });
+  });
+}
+
+/** The Outputs tab's settings form: the same `PATCH /api/rooms/{id} {settings}` as the settings tab. */
+function setUpOutputSettings(): void {
+  const form = element<HTMLFormElement>("outputs-settings-form");
+  const error = element("outputs-settings-error");
+  const saved = element("outputs-settings-saved");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    error.textContent = "";
+    saved.textContent = "";
+    let patch: Record<string, unknown> | null;
+    try {
+      patch = settingsPatch(groupsOfTab("outputs"));
+    } catch (e) {
+      error.textContent = message(e);
+      return;
+    }
+    if (patch === null) {
+      saved.textContent = "Nothing changed.";
+      return;
+    }
+    const save = element<HTMLButtonElement>("outputs-settings-save");
+    save.disabled = true;
+    api<RoomView & { adjusted?: string[] }>("PATCH", roomPath(), { settings: patch }).then((updated) => {
+      const notice = adjustedNotice(updated.adjusted, (k) => getPath(updated.settings, k));
+      room = updated;
+      renderHeader();
+      renderOutputSettings();
+      outputs?.update(outputsState());
+      saved.textContent = notice === null ? "Saved." : "Saved. " + notice;
+    }).catch((e: unknown) => {
+      error.textContent = message(e);
+    }).finally(() => { save.disabled = false; });
   });
 }
 
@@ -534,6 +589,7 @@ function showOutputs(): void {
   const panel = new OutputsPanel(element("outputs-root"));
   outputs = panel;
   panel.update(outputsState());
+  renderOutputSettings();
   // While the room plays here, follow its push status.
   VIEW.every(() => {
     const playing = currentRoom();

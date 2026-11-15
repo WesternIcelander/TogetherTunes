@@ -28,6 +28,13 @@ test("every room setting of docs/rooms.md is defined once, with its default", ()
   for (const d of S.SETTINGS) assert.ok(S.GROUPS.some((g) => g[0] === d.group), d.key);
 });
 
+test("Manage Room: output settings and the QR overlay are in the Outputs tab, in that order", () => {
+  assert.deepEqual(S.groupsOfTab("outputs").map((g) => g[0]), ["outputs", "overlay"]);
+  const settings = S.groupsOfTab("settings").map((g) => g[0]);
+  assert.deepEqual(settings, ["requests", "guests", "playback", "autoplay"]);
+  assert.equal(settings.length + 2, S.GROUPS.length);
+});
+
 test("server switches grey out exactly what they turn off", () => {
   for (const d of S.SETTINGS) assert.equal(S.serverDisabledReason(d.key, ALL_ON), null, d.key);
   for (const d of S.SETTINGS) assert.equal(S.serverDisabledReason(d.key, undefined), null, d.key);

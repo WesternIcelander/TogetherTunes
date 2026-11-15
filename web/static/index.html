@@ -417,8 +417,18 @@
       <section id="tab-outputs" hidden>
         <h2>Outputs</h2>
         <p class="muted small">The room's stream: URLs for video players and internet radio, and the push to an RTMP
-          service. Only the owner turns them on and off.</p>
+          service, then the output and QR overlay settings. Only the owner turns them on and off and changes the
+          settings.</p>
         <div id="outputs-root" class="room-outputs"></div>
+        <form id="outputs-settings-form" class="room-settings" hidden>
+          <p id="outputs-settings-readonly" class="muted" hidden>Only the room's owner changes these settings.</p>
+          <div id="outputs-settings-groups"></div>
+          <div class="row">
+            <button type="submit" id="outputs-settings-save">Save output settings</button>
+            <span id="outputs-settings-saved" class="muted small" role="status"></span>
+          </div>
+          <p id="outputs-settings-error" class="error" role="alert"></p>
+        </form>
       </section>
 
       <section id="tab-cards" hidden>

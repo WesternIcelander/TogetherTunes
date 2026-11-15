@@ -24,9 +24,17 @@ export const GROUPS: Array<[string, string]> = [
   ["guests", "Guests"],
   ["playback", "Playback"],
   ["autoplay", "Autoplay"],
+  ["outputs", "Output settings"],
   ["overlay", "QR overlay"],
-  ["outputs", "Outputs"],
 ];
+
+/** The groups Manage Room shows in its Outputs tab, after the outputs themselves; Settings shows the rest. */
+export const OUTPUT_TAB_GROUPS: readonly string[] = ["outputs", "overlay"];
+
+/** The setting groups (in GROUPS order) of Manage Room's Settings tab or its Outputs tab. */
+export function groupsOfTab(tab: "settings" | "outputs"): Array<[string, string]> {
+  return GROUPS.filter(([g]) => OUTPUT_TAB_GROUPS.includes(g) === (tab === "outputs"));
+}
 
 /** `overlay.mode` (docs/media-types.md#qr-overlay-modes): [value, label]. */
 export const OVERLAY_MODES: Array<[string, string]> = [

@@ -376,7 +376,8 @@ export class OutputsPanel {
       parts.push(h("p", { class: "small", text: "Viewer URL:" }), copyField(playback, "RTMP viewer URL"));
     } else {
       parts.push(h("p", { class: "muted small" }, "No viewer URL saved. Viewers need the URL the RTMP service gives "
-        + "out: save it under ", h("a", { href: manageHref, text: "Manage Room" }), " → Settings → Outputs."));
+        + "out: save it under ", h("a", { href: manageHref + "#outputs", text: "Manage Room" }), " → Outputs → Output "
+        + "settings."));
     }
     const buttons: Node[] = [];
     if (this.#owner && this.#rtmpForm !== "edit") {
