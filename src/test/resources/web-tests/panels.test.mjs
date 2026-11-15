@@ -231,3 +231,25 @@ test("autoplay stopped: the notice says for how long nobody was there", () => {
   assert.equal(P.formatMinutes(0), "0 min");
   assert.equal(P.formatMinutes(1440), "24 h");
 });
+
+test("the Now Playing View's player bar hides 5 s after the last activity unless something holds it", () => {
+  const free = { hover: false, menuOpen: false, keyboardFocus: false };
+  assert.equal(P.NOW_VIEW_HIDE_MS, 5000);
+  const a = new P.AutoHide();
+  assert.equal(a.delayMs, 5000);
+  assert.equal(a.shown(1000, free), false); // no activity yet
+  a.activity(10000); // entering the view, a mouse move or a tap
+  assert.equal(a.shown(10000, free), true);
+  assert.equal(a.shown(14999, free), true);
+  assert.equal(a.shown(15000, free), false);
+  for (const hold of [{ hover: true }, { menuOpen: true }, { keyboardFocus: true }]) {
+    assert.equal(a.shown(60000, { ...free, ...hold }), true, JSON.stringify(hold));
+  }
+  a.activity(60000);
+  assert.equal(a.shown(64000, free), true);
+  assert.equal(a.shown(65000, free), false);
+  const b = new P.AutoHide(100);
+  b.activity(0);
+  assert.equal(b.shown(99, free), true);
+  assert.equal(b.shown(100, free), false);
+});

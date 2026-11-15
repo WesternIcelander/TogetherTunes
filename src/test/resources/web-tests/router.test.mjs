@@ -54,6 +54,42 @@ test("deep links: rooms, room management, items and playlists", () => {
   assert.deepEqual(R.routeOf(R.playlistPath("a b")), view("list", { list: "playlist", id: "a b" }, "/playlists/a%20b"));
 });
 
+test("a room's Now Playing View: the room view with `now`, never a room slug", () => {
+  const now = (ref, path) => view("room", { ref, now: "1" }, path);
+  assert.deepEqual(R.routeOf("/rooms/lounge/now-playing"), now("lounge", "/rooms/lounge/now-playing"));
+  assert.deepEqual(R.routeOf("/rooms/lounge/now-playing/"), now("lounge", "/rooms/lounge/now-playing"));
+  assert.deepEqual(R.routeOf("/rooms/" + ID + "/now-playing"), now(ID, "/rooms/" + ID + "/now-playing"));
+  assert.deepEqual(R.routeOf("/rooms/caf%C3%A9/now-playing"), now("café", "/rooms/caf%C3%A9/now-playing"));
+  // a room whose slug is "now-playing" is just that room
+  assert.deepEqual(R.routeOf("/rooms/now-playing"), view("room", { ref: "now-playing" }, "/rooms/now-playing"));
+  assert.equal(R.routeOf("/rooms/a/b/now-playing").view, "notFound");
+  assert.equal(R.routeOf("/rooms//now-playing").kind, "other");
+  assert.equal(R.isNowPlaying(R.routeOf("/rooms/lounge/now-playing")), true);
+  assert.equal(R.isNowPlaying(R.routeOf("/rooms/lounge")), false);
+  assert.equal(R.isNowPlaying(R.routeOf("/api/x")), false);
+  assert.equal(R.nowPlayingPath("/rooms/lounge"), "/rooms/lounge/now-playing");
+  assert.equal(R.nowPlayingPath("/rooms/lounge/"), "/rooms/lounge/now-playing");
+  assert.equal(R.nowPlayingPath("/rooms/caf%C3%A9"), "/rooms/caf%C3%A9/now-playing");
+  // the playing room's Now Playing View is shown in place (the kept room again), another room's switches
+  assert.equal(R.decide("/rooms/lounge/now-playing", "https://tt.example/library/", isLounge), "room");
+  assert.equal(R.decide("/rooms/other/now-playing", "https://tt.example/library/", isLounge), "view");
+  assert.equal(R.decide("/rooms/lounge/now-playing", HERE, undefined, click()), "view");
+});
+
+test("Exit Now Playing View: back when the previous entry is the app's, else push the room view", () => {
+  assert.equal(R.historyDepth(null), 0);
+  assert.equal(R.historyDepth(undefined), 0);
+  assert.equal(R.historyDepth({}), 0);
+  assert.equal(R.historyDepth({ depth: "2" }), 0);
+  assert.equal(R.historyDepth({ depth: -1 }), 0);
+  assert.equal(R.historyDepth({ depth: 1.5 }), 0);
+  assert.equal(R.historyDepth({ depth: 3, scrollY: 10 }), 3);
+  assert.equal(R.exitNowPlaying(null), "push"); // opened directly (a fresh load or a shared link)
+  assert.equal(R.exitNowPlaying({ depth: 0, scrollY: 0 }), "push");
+  assert.equal(R.exitNowPlaying({ depth: 1 }), "back");
+  assert.equal(R.exitNowPlaying({ depth: 7, mPane: "now" }), "back");
+});
+
 test("unknown UI paths are the Not found view; the server's own paths are not views", () => {
   for (const p of ["/items/", "/rooms/a/b/c", "/library/x/y", "/nope", "/rooms/%E0%A4%A", "/room.html",
     "/item.html"]) {

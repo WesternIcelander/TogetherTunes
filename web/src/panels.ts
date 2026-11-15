@@ -155,6 +155,44 @@ export function voteSkip(s: RoomLike & { skipVotes?: { votes: number; needed: nu
     label: "Vote to skip (" + sv.votes + "/" + sv.needed + ")" };
 }
 
+/** How long the Now Playing View's player bar stays after the last mouse move or tap (docs/ui.md#layout-desktop). */
+export const NOW_VIEW_HIDE_MS = 5000;
+
+/** What keeps the Now Playing View's player bar shown regardless of the timer. */
+export interface BarHold {
+  /** The pointer is over the bar. */
+  hover: boolean;
+  /** One of its menus (⋯, mute) is open. */
+  menuOpen: boolean;
+  /** Keyboard focus is inside it (not focus left there by a mouse click). */
+  keyboardFocus: boolean;
+}
+
+/**
+ * The Now Playing View's auto-hiding player bar: shown while the mouse moved (or the screen was
+ * tapped) within the last {@link NOW_VIEW_HIDE_MS}, or while something holds it ({@link BarHold});
+ * hidden otherwise (the cursor over the video with it). Times are in ms on any one clock.
+ */
+export class AutoHide {
+  readonly delayMs: number;
+  #last = Number.NEGATIVE_INFINITY;
+
+  constructor(delayMs = NOW_VIEW_HIDE_MS) {
+    this.delayMs = delayMs;
+  }
+
+  /** A mouse move, tap or key press at `now`: the bar shows for another `delayMs`. */
+  activity(now: number): void {
+    this.#last = now;
+  }
+
+  /** Whether the bar shows at `now`. */
+  shown(now: number, hold: BarHold): boolean {
+    if (hold.hover || hold.menuOpen || hold.keyboardFocus) return true;
+    return now - this.#last < this.delayMs;
+  }
+}
+
 /**
  * The player's mute (docs/ui.md#layout-desktop): "Mute player" until unmuted, or "Mute only until
  * end of song", which unmutes by itself as soon as another entry (or nothing) is current.

@@ -2323,3 +2323,30 @@ li.entry.selected {
     margin-top: 1.5rem;
   }
 }
+
+/* The Now Playing View's player bar (docs/ui.md#layout-desktop; frame.ts, panels.ts AutoHide): over the
+   video, translucent black with the dark scheme's controls (readable in light and dark themes), and
+   faded out (with the cursor over the video) 5 s after the last mouse move or tap. */
+body.now-view-open .player-bar {
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  color-scheme: dark;
+  border-top-color: transparent;
+  transition: opacity 0.3s;
+}
+
+body.now-view-open .player-bar .muted {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+body.now-view-open.pb-idle .player-bar,
+body.now-view-open.pb-idle .now-close {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.now-view-open.pb-idle .app-video,
+body.now-view-open.pb-idle .app-video * {
+  cursor: none;
+}

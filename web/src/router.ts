@@ -148,6 +148,14 @@ export function routeOf(pathname: string): Route {
     const ref = decodeSegment(m[1]);
     if (ref !== undefined && ref !== "") return { kind: "view", view: "room", params: { ref }, path: "/rooms/" + m[1] };
   }
+  m = /^\/rooms\/([^/]+)\/now-playing\/?$/.exec(pathname);
+  if (m !== null && m[1] !== undefined) {
+    // The Now Playing View (docs/ui.md#layout-desktop): the room view with the view open over it.
+    const ref = decodeSegment(m[1]);
+    if (ref !== undefined && ref !== "") {
+      return { kind: "view", view: "room", params: { ref, now: "1" }, path: "/rooms/" + m[1] + "/now-playing" };
+    }
+  }
   m = /^\/rooms\/([^/]+)\/manage\/?$/.exec(pathname);
   if (m !== null && m[1] !== undefined) {
     const ref = decodeSegment(m[1]);
@@ -168,6 +176,34 @@ export function routeOf(pathname: string): Route {
     }
   }
   return { kind: "view", view: "notFound", params: {}, path: pathname };
+}
+
+/** The path of a room's Now Playing View: the room view's path + `/now-playing`. */
+export function nowPlayingPath(roomPath: string): string {
+  return roomPath.replace(/\/+$/, "") + "/now-playing";
+}
+
+/** Whether a route is a room's Now Playing View. */
+export function isNowPlaying(route: Route): boolean {
+  return route.kind === "view" && route.view === "room" && route.params["now"] === "1";
+}
+
+/**
+ * How far into this app's own history entries an entry is (`history.state.depth`, set by the shell:
+ * 0 for the entry the document was loaded on, +1 for each entry it pushes). Missing: 0.
+ */
+export function historyDepth(state: unknown): number {
+  if (state === null || typeof state !== "object") return 0;
+  const d = (state as { depth?: unknown }).depth;
+  return typeof d === "number" && Number.isInteger(d) && d > 0 ? d : 0;
+}
+
+/**
+ * Exit Now Playing View: "back" when the previous history entry is this app's (the view was entered
+ * from a page here), "push" (the room view's path) when the URL was opened directly.
+ */
+export function exitNowPlaying(state: unknown): "back" | "push" {
+  return historyDepth(state) > 0 ? "back" : "push";
 }
 
 /** The path of a playlist's view (the `list` view). */

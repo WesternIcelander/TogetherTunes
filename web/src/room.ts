@@ -92,7 +92,8 @@ interface RoomResponse {
 
 /** The room from `/rooms/{idOrSlug}` (or `?room=` when the page is opened as a plain file). */
 function roomFromLocation(): string {
-  const m = /^\/rooms\/([^/]+)\/?$/.exec(PAGE_PATH);
+  // `/rooms/{ref}` or its Now Playing View, `/rooms/{ref}/now-playing` (the frame opens that view).
+  const m = /^\/rooms\/([^/]+)(?:\/now-playing)?\/?$/.exec(PAGE_PATH);
   if (m !== null && m[1] !== undefined) {
     try {
       return decodeURIComponent(m[1]);

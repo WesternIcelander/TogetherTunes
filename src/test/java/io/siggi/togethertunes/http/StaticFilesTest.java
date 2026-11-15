@@ -350,7 +350,7 @@ class StaticFilesTest {
     @Test
     void appPathsWithoutAFileGetTheAppDocument() throws IOException {
         for (String target : List.of("/items/0190abcd-ef01-7000-8000-000000000001", "/rooms/lounge",
-                "/rooms/lounge/manage", "/rooms/", "/library/", "/playlists/0190abcd", "/login", "/login.html",
+                "/rooms/lounge/manage", "/rooms/lounge/now-playing", "/rooms/", "/library/", "/playlists/0190abcd", "/login", "/login.html",
                 "/some/unknown/view", "/rooms/caf%C3%A9?mode=remote")) {
             assertServed(target, "text/html; charset=utf-8", INDEX);
         }
@@ -372,7 +372,8 @@ class StaticFilesTest {
 
     @Test
     void appPathRules() {
-        for (String path : List.of("/", "/library/", "/library", "/rooms/lounge", "/items/x", "/login.html",
+        for (String path : List.of("/", "/library/", "/library", "/rooms/lounge", "/rooms/lounge/now-playing",
+                "/items/x", "/login.html",
                 "/a/b/c/")) {
             assertTrue(StaticFiles.isAppPath(path), path);
         }

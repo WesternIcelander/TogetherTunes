@@ -23,7 +23,7 @@
 //   session's room (the room they are in, otherwise their alone room) as a background room view
 //   (hidden from the start, with its own signal and path, nav.ts `viewStart`). Leave asks fork or
 //   restore and then plays the alone room; a room deleted while the user is in it asks the same.
-import { decide, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
+import { decide, historyDepth, pageKey, routeOf, VIEWS, type ClickInfo, type Decision, type ViewRoute } from "./router.js";
 import { navigate, registerViewStart, rememberPlaying, setIdentityHook, setNavigator, setRoomHost, startPageSignal,
   type RoomHandle, type ShellRoom } from "./nav.js";
 import {
@@ -38,6 +38,8 @@ import { recordEvent } from "./diagnostics.js";
 
 interface HistoryState {
   scrollY?: number;
+  /** How many of this app's entries come before this one (router.ts historyDepth; Exit Now Playing View). */
+  depth?: number;
 }
 
 /** A view in the document: shown, or (the room) kept playing in the background. */
@@ -121,10 +123,14 @@ export class Shell {
   start(): void {
     const url = new URL(location.href);
     const route = routeOf(url.pathname);
+    // The entry the document was loaded on keeps its depth (a reload); a fresh load is depth 0.
+    const depth = historyDepth(history.state);
     if (route.kind === "view" && route.path !== url.pathname) {
       // An alias (`/login.html`, `/library`): show the view's own spelling.
       url.pathname = route.path;
-      this.#replaceState({}, url.pathname + url.search + url.hash);
+      this.#replaceState({ depth }, url.pathname + url.search + url.hash);
+    } else {
+      this.#replaceState({ ...((history.state ?? {}) as HistoryState), depth });
     }
     void this.#frame.start();
     void this.#show(url, 0).then(() => this.#ensureRoom());
@@ -389,10 +395,11 @@ export class Shell {
     if (route.kind === "view") url.pathname = route.path;
     this.#saveScroll();
     const target = url.pathname + url.search + url.hash;
-    if (replace) this.#replaceState({}, target);
+    const depth = historyDepth(history.state);
+    if (replace) this.#replaceState({ depth }, target);
     else {
       try {
-        history.pushState({}, "", target);
+        history.pushState({ depth: depth + 1 }, "", target);
       } catch {
         // Not allowed (a file:// page): the view changes, the address doesn't.
       }
@@ -462,8 +469,9 @@ export class Shell {
     const shown = this.#view;
     if (route.view === "room" && shown?.route.view === "room" && shown.room !== undefined
       && shown.room.isRoom(route.params["ref"] ?? "")) {
-      // The room view already shown (a link to it): nothing to start.
+      // The room view already shown (a link to it, or its Now Playing View): nothing to start.
       shown.key = key;
+      this.#frame.navigated(url.pathname + url.search);
       this.#scroll(scrollY, url.hash);
       return;
     }

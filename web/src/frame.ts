@@ -43,14 +43,14 @@ import { offersNextEpisode } from "./shows.js";
 import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
   playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
 import {
-  autoplayStoppedText, canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
+  AutoHide, autoplayStoppedText, canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
   parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections, songCount,
   suggestionsPlace, volumeGain, voteSkip, type AutoplaySelectionLike, type PersonAction, type PersonLike,
   type PersonViewer,
 } from "./panels.js";
 import type { CurrentEntry, HistoryEntry, RoomItem, RoomState, WaitingEntry } from "./roomclient.js";
 import type { RoomListEntry } from "./roomlist.js";
-import { playlistPath, routeOf } from "./router.js";
+import { exitNowPlaying, historyDepth, isNowPlaying, nowPlayingPath, playlistPath, routeOf } from "./router.js";
 import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, loadMe, logout, message, ROOMS_PAGE,
   type Me } from "./session.js";
 import { lastPressWasTouch, onLongPress, openMenu, placeMenu } from "./touch.js";
@@ -140,6 +140,14 @@ export class Frame {
   #pane: MobilePane = "";
   /** Where the room view's request parts (`.rv-request`) belong while the Now Playing pane holds them. */
   #requestHome: HTMLElement | undefined;
+  /** The URL is a room's Now Playing View (`/rooms/{ref}/now-playing`): open it once that room view is shown. */
+  #nowWanted = false;
+  /** The Now Playing View's auto-hiding player bar (rules in panels.ts). */
+  readonly #autoHide = new AutoHide();
+  /** The last input was a key (not a pointer): focus in the player bar then holds it shown. */
+  #keyboardInput = false;
+  /** Where the mouse was last seen (a mousemove without movement isn't activity). */
+  #mouseAt = "";
 
   constructor(host: FrameHost) {
     this.#host = host;
@@ -173,8 +181,19 @@ export class Frame {
     prefs.subscribe((p, changed) => { if (changed.indexOf("debug") >= 0) byId("app-debug").hidden = !p.debug; });
     byId("app-diagnostics").addEventListener("click", () => { void this.#sendDiagnostics(); });
     document.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape" && document.body.classList.contains("now-view-open")) this.#setNowView(false);
+      if (ev.key !== "Escape" || !this.#nowViewOpen() || ev.defaultPrevented) return;
+      // An open menu closes first; while the browser is in fullscreen, Escape is its own.
+      const menu = byId("pb-menu");
+      if (!menu.hidden || !byId("pb-mute-menu").hidden || document.querySelector(".popup-menu") !== null) {
+        menu.hidden = true;
+        byId("pb-mute-menu").hidden = true;
+        return;
+      }
+      const doc = document as Document & { webkitFullscreenElement?: Element | null };
+      if ((doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null) !== null) return;
+      this.#exitNowView();
     });
+    this.#wireAutoHide();
     document.addEventListener("click", (ev) => this.#closeMenus(ev));
     // A plain click (or Escape) ends the panel's multi-select.
     const clearSelection = (): void => {
@@ -266,7 +285,7 @@ export class Frame {
     const state = (history.state ?? {}) as Record<string, unknown>;
     try {
       history.replaceState({ ...state, scrollY: window.scrollY }, "");
-      history.pushState({ mPane: pane }, "");
+      history.pushState({ mPane: pane, depth: historyDepth(state) + 1 }, "");
     } catch {
       // Not allowed (a file:// page): the pane shows, Back doesn't close it.
     }
@@ -439,6 +458,9 @@ export class Frame {
       this.update();
     }
     this.#markCurrent(path);
+    const q = path.indexOf("?");
+    this.#nowWanted = isNowPlaying(routeOf(q >= 0 ? path.slice(0, q) : path));
+    this.#applyNowView();
     if (this.#me?.kind !== "user") void this.#reloadMe();
   }
 
@@ -860,6 +882,7 @@ export class Frame {
     this.#drawPanel(room, s);
     if (this.#host.roomShown()) this.#drawRoomView(room, s);
     this.#drawPlayerBar(room, s);
+    this.#applyNowView();
     this.#drawVideo();
   }
 
@@ -1567,9 +1590,15 @@ export class Frame {
     });
     byId("pb-now-view").addEventListener("click", () => {
       menu.hidden = true;
-      this.#setNowView(!document.body.classList.contains("now-view-open"));
+      menuButton.setAttribute("aria-expanded", "false");
+      if (this.#nowViewOpen()) {
+        this.#exitNowView();
+        return;
+      }
+      const room = this.#host.room();
+      if (room !== undefined) navigate(nowPlayingPath(room.path()));
     });
-    byId("app-now-close").addEventListener("click", () => this.#setNowView(false));
+    byId("app-now-close").addEventListener("click", () => this.#exitNowView());
     byId("pb-fullscreen").addEventListener("click", () => {
       menu.hidden = true;
       this.#toggleFullscreen();
@@ -1664,6 +1693,7 @@ export class Frame {
 
   /** Moves the seek bar and the times along. */
   #tick(): void {
+    this.#drawAutoHide();
     // The view's title can change after its data loads (mobile top bar).
     this.#drawBarTitle();
     const room = this.#host.room();
@@ -1730,11 +1760,87 @@ export class Frame {
     }
   }
 
-  #setNowView(on: boolean): void {
-    if (on && this.#host.room() === undefined) return;
+  #nowViewOpen(): boolean {
+    return document.body.classList.contains("now-view-open");
+  }
+
+  /**
+   * The Now Playing View is open while the URL is its own (`/rooms/{ref}/now-playing`) and that room
+   * view is shown (on a fresh load, once the room attached). The video panel only changes its CSS
+   * (it stays in the room view's video area), so the media keep playing.
+   */
+  #applyNowView(): void {
+    const on = this.#nowWanted && this.#host.room() !== undefined && this.#host.roomShown();
+    if (on === this.#nowViewOpen()) return;
     document.body.classList.toggle("now-view-open", on);
     byId("app-now-close").hidden = !on;
+    byId("pb-now-view").textContent = on ? "Exit Now Playing View" : "Now Playing View";
+    if (on) this.#autoHide.activity(Date.now());
+    this.#drawAutoHide();
     this.#drawVideo();
+  }
+
+  /**
+   * Exit Now Playing View (the ⋯ menu, Escape, Close): back in history when the previous entry is this
+   * app's, otherwise (the URL was opened directly) to the room view's path.
+   */
+  #exitNowView(): void {
+    if (exitNowPlaying(history.state) === "back") {
+      history.back();
+      return;
+    }
+    const room = this.#host.room();
+    navigate(room !== undefined ? room.path() : "/");
+  }
+
+  /** Mouse moves, taps and keys show the Now Playing View's player bar for a while (panels.ts AutoHide). */
+  #wireAutoHide(): void {
+    const active = (): void => {
+      if (!this.#nowViewOpen()) return;
+      this.#autoHide.activity(Date.now());
+      this.#drawAutoHide();
+    };
+    document.addEventListener("mousemove", (ev) => {
+      // Some browsers send a mousemove when the page changes under a still mouse: not activity.
+      const at = ev.screenX + "," + ev.screenY;
+      if (at === this.#mouseAt) return;
+      this.#mouseAt = at;
+      active();
+    });
+    document.addEventListener("pointerdown", () => {
+      this.#keyboardInput = false;
+      active();
+    }, true);
+    document.addEventListener("touchstart", active, { capture: true, passive: true });
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") return;
+      this.#keyboardInput = true;
+      active();
+    }, true);
+    const bar = byId("player-bar");
+    bar.addEventListener("focusin", () => this.#drawAutoHide());
+    bar.addEventListener("focusout", () => this.#drawAutoHide());
+  }
+
+  /** Shows or hides the player bar (and the cursor over the video) in the Now Playing View. */
+  #drawAutoHide(): void {
+    let idle = false;
+    if (this.#nowViewOpen()) {
+      const bar = byId("player-bar");
+      let hover = false;
+      try {
+        hover = bar.matches(":hover");
+      } catch {
+        // No :hover matching: the timer alone decides.
+      }
+      const active = document.activeElement;
+      idle = !this.#autoHide.shown(Date.now(), {
+        hover,
+        menuOpen: !byId("pb-menu").hidden || !byId("pb-mute-menu").hidden,
+        keyboardFocus: this.#keyboardInput && active !== null && bar.contains(active),
+      });
+    }
+    document.body.classList.toggle("pb-idle", idle);
   }
 
   #toggleFullscreen(): void {
