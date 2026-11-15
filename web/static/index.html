@@ -74,6 +74,9 @@
       <section id="app-video" class="app-video" aria-label="Video" hidden>
         <div id="room-player" class="room-player" hidden></div>
         <div id="app-video-card" class="video-card" hidden></div>
+        <!-- Show QR code (Now Playing View only): the stream's QR overlay drawn over the video or card
+             (frame.ts, overlayshow.ts); never takes clicks. -->
+        <div id="now-qr" class="now-qr" hidden></div>
         <!-- Shown while the browser doesn't let the page play sound without a click (listen.ts): over the
              video area only, so clicks elsewhere on the page work as usual and don't start the sound. -->
         <div id="room-listen-overlay" class="listen-overlay" hidden>
@@ -120,6 +123,7 @@
         <!-- Mobile: the mute choices (right-click on the desktop mute button) are here instead. -->
         <button type="button" role="menuitem" id="pb-m-mute" class="m-only">Mute</button>
         <button type="button" role="menuitem" id="pb-m-mute-song" class="m-only">Mute only until end of song</button>
+        <label role="menuitemcheckbox" id="pb-show-qr-item" hidden><input type="checkbox" id="pb-show-qr"> Show QR code</label>
         <button type="button" role="menuitem" id="pb-now-view">Now Playing View</button>
         <button type="button" role="menuitem" id="pb-fullscreen">Fullscreen</button>
       </div>

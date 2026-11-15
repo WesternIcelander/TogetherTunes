@@ -47,6 +47,34 @@ final class RoomViews {
         this.covers = Objects.requireNonNull(covers);
     }
 
+    private volatile RoomSocket.EntryOverlay entryOverlay;
+
+    /** The current entry's QR overlay decision ({@code current.overlay}); without it the field is left out. */
+    void entryOverlay(RoomSocket.EntryOverlay entryOverlay) {
+        this.entryOverlay = Objects.requireNonNull(entryOverlay);
+    }
+
+    /**
+     * {@link #current(Lookup, QueueEntry)} plus {@code overlay}: the entry's QR overlay decision as
+     * the stream uses it ({@code off}, {@code cards} or {@code video}), when it can be told.
+     */
+    JsonObject currentView(Lookup l, QueueEntry e) {
+        JsonObject o = current(l, e);
+        RoomSocket.EntryOverlay eo = entryOverlay;
+        if (eo != null) {
+            try {
+                String wire = eo.overlay(e.id());
+                if (wire != null) {
+                    o.addProperty("overlay", wire);
+                }
+            } catch (SQLException | RuntimeException ex) {
+                System.getLogger(RoomViews.class.getName()).log(System.Logger.Level.WARNING,
+                        "Overlay decision of entry " + e.id() + ": " + ex);
+            }
+        }
+        return o;
+    }
+
     /**
      * An item's columns as the room messages show it. {@code presentAsAudio} is derived from the
      * media type (a video item of type {@code audio}); {@code show} only for type {@code show}.

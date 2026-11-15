@@ -125,19 +125,12 @@ public final class OverlayDecisions {
         });
     }
 
-    /**
-     * The entry's overlay decision: the recorded one, or, the first time, {@link #evaluate} for its
-     * room's owner and settings and its item's type as they are now, which is then recorded. When
-     * two callers race, the first write wins and both get it. A movie or show is always
-     * {@link Decision#OFF}, whatever was recorded.
-     *
-     * @return the decision, or {@code null} if there is no such entry
-     */
-    public Decision decide(String entryId) throws SQLException {
-        Objects.requireNonNull(entryId);
-        record Row(String overlay, String ownerId, String settingsJson, String mediaType) {
-        }
-        Row row = db.read(c -> {
+    /** A queue entry's overlay decision with what deciding it needs. */
+    private record Row(String overlay, String ownerId, String settingsJson, String mediaType) {
+    }
+
+    private Row row(String entryId) throws SQLException {
+        return db.read(c -> {
             try (PreparedStatement ps = c.prepareStatement("SELECT q.overlay, r.owner_id, r.settings_json, i.kind,"
                     + " i.media_type FROM queue_entries q JOIN rooms r ON r.id = q.room_id"
                     + " JOIN items i ON i.id = q.item_id WHERE q.id = ?")) {
@@ -148,6 +141,39 @@ public final class OverlayDecisions {
                 }
             }
         });
+    }
+
+    /**
+     * What {@link #decide} gives the entry, without recording anything: the recorded decision (a
+     * movie or show {@link Decision#OFF}), or {@link #evaluate} as things are now. The web player's
+     * copy of the overlay follows it (the room state's {@code current.overlay}).
+     *
+     * @return the decision, or {@code null} if there is no such entry
+     */
+    public Decision peek(String entryId) throws SQLException {
+        Objects.requireNonNull(entryId);
+        Row row = row(entryId);
+        if (row == null) {
+            return null;
+        }
+        Decision known = Decision.parse(row.overlay());
+        if (known != null) {
+            return neverOverlaid(row.mediaType()) ? Decision.OFF : known;
+        }
+        return evaluate(row.ownerId(), RoomSettings.parse(row.settingsJson()), row.mediaType());
+    }
+
+    /**
+     * The entry's overlay decision: the recorded one, or, the first time, {@link #evaluate} for its
+     * room's owner and settings and its item's type as they are now, which is then recorded. When
+     * two callers race, the first write wins and both get it. A movie or show is always
+     * {@link Decision#OFF}, whatever was recorded.
+     *
+     * @return the decision, or {@code null} if there is no such entry
+     */
+    public Decision decide(String entryId) throws SQLException {
+        Objects.requireNonNull(entryId);
+        Row row = row(entryId);
         if (row == null) {
             return null;
         }

@@ -182,6 +182,23 @@ public final class RoomSocket {
         views.covers(covers);
     }
 
+    /**
+     * A queue entry's QR overlay decision as the stream uses it ({@code docs/overlay.md#permissions}):
+     * {@code off}, {@code cards} or {@code video}, or {@code null} if unknown.
+     */
+    @FunctionalInterface
+    public interface EntryOverlay {
+        String overlay(String entryId) throws java.sql.SQLException;
+    }
+
+    /**
+     * Gives the current entry its {@code overlay} decision in the room messages (the web player's
+     * copy of the QR overlay follows it, {@code docs/ui.md} "Show QR code").
+     */
+    public void entryOverlay(EntryOverlay entryOverlay) {
+        views.entryOverlay(entryOverlay);
+    }
+
     /** Where the rooms' program outputs come from (the {@code outputs} of {@code state}). */
     public void outputs(RoomOutputs outputs) {
         this.outputs = Objects.requireNonNull(outputs);

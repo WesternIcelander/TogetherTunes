@@ -58,6 +58,7 @@ import io.siggi.togethertunes.overlay.OverlayPool;
 import io.siggi.togethertunes.overlay.OverlayVideoJobs;
 import io.siggi.togethertunes.overlay.CustomCards;
 import io.siggi.togethertunes.overlay.CustomCardsApi;
+import io.siggi.togethertunes.overlay.OverlayLayoutApi;
 import io.siggi.togethertunes.overlay.OverlayPreviewApi;
 import io.siggi.togethertunes.overlay.Overlays;
 import io.siggi.togethertunes.ingest.IngestItems;
@@ -561,6 +562,14 @@ public final class Main {
                 .register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
         new OverlayPreviewApi(rooms, overlays, customCards).register(appRouter);
+        // The web player's copy of the overlay (docs/ui.md "Show QR code"): its layout, and the
+        // current entry's overlay decision in the room messages.
+        new OverlayLayoutApi(rooms, overlays, settings::overlayEnabled).register(appRouter);
+        OverlayDecisions webOverlayDecisions = new OverlayDecisions(database, settings, permissions);
+        roomSocket.entryOverlay(entryId -> {
+            OverlayDecisions.Decision d = webOverlayDecisions.peek(entryId);
+            return d == null ? null : d.wire();
+        });
         // Custom card images: /api/admin/cards... (admin.settings) and /api/rooms/{room}/cards...
         new CustomCardsApi(customCards, rooms, permissions, database, () -> outputAssets.encoding().profile(),
                 dataDir.tmp(), Clock.systemUTC()).register(appRouter);

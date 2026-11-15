@@ -612,6 +612,41 @@ class RoomSocketTest {
         assertNull(wiring.registry().call(roomId, tx -> tx.state().autoplayStopped()));
     }
 
+    /** The current entry carries its QR overlay decision for the web player's copy (docs/ui.md "Show QR code"). */
+    @Test
+    void currentEntryCarriesItsOverlayDecision() throws Exception {
+        io.siggi.togethertunes.overlay.OverlayDecisions decisions = new io.siggi.togethertunes.overlay.OverlayDecisions(
+                db, settings, new Permissions(db, settings));
+        settings.set(Settings.OVERLAY_ENABLED, true);
+        wiring.socket().entryOverlay(id -> {
+            io.siggi.togethertunes.overlay.OverlayDecisions.Decision d = decisions.peek(id);
+            return d == null ? null : d.wire();
+        });
+        room("qr-room", "public", "owner");
+        roomSettings("qr-room", "{\"overlay\":{\"mode\":\"always\"}}");
+        String song = item("Song One");
+        Client owner = connect(alice, null);
+        owner.next("identity");
+        owner.ok("{\"type\":\"join\",\"room\":\"qr-room\",\"mode\":\"listen\"}");
+        owner.await("state");
+        String entry = owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}").get("entryId").getAsString();
+        JsonObject state = owner.await(m -> m.get("type").getAsString().equals("state") && m.has("current"));
+        String overlay = state.getAsJsonObject("current").get("overlay").getAsString();
+        assertTrue(overlay.equals("cards") || overlay.equals("video"), overlay);
+        // Peeking records nothing; the mode off: off.
+        assertNull(decisions.recorded(entry));
+        roomSettings("qr-room", "{\"overlay\":{\"mode\":\"off\"}}");
+        state = owner.await(m -> m.get("type").getAsString().equals("state") && m.has("current")
+                && m.getAsJsonObject("room").getAsJsonObject("settings").getAsJsonObject("overlay").get("mode")
+                .getAsString().equals("off"));
+        assertEquals("off", state.getAsJsonObject("current").get("overlay").getAsString());
+        // A recorded decision wins (the stream decided it as the entry became current).
+        sql("UPDATE queue_entries SET overlay = 'cards' WHERE id = ?", entry);
+        owner.ok("{\"type\":\"pause\"}");
+        JsonObject timeline = owner.await("timeline");
+        assertEquals("cards", timeline.getAsJsonObject("current").get("overlay").getAsString());
+    }
+
     @Test
     void joinSendsTheStateThenEveryChangeWithTheNextVersion() throws Exception {
         String roomId = room("party", "public", "owner");

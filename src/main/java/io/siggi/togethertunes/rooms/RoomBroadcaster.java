@@ -430,7 +430,7 @@ final class RoomBroadcaster implements RoomListener {
                     currentLooked = true;
                     if (s.current() != null) {
                         RoomViews.Lookup l = views.lookup(List.of(s.current()), List.of());
-                        currentJson = RoomViews.current(l, s.current());
+                        currentJson = views.currentView(l, s.current());
                     }
                 }
                 JsonObject msg = message("timeline", s.version());
@@ -515,7 +515,7 @@ final class RoomBroadcaster implements RoomListener {
         base.add("room", room);
         base.add("timeline", RoomViews.timeline(s.timeline()));
         if (s.current() != null) {
-            base.add("current", RoomViews.current(l, s.current()));
+            base.add("current", views.currentView(l, s.current()));
         }
         base.add("queue", entries(l, s, s.queue()));
         base.add("suggestions", entries(l, s, s.suggestions()));
@@ -572,7 +572,7 @@ final class RoomBroadcaster implements RoomListener {
         msg.add("suggestionOrder", ids(s.suggestions()));
         msg.add("timeline", RoomViews.timeline(s.timeline()));
         if (s.current() != null) {
-            msg.add("current", RoomViews.current(l, s.current()));
+            msg.add("current", views.currentView(l, s.current()));
         }
         msg.add("history", RoomViews.history(l, history));
         JsonObject skip = RoomViews.skipVotes(s);

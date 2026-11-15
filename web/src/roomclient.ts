@@ -68,6 +68,8 @@ export interface CurrentEntry {
   addedAt: number;
   /** Plays audio-only (an audio-only room): `item` then has no `videoUrl`. */
   audioOnly?: boolean;
+  /** Current entry only: its QR overlay decision as the stream uses it (`off`, `cards`, `video`). */
+  overlay?: "off" | "cards" | "video" | string;
 }
 
 export interface WaitingEntry extends CurrentEntry {

@@ -296,7 +296,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.overlay.OverlayCards$ItemRow", "an item's card metadata read from the database, private"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayCards$ItemInfo", "what an overlaid item card shows, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayCards$RoomInfo", "a room's slug and settings for its overlay cards, server-side only"),
-            Map.entry("io.siggi.togethertunes.overlay.OverlayDecisions$1Row", "a queue entry's overlay decision row, local to decide()"),
+            Map.entry("io.siggi.togethertunes.overlay.OverlayDecisions$Row", "a queue entry's overlay decision row, private"),
+            Map.entry("io.siggi.togethertunes.overlay.OverlayRenderer$Layout", "the overlay's geometry; the layout endpoint copies numbers from it into JSON by hand"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayRenderer$Rendered", "a rendered overlay image, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayRenderer$Spec", "what an overlay image is rendered from, server-side only"),
             Map.entry("io.siggi.togethertunes.overlay.OverlayVideoEncoder$Request", "a music-video overlay re-encode job's inputs, server-side only"),
@@ -597,6 +598,10 @@ class DtoIpLeakTest {
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),
                 roomsWiring.api(), roomsWiring.socket());
+        // The web player's copy of the QR overlay (Main registers it next to the routes above).
+        new io.siggi.togethertunes.overlay.OverlayLayoutApi(rooms, new io.siggi.togethertunes.overlay.Overlays(
+                dir.resolve("data").resolve("rooms"), PUBLIC_BASE_URL,
+                () -> io.siggi.togethertunes.config.OutputProfile.P720_30), settings::overlayEnabled).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
     }
 
@@ -1036,7 +1041,7 @@ class DtoIpLeakTest {
                 "/api/rooms/" + f.roomSlug + "/bans", "/api/rooms/" + f.roomSlug + "/bans/users/" + f.aliceId,
                 "/api/rooms/" + f.roomSlug + "/bans/guests/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
-                "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/autoplay",
+                "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/overlay/layout", "/api/rooms/" + f.roomSlug + "/autoplay",
                 "/api/rooms/" + f.roomSlug + "/autoplay/playlists/" + f.playlistId, "/auth/oidc/nope/start",
                 "/auth/oidc/nope/callback?state=x&code=y", "/auth/popup-done?error=login_expired");
         Set<String> getRoutes = new TreeSet<>();

@@ -192,8 +192,36 @@ public final class OverlayRenderer {
         }
     }
 
-    /** Renders the overlay for {@code spec}. */
-    public Rendered render(Spec spec) {
+    /**
+     * Where everything of the overlay goes ({@link #layout}): {@link #render} draws exactly this, and
+     * the web player's copy ({@code GET /api/rooms/{room}/overlay/layout}, {@link OverlayLayoutApi})
+     * is built from it, so the page can't drift from the stream. Positions inside the overlay image
+     * ({@code qrX}, {@code backdropX}, {@code textX}, …) are relative to its top left corner, which is
+     * at ({@link #x()}, {@link #y()}) in the frame.
+     *
+     * @param matrix         the QR code's modules, quiet zone included ({@code true} = dark: drawn white)
+     * @param modulePx       pixels per module
+     * @param qrSide         the QR square's side ({@code modules × modulePx})
+     * @param qrRadius       the QR square's corner radius
+     * @param backdropRadius the text backdrop's corner radius
+     * @param fontSize       the text's size in pixels (bold)
+     * @param textX          the text baseline's left end
+     * @param baseline       the text's baseline
+     * @param advance        the text's advance width at {@code fontSize}
+     * @param text           the drawn text, laid out (server-side only)
+     */
+    public record Layout(Spec spec, BitMatrix matrix, int modulePx, int qrSide, int x, int y, int width, int height,
+                         int qrX, int qrY, double qrRadius, int backdropX, int backdropY, int backdropW, int backdropH,
+                         double backdropRadius, double fontSize, double textX, double baseline, double advance,
+                         TextLayout text) {
+        /** Modules per side, quiet zone included. */
+        public int modules() {
+            return matrix.getWidth();
+        }
+    }
+
+    /** Lays out the overlay for {@code spec} ({@link Layout}). */
+    public static Layout layout(Spec spec) {
         Objects.requireNonNull(spec);
         int frameW = spec.frameWidth(), frameH = spec.frameHeight();
         BitMatrix matrix = qr(spec.url());
@@ -240,8 +268,24 @@ public final class OverlayRenderer {
         int backdropX = spec.right() ? imageW - backdropW : 0;
         int qrY = spec.bottom() ? 0 : imageH - qrSide;
         int backdropY = spec.bottom() ? imageH - backdropH : 0;
+        // The QR square's radius: the text backdrop's, but kept inside the quiet zone (at least one
+        // pixel short of it) so no module is clipped.
+        double qrRadius = Math.min(size * RADIUS_PER_TEXT, QUIET_ZONE * modulePx - 1.0);
+        double backdropRadius = Math.min(size * RADIUS_PER_TEXT, backdropH / 2.0);
+        double textX = backdropX + hPad - ink.getX();
+        double baseline = backdropY + vPad - ink.getY();
+        return new Layout(spec, matrix, modulePx, qrSide, x, y, imageW, imageH, qrX, qrY, qrRadius, backdropX,
+                backdropY, backdropW, backdropH, backdropRadius, size, textX, baseline, layout.getAdvance(), layout);
+    }
 
-        BufferedImage image = new BufferedImage(imageW, imageH, BufferedImage.TYPE_INT_ARGB);
+    /** Renders the overlay for {@code spec}: draws its {@link #layout}. */
+    public Rendered render(Spec spec) {
+        Layout l = layout(spec);
+        BitMatrix matrix = l.matrix();
+        int modules = l.modules(), modulePx = l.modulePx(), qrSide = l.qrSide();
+        int qrX = l.qrX(), qrY = l.qrY();
+
+        BufferedImage image = new BufferedImage(l.width(), l.height(), BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = image.createGraphics();
         try {
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -251,11 +295,10 @@ public final class OverlayRenderer {
             g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
             g.setRenderingHint(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
 
-            // The QR square: rounded backdrop, with the same radius as the text's backdrop but
-            // kept inside the quiet zone (at least one pixel short of it) so no module is clipped.
-            double qrRadius = Math.min(size * RADIUS_PER_TEXT, QUIET_ZONE * modulePx - 1.0);
+            // The QR square: rounded backdrop.
+            double qrArc = 2 * l.qrRadius();
             g.setColor(BACKDROP);
-            g.fill(new RoundRectangle2D.Double(qrX, qrY, qrSide, qrSide, 2 * qrRadius, 2 * qrRadius));
+            g.fill(new RoundRectangle2D.Double(qrX, qrY, qrSide, qrSide, qrArc, qrArc));
             // Inverted: the dark modules white, on whole pixels, no antialiasing (crisp edges for scanning).
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_OFF);
             g.setColor(TEXT);
@@ -268,18 +311,16 @@ public final class OverlayRenderer {
             }
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 
-            double arc = 2.0 * Math.min(size * RADIUS_PER_TEXT, backdropH / 2.0);
+            double arc = 2.0 * l.backdropRadius();
             g.setColor(BACKDROP);
-            g.fill(new RoundRectangle2D.Double(backdropX, backdropY, backdropW, backdropH, arc, arc));
+            g.fill(new RoundRectangle2D.Double(l.backdropX(), l.backdropY(), l.backdropW(), l.backdropH(), arc, arc));
 
-            double textX = backdropX + hPad - ink.getX();
-            double baseline = backdropY + vPad - ink.getY();
             g.setColor(TEXT);
-            layout.draw(g, (float) textX, (float) baseline);
+            l.text().draw(g, (float) l.textX(), (float) l.baseline());
         } finally {
             g.dispose();
         }
-        return new Rendered(spec, image, x, y, hash(image, x, y, frameW, frameH));
+        return new Rendered(spec, image, l.x(), l.y(), hash(image, l.x(), l.y(), spec.frameWidth(), spec.frameHeight()));
     }
 
     /**

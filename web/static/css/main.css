@@ -1538,6 +1538,23 @@ body.now-view-open .app-video .video-card .card-artist {
   font-size: 1.5rem;
 }
 
+/* Show QR code: the stream's overlay over the Now Playing View's video or card (placed by frame.ts). */
+.now-qr {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.now-qr[hidden] {
+  display: none;
+}
+
+.now-qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
 /* "Click to enable sound": a translucent dark layer over the video area only. */
 .app-video .listen-overlay {
   position: absolute;

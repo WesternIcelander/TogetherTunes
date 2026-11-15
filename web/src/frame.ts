@@ -40,6 +40,7 @@ import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
 import { prefs } from "./prefsclient.js";
 import { offersNextEpisode } from "./shows.js";
+import { frameRect, layoutKey, overlayShown, overlaySvg, SHOW_QR_KEY, type OverlayLayout } from "./overlayshow.js";
 import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
   playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
 import {
@@ -148,6 +149,13 @@ export class Frame {
   #keyboardInput = false;
   /** Where the mouse was last seen (a mousemove without movement isn't activity). */
   #mouseAt = "";
+  /** Show QR code (Now Playing View): remembered per browser. */
+  #showQr = storageGet(SHOW_QR_KEY) === "1";
+  /** The room's overlay layout (GET /api/rooms/{room}/overlay/layout) and the room state key it was loaded for. */
+  #qrLayout: OverlayLayout | undefined;
+  #qrKey = "";
+  /** What the QR layer was last drawn and placed with. */
+  #qrDrawn = "";
 
   constructor(host: FrameHost) {
     this.#host = host;
@@ -1599,6 +1607,11 @@ export class Frame {
       if (room !== undefined) navigate(nowPlayingPath(room.path()));
     });
     byId("app-now-close").addEventListener("click", () => this.#exitNowView());
+    byId<HTMLInputElement>("pb-show-qr").addEventListener("change", (ev) => {
+      this.#showQr = (ev.target as HTMLInputElement).checked;
+      storageSet(SHOW_QR_KEY, this.#showQr ? "1" : "0");
+      this.#drawQr();
+    });
     byId("pb-fullscreen").addEventListener("click", () => {
       menu.hidden = true;
       this.#toggleFullscreen();
@@ -1694,6 +1707,8 @@ export class Frame {
   /** Moves the seek bar and the times along. */
   #tick(): void {
     this.#drawAutoHide();
+    // The video's size and the window can change without a state change.
+    this.#drawQr();
     // The view's title can change after its data loads (mobile top bar).
     this.#drawBarTitle();
     const room = this.#host.room();
@@ -1749,6 +1764,7 @@ export class Frame {
           h("div", { class: "card-artist", text: c !== undefined ? c.item.artist ?? "" : "Nothing is playing" }));
       }
     }
+    this.#drawQr();
     // The room view's title line under the video: only while a video shows (the card has it otherwise).
     const title = document.getElementById("rv-title");
     if (title !== null) {
@@ -1762,6 +1778,76 @@ export class Frame {
 
   #nowViewOpen(): boolean {
     return document.body.classList.contains("now-view-open");
+  }
+
+  /**
+   * Show QR code (docs/ui.md): in the Now Playing View only, the ⋯ menu's toggle while the room's
+   * overlay is available, and while on, the stream's overlay drawn over the video or card whenever the
+   * stream shows it now (overlayshow.ts), placed on the output frame's rectangle over the media.
+   */
+  #drawQr(): void {
+    const layer = byId("now-qr");
+    const item = byId("pb-show-qr-item");
+    const room = this.#host.room();
+    const s = room?.state();
+    const now = this.#nowViewOpen();
+    if (now && s !== undefined) {
+      const key = layoutKey(s.room.id, s.room.slug, s.room.settings);
+      if (key !== this.#qrKey) {
+        this.#qrKey = key;
+        this.#qrLayout = undefined;
+        void this.#loadQrLayout(key, s.room.id);
+      }
+    }
+    const layout = this.#qrLayout;
+    item.hidden = !now || layout === undefined || !layout.available;
+    byId<HTMLInputElement>("pb-show-qr").checked = this.#showQr;
+    const show = now && this.#showQr && layout !== undefined && layout.available
+      && room?.mode() === "listen" && overlayShown(s, layout);
+    if (!show || layout === undefined) {
+      layer.hidden = true;
+      this.#qrDrawn = "";
+      return;
+    }
+    // The output frame over what shows: the playing video (its own size, letterboxed), else the card.
+    const panel = byId("app-video");
+    const base = panel.getBoundingClientRect();
+    const container = byId("room-player");
+    let video: HTMLVideoElement | null = null;
+    if (!container.hidden) {
+      for (const v of Array.from(container.querySelectorAll("video"))) {
+        if (!v.hidden && v.getClientRects().length > 0) video = v;
+      }
+    }
+    const boxEl = video ?? panel;
+    const r = boxEl.getBoundingClientRect();
+    const box = { x: r.left - base.left, y: r.top - base.top, width: r.width, height: r.height };
+    const media = video !== null && video.videoWidth > 0 ? { width: video.videoWidth, height: video.videoHeight }
+      : undefined;
+    const f = frameRect(box, layout.frame, media);
+    const drawn = this.#qrKey + "|" + layout.version + "|" + [f.x, f.y, f.width, f.height].map(Math.round).join(",");
+    if (drawn === this.#qrDrawn && !layer.hidden) return;
+    if (layer.dataset["key"] !== this.#qrKey + "|" + layout.version) {
+      layer.dataset["key"] = this.#qrKey + "|" + layout.version;
+      layer.innerHTML = overlaySvg(layout);
+    }
+    layer.style.left = f.x + "px";
+    layer.style.top = f.y + "px";
+    layer.style.width = f.width + "px";
+    layer.style.height = f.height + "px";
+    layer.hidden = false;
+    this.#qrDrawn = drawn;
+  }
+
+  async #loadQrLayout(key: string, roomId: string): Promise<void> {
+    try {
+      const layout = await api<OverlayLayout>("GET", "/api/rooms/" + encodeURIComponent(roomId) + "/overlay/layout");
+      if (key !== this.#qrKey) return;
+      this.#qrLayout = layout;
+    } catch {
+      // Not offered this time; a later change of the room's overlay settings tries again.
+    }
+    this.#drawQr();
   }
 
   /**
