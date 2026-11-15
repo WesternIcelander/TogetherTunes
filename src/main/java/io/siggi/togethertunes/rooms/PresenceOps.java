@@ -25,7 +25,8 @@ public final class PresenceOps {
     }
 
     /**
-     * A connection joins the room (or joins again: its old entry is replaced).
+     * A connection joins the room (or joins again: its old entry is replaced). A web user coming
+     * into the room resumes its autoplay if it had stopped ({@link AutoplayStop#resume}).
      *
      * @return the counts afterwards
      */
@@ -34,6 +35,7 @@ public final class PresenceOps {
         RoomPresence p = tx.state().presence();
         Before before = new Before(p);
         p.join(connectionId, key(a), mode);
+        AutoplayStop.resume(tx);
         return changed(tx, before);
     }
 

@@ -606,44 +606,49 @@ class StreamOutputsApiTest {
     }
 
     @Test
-    void noListenersTurnsEachPullOutputOffSeparately() throws Exception {
+    void pullOutputsWithoutListenersStayOnWhileTheRoomPlays() throws Exception {
+        // Rule (b) "no listeners" is gone (docs/program-output.md#auto-turn-off, 2026-11-15): only
+        // an empty queue turns .ts, HLS and MP3 off.
         create("{\"kind\":\"ts\"}");
         create("{\"kind\":\"hls\"}");
-        create("{\"kind\":\"mp3\"}");
+        JsonObject mp3 = create("{\"kind\":\"mp3\"}");
         create("{\"kind\":\"rtmp\",\"rtmpUrl\":\"rtmp://ingest.example/live\"}");
-        autoOff.idle(roomId, false); // something is playing: only the listener clock runs
-        autoOff.opened(roomId, StreamOutputs.Kind.TS);
-        clock.advance(5 * MINUTE);
-        autoOff.touched(roomId, StreamOutputs.Kind.HLS);
-        clock.advance(5 * MINUTE - 1);
-        assertEquals(List.of(), stops());
-        clock.advance(1);
-        // MP3: nobody since it was turned on; .ts: a connection is open; HLS: fetched 5 min ago; RTMP has no listeners
-        assertEquals(List.of("mp3:no_listeners"), stops());
-        JsonObject mp3 = output(alice, "mp3");
-        assertFalse(mp3.get("enabled").getAsBoolean());
-        assertEquals("no_listeners", mp3.getAsJsonObject("stopped").get("reason").getAsString());
-        assertEquals(10, mp3.getAsJsonObject("stopped").get("idleMinutes").getAsInt());
-        assertFalse(output(bob, "mp3").has("stopped"), "the reason is the owner's");
-        clock.advance(5 * MINUTE);
-        assertEquals(List.of("hls:no_listeners"), stops());
-        autoOff.closed(roomId, StreamOutputs.Kind.TS);
-        clock.advance(10 * MINUTE - 1);
-        assertEquals(List.of(), stops());
-        clock.advance(1);
-        assertEquals(List.of("ts:no_listeners"), stops());
-        assertTrue(pushes.containsKey(roomId), "RTMP stays on while the room isn't idle");
+        autoOff.idle(roomId, false); // something is playing
+        assertEquals(io.siggi.togethertunes.rooms.AutoplayStop.NEVER, autoOff.lastListenedAt(roomId));
         clock.advance(24 * 60 * MINUTE);
         assertEquals(List.of(), stops());
+        assertTrue(output(alice, "mp3").get("enabled").getAsBoolean());
 
-        // turning one on again starts a fresh timer
-        String mp3Path = "/api/rooms/club/outputs/" + mp3.get("id").getAsString();
-        assertEquals(200, call(alice, "PATCH", mp3Path, "{\"enabled\":true}").statusCode());
-        assertFalse(output(alice, "mp3").has("stopped"));
+        // listening is still tracked, for the autoplay stop (autoplay.pullListenersCount)
+        autoOff.opened(roomId, StreamOutputs.Kind.TS);
+        assertEquals(io.siggi.togethertunes.rooms.AutoplayStop.LISTENING_NOW, autoOff.lastListenedAt(roomId));
+        clock.advance(MINUTE);
+        autoOff.closed(roomId, StreamOutputs.Kind.TS);
+        long closedAt = clock.millis();
+        assertEquals(closedAt, autoOff.lastListenedAt(roomId));
+        clock.advance(MINUTE);
+        autoOff.touched(roomId, StreamOutputs.Kind.HLS);
+        assertEquals(clock.millis(), autoOff.lastListenedAt(roomId));
+        assertEquals(io.siggi.togethertunes.rooms.AutoplayStop.NEVER, autoOff.lastListenedAt("another-room"));
+
+        // the queue runs empty: every output turns off after the limit, listeners or not
+        autoOff.opened(roomId, StreamOutputs.Kind.MP3);
+        autoOff.idle(roomId, true);
         clock.advance(10 * MINUTE - 1);
         assertEquals(List.of(), stops());
         clock.advance(1);
-        assertEquals(List.of("mp3:no_listeners"), stops());
+        assertEquals(List.of("hls:idle", "mp3:idle", "rtmp:idle", "ts:idle"), stops());
+
+        // an old row stopped by the removed rule still reads as such
+        String mp3Id = mp3.get("id").getAsString();
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE stream_outputs SET stopped_reason = 'no_listeners',"
+                    + " stopped_idle_minutes = 10 WHERE id = ?")) {
+                ps.setString(1, mp3Id);
+                return ps.executeUpdate();
+            }
+        });
+        assertEquals("no_listeners", output(alice, "mp3").getAsJsonObject("stopped").get("reason").getAsString());
     }
 
     @Test

@@ -374,6 +374,7 @@ final class RoomBroadcaster implements RoomListener {
         noteSnapshot(s);
         List<RoomEvent> events = change.events();
         boolean recheckAll = false;
+        boolean fullAll = false;
         Set<String> recheckUsers = new HashSet<>();
         boolean presenceOnly = !events.isEmpty();
         boolean timelineOnly = !events.isEmpty();
@@ -383,6 +384,7 @@ final class RoomBroadcaster implements RoomListener {
                 case RoomEvent.SettingsChanged ignored -> recheckAll = true;
                 case RoomEvent.RestrictionsChanged ignored -> recheckAll = true;
                 case RoomEvent.MemberChanged mc -> recheckUsers.add(mc.userId());
+                case RoomEvent.AutoplayStopChanged ignored -> fullAll = true; // room.autoplayStopped
                 default -> {
                 }
             }
@@ -414,7 +416,7 @@ final class RoomBroadcaster implements RoomListener {
         JsonObject presenceJson = null;
         boolean currentLooked = false;
         for (Member m : members.values()) {
-            if (forceFull.contains(m) || m.base == null) {
+            if (fullAll || forceFull.contains(m) || m.base == null) {
                 full.add(m);
             } else if (presenceOnly) {
                 if (presenceJson == null) {
@@ -501,6 +503,14 @@ final class RoomBroadcaster implements RoomListener {
             if (s.awayInRoomId() != null) {
                 room.addProperty("awayInRoomId", s.awayInRoomId());
             }
+        }
+        if (s.autoplayStopped() != null) {
+            // autoplay stopped topping up: nobody was in the room for the limit (AutoplayStop)
+            JsonObject stopped = new JsonObject();
+            stopped.addProperty("at", s.autoplayStopped().at());
+            stopped.addProperty("reason", s.autoplayStopped().reason());
+            stopped.addProperty("minutes", s.autoplayStopped().minutes());
+            room.add("autoplayStopped", stopped);
         }
         base.add("room", room);
         base.add("timeline", RoomViews.timeline(s.timeline()));
@@ -723,6 +733,10 @@ final class RoomBroadcaster implements RoomListener {
         o.addProperty("canYoutube", c.canYoutube());
         o.addProperty("canSkip", c.canSkip());
         o.addProperty("canModerate", a.moderates());
+        if (s.autoplayStopped() != null) {
+            // Resume autoplay: people who may select autoplay playlists here (AutoplaySelections#resume)
+            o.addProperty("canResumeAutoplay", mayResumeAutoplay(s, a));
+        }
         RoomBans.Restriction r = a.restriction();
         if (r != null) {
             // Read-only here: listen, nothing else (docs/rooms.md#bans-and-timeouts).
@@ -734,6 +748,29 @@ final class RoomBroadcaster implements RoomListener {
             o.add("restriction", restriction);
         }
         return o;
+    }
+
+    /**
+     * Whether {@code a} may select autoplay playlists in the room ({@link AutoplaySelections#maySelect}),
+     * so may resume a stopped autoplay. By the effective room role (the server checks the stored one).
+     */
+    private static boolean mayResumeAutoplay(RoomSnapshot s, RoomActor a) {
+        if (a.userId() == null || a.readOnly()) {
+            return false;
+        }
+        if (a.userId().equals(s.ownerId())) {
+            return true;
+        }
+        String selectors = "owner";
+        if (s.settings().get("autoplay") instanceof JsonObject ap && ap.get("selectors") instanceof JsonElement sel
+                && sel.isJsonPrimitive()) {
+            selectors = sel.getAsString();
+        }
+        return switch (selectors) {
+            case "moderators" -> a.role() == Rooms.Role.MODERATOR;
+            case "members" -> a.role() == Rooms.Role.MODERATOR || a.role() == Rooms.Role.MEMBER;
+            default -> false;
+        };
     }
 
     private static JsonObject message(String type, long version) {

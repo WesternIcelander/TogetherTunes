@@ -415,6 +415,10 @@ class PermissionMatrixTest {
                     + c.rootRoomSlug() + "/autoplay/playlists/0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d"), 401, 401, 200, 200),
             row("PUT /api/rooms/{room}/autoplay/mine", c -> Call.put("/api/rooms/" + c.rootRoomSlug()
                     + "/autoplay/mine", "{\"playlistIds\":[]}"), 401, 401, 200, 200),
+            // Resume autoplay after it stopped because nobody was there: as selecting (owner only by
+            // default; AutoplayContract covers the rule, RoomSocketTest the autoplay.resume message).
+            row("POST /api/rooms/{room}/autoplay/resume", c -> Call.post("/api/rooms/" + c.rootRoomSlug()
+                    + "/autoplay/resume", null), 401, 401, 403, 403),
 
             // The alone state and the own play history: users only (guests have none). A fresh
             // user isn't in a room, so leaving is 409 not_in_room (AloneSessionsContract covers it).

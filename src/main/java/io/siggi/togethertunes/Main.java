@@ -458,13 +458,16 @@ public final class Main {
         // Autoplay selections (docs/ui.md#autoplay-from-playlists): who selected which playlists per room.
         // Each selection change, and each change to a selected person's playlists, refills the room's
         // autoplay section (docs/rooms.md#autoplay).
-        roomsApi.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists, roomRegistry));
+        io.siggi.togethertunes.rooms.AutoplaySelections autoplaySelections =
+                new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists, roomRegistry);
+        roomsApi.autoplay(autoplaySelections);
         library.playlistsChangeListener(roomRegistry::playlistsChanged);
         RoomQueue roomQueue = new RoomQueue(roomRegistry, database, uploads, youtubeImports, playlists, addMedia,
                 new SecureRandom());
         RoomSocket roomSocket = new RoomSocket(actors, identityTickets, guests, settings, rooms, roomGuests,
                 roomRegistry, roomQueue, database, Clock.systemUTC());
         roomSocket.covers(new io.siggi.togethertunes.library.Covers(dataDir));
+        roomSocket.autoplay(autoplaySelections); // autoplay.resume
         Router appRouter = router(config, staticFiles, actors, setup, auth, sessionsApi, me, admin, providersApi, activity,
                 uploadsApi, youtubeApi, libraryApi, itemsApi, playlistsApi, userLibrariesApi, mediaApi,
                 roomsApi, roomSocket);
@@ -476,8 +479,9 @@ public final class Main {
         }
         // The rooms' outputs (/api/rooms/{room}/outputs...).
         StreamOutputs streamOutputs = new StreamOutputs(database, new SecureRandom(), Clock.systemUTC());
-        // Outputs turn off after the queue was empty, or (.ts/HLS/MP3) nobody listened, for the
-        // room's limit (docs/program-output.md#auto-turn-off).
+        // Outputs turn off after the queue was empty for the room's limit
+        // (docs/program-output.md#auto-turn-off); it also tracks the .ts/HLS/MP3 listeners, which
+        // count as people in a room for the autoplay stop when the room says so.
         OutputAutoOff autoOff = new OutputAutoOff(streamOutputs, roomId -> {
             Rooms.Room room = rooms.record(roomId);
             RoomSettings rs = room == null ? RoomSettings.DEFAULTS : room.settings();
@@ -485,6 +489,13 @@ public final class Main {
                     settings.outputsMaxAutoOffMinutes());
         }, System::currentTimeMillis);
         programOutputs.idleListener(autoOff::idle);
+        // Autoplay stops topping up the queue after nobody was in a room for its limit
+        // (docs/ui.md#autoplay-from-playlists, "Autoplay stops when nobody is there").
+        io.siggi.togethertunes.rooms.AutoplayStop autoplayStop = new io.siggi.togethertunes.rooms.AutoplayStop(
+                roomRegistry, () -> new io.siggi.togethertunes.rooms.AutoplayStop.Caps(
+                        settings.autoplayMaxStopAfterMinutes(), settings.autoplayMaxStopAfterMinutesWithListeners()),
+                autoOff::lastListenedAt);
+        autoplayStop.start();
         // /live/...: per-IP rate limit and per-URL connection cap (docs/auth.md#stream-urls).
         LiveLimits liveLimits = LiveLimits.defaults(Clock.systemUTC());
         // The direct MPEG-TS output: GET/HEAD /live/{key}.ts (docs/program-output.md#direct-mpeg-ts-ts).
@@ -613,6 +624,7 @@ public final class Main {
         outputControl.start();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             web.close();
+            autoplayStop.close();
             outputControl.close();
             outputStatus.close();
             if (rtmpPushers != null) {

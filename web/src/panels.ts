@@ -47,6 +47,28 @@ export function queueSections<E extends EntryLike>(queue: readonly E[]): { reque
   return { requests, fromPlaylist };
 }
 
+/** `room.autoplayStopped` of the state: autoplay stopped topping up because nobody was there. */
+export interface AutoplayStoppedLike { at: number; reason: string; minutes: number }
+
+/** A number of minutes as "45 min", "2 h" or "1 h 30 min". */
+export function formatMinutes(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return m + " min";
+  const hours = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest === 0 ? hours + " h" : hours + " h " + rest + " min";
+}
+
+/**
+ * The notice in the Queue (docs/ui.md#autoplay-from-playlists, "Autoplay stops when nobody is
+ * there") while autoplay is stopped, or null while it runs.
+ */
+export function autoplayStoppedText(stopped: AutoplayStoppedLike | undefined): string | null {
+  if (stopped === undefined || stopped === null) return null;
+  if (stopped.reason === "nobody") return "Autoplay stopped: nobody was here for " + formatMinutes(stopped.minutes);
+  return "Autoplay stopped";
+}
+
 /**
  * Where pending suggestions go (docs/ui.md#existing-features-in-the-new-ui): above the queue for
  * people who may edit it (they accept or reject them), below it for everyone else; nowhere when

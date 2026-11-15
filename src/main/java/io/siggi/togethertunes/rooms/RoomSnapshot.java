@@ -24,13 +24,14 @@ import java.util.Map;
  * @param alone           an alone room ({@link AloneSessions})
  * @param awayInRoomId    for an alone room: the room its user is in (the alone state is saved), or {@code null}
  * @param people          the identified people present ({@link RoomPresence#people}), as actor keys
+ * @param autoplayStopped why and since when autoplay stopped ({@link AutoplayStop}), or {@code null}
  */
 record RoomSnapshot(String roomId, long version, String slug, String name, String ownerId,
                     Rooms.Visibility visibility, Rooms.ControlMode controlMode, JsonObject settings,
                     Timeline timeline, QueueEntry current, List<QueueEntry> queue, List<QueueEntry> suggestions,
                     Map<String, Map<String, Integer>> votes, int skipVotes, Integer skipVotesNeeded,
                     RoomPresence.Counts presence, boolean alone, String awayInRoomId,
-                    List<RoomPresence.Person> people) {
+                    List<RoomPresence.Person> people, AutoplayStop.Stopped autoplayStopped) {
 
     /** A copy of {@code s}. Call on the room's executor thread only. */
     static RoomSnapshot of(RoomState s) {
@@ -55,7 +56,7 @@ record RoomSnapshot(String roomId, long version, String slug, String name, Strin
         return new RoomSnapshot(s.id(), s.version(), s.slug(), s.name(), s.ownerId(), s.visibility(),
                 s.controlMode(), s.settings().toJson(), s.timeline(), s.current(), List.copyOf(queue),
                 List.copyOf(suggestions), Map.copyOf(votes), s.skipVotes().size(), needed, s.presence().counts(),
-                s.aloneUserId() != null, s.awayInRoomId(), s.presence().people());
+                s.aloneUserId() != null, s.awayInRoomId(), s.presence().people(), s.autoplayStopped());
     }
 
     /** The waiting entries: the queue in play order, then the suggestions. */

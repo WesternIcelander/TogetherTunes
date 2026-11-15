@@ -310,6 +310,37 @@ public final class AutoplaySelections {
     }
 
     /**
+     * <b>Resume autoplay</b> ({@link AutoplayStop}): clears a stop made because nobody was in the
+     * room, so autoplay tops up the queue again. Needs the right to select ({@link #maySelect}) and
+     * not being read-only in the room, like {@link #select}.
+     *
+     * @return whether autoplay was stopped (false: nothing to resume, nothing changed)
+     * @throws HttpError {@code 401 not_authenticated}, {@code 403 forbidden} /
+     *                   {@code banned_from_room} / {@code timed_out}, {@code 404 room_not_found}
+     */
+    public boolean resume(Actor actor, String idOrSlug) throws Exception {
+        if (!(actor instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        boolean moderateAny = rooms.moderatesAny(actor);
+        String roomId = db.read(c -> {
+            Rooms.Access a = rooms.access(c, actor, idOrSlug, false, moderateAny);
+            Rooms.Room room = a.room();
+            if (a.restriction() != null) {
+                throw a.restriction().error(); // read-only: banned or timed out
+            }
+            if (!maySelect(room, user.userId(), Rooms.memberRole(c, room.id(), user.userId()))) {
+                throw HttpError.forbidden("You can't resume autoplay in this room");
+            }
+            return room.id();
+        });
+        if (registry == null) {
+            return false;
+        }
+        return registry.call(roomId, AutoplayStop::resume);
+    }
+
+    /**
      * Deselects one of the caller's playlists in the room (not selected: unchanged). Needs no right
      * to select.
      */

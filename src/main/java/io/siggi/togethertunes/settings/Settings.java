@@ -169,11 +169,23 @@ public final class Settings {
      */
     public static final SettingKey<Boolean> OUTPUTS_FORCE_AUTO_OFF = SettingKey.bool("outputs.forceAutoOff", false);
     /**
-     * The longest an output keeps running with an empty queue or without listeners, in minutes: the
+     * The longest an output keeps running with an empty queue, in minutes: the
      * room's {@code outputs.autoOffMinutes} applies up to this ({@code docs/program-output.md#auto-turn-off}).
      */
     public static final SettingKey<Integer> OUTPUTS_MAX_AUTO_OFF_MINUTES = SettingKey.integer(
             "outputs.maxAutoOffMinutes", 60, 1, 1440);
+
+    // Autoplay
+    /**
+     * The longest a room's autoplay keeps topping up the queue with nobody in the room, in minutes:
+     * the room's {@code autoplay.stopAfterMinutes} applies up to this
+     * ({@code docs/ui.md#autoplay-from-playlists}, "Autoplay stops when nobody is there").
+     */
+    public static final SettingKey<Integer> AUTOPLAY_MAX_STOP_AFTER_MINUTES = SettingKey.integer(
+            "autoplay.maxStopAfterMinutes", 180, 1, 1440);
+    /** As {@link #AUTOPLAY_MAX_STOP_AFTER_MINUTES}, for rooms where stream listeners count as people. */
+    public static final SettingKey<Integer> AUTOPLAY_MAX_STOP_AFTER_MINUTES_WITH_LISTENERS = SettingKey.integer(
+            "autoplay.maxStopAfterMinutesWithListeners", 15, 1, 1440);
 
     // Overlay
     public static final SettingKey<Boolean> OVERLAY_ENABLED = SettingKey.bool("overlay.enabled", false);
@@ -229,6 +241,7 @@ public final class Settings {
                 OUTPUTS_FORCE_AUTO_OFF, OUTPUTS_MAX_AUTO_OFF_MINUTES,
                 OUTPUTS_RTMP_ENABLED, OUTPUTS_TS_ENABLED, OUTPUTS_HLS_ENABLED,
                 OUTPUTS_MP3_ENABLED, OUTPUTS_MP3_BITRATE_KBPS,
+                AUTOPLAY_MAX_STOP_AFTER_MINUTES, AUTOPLAY_MAX_STOP_AFTER_MINUTES_WITH_LISTENERS,
                 OVERLAY_ENABLED, OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, OVERLAY_ALLOW_QUALITY_PRESET,
                 CARDS_FONT, FONTS_AUTO_DOWNLOAD, FONTS_CJK_VARIANT)) {
             if (keys.put(k.name(), k) != null) {
@@ -586,6 +599,14 @@ public final class Settings {
 
     public int outputsMaxAutoOffMinutes() throws SQLException {
         return get(OUTPUTS_MAX_AUTO_OFF_MINUTES);
+    }
+
+    public int autoplayMaxStopAfterMinutes() throws SQLException {
+        return get(AUTOPLAY_MAX_STOP_AFTER_MINUTES);
+    }
+
+    public int autoplayMaxStopAfterMinutesWithListeners() throws SQLException {
+        return get(AUTOPLAY_MAX_STOP_AFTER_MINUTES_WITH_LISTENERS);
     }
 
     public boolean outputsTsEnabled() throws SQLException {

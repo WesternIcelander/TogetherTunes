@@ -256,6 +256,7 @@ public final class RoomExecutor {
         try {
             return runTx(mutation);
         } finally {
+            state.presence().track(EpochMs.now(clock)); // the autoplay stop's presence clock
             presence = state.presence().counts();
         }
     }

@@ -50,6 +50,11 @@ public final class RoomState {
      * {@code null}; in memory only.
      */
     private String autoplayStuck;
+    /**
+     * Why and since when autoplay stopped topping up the queue ({@link AutoplayStop}), or
+     * {@code null} while it runs; persisted with the room row.
+     */
+    private AutoplayStop.Stopped autoplayStopped;
 
     RoomState(String id, String slug, String name, String ownerId, Rooms.Visibility visibility,
               Rooms.ControlMode controlMode, String settingsJson, Timeline timeline, long version) {
@@ -228,6 +233,16 @@ public final class RoomState {
 
     void autoplayStuck(String key) {
         this.autoplayStuck = key;
+    }
+
+    /** Whether, why and since when autoplay stopped ({@link AutoplayStop}); {@code null}: it runs. */
+    public AutoplayStop.Stopped autoplayStopped() {
+        return autoplayStopped;
+    }
+
+    /** Sets or clears ({@code null}) the stop; persisted with the next committed change. */
+    void autoplayStopped(AutoplayStop.Stopped stopped) {
+        this.autoplayStopped = stopped;
     }
 
     /** The version of the last committed change; bumped by the executor, never by mutations. */

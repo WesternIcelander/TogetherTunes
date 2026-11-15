@@ -19,7 +19,8 @@ function clone(o) {
 test("every room setting of docs/rooms.md is defined once, with its default", () => {
   const keys = S.SETTINGS.map((d) => d.key);
   assert.equal(new Set(keys).size, keys.length);
-  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "estimatedDelayMs.hls", "estimatedDelayMs.mp3", "estimatedDelayMs.rtmp",
+  assert.deepEqual(keys.slice().sort(), ["allowDownvotes", "audioOnly", "autoplay.pullListenersCount",
+    "autoplay.stopAfterMinutes", "estimatedDelayMs.hls", "estimatedDelayMs.mp3", "estimatedDelayMs.rtmp",
     "estimatedDelayMs.ts", "gapMs", "guests.canRequestLibrary", "guests.canUpload", "guests.canVote",
     "guests.canYoutube", "libraryRequests", "noRepeatWindow", "outputs.autoOff", "outputs.autoOffMinutes", "outputs.rtmp.playbackUrl", "outputs.ts.join", "overlay.corner",
     "overlay.heightPct", "overlay.margin", "overlay.mode", "requestsOnly", "requestsPerActor", "transitionCard", "uploadRequests",
@@ -94,6 +95,33 @@ test("auto turn-off: the server's maximum is shown, a higher value acts as it (c
   const noRtmp = clone(sw);
   noRtmp.outputs.rtmp.enabled = false;
   assert.equal(S.serverDisabledReason("outputs.autoOff", noRtmp), null);
+});
+
+test("autoplay stop: the server's cap is shown, the lower one when stream listeners count", () => {
+  const def = S.SETTINGS.find((d) => d.key === "autoplay.stopAfterMinutes");
+  assert.equal(def.default, 120);
+  assert.equal(def.group, "autoplay");
+  assert.throws(() => S.parseInput(def, "0"), /1 to 1440/);
+  assert.throws(() => S.parseInput(def, "1441"), /1 to 1440/);
+  assert.equal(S.parseInput(def, "90"), 90);
+  const pull = S.SETTINGS.find((d) => d.key === "autoplay.pullListenersCount");
+  assert.equal(pull.default, false);
+  assert.equal(pull.kind, "bool");
+  const sw = clone(ALL_ON);
+  sw.autoplay = { maxStopAfterMinutes: 180, maxStopAfterMinutesWithListeners: 15 };
+  assert.equal(S.serverCapNote(def.key, 120, sw, {}), "This server stops autoplay after at most 180 minutes.");
+  assert.equal(S.serverCapNote(def.key, 200, sw, { autoplay: { pullListenersCount: false } }),
+    "This server stops autoplay after at most 180 minutes, so 180 applies.");
+  assert.equal(S.serverCapNote(def.key, 120, sw, { autoplay: { pullListenersCount: true } }),
+    "This server stops autoplay after at most 15 minutes when stream listeners count, so 15 applies.");
+  assert.equal(S.serverCapNote(def.key, 10, sw, { autoplay: { pullListenersCount: true } }),
+    "This server stops autoplay after at most 15 minutes when stream listeners count.");
+  assert.equal(S.serverCapNote(def.key, 120, ALL_ON, {}), null, "an older server without the caps");
+  assert.equal(S.serverDisabledReason(def.key, sw), null);
+  assert.equal(S.serverDisabledReason(pull.key, sw), null);
+  // the auto turn-off help no longer mentions listeners (only an empty queue turns outputs off)
+  const autoOff = S.SETTINGS.find((d) => d.key === "outputs.autoOff");
+  assert.doesNotMatch(autoOff.help, /listen/);
 });
 
 test("dotted names read and write nested objects", () => {

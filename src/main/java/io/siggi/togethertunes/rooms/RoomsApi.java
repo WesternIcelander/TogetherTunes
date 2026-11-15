@@ -98,9 +98,10 @@ import java.util.Set;
  *   <li>{@code GET /api/rooms/{room}/server-switches} → {@code {"guests": {"enabled", "canVote",
  *       "canRequestLibrary", "canUpload", "canYoutube"}, "overlay": {"enabled", "videoOverlay"}, "outputs":
  *       {"forceAutoOff", "maxAutoOffMinutes", "rtmp": {"enabled"}, "ts": {"enabled"}, "hls":
- *       {"enabled"}, "mp3": {"enabled"}}}}: the server switches behind the room settings, so the
+ *       {"enabled"}, "mp3": {"enabled"}}, "autoplay": {"maxStopAfterMinutes",
+ *       "maxStopAfterMinutesWithListeners"}}}: the server switches behind the room settings, so the
  *       management view can grey out what the server turned off or forces, and show the server's
- *       cap on {@code outputs.autoOffMinutes} (the guest
+ *       caps on {@code outputs.autoOffMinutes} and {@code autoplay.stopAfterMinutes} (the guest
  *       capabilities are each the server's setting alone; {@code guests.enabled} off turns them
  *       all off; {@code canYoutube} also needs {@code ytdlp.enabled}; {@code overlay.videoOverlay}: the
  *       overlay is on and the room's owner holds {@code output.overlayVideo}, so music videos get
@@ -561,6 +562,10 @@ public final class RoomsApi {
                 && permissions.held(access.room().ownerId()).contains(Permission.OUTPUT_OVERLAY_VIDEO);
         body.put("overlay", Map.of("enabled", sw.overlayEnabled(), "videoOverlay", videoOverlay));
         body.put("outputs", outputs);
+        Map<String, Object> autoplay = new LinkedHashMap<>();
+        autoplay.put("maxStopAfterMinutes", sw.autoplayMaxStopAfterMinutes());
+        autoplay.put("maxStopAfterMinutesWithListeners", sw.autoplayMaxStopAfterMinutesWithListeners());
+        body.put("autoplay", autoplay);
         response.header("Cache-Control", "no-store");
         response.json(body);
     }

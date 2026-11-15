@@ -35,6 +35,10 @@ import java.util.Set;
  *   <li>{@code PUT /api/rooms/{room}/autoplay/mine} {@code {"playlistIds": [id…]}} → the listing:
  *       exactly these are the caller's selection (one: "only this one"; empty: none). Other people's
  *       selections stay. {@code 400 invalid_playlist_ids}, and the errors of selecting.</li>
+ *   <li>{@code POST /api/rooms/{room}/autoplay/resume} → {@code {"resumed": bool}}: Resume autoplay
+ *       after it stopped because nobody was there ({@link AutoplayStop}); {@code false} when it
+ *       wasn't stopped. Needs the right to select ({@code 403 forbidden}). The WebSocket message
+ *       {@code autoplay.resume} does the same.</li>
  * </ul>
  */
 final class AutoplayApi {
@@ -52,6 +56,12 @@ final class AutoplayApi {
         router.get("/api/rooms/{room}/autoplay/playlists/{playlistId}", this::playlist);
         router.put("/api/rooms/{room}/autoplay/playlists/{playlistId}", this::select);
         router.delete("/api/rooms/{room}/autoplay/playlists/{playlistId}", this::deselect);
+        router.post("/api/rooms/{room}/autoplay/resume", this::resume);
+    }
+
+    private void resume(Request request, Response response) throws Exception {
+        boolean resumed = selections.resume(ActorResolver.actor(request), request.pathParam("room"));
+        send(response, java.util.Map.of("resumed", resumed));
     }
 
     private void list(Request request, Response response) throws Exception {

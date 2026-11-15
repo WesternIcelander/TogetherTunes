@@ -17,22 +17,21 @@ import java.util.function.LongSupplier;
  * <p>While the room's {@code outputs.autoOff} is on (or the server's {@code outputs.forceAutoOff}),
  * an active output is turned off ({@link StreamOutputs#stopAuto}: {@code enabled = false} as if the
  * owner had pressed Turn off, the reason recorded, audited as the system; it stays off until the
- * owner turns it on) once <b>either</b>
+ * owner turns it on) once the room has been <b>idle</b> (nothing playing, nothing queued: the
+ * program output shows the Idle card, {@link ProgramOutputs.IdleListener}) for the limit, reason
+ * {@link StreamOutputs#STOPPED_IDLE}; per room, for every output, pull or push.
  *
- * <ul>
- *   <li>(a) the room has been <b>idle</b> (nothing playing, nothing queued: the program output shows
- *       the Idle card, {@link ProgramOutputs.IdleListener}) for the limit, reason
- *       {@link StreamOutputs#STOPPED_IDLE}; per room, applies to every output; or</li>
- *   <li>(b) for {@code .ts}, HLS and MP3, <b>nobody has listened</b> for the limit: no open
- *       {@code .ts}/MP3 connection ({@link #opened}/{@link #closed}) and no HLS request
- *       ({@link #touched}), reason {@link StreamOutputs#STOPPED_NO_LISTENERS}; per output. RTMP has
- *       no listeners of its own, so only (a) applies to it.</li>
- * </ul>
+ * <p>The earlier rule "(b) nobody listened to a {@code .ts}/HLS/MP3 output for the limit" was
+ * removed (Siggi, 2026-11-15): pull outputs turn off only when the queue is empty too; with autoplay
+ * that happens once autoplay stopped because nobody was there
+ * ({@link io.siggi.togethertunes.rooms.AutoplayStop}). Old rows keep
+ * {@link StreamOutputs#STOPPED_NO_LISTENERS}. The listeners are still tracked ({@link #opened},
+ * {@link #closed}, {@link #touched}): {@link #lastListenedAt} tells the autoplay stop when somebody
+ * last listened to a room's stream.
  *
- * <p>Both clocks start no earlier than the moment the output became active ({@link #sync}: turned
+ * <p>The clock starts no earlier than the moment the output became active ({@link #sync}: turned
  * on, the server switch turned on, or the server started), so turning an output on gives it a fresh
- * timer even if the room is still idle, and an output nobody uses turns off too. Any activity (an
- * item queued or playing; a listener) resets the respective clock.
+ * timer even if the room is still idle. An item queued or playing resets it.
  *
  * <p>The limit is the room's {@code outputs.autoOffMinutes}, at most the server's
  * {@code outputs.maxAutoOffMinutes} ({@link #effectiveMinutes}, {@link Policies}). {@link #check}
@@ -135,14 +134,34 @@ public final class OutputAutoOff implements OutputListeners {
         lastListen.put(new Key(roomId, kind), nowMs.getAsLong());
     }
 
+    /**
+     * When somebody last listened to one of the room's {@code .ts}, HLS or MP3 outputs:
+     * {@link io.siggi.togethertunes.rooms.AutoplayStop#LISTENING_NOW} while a {@code .ts}/MP3
+     * connection is open, else the last close or HLS request (epoch ms), or
+     * {@link io.siggi.togethertunes.rooms.AutoplayStop#NEVER}. Only outputs active now count.
+     */
+    public long lastListenedAt(String roomId) {
+        for (Key k : open.keySet()) {
+            if (k.roomId().equals(roomId)) {
+                return io.siggi.togethertunes.rooms.AutoplayStop.LISTENING_NOW;
+            }
+        }
+        long last = io.siggi.togethertunes.rooms.AutoplayStop.NEVER;
+        for (Map.Entry<Key, Long> e : lastListen.entrySet()) {
+            if (e.getKey().roomId().equals(roomId)) {
+                last = Math.max(last, e.getValue());
+            }
+        }
+        return last;
+    }
+
     /** Open connections of the output (tests). */
     int openConnections(String roomId, StreamOutputs.Kind kind) {
         return open.getOrDefault(new Key(roomId, kind), 0);
     }
 
     /**
-     * Turns off every active output whose room was idle, or (not RTMP) that nobody listened to,
-     * for its room's limit.
+     * Turns off every active output whose room was idle for its room's limit.
      *
      * @return the outputs turned off (the caller brings pushes and connections in line)
      */
@@ -163,17 +182,11 @@ public final class OutputAutoOff implements OutputListeners {
                     continue;
                 }
                 long limit = p.minutes() * 60_000L;
-                String reason = null;
                 Long idle = idleSince.get(k.roomId());
-                if (idle != null && now - Math.max(since, idle) >= limit) {
-                    reason = StreamOutputs.STOPPED_IDLE;
-                } else if (k.kind() != StreamOutputs.Kind.RTMP && !open.containsKey(k)
-                        && now - Math.max(since, lastListen.getOrDefault(k, 0L)) >= limit) {
-                    reason = StreamOutputs.STOPPED_NO_LISTENERS;
-                }
-                if (reason == null) {
+                if (idle == null || now - Math.max(since, idle) < limit) {
                     continue;
                 }
+                String reason = StreamOutputs.STOPPED_IDLE;
                 if (rows.stopAuto(k.roomId(), k.kind(), reason, p.minutes()) != null) {
                     LOG.log(System.Logger.Level.INFO, "{0} output of room {1} turned off: {2} for {3} min",
                             k.kind().wire(), k.roomId(), reason, p.minutes());

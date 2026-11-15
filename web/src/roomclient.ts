@@ -108,6 +108,8 @@ export interface You {
   canRequestLibrary?: boolean;
   /** Banned or timed out here: read-only (may listen, nothing else); `until` ends a timeout. */
   restriction?: { kind: "ban" | "timeout" | string; until?: number };
+  /** Only while autoplay is stopped: may Resume autoplay (`autoplay.resume`; may select playlists here). */
+  canResumeAutoplay?: boolean;
 }
 
 export interface RoomSettingsView {
@@ -130,6 +132,11 @@ export interface RoomInfo {
   you: You;
   /** The user's alone room (docs/rooms.md#alone). */
   alone?: boolean;
+  /**
+   * Autoplay stopped topping up the queue because nobody was in the room for `minutes`
+   * (docs/ui.md#autoplay-from-playlists); absent while it runs.
+   */
+  autoplayStopped?: { at: number; reason: "nobody" | string; minutes: number };
 }
 
 /** The room as the page knows it (the `state` message, with deltas applied). */

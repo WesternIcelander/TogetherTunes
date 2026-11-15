@@ -159,13 +159,16 @@ public final class TestUploads {
         alone(api, db, rooms, registry, settings, clock);
         io.siggi.togethertunes.library.Playlists playlists = new io.siggi.togethertunes.library.Playlists(db, youtube,
                 clock);
-        api.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists));
+        io.siggi.togethertunes.rooms.AutoplaySelections selections =
+                new io.siggi.togethertunes.rooms.AutoplaySelections(rooms, playlists, registry);
+        api.autoplay(selections);
         io.siggi.togethertunes.rooms.RoomQueue queue = new io.siggi.togethertunes.rooms.RoomQueue(registry, db,
                 uploads(db, dir, config, Tools.from(config), clock), youtube,
                 playlists, addMedia, new java.util.Random(1));
         io.siggi.togethertunes.rooms.RoomSocket socket = new io.siggi.togethertunes.rooms.RoomSocket(actors, tickets,
                 new Guests(db, settings, clock, config.secureCookies(), GuestNames.bundled()), settings, rooms, guests,
                 registry, queue, db, clock);
+        socket.autoplay(selections); // autoplay.resume
         return new RoomsWiring(api, socket, registry);
     }
 

@@ -224,6 +224,17 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
         }
     }
 
+    /** The executors of the loaded rooms (a copy). */
+    List<RoomExecutor> loadedExecutors() {
+        List<RoomExecutor> out = new ArrayList<>();
+        for (RoomExecutor e : executors.values()) {
+            if (!e.isClosed()) {
+                out.add(e);
+            }
+        }
+        return out;
+    }
+
     /** How many rooms are loaded. */
     public int loadedCount() {
         return executors.size();

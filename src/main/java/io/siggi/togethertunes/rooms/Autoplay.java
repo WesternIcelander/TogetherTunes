@@ -33,7 +33,8 @@ import java.util.TreeSet;
  *       lowered, or entries were moved in).</li>
  *   <li>Missing entries are added at the end of the section, each added by the person whose
  *       playlist it came from. Only {@code ready} items are picked. Adding never starts an idle
- *       room (play does, or a request).</li>
+ *       room (play does, or a request). Nothing is added while autoplay is stopped because
+ *       nobody was there ({@link AutoplayStop}).</li>
  * </ol>
  * Entries moved into the section by hand ({@code queue.move}: their {@code via} isn't
  * {@code autoplay}) count towards {@code autoplay.upcoming} but are never removed by it.
@@ -70,6 +71,11 @@ final class Autoplay {
         boolean refresh = tx.refreshesAutoplay();
         List<QueueEntry> section = Playback.sectionOrder(s, QueueEntry.Section.AUTOPLAY);
         String roomId = s.id();
+        // Stopped (nobody was there, AutoplayStop): nothing is added; waiting entries stay.
+        boolean stopped = s.autoplayStopped() != null;
+        if (stopped && !refresh && section.size() <= upcoming) {
+            return;
+        }
         if (!refresh) {
             if (section.size() == upcoming || fingerprint(s).equals(s.autoplayStuck())) {
                 return;
@@ -103,7 +109,7 @@ final class Autoplay {
         if (kept.size() > upcoming) {
             kept = trim(tx, kept, upcoming, movedIn);
         }
-        int need = upcoming - kept.size();
+        int need = stopped ? 0 : upcoming - kept.size();
         List<QueueEntry> added = new ArrayList<>();
         if (need > 0) {
             Set<String> waiting = new HashSet<>();

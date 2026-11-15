@@ -694,6 +694,9 @@ public final class AdminApi {
         if (name.startsWith("overlay.")) {
             return "overlay";
         }
+        if (name.startsWith("autoplay.")) {
+            return "autoplay";
+        }
         if (name.startsWith("cards.") || name.startsWith("fonts.")) {
             return "fonts";
         }

@@ -669,4 +669,181 @@ abstract class AutoplayContract {
             }
         }
     }
+
+    // ------------------------------------------------------------------ autoplay stops when nobody is there
+
+    private static final long MIN = 60_000L;
+
+    /** Runs the autoplay stop's check on every loaded room; whether any stopped. */
+    private boolean check(AutoplayStop stop) throws Exception {
+        boolean any = false;
+        for (var f : stop.checkAll()) {
+            any |= f.get();
+        }
+        return any;
+    }
+
+    private AutoplayStop.Stopped stopped() throws Exception {
+        return call(tx -> tx.state().autoplayStopped());
+    }
+
+    @Test
+    void autoplayStopsWhenNobodyIsThereAndResumesWhenSomeoneComes() throws Exception {
+        List<String> songs = new ArrayList<>();
+        String list = playlist(aliceActor, "Mix", 12, songs);
+        selections.select(aliceActor, roomId, list);
+        queue.play(roomId, owner);
+        AutoplayStop stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15),
+                AutoplayStop.PullListening.NONE);
+
+        // Someone in the room: the clock doesn't run, however long.
+        call(tx -> PresenceOps.join(tx, "c1", owner, RoomPresence.Mode.LISTEN));
+        clock.advance(5 * 60 * MIN);
+        assertFalse(check(stop));
+        // The last one leaves: the limit (default 120 min) counts from then.
+        call(tx -> PresenceOps.leave(tx, "c1"));
+        clock.advance(60 * MIN);
+        // Someone comes back before the limit: the clock resets.
+        call(tx -> PresenceOps.join(tx, "c2", RoomActor.ANONYMOUS, RoomPresence.Mode.REMOTE));
+        clock.advance(MIN);
+        call(tx -> PresenceOps.leave(tx, "c2"));
+        clock.advance(120 * MIN - 1);
+        assertFalse(check(stop));
+        assertNull(stopped());
+        clock.advance(1);
+        assertTrue(check(stop));
+        assertFalse(check(stop), "once");
+        AutoplayStop.Stopped st = stopped();
+        assertEquals(new AutoplayStop.Stopped(clock.millis(), AutoplayStop.REASON_NOBODY, 120), st);
+        assertEquals(List.of(String.valueOf(clock.millis()), "nobody", "120"), db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT autoplay_stopped_at, autoplay_stopped_reason,"
+                    + " autoplay_stopped_minutes FROM rooms WHERE id = ?")) {
+                ps.setString(1, roomId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    return List.of(String.valueOf(rs.getLong(1)), rs.getString(2), String.valueOf(rs.getInt(3)));
+                }
+            }
+        }));
+
+        // No top-up any more; a request still plays; the queue drains, then the room is idle.
+        assertEquals(5, section(QueueEntry.Section.AUTOPLAY).size());
+        String request = song();
+        call(tx -> QueueOps.add(tx, owner, request));
+        queue.next(roomId, owner);
+        assertEquals(request, current().itemId(), "requests first");
+        assertEquals(5, section(QueueEntry.Section.AUTOPLAY).size());
+        // Changing the selections doesn't resume it.
+        String other = playlist(aliceActor, "Other", 3, songs);
+        selections.select(aliceActor, roomId, other);
+        assertNotNullStop();
+        for (int left = 4; left >= 0; left--) {
+            queue.next(roomId, owner);
+            assertEquals(left, section(QueueEntry.Section.AUTOPLAY).size(), "not topped up");
+        }
+        queue.next(roomId, owner);
+        assertNull(current(), "the queue ran out: idle");
+
+        // A restart keeps it.
+        restart();
+        assertEquals(st, stopped());
+        assertEquals(List.of(), section(QueueEntry.Section.AUTOPLAY));
+
+        // A web user comes into the room: autoplay resumes and fills the section again.
+        call(tx -> PresenceOps.join(tx, "c3", bob, RoomPresence.Mode.LISTEN));
+        assertNull(stopped());
+        assertEquals(5, section(QueueEntry.Section.AUTOPLAY).size());
+        assertEquals(List.of(), column("SELECT id FROM rooms WHERE id = ? AND autoplay_stopped_at IS NOT NULL",
+                roomId));
+    }
+
+    private void assertNotNullStop() throws Exception {
+        assertTrue(stopped() != null, "still stopped");
+    }
+
+    @Test
+    void anIdleOrPausedRoomOrOneWithoutAutoplayIsNotStopped() throws Exception {
+        List<String> songs = new ArrayList<>();
+        String list = playlist(aliceActor, "Mix", 8, songs);
+        selections.select(aliceActor, roomId, list);
+        AutoplayStop stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15),
+                AutoplayStop.PullListening.NONE);
+        clock.advance(10 * 60 * MIN);
+        assertFalse(check(stop), "idle: autoplay adds nothing there anyway");
+        queue.play(roomId, owner);
+        queue.pause(roomId, owner);
+        clock.advance(10 * 60 * MIN);
+        assertFalse(check(stop), "paused");
+        settings("{\"autoplay\":{\"upcoming\":0}}");
+        stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15), AutoplayStop.PullListening.NONE);
+        queue.play(roomId, owner);
+        clock.advance(10 * 60 * MIN);
+        assertFalse(check(stop), "autoplay off");
+        assertNull(stopped());
+    }
+
+    @Test
+    void streamListenersCountOnlyWithTheSettingAndThenTheLowerCapApplies() throws Exception {
+        List<String> songs = new ArrayList<>();
+        String list = playlist(aliceActor, "Mix", 8, songs);
+        selections.select(aliceActor, roomId, list);
+        java.util.concurrent.atomic.AtomicLong last = new java.util.concurrent.atomic.AtomicLong(
+                AutoplayStop.LISTENING_NOW);
+        AutoplayStop stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15), id -> last.get());
+
+        // Without the setting a stream listener doesn't count: the room's 120 min (under the 180 cap).
+        queue.play(roomId, owner);
+        clock.advance(120 * MIN - 1);
+        assertFalse(check(stop));
+        clock.advance(1);
+        assertTrue(check(stop));
+        assertEquals(120, stopped().minutes());
+        assertTrue(selections.resume(aliceActor, roomId));
+        assertFalse(selections.resume(aliceActor, roomId), "nothing to resume");
+
+        // With it, listeners keep autoplay going; the cap is the lower one (15 min).
+        settings("{\"autoplay\":{\"pullListenersCount\":true,\"stopAfterMinutes\":60}}");
+        stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15), id -> last.get());
+        queue.play(roomId, owner);
+        clock.advance(5 * 60 * MIN);
+        assertFalse(check(stop), "listening now");
+        last.set(clock.millis() - 5 * MIN); // the last listener left 5 min ago
+        clock.advance(10 * MIN - 1);
+        assertFalse(check(stop));
+        clock.advance(1);
+        assertTrue(check(stop));
+        assertEquals(15, stopped().minutes());
+        // a stream listener doesn't resume it
+        last.set(AutoplayStop.LISTENING_NOW);
+        assertFalse(check(stop));
+        assertNotNullStop();
+
+        // A higher room value acts as the cap; a lower one applies.
+        RoomSettings rs = RoomSettings.parse("{\"autoplay\":{\"stopAfterMinutes\":1440}}");
+        assertEquals(180, AutoplayStop.limitMinutes(rs, new AutoplayStop.Caps(180, 15)));
+        rs = RoomSettings.parse("{\"autoplay\":{\"stopAfterMinutes\":10,\"pullListenersCount\":true}}");
+        assertEquals(10, AutoplayStop.limitMinutes(rs, new AutoplayStop.Caps(180, 15)));
+        assertEquals(120, AutoplayStop.limitMinutes(RoomSettings.DEFAULTS, new AutoplayStop.Caps(180, 15)));
+        assertEquals(1, AutoplayStop.limitMinutes(5, 0));
+    }
+
+    @Test
+    void resumeAutoplayNeedsTheRightToSelect() throws Exception {
+        List<String> songs = new ArrayList<>();
+        String list = playlist(aliceActor, "Mix", 8, songs);
+        selections.select(aliceActor, roomId, list);
+        queue.play(roomId, owner);
+        AutoplayStop stop = new AutoplayStop(registry, () -> new AutoplayStop.Caps(180, 15),
+                AutoplayStop.PullListening.NONE);
+        clock.advance(120 * MIN);
+        assertTrue(check(stop));
+        assertEquals("forbidden", refused(() -> selections.resume(bobActor, roomId)), "selectors: owner only");
+        assertEquals("not_authenticated", refused(() -> selections.resume(Actor.ANONYMOUS, roomId)));
+        assertNotNullStop();
+        // members may select: Bob may resume
+        settings("{\"autoplay\":{\"selectors\":\"members\"}}");
+        assertNotNullStop();
+        assertTrue(selections.resume(bobActor, roomId));
+        assertNull(stopped());
+    }
 }

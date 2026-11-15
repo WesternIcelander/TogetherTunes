@@ -43,7 +43,7 @@ import { offersNextEpisode } from "./shows.js";
 import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
   playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
 import {
-  canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
+  autoplayStoppedText, canHeart, canSkipNow, entryButtons, LIBRARY_LINKS, MuteState, mySelectedPlaylists, othersAutoplay, parseDurationInput,
   parseVolume, PERSON_ACTION_LABELS, personActions, personModeText, playerControls, presenceText, queueSections, songCount,
   suggestionsPlace, volumeGain, voteSkip, type AutoplaySelectionLike, type PersonAction, type PersonLike,
   type PersonViewer,
@@ -1193,6 +1193,28 @@ export class Frame {
     people.replaceChildren(...this.#peopleParts(room, s));
   }
 
+  /**
+   * While autoplay is stopped because nobody was there: the notice, with Resume autoplay for people
+   * who may select playlists here (docs/ui.md#autoplay-from-playlists). Null while it runs.
+   */
+  #autoplayStoppedNotice(room: ShellRoom, s: RoomState): HTMLElement | null {
+    const text = autoplayStoppedText(s.room.autoplayStopped);
+    if (text === null) return null;
+    const p = h("p", { class: "muted small autoplay-stopped" }, text + ". ");
+    if (s.room.you.canResumeAutoplay === true) {
+      const b = h("button", { type: "button", class: "small", text: "Resume autoplay" });
+      b.addEventListener("click", () => {
+        b.disabled = true;
+        room.request({ type: "autoplay.resume" }).catch((e: unknown) => {
+          b.disabled = false;
+          this.#showError(e);
+        });
+      });
+      p.append(b);
+    }
+    return p;
+  }
+
   /** Queue: suggestions above (people who may edit it) or below, Now Playing, Requests, From Playlist. */
   #queueParts(room: ShellRoom, s: RoomState, voteSkipHere: boolean): HTMLElement[] {
     const place = suggestionsPlace(s);
@@ -1207,6 +1229,7 @@ export class Frame {
     const apList = h("ul", { class: "entries" });
     for (const e of fromPlaylist) apList.append(this.#waitingRow(room, s, e, false));
     const apSection = h("section", { class: "queue-section", "data-section": "autoplay" }, h("h3", { text: "From Playlist" }),
+      this.#autoplayStoppedNotice(room, s),
       fromPlaylist.length > 0 ? apList : h("p", { class: "muted small", text: "Nothing from playlists." }));
     if (!this.#mobile()) {
       this.#queueDropTarget(reqSection, room, "manual");

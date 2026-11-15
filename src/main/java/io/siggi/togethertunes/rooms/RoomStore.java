@@ -68,7 +68,8 @@ final class RoomStore {
             try (PreparedStatement ps = c.prepareStatement("SELECT slug, name, owner_id, visibility, control_mode,"
                     + " settings_json, playback_state, current_entry_id, anchor_server_ms, anchor_position_ms, version,"
                     + " current_audio_only, alone_user_id,"
-                    + " (SELECT s.room_id FROM alone_sessions s WHERE s.user_id = rooms.alone_user_id)"
+                    + " (SELECT s.room_id FROM alone_sessions s WHERE s.user_id = rooms.alone_user_id),"
+                    + " autoplay_stopped_at, autoplay_stopped_reason, autoplay_stopped_minutes"
                     + " FROM rooms WHERE id = ?")) {
                 ps.setString(1, roomId);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -127,6 +128,13 @@ final class RoomStore {
                     RoomState loaded = new RoomState(roomId, slug, name, ownerId, visibility, mode, settings, timeline,
                             version, current, queue, suggestions, votes, skipVotes);
                     loaded.alone(aloneUserId, awayIn);
+                    long stoppedAt = rs.getLong(15);
+                    if (!rs.wasNull()) {
+                        String reason = rs.getString(16);
+                        int minutes = rs.getInt(17);
+                        loaded.autoplayStopped(new AutoplayStop.Stopped(stoppedAt,
+                                reason == null ? AutoplayStop.REASON_NOBODY : reason, minutes));
+                    }
                     return loaded;
                 }
             }
@@ -432,14 +440,15 @@ final class RoomStore {
     /**
      * Writes the version and the timeline of {@code state} (with {@code version}) to its row, and
      * whether its current entry plays audio-only ({@code current_audio_only}: the mode it started
-     * with, kept across restarts).
+     * with, kept across restarts), and whether autoplay stopped ({@link AutoplayStop}).
      *
      * @return {@code false} if the row is gone (the room was deleted)
      */
     static boolean save(Connection c, RoomState state, long version) throws SQLException {
         Timeline t = state.timeline();
         try (PreparedStatement ps = c.prepareStatement("UPDATE rooms SET version = ?, playback_state = ?,"
-                + " current_entry_id = ?, anchor_server_ms = ?, anchor_position_ms = ?, current_audio_only = ?"
+                + " current_entry_id = ?, anchor_server_ms = ?, anchor_position_ms = ?, current_audio_only = ?,"
+                + " autoplay_stopped_at = ?, autoplay_stopped_reason = ?, autoplay_stopped_minutes = ?"
                 + " WHERE id = ?")) {
             ps.setLong(1, version);
             ps.setString(2, t.state().wire());
@@ -447,7 +456,17 @@ final class RoomStore {
             ps.setLong(4, t.anchorServerMs());
             ps.setLong(5, t.anchorPositionMs());
             ps.setInt(6, state.current() != null && state.current().audioOnly() ? 1 : 0);
-            ps.setString(7, state.id());
+            AutoplayStop.Stopped stopped = state.autoplayStopped();
+            if (stopped == null) {
+                ps.setNull(7, java.sql.Types.BIGINT);
+                ps.setNull(8, java.sql.Types.VARCHAR);
+                ps.setNull(9, java.sql.Types.INTEGER);
+            } else {
+                ps.setLong(7, stopped.at());
+                ps.setString(8, stopped.reason());
+                ps.setInt(9, stopped.minutes());
+            }
+            ps.setString(10, state.id());
             return ps.executeUpdate() == 1;
         }
     }

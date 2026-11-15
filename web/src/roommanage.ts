@@ -172,7 +172,8 @@ function renderSettings(): void {
     for (const def of SETTINGS) {
       if (def.group !== group) continue;
       const reason = serverDisabledReason(def.key, switches);
-      const cap = reason === null ? serverCapNote(def.key, getPath(room.settings, def.key), switches) : null;
+      const cap = reason === null ? serverCapNote(def.key, getPath(room.settings, def.key), switches, room.settings)
+        : null;
       const input = settingInput(def, getPath(room.settings, def.key), readOnly || reason !== null);
       inputs.set(def.key, input);
       if (def.kind === "bool") input.addEventListener("change", () => { coupleInputs(def.key); });

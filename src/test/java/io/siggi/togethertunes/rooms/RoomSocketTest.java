@@ -450,6 +450,73 @@ class RoomSocketTest {
         other.error("room_not_found", "{\"type\":\"join\",\"room\":\"" + aloneId + "\"}");
     }
 
+    /** Stops the room's autoplay as {@link AutoplayStop#check} would (nobody was there for 120 min). */
+    private void stopAutoplay(String roomId) throws Exception {
+        wiring.registry().call(roomId, tx -> {
+            tx.state().autoplayStopped(new AutoplayStop.Stopped(tx.now(), AutoplayStop.REASON_NOBODY, 120));
+            tx.event(new RoomEvent.AutoplayStopChanged(true));
+            return null;
+        });
+    }
+
+    /**
+     * Autoplay stopped because nobody was there: the state says so, {@code autoplay.resume} resumes
+     * it for those who may select playlists, and a web user coming in resumes it too.
+     */
+    @Test
+    void autoplayStoppedIsInTheStateAndResumeNeedsTheRightToSelect() throws Exception {
+        String roomId = room("quiet", "public", "owner");
+        Client owner = connect(alice, null);
+        owner.next("identity");
+        owner.ok("{\"type\":\"join\",\"room\":\"quiet\",\"mode\":\"listen\"}");
+        JsonObject state = owner.await("state");
+        assertFalse(state.getAsJsonObject("room").has("autoplayStopped"));
+        assertFalse(state.getAsJsonObject("room").getAsJsonObject("you").has("canResumeAutoplay"));
+        Client other = connect(bob, null);
+        other.next("identity");
+        other.ok("{\"type\":\"join\",\"room\":\"quiet\",\"mode\":\"listen\"}");
+        other.await("state");
+        // nothing to resume
+        assertFalse(owner.ok("{\"type\":\"autoplay.resume\"}").get("resumed").getAsBoolean());
+
+        stopAutoplay(roomId);
+        long at = clock.millis();
+        state = owner.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").has("autoplayStopped"));
+        JsonObject stopped = state.getAsJsonObject("room").getAsJsonObject("autoplayStopped");
+        assertEquals(at, stopped.get("at").getAsLong());
+        assertEquals("nobody", stopped.get("reason").getAsString());
+        assertEquals(120, stopped.get("minutes").getAsInt());
+        assertTrue(state.getAsJsonObject("room").getAsJsonObject("you").get("canResumeAutoplay").getAsBoolean());
+        JsonObject otherState = other.await(m -> m.get("type").getAsString().equals("state")
+                && m.getAsJsonObject("room").has("autoplayStopped"));
+        assertFalse(otherState.getAsJsonObject("room").getAsJsonObject("you").get("canResumeAutoplay").getAsBoolean());
+
+        // Bob may not select playlists here (autoplay.selectors: owner): forbidden
+        other.error("forbidden", "{\"type\":\"autoplay.resume\"}");
+        JsonObject resumed = owner.ok("{\"type\":\"autoplay.resume\"}");
+        assertTrue(resumed.get("resumed").getAsBoolean());
+        state = owner.await(m -> m.get("type").getAsString().equals("state")
+                && !m.getAsJsonObject("room").has("autoplayStopped"));
+        assertFalse(state.getAsJsonObject("room").getAsJsonObject("you").has("canResumeAutoplay"));
+        assertNull(wiring.registry().call(roomId, tx -> tx.state().autoplayStopped()));
+
+        // over HTTP too: POST /api/rooms/{room}/autoplay/resume
+        stopAutoplay(roomId);
+        assertEquals(403, call(bob, "POST", "/api/rooms/quiet/autoplay/resume", null).statusCode());
+        HttpResponse<String> r = call(alice, "POST", "/api/rooms/quiet/autoplay/resume", null);
+        assertEquals(200, r.statusCode(), r.body());
+        assertTrue(json(r).get("resumed").getAsBoolean());
+
+        // a web user coming into the room resumes it (anonymous too)
+        stopAutoplay(roomId);
+        Client anon = connect(null, null);
+        anon.next("identity");
+        anon.ok("{\"type\":\"join\",\"room\":\"quiet\",\"mode\":\"remote\"}");
+        assertFalse(anon.await("state").getAsJsonObject("room").has("autoplayStopped"));
+        assertNull(wiring.registry().call(roomId, tx -> tx.state().autoplayStopped()));
+    }
+
     @Test
     void joinSendsTheStateThenEveryChangeWithTheNextVersion() throws Exception {
         String roomId = room("party", "public", "owner");

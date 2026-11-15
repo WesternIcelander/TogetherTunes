@@ -74,6 +74,11 @@ public final class RoomPresence {
     }
 
     private final Map<String, Connection> connections = new LinkedHashMap<>();
+    /**
+     * Since when (epoch ms) nobody has had the room open ({@link #track}), or {@code null} while
+     * someone has; for the autoplay stop ({@link AutoplayStop}).
+     */
+    private Long emptySince;
 
     /**
      * Adds a connection, or replaces it if the id is already present (a socket that joins again).
@@ -135,6 +140,24 @@ public final class RoomPresence {
     public String actorKey(String connectionId) {
         Connection c = connections.get(connectionId);
         return c == null ? null : c.actorKey();
+    }
+
+    /**
+     * Keeps the presence clock: once nobody is connected, {@link #emptySince} is the first moment
+     * that was seen ({@code now}); a connection clears it. The executor calls it after every
+     * mutation, so a room loaded with nobody in it starts the clock at its load.
+     */
+    void track(long now) {
+        if (!connections.isEmpty()) {
+            emptySince = null;
+        } else if (emptySince == null) {
+            emptySince = now;
+        }
+    }
+
+    /** Since when nobody has had the room open (epoch ms), or {@code null} while someone has. */
+    public Long emptySince() {
+        return emptySince;
     }
 
     /** The number of open connections. */

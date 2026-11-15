@@ -111,4 +111,11 @@ public interface RoomEvent {
      */
     record MemberChanged(String userId) implements RoomEvent {
     }
+
+    /**
+     * The room's autoplay stopped ({@code stopped}: nobody was there for the limit) or resumed
+     * ({@link AutoplayStop}); the stop is {@link RoomState#autoplayStopped()}.
+     */
+    record AutoplayStopChanged(boolean stopped) implements RoomEvent {
+    }
 }

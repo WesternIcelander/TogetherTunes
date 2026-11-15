@@ -63,6 +63,7 @@ const GROUPS: Record<string, string> = {
   storage: "Storage",
   output: "Output encoding",
   outputs: "Outputs",
+  autoplay: "Autoplay",
   overlay: "Overlay",
 };
 

@@ -219,14 +219,20 @@ abstract class AutoplaySelectionsContract {
         JsonObject autoplay = ok(200, alice, "GET", "/api/rooms/" + roomId, null).getAsJsonObject("settings")
                 .getAsJsonObject("autoplay");
         assertEquals(JsonParser.parseString("{\"selectors\":\"owner\",\"upcoming\":5,\"mix\":\"random\","
-                + "\"recentPct\":50,\"requestsFirst\":\"first\"}"), autoplay);
+                + "\"recentPct\":50,\"requestsFirst\":\"first\",\"stopAfterMinutes\":120,"
+                + "\"pullListenersCount\":false}"), autoplay);
         JsonObject changed = ok(200, alice, "PATCH", "/api/rooms/" + roomId, "{\"settings\":{\"autoplay\":{"
                 + "\"selectors\":\"members\",\"upcoming\":0,\"mix\":\"turns\",\"recentPct\":100,"
-                + "\"requestsFirst\":\"alternate\"}}}").getAsJsonObject("settings").getAsJsonObject("autoplay");
+                + "\"requestsFirst\":\"alternate\",\"stopAfterMinutes\":1440,\"pullListenersCount\":true}}}")
+                .getAsJsonObject("settings").getAsJsonObject("autoplay");
+        // 1440 is kept although the server caps it lower (180, or 15 with stream listeners): it acts as the cap
         assertEquals(JsonParser.parseString("{\"selectors\":\"members\",\"upcoming\":0,\"mix\":\"turns\","
-                + "\"recentPct\":100,\"requestsFirst\":\"alternate\"}"), changed);
+                + "\"recentPct\":100,\"requestsFirst\":\"alternate\",\"stopAfterMinutes\":1440,"
+                + "\"pullListenersCount\":true}"), changed);
         for (String bad : List.of("{\"selectors\":\"everyone\"}", "{\"upcoming\":51}", "{\"upcoming\":-1}",
-                "{\"mix\":\"shuffle\"}", "{\"recentPct\":101}", "{\"recentPct\":2.5}", "{\"requestsFirst\":true}")) {
+                "{\"mix\":\"shuffle\"}", "{\"recentPct\":101}", "{\"recentPct\":2.5}", "{\"requestsFirst\":true}",
+                "{\"stopAfterMinutes\":0}", "{\"stopAfterMinutes\":1441}", "{\"stopAfterMinutes\":1.5}",
+                "{\"pullListenersCount\":\"yes\"}")) {
             expectError(400, "invalid_setting", call(alice, "PATCH", "/api/rooms/" + roomId,
                     "{\"settings\":{\"autoplay\":" + bad + "}}"));
         }

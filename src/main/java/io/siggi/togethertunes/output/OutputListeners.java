@@ -1,8 +1,10 @@
 package io.siggi.togethertunes.output;
 
 /**
- * Told when somebody listens to a pull output ({@code .ts}, HLS, MP3), for the auto turn-off's
- * "no listeners" clock ({@link OutputAutoOff}). Called from request threads; must not block.
+ * Told when somebody listens to a pull output ({@code .ts}, HLS, MP3): {@link OutputAutoOff} keeps
+ * when a room's stream was last listened to, which counts as presence for the autoplay stop when
+ * the room says so ({@link io.siggi.togethertunes.rooms.AutoplayStop}). Called from request threads;
+ * must not block.
  */
 public interface OutputListeners {
     /** Nobody is told anything (tests). */

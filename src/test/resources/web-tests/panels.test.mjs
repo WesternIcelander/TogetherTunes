@@ -218,3 +218,16 @@ test("timeout lengths as typed: minutes by default, units, combinations, limits"
   assert.equal(P.parseDurationInput("1s"), P.MIN_TIMEOUT_MS);
   assert.equal(P.parseDurationInput("3650d"), P.MAX_TIMEOUT_MS);
 });
+
+test("autoplay stopped: the notice says for how long nobody was there", () => {
+  assert.equal(P.autoplayStoppedText(undefined), null);
+  assert.equal(P.autoplayStoppedText({ at: 1, reason: "nobody", minutes: 120 }),
+    "Autoplay stopped: nobody was here for 2 h");
+  assert.equal(P.autoplayStoppedText({ at: 1, reason: "nobody", minutes: 15 }),
+    "Autoplay stopped: nobody was here for 15 min");
+  assert.equal(P.autoplayStoppedText({ at: 1, reason: "nobody", minutes: 90 }),
+    "Autoplay stopped: nobody was here for 1 h 30 min");
+  assert.equal(P.autoplayStoppedText({ at: 1, reason: "somethingNew", minutes: 5 }), "Autoplay stopped");
+  assert.equal(P.formatMinutes(0), "0 min");
+  assert.equal(P.formatMinutes(1440), "24 h");
+});

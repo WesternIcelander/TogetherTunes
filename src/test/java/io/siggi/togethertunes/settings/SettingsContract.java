@@ -112,7 +112,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(41, all.size());
+        assertEquals(43, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -132,6 +132,16 @@ abstract class SettingsContract {
         assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 1441));
         settings.set(Settings.OUTPUTS_FORCE_AUTO_OFF, true);
         assertTrue(settings.outputsForceAutoOff());
+        // the autoplay stop's caps (docs/ui.md#autoplay-from-playlists): 180 and 15 min by default
+        assertEquals(180, settings.autoplayMaxStopAfterMinutes());
+        assertEquals(15, settings.autoplayMaxStopAfterMinutesWithListeners());
+        settings.set(Settings.AUTOPLAY_MAX_STOP_AFTER_MINUTES, 1440);
+        settings.set(Settings.AUTOPLAY_MAX_STOP_AFTER_MINUTES_WITH_LISTENERS, 1);
+        assertEquals(1440, settings.autoplayMaxStopAfterMinutes());
+        assertEquals(1, settings.autoplayMaxStopAfterMinutesWithListeners());
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.AUTOPLAY_MAX_STOP_AFTER_MINUTES, 0));
+        assertThrows(IllegalArgumentException.class,
+                () -> settings.set(Settings.AUTOPLAY_MAX_STOP_AFTER_MINUTES_WITH_LISTENERS, 1441));
         assertTrue(settings.outputsMp3Enabled());
         assertEquals(128, settings.outputsMp3BitrateKbps());
         settings.set(Settings.OUTPUTS_MP3_ENABLED, false);
@@ -248,7 +258,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(41, settings.all().size());
+        assertEquals(43, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

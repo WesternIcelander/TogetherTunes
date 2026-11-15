@@ -64,8 +64,9 @@ import java.util.concurrent.Semaphore;
  * {@code queue.addPlaylist} and {@code queue.retry} may import or resolve media first (or wait for
  * an import of the same video), so they run on a thread of their
  * own (at most {@value #MAX_SLOW_ACTIONS} at a time per socket) and the socket keeps answering
- * {@code time} meanwhile. {@code time} is answered at once, at any point. Unknown message types are
- * ignored.
+ * {@code time} meanwhile. {@code time} is answered at once, at any point. {@code autoplay.resume}
+ * resumes a stopped autoplay ({@link AutoplaySelections#resume}; ack {@code {"resumed"}}). Unknown
+ * message types are ignored.
  *
  * <p><b>Sending.</b> Every outgoing message goes through the socket's bounded outbox and one
  * sender thread, so the room executor and broadcaster never wait on a socket. A socket whose
@@ -157,6 +158,16 @@ public final class RoomSocket {
     public void ingestProgress(IngestProgress progress, long intervalMs) {
         this.ingestProgress = Objects.requireNonNull(progress);
         this.ingestIntervalMs = intervalMs;
+    }
+
+    private volatile AutoplaySelections autoplay;
+
+    /**
+     * Turns on {@code autoplay.resume} (Resume autoplay after it stopped because nobody was there,
+     * {@link AutoplaySelections#resume}); without it the message is {@code 503 unavailable}.
+     */
+    public void autoplay(AutoplaySelections autoplay) {
+        this.autoplay = Objects.requireNonNull(autoplay);
     }
 
     /** Which media versions have a {@code cover.jpg}: items get a {@code coverUrl} only for those. */
@@ -419,6 +430,15 @@ public final class RoomSocket {
                     o.addProperty("votes", v.votes());
                     o.addProperty("needed", v.needed());
                     o.addProperty("skipped", v.skipped());
+                    return o;
+                }));
+                case "autoplay.resume" -> handle(rid, () -> room((j, a) -> {
+                    AutoplaySelections sel = autoplay;
+                    if (sel == null) {
+                        throw new HttpError(503, "unavailable", "Autoplay can't be resumed here");
+                    }
+                    JsonObject o = new JsonObject();
+                    o.addProperty("resumed", sel.resume(actor, j.roomId()));
                     return o;
                 }));
                 default -> {

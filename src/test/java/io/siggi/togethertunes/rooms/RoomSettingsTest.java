@@ -105,10 +105,10 @@ class RoomSettingsTest {
                 + "\"overlay\":{\"mode\":\"off\",\"corner\":\"br\",\"heightPct\":22,\"margin\":3},"
                 + "\"outputs\":{\"rtmp\":{\"playbackUrl\":\"\"},\"autoOff\":true,\"autoOffMinutes\":10,\"ts\":{\"join\":\"next\"}},"
                 + "\"autoplay\":{\"selectors\":\"owner\",\"upcoming\":5,\"mix\":\"random\",\"recentPct\":50,"
-                + "\"requestsFirst\":\"first\"},"
+                + "\"requestsFirst\":\"first\",\"stopAfterMinutes\":120,\"pullListenersCount\":false},"
                 + "\"estimatedDelayMs\":{\"rtmp\":5000,\"ts\":2000,\"hls\":8000,\"mp3\":3000}}"), j);
         assertEquals(j, JsonParser.parseString(Json.GSON.toJson(j)), "nothing left out by the serialiser");
-        assertEquals(RoomSettings.keys().size(), 31);
+        assertEquals(RoomSettings.keys().size(), 33);
     }
 
     @Test

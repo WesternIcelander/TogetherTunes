@@ -23,6 +23,7 @@ export const GROUPS: Array<[string, string]> = [
   ["requests", "Requests and voting"],
   ["guests", "Guests"],
   ["playback", "Playback"],
+  ["autoplay", "Autoplay"],
   ["overlay", "QR overlay"],
   ["outputs", "Outputs"],
 ];
@@ -63,6 +64,15 @@ export const SETTINGS: SettingDef[] = [
   { key: "requestsOnly", label: "Requests-only room", kind: "bool", group: "playback", default: false,
     help: "Everyone's room page plays nothing and is only for requests and votes, e.g. when the room plays on"
       + " one speaker or through a stream. Visitors who aren't logged in can't fetch the room's media then." },
+  { key: "autoplay.stopAfterMinutes", label: "Stop autoplay after nobody was here for (minutes)", kind: "int",
+    group: "autoplay", default: 120, min: 1, max: 1440,
+    help: "With nobody in the room for this long, autoplay stops adding songs: what is queued and every"
+      + " request still play, then the room goes quiet and its outputs turn off. It starts again when someone"
+      + " comes into the room, or with Resume autoplay." },
+  { key: "autoplay.pullListenersCount", label: "Stream listeners count as people in the room", kind: "bool",
+    group: "autoplay", default: false,
+    help: "On: people listening through the .ts, HLS or MP3 stream keep autoplay going too. The server allows a"
+      + " shorter time in this mode." },
   { key: "overlay.mode", label: "Show the QR code overlay", kind: "select", group: "overlay", default: "off",
     options: OVERLAY_MODES,
     help: "Always: on every card and on videos. Only when the queue is empty: just on the card shown while"
@@ -76,8 +86,8 @@ export const SETTINGS: SettingDef[] = [
   { key: "outputs.rtmp.playbackUrl", label: "RTMP playback URL for viewers", kind: "text", group: "outputs",
     default: "", max: 2048, help: "The URL your RTMP service gives viewers. Empty for none." },
   { key: "outputs.autoOff", label: "Turn outputs off automatically", kind: "bool", group: "outputs", default: true,
-    help: "On: an output turns off after the queue was empty, or (.ts, HLS, MP3) nobody listened, for the time"
-      + " below, and stays off until you turn it on again on the room page. Off: outputs stay on." },
+    help: "On: an output turns off after the queue was empty (nothing playing or queued) for the time below,"
+      + " and stays off until you turn it on again on the room page. Off: outputs stay on." },
   { key: "outputs.autoOffMinutes", label: "Turn off after (minutes)", kind: "int", group: "outputs", default: 10,
     min: 1, max: 1440 },
   { key: "outputs.ts.join", label: ".ts viewers join at", kind: "select", group: "outputs", default: "next",
@@ -153,18 +163,39 @@ export interface ServerSwitches {
     rtmp: { enabled: boolean }; ts: { enabled: boolean }; hls: { enabled: boolean };
     mp3?: { enabled: boolean };
   };
+  /** The caps on `autoplay.stopAfterMinutes` (normally, and when stream listeners count). */
+  autoplay?: { maxStopAfterMinutes?: number; maxStopAfterMinutesWithListeners?: number };
 }
 
 /**
- * A note on a setting the server caps: `outputs.autoOffMinutes` applies up to the server's
- * `outputs.maxAutoOffMinutes`; a higher value is saved but acts as the maximum (clamped).
+ * A note on a setting the server caps; a higher value is saved but acts as the maximum (clamped):
+ * `outputs.autoOffMinutes` applies up to the server's `outputs.maxAutoOffMinutes`, and
+ * `autoplay.stopAfterMinutes` up to `autoplay.maxStopAfterMinutes`, or
+ * `autoplay.maxStopAfterMinutesWithListeners` when the room's `autoplay.pullListenersCount` (read
+ * from `settings`, the room's saved settings) is on.
  */
-export function serverCapNote(key: string, value: unknown, sw: ServerSwitches | undefined): string | null {
-  if (key !== "outputs.autoOffMinutes" || sw === undefined) return null;
-  const max = sw.outputs.maxAutoOffMinutes;
-  if (typeof max !== "number") return null;
-  const note = "This server turns unused outputs off after at most " + max + (max === 1 ? " minute" : " minutes");
-  return typeof value === "number" && value > max ? note + ", so " + max + " applies." : note + ".";
+export function serverCapNote(key: string, value: unknown, sw: ServerSwitches | undefined,
+  settings?: unknown): string | null {
+  if (sw === undefined) return null;
+  if (key === "outputs.autoOffMinutes") {
+    const max = sw.outputs.maxAutoOffMinutes;
+    if (typeof max !== "number") return null;
+    const note = "This server turns unused outputs off after at most " + minutes(max);
+    return typeof value === "number" && value > max ? note + ", so " + max + " applies." : note + ".";
+  }
+  if (key === "autoplay.stopAfterMinutes") {
+    const listeners = getPath(settings, "autoplay.pullListenersCount") === true;
+    const max = listeners ? sw.autoplay?.maxStopAfterMinutesWithListeners : sw.autoplay?.maxStopAfterMinutes;
+    if (typeof max !== "number") return null;
+    const note = "This server stops autoplay after at most " + minutes(max)
+      + (listeners ? " when stream listeners count" : "");
+    return typeof value === "number" && value > max ? note + ", so " + max + " applies." : note + ".";
+  }
+  return null;
+}
+
+function minutes(n: number): string {
+  return n + (n === 1 ? " minute" : " minutes");
 }
 
 /** The overlay settings the preview follows, as the form holds them. */

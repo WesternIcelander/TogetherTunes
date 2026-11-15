@@ -472,6 +472,10 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Restricting", "restrictUser's result; the API sends its"
                     + " entry (RoomBans$Entry)"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$MemberChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$AutoplayStopChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.AutoplayStop$Caps", "the server's caps, read from the settings"),
+            Map.entry("io.siggi.togethertunes.rooms.AutoplayStop$Stopped", "why autoplay stopped (time, reason, minutes),"
+                    + " part of the room's state and row; the room socket copies its fields into the state"),
             Map.entry("io.siggi.togethertunes.rooms.RoomSnapshot", "copy of the room state for the WebSocket"
                     + " broadcaster (ids, entries, votes, counts); messages are built field by field and scanned"
                     + " in the seeding"),
@@ -1334,6 +1338,7 @@ class DtoIpLeakTest {
         expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + playlistId, null);
         expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + otherList, null);
         expect(200, alice, "DELETE", "/api/rooms/" + roomSlug + "/autoplay/playlists/" + otherList, null);
+        expect(200, alice, "POST", "/api/rooms/" + roomSlug + "/autoplay/resume", null);
         expect(200, alice, "PUT", "/api/rooms/" + roomSlug + "/autoplay/mine",
                 "{\"playlistIds\":[\"" + playlistId + "\"]}");
         expect(200, anon, "GET", "/api/rooms/" + roomSlug + "/autoplay", null);
