@@ -55,6 +55,13 @@ class PanelsJsTest {
         // the listener's volume and mute reach the player after its meters (never mistaken for a silent path)
         String listen = read("web/js/listen.js");
         assertTrue(listen.contains("setVolume(") && listen.contains("setMuted(") && listen.contains("#output("), listen);
+        // the middle mute (for people without control) is only for the mobile mini player
+        String css = read("web/css/main.css");
+        int desktop = css.indexOf("@media (min-width: 800px) {");
+        assertTrue(desktop >= 0);
+        int rule = css.indexOf(".player-bar #pb-mute-big {", desktop);
+        assertTrue(rule > desktop, "pb-mute-big rule in the desktop block");
+        assertTrue(css.substring(rule, css.indexOf("}", rule)).contains("display: none;"), "pb-mute-big hidden on desktop");
     }
 
     @Test

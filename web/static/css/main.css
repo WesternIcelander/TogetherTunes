@@ -2107,6 +2107,12 @@ li.entry.selected {
    the sidebars at the window's edges, and only the middle (#app) and each sidebar scroll on their own.
    Not below 800 px: the mobile layout keeps scrolling the window (MOBILE_QUERY). */
 @media (min-width: 800px) {
+  /* Without control the middle shows only the heart: the mute beside the volume slider (with its right-click
+     menu) does the middle mute's job. The mobile mini player keeps it (its volume and mute are hidden). */
+  .player-bar #pb-mute-big {
+    display: none;
+  }
+
   html {
     height: 100%;
     overflow: hidden;
