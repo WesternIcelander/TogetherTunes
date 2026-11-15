@@ -2163,6 +2163,37 @@ li.entry.selected {
     border-left: 1px solid rgba(128, 128, 128, 0.3);
   }
 
+  /* The right panel's video pane (docs/ui.md "Video pane"): the panel is a column of the tabs, the shown tab's
+     content (its own scroll area, the only part that scrolls) and the video panel fixed at the bottom. The video
+     panel is still moved into the room view's #rv-video-slot and back (frame.ts) as before. */
+  .app-panel:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding-bottom: 0;
+  }
+
+  .app-panel > * {
+    flex: none;
+  }
+
+  .app-panel > .tab-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /* Flex items' margins don't collapse: the empty room and error lines take no room. */
+  .app-panel > p:empty {
+    margin: 0;
+  }
+
+  .app-panel > .app-video {
+    margin-top: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
   /* The middle takes all the room between the sidebars (so the right panel sits at the window's edge)
      and is the scroll container (shell.ts / dom.ts contentScroller). */
   #app,
