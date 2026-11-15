@@ -85,6 +85,29 @@ test("the request body and the preview", () => {
   assert.equal(T.frames(6513), 196);
 });
 
+test("Preview end plays the selection's last 8 s from the current version", () => {
+  assert.equal(T.PREVIEW_END_MS, 8000);
+  // the current version is the original's 2..60 s
+  const v = view({ videoStartMs: 2000, videoEndMs: 60000, originalMs: 70000 });
+  // normal: the last 8 s of 10..40 s are 32..40 s, i.e. 30..38 s into the version
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 10000, endMs: 40000 }), { fromS: 30, toS: 38 });
+  // a selection shorter than 8 s plays from its start (like Preview)
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 10000, endMs: 15000 }), { fromS: 8, toS: 13 });
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 10000, endMs: 15000 }), T.previewSpan(v, { startMs: 10000, endMs: 15000 }));
+  // a selection only partly in the current version: the start before it doesn't matter ...
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 0, endMs: 9000 }), { fromS: 0, toS: 7 });
+  // ... and an end past it plays what the version has of the last 8 s (56..60 s)
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 10000, endMs: 64000 }), { fromS: 54, toS: 58 });
+  // none of the last 8 s in the current version (62..70 s): nothing to play (the page says so, as for Preview)
+  assert.equal(T.previewEndSpan(v, { startMs: 10000, endMs: 70000 }), undefined);
+  assert.equal(T.previewEndSpan(v, { startMs: 61000, endMs: 66000 }), undefined);
+  // a custom length
+  assert.deepEqual(T.previewEndSpan(v, { startMs: 10000, endMs: 40000 }, 3000), { fromS: 35, toS: 38 });
+  // an audio item's player (audio.m4a starts at its trim's start)
+  const pv = T.playerView(view({ originalMs: 30000, audioStartMs: 5000, audioEndMs: 25000 }), false);
+  assert.deepEqual(T.previewEndSpan(pv, { startMs: 5000, endMs: 25000 }), { fromS: 12, toS: 20 });
+});
+
 test("the audio trim: current range, player view, estimate and body", () => {
   // an audio item without a trim: the whole original; its player is audio.m4a from 0
   const a = view({ originalMs: 10000 });

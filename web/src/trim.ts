@@ -182,6 +182,18 @@ export function previewSpan(view: TrimView, range: Range): { fromS: number; toS:
   return { fromS: (from - cur.startMs) / 1000, toS: (to - cur.startMs) / 1000 };
 }
 
+/** How much of the selection's end "Preview end" plays. */
+export const PREVIEW_END_MS = 8000;
+
+/**
+ * What "Preview end" plays from the current version: the selection's last `lastMs` (from
+ * max(start, end − lastMs) to the end), mapped like Preview (`previewSpan`): the part of it the
+ * current encode has, in seconds of the current version, or undefined if it has none of it.
+ */
+export function previewEndSpan(view: TrimView, range: Range, lastMs: number = PREVIEW_END_MS): { fromS: number; toS: number } | undefined {
+  return previewSpan(view, { startMs: Math.max(range.startMs, range.endMs - lastMs), endMs: range.endMs });
+}
+
 // ------------------------------------------------------------------ audio trim
 
 /**

@@ -16,8 +16,8 @@ import { viewScope } from "./nav.js";
 import { checkPasswordChange, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
   audioEstimate, audioRange, audioTrimBody, currentRange, estimate, estimateText, formatTime as formatTrimTime,
-  endAtPlayhead, fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan,
-  startAtPlayhead, trimBody, type Range, type TrimEstimate, type TrimView,
+  endAtPlayhead, fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs,
+  PREVIEW_END_MS, previewEndSpan, previewSpan, startAtPlayhead, trimBody, type Range, type TrimEstimate, type TrimView,
 } from "./trim.js";
 import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
 import { pinPath, pinText, viewPath, viewReporter } from "./views.js";
@@ -45,8 +45,11 @@ let logOpen: boolean | undefined;
 let editOpen = true;
 /** Every player element this view made: each ducks the room while it plays (released when the view goes). */
 const players: HTMLMediaElement[] = [];
-/** The trim part whose preview plays (its button reads Stop), if any. */
-let activePreview: { reset(): void } | undefined;
+/** A trim part's Preview or Preview end button. */
+interface PreviewButton { el: HTMLButtonElement; reset(): void }
+
+/** The preview button whose preview plays (it reads Stop), if any. */
+let activePreview: PreviewButton | undefined;
 
 /** A queued or running job (downloading, encoding). */
 function busy(job: JobView | undefined): boolean {
@@ -317,50 +320,61 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
 
   // the playhead follows the player (its time is on the current version)
   let previewEnd: number | undefined;
-  const preview = h("button", { type: "button", text: "Preview" });
-  const part = {
-    /** This part's preview stopped (or another part's started): Stop turns back into Preview. */
-    reset(): void {
-      previewEnd = undefined;
-      preview.textContent = "Preview";
-      if (activePreview === part) activePreview = undefined;
-    },
+  /**
+   * A preview button (Preview: the whole selection; Preview end: its last 8 s). While its preview
+   * plays it reads Stop; only one button (of all parts) is the active preview at a time.
+   */
+  const previewButton = (label: string, spanOf: (range: Range) => { fromS: number; toS: number } | undefined): PreviewButton => {
+    const btn = h("button", { type: "button", text: label });
+    const ctl: PreviewButton = {
+      el: btn,
+      /** This preview stopped (or another one started): Stop turns back into the label. */
+      reset(): void {
+        btn.textContent = label;
+        if (activePreview !== ctl) return;
+        previewEnd = undefined;
+        activePreview = undefined;
+      },
+    };
+    btn.addEventListener("click", () => {
+      const p = player;
+      if (activePreview === ctl) {
+        // Stop: pauses at once (the pause event resets the button too).
+        p?.pause();
+        ctl.reset();
+        return;
+      }
+      const span = spanOf(range);
+      if (span === undefined || p === undefined) {
+        error.textContent = "The current version has none of the selection to preview; Save makes it.";
+        return;
+      }
+      error.textContent = "";
+      activePreview?.reset();
+      activePreview = ctl;
+      btn.textContent = "Stop";
+      p.currentTime = span.fromS;
+      previewEnd = span.toS;
+      p.play().catch((e: unknown) => {
+        ctl.reset();
+        error.textContent = message(e);
+      });
+    });
+    return ctl;
   };
+  const preview = previewButton("Preview", (r) => previewSpan(spec.player, r));
+  const previewEndButton = previewButton("Preview end", (r) => previewEndSpan(spec.player, r, PREVIEW_END_MS));
   const timer = window.setInterval(() => {
     const p = player;
     if (p === undefined) return;
     playhead.style.left = msToFraction(playheadMs(spec.player, p.currentTime), view) * 100 + "%";
     if (previewEnd !== undefined && p.currentTime >= previewEnd) {
       p.pause();
-      part.reset();
+      activePreview?.reset();
     }
   }, 100);
-  stopTrimPanels.push(() => { window.clearInterval(timer); part.reset(); });
+  stopTrimPanels.push(() => { window.clearInterval(timer); preview.reset(); previewEndButton.reset(); });
 
-  preview.addEventListener("click", () => {
-    const p = player;
-    if (activePreview === part) {
-      // Stop: pauses at once (the pause event resets the button too).
-      p?.pause();
-      part.reset();
-      return;
-    }
-    const span = previewSpan(spec.player, range);
-    if (span === undefined || p === undefined) {
-      error.textContent = "The current version has none of the selection to preview; Save makes it.";
-      return;
-    }
-    error.textContent = "";
-    activePreview?.reset();
-    activePreview = part;
-    preview.textContent = "Stop";
-    p.currentTime = span.fromS;
-    previewEnd = span.toS;
-    p.play().catch((e: unknown) => {
-      part.reset();
-      error.textContent = message(e);
-    });
-  });
   // Set start / Set end: the player's position (on the original's timeline, as the playhead shows it).
   const atPlayhead = (set: (p: HTMLMediaElement) => void): void => {
     const p = player;
@@ -389,7 +403,7 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
     h("div", { class: "row" },
       h("label", {}, "Start ", startInput), setStart, h("label", {}, "End ", endInput), setEnd),
     hint,
-    h("div", { class: "row" }, preview, save, spec.extra ?? null),
+    h("div", { class: "row" }, preview.el, previewEndButton.el, save, spec.extra ?? null),
     error);
 }
 
@@ -440,11 +454,18 @@ function stopTrim(): void {
   stopTrimPanels = [];
 }
 
-/** The Trim section: the player (above the bars) and the trim parts. */
+/**
+ * The Trim section: the player and the trim parts. A video's player is on the left half and the parts
+ * on the right (main.css stacks them, video on top, on narrow windows and mobile); an audio player
+ * stays above the parts. The player is moved in (not recreated), so it keeps playing.
+ */
 function trimSection(item: ItemPage, view: TrimView): HTMLElement {
   const slot = h("div", { class: "player", id: "item-trim-player" });
   if (player !== undefined) slot.append(player);
-  return h("section", { class: "panel trim-section" }, h("h2", { text: "Trim" }), slot, ...trimPanels(item, view));
+  const video = item.kind === "video" && !item.presentAsAudio;
+  return h("section", { class: "panel trim-section" }, h("h2", { text: "Trim" }),
+    h("div", { class: video ? "trim-cols trim-video" : "trim-cols" }, slot,
+      h("div", { class: "trim-parts" }, ...trimPanels(item, view))));
 }
 
 function render(item: ItemPage, job: JobView | undefined): void {

@@ -1286,6 +1286,25 @@ table.rooms td {
   display: none;
 }
 
+/* Item page Trim section (docs/ui.md "Item page"): a video on the left half, the trim parts on the right;
+   they wrap (video on top) when the section can't give each half 20rem, and always on mobile. */
+.trim-video {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-start;
+}
+.trim-video > .player,
+.trim-video > .trim-parts {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+@media (max-width: 799.98px) {
+  .trim-video > .player,
+  .trim-video > .trim-parts {
+    flex-basis: 100%;
+  }
+}
 /* Video trim timeline (item page) */
 .trim-bar {
   position: relative;
