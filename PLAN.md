@@ -1200,6 +1200,7 @@ Design: **`docs/ui.md`** (read it whole first) and the drawings `drawings/ui_mai
   - Re-checked 2026-11-14 after the link/file requests step (`[x]`, main `ddd519b`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
   - Re-checked 2026-11-15 after the item page rework (`[x]`, main `5c2625e`, which includes muting the room's audio while the item page's preview plays) and the player bar mute step (`[x]`, main `992fd24`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
   - Re-checked 2026-11-15 after the autoplay/auto turn-off, video pane, item trim, one-window-with-sound, mobile request parts, admin messages, Manage Room Outputs tab, Now Playing View and Show QR code steps (all `[x]`, main up to `55b40f6`): the hold step is still gone; the desktop and mobile *(manual)* walkthroughs are still `[?]` awaiting Siggi's check. Tests not run.
+  - Re-checked 2026-11-15 after the system media controls step (`[x]`, main `bb6d9a2`): the hold step is still gone; every other M9 step is `[x]` except the desktop *(manual)* walkthrough in Chrome and Firefox and the mobile *(manual)* walkthrough on Android Chrome and Firefox, both still `[?]` awaiting Siggi's check. Tests not run.
 
 ## Before the first release
 
