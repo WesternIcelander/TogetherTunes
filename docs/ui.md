@@ -188,6 +188,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 - **Classify dialog:** the modal now has a "Media type" heading. **New Room** (sidebar) goes to the rooms view's create form and focuses its name field.
 - **Loading / failed / empty:** views show "Loading…" until their data is there and an empty-state line for empty lists (sessions, invites, bans, shows, playlists, lists); a list view whose load failed says so with **Try again**.
 - Item page, admin pages and encode jobs keep their existing screens inside the frame.
+- **Item page** (Siggi, 2026-11-15): **Edit details** is open by default. **Processing** stays at the top only while the item is downloading or encoding (job queued or running); otherwise it moves to the bottom of the page. **Trim** is one section holding the video trim and, for videos, the audio-only rooms' trim; the **preview player** lives inside it (for people who can't trim, it stays where it is). The preview follows the player bar's **volume and mute**, and while it plays the **room's audio is muted** (unmuted again when the preview pauses, ends or the page goes away; this never changes the listener's own mute). **Preview** turns into **Stop** while a preview plays. **Set start** / **Set end** buttons take the preview's current position.
 
 ### Leftovers removed (end of M9)
 
