@@ -186,6 +186,7 @@ From [`drawings/mobile_view.png`](../drawings/mobile_view.png) (2026-11-14):
 - **User settings** has tabs: preferences (double-click behaviour, **Web Audio** (only here), **debug mode**), account (password, linked logins), and **sessions** (devices with Revoke, API tokens).
 - **Debug mode** shows a **Send diagnostics** button at the top of the page.
 - **Invites:** invite-only registration needs a UI to create and hand out invites (admins, and non-admins whose role has the new permission `users.invite`).
+- **Login and register page messages** (Siggi, 2026-11-15): the admin sets a plain-text message for each in Admin → Settings (Accounts group, a text area); the login view shows its message above the form, the register view its own (also while registration is closed or by invite, so the admin can say how to get an invite). **As built:** `#login-message` / `#register-message` (`.admin-message`, `white-space: pre-line`), filled by `dom.ts` `showMessage` from `GET /api/auth/providers` (`loginMessage`, `registerMessage`): text nodes only, with `http://` / `https://` addresses as links (`target="_blank"`, `rel="noopener noreferrer"`) split out by the DOM-free `linkify.ts` (`linkify.test.mjs`); hidden while empty ([auth.md](auth.md#login-and-registration-messages)).
 
 **As built** (M9 remaining screens step, 2026-11-14), in the existing design (header, tabs, tables, dialogs):
 
