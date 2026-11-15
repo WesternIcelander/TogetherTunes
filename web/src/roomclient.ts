@@ -45,6 +45,7 @@ export interface RoomItem {
   show?: { name: string; season?: number; episode: number };
   title?: string;
   artist?: string;
+  album?: string;
   durationMs?: number;
   status?: "pending" | "processing" | "ready" | "failed" | "purged" | string;
   /** `youtube` or `upload`: only a failed YouTube item can be retried. */

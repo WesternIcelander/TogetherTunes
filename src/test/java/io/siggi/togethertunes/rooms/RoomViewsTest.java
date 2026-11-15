@@ -46,6 +46,19 @@ class RoomViewsTest {
         assertFalse(bin.has("originalType"));
     }
 
+    /** The album (system media controls): given when the item has one, left out when empty or unknown. */
+    @Test
+    void albumWhenKnown() {
+        RoomViews.ItemRow with = new RoomViews.ItemRow(ID, "audio", "T", "A", 1000L, "ready", "upload", false, null,
+                false, null, 0, null, true, "audio", null, "Record");
+        assertEquals("Record", RoomViews.item(new RoomViews.Lookup(Map.of(ID, with), Map.of()), ID)
+                .get("album").getAsString());
+        RoomViews.ItemRow empty = new RoomViews.ItemRow(ID, "audio", "T", "A", 1000L, "ready", "upload", false, null,
+                false, null, 0, null, true, "audio", null, "");
+        assertFalse(RoomViews.item(new RoomViews.Lookup(Map.of(ID, empty), Map.of()), ID).has("album"));
+        assertFalse(item("upload", null, false, null).has("album"));
+    }
+
     @Test
     void mediaUrlsNameTheCurrentVersion() {
         RoomViews.ItemRow row = new RoomViews.ItemRow(ID, "video", "T", null, 1000L, "ready", "youtube", false, null,

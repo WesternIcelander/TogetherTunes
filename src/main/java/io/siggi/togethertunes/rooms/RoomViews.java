@@ -81,7 +81,16 @@ final class RoomViews {
      */
     record ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                    boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
-                   int mediaVersion, Long audioOnlyMs, boolean hasCover, String mediaType, MediaType.Show show) {
+                   int mediaVersion, Long audioOnlyMs, boolean hasCover, String mediaType, MediaType.Show show,
+                   String album) {
+        /** Without an album. */
+        ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
+                boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
+                int mediaVersion, Long audioOnlyMs, boolean hasCover, String mediaType, MediaType.Show show) {
+            this(id, kind, title, artist, durationMs, status, source, presentAsAudio, originalFile, originalWeb,
+                    originalGainDb, mediaVersion, audioOnlyMs, hasCover, mediaType, show, null);
+        }
+
         /** The media type from {@code kind} and {@code presentAsAudio} (tests). */
         ItemRow(String id, String kind, String title, String artist, Long durationMs, String status, String source,
                 boolean presentAsAudio, String originalFile, boolean originalWeb, Double originalGainDb,
@@ -168,7 +177,7 @@ final class RoomViews {
             for (List<String> chunk : chunks(itemIds)) {
                 try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, duration_ms, status,"
                         + " source, " + MediaType.columns(null) + ", original_file, original_web, original_gain_db,"
-                        + " media_version, audio_only_ms FROM items"
+                        + " media_version, audio_only_ms, album FROM items"
                         + " WHERE id IN (" + marks(chunk.size()) + ")")) {
                     bind(ps, chunk);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -188,7 +197,8 @@ final class RoomViews {
                             items.put(id, new ItemRow(id, kind, rs.getString(3),
                                     rs.getString(4), durationMs, status, rs.getString(7),
                                     MediaType.presentAsAudio(kind, mediaType), rs.getString(12), rs.getInt(13) != 0,
-                                    gainDb, version, audioOnlyMs, hasCover, mediaType, MediaType.show(rs, 8)));
+                                    gainDb, version, audioOnlyMs, hasCover, mediaType, MediaType.show(rs, 8),
+                                    rs.getString(17)));
                         }
                     }
                 }
@@ -247,7 +257,7 @@ final class RoomViews {
 
     /**
      * An item: {@code id, kind, presentAsAudio, mediaType, show?: {name, season?, episode}, title,
-     * artist?, durationMs?, status}, and once it
+     * artist?, album?, durationMs?, status}, and once it
      * is {@code ready} its media URLs: {@code coverUrl} (only if that version has a {@code cover.jpg}), {@code audioUrl}, {@code videoUrl} (video
      * items), all of the item's current media version ({@code /media/{id}/v/{N}/…}, so a play
      * that started on it stays on it after a re-encode), and for an audio upload whose original browsers can play, {@code originalUrl} with
@@ -281,6 +291,9 @@ final class RoomViews {
         o.addProperty("title", r.title());
         if (r.artist() != null) {
             o.addProperty("artist", r.artist());
+        }
+        if (r.album() != null && !r.album().isEmpty()) {
+            o.addProperty("album", r.album());
         }
         boolean video = "video".equals(r.kind());
         boolean audioOnlyFile = audioOnly && video && r.audioOnlyMs() != null;

@@ -40,6 +40,7 @@ import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
 import { prefs } from "./prefsclient.js";
 import { offersNextEpisode } from "./shows.js";
+import { MediaSessionSync, sessionPlan, type MediaSessionLike, type SessionMetadata } from "./mediasession.js";
 import { frameRect, layoutKey, overlayShown, overlaySvg, SHOW_QR_KEY, type OverlayLayout } from "./overlayshow.js";
 import { clickSelect, ENTRY_ACTION_LABELS, entryMenu, entryMessage, playlistClick, PLAYLIST_ACTION_LABELS, playlistMenu,
   playlistNameInput, toggleKey, type EntryAction } from "./interactions.js";
@@ -156,6 +157,21 @@ export class Frame {
   #qrKey = "";
   /** What the QR layer was last drawn and placed with. */
   #qrDrawn = "";
+  /** The system media controls (docs/ui.md "System media controls"; rules in mediasession.ts). */
+  readonly #mediaSession = new MediaSessionSync(
+    "mediaSession" in navigator ? navigator.mediaSession as unknown as MediaSessionLike : undefined,
+    (m: SessionMetadata) => new MediaMetadata(m),
+    {
+      play: () => this.#systemMute(false),
+      pause: () => this.#systemMute(true),
+      nexttrack: () => {
+        const room = this.#host.room();
+        if (room !== undefined) this.#act(room, { type: "next" });
+      },
+    });
+  /** The current cover's size once loaded (artwork `sizes`), and the URL being measured. */
+  #coverSize: { url: string; width: number; height: number } | undefined;
+  #coverMeasuring = "";
 
   constructor(host: FrameHost) {
     this.#host = host;
@@ -1707,6 +1723,7 @@ export class Frame {
   /** Moves the seek bar and the times along. */
   #tick(): void {
     this.#drawAutoHide();
+    this.#drawMediaSession();
     // The video's size and the window can change without a state change.
     this.#drawQr();
     // The view's title can change after its data loads (mobile top bar).
@@ -1736,6 +1753,43 @@ export class Frame {
     // "Mute only until end of song" ends when the song does.
     const wasMuted = this.#mute.muted;
     if (this.#mute.current(c.entryId) !== wasMuted) this.update();
+  }
+
+  // ---------------------------------------------------------------- system media controls
+
+  /** Fills (or empties) the browser's Media Session from the room this window plays. */
+  #drawMediaSession(): void {
+    const room = this.#host.room();
+    const s = room?.state();
+    const heard = room !== undefined && room.mode() === "listen" && room.stopped() === undefined
+      && (room.heard?.() ?? false);
+    const coverUrl = s?.current?.item.coverUrl;
+    if (heard && coverUrl !== undefined && coverUrl !== this.#coverMeasuring) this.#measureCover(coverUrl);
+    try {
+      this.#mediaSession.apply(sessionPlan({ state: s, heard, muted: this.#mute.muted,
+        serverNow: room?.serverNow() ?? 0, origin: location.origin, coverSize: this.#coverSize }));
+    } catch (e) {
+      recordEvent("media-session", { error: String(e) });
+    }
+  }
+
+  /** Loads the cover once to learn its size (it is usually in the cache already: the page shows it). */
+  #measureCover(url: string): void {
+    this.#coverMeasuring = url;
+    const img = new Image();
+    img.addEventListener("load", () => {
+      if (this.#coverMeasuring !== url || img.naturalWidth <= 0) return;
+      this.#coverSize = { url, width: img.naturalWidth, height: img.naturalHeight };
+      this.#drawMediaSession();
+    });
+    img.src = url;
+  }
+
+  /** The system's Play / Pause: the listener's own mute (the room keeps playing). */
+  #systemMute(on: boolean): void {
+    if (on) this.#mute.mute();
+    else this.#mute.unmute();
+    this.update();
   }
 
   // ---------------------------------------------------------------- video panel, Now Playing View

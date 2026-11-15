@@ -211,6 +211,11 @@ export interface ShellRoom {
   forcedRequestsOnly(): boolean;
   /** Switches between listening here and requests-only mode (remembered for the room). */
   setRequestsOnly(on: boolean): void;
+  /**
+   * Whether this window plays the room's sound (listen mode, holds the sound, the browser lets it
+   * play): only then it fills the system media controls.
+   */
+  heard?(): boolean;
   /** The listener's volume (linear gain 0..1) and mute, applied to the room's player. */
   setVolume(gain: number, muted: boolean): void;
   /** The element the room's videos play in (the frame's video panel holds it). */

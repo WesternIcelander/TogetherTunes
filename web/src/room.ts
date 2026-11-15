@@ -831,6 +831,7 @@ function createShell(): RoomHandle {
     mode: () => mode,
     forcedRequestsOnly: () => forced,
     setRequestsOnly: (on) => switchMode(on ? "remote" : "listen"),
+    heard: () => mode === "listen" && kickedText === undefined && player?.heard === true,
     setVolume: (gain, muted) => {
       listenerGain = gain;
       listenerMuted = muted;

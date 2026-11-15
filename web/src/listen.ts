@@ -644,6 +644,15 @@ export class ListenPlayer {
     this.#applyListenerGain();
   }
 
+  /**
+   * Whether this window's sound can be heard (system media controls, docs/ui.md): not silenced for
+   * another window, not blocked by the browser (nor playing muted meanwhile), no "Tap to restore
+   * sound" pending. The listener's own mute and a preview's duck don't count: the window still holds the sound.
+   */
+  get heard(): boolean {
+    return !this.#otherWindow && !this.#needsRestore && this.#audible();
+  }
+
   /** Whether another window of the same person has the sound (this one plays silently). */
   get otherWindowHasSound(): boolean {
     return this.#otherWindow;
