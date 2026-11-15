@@ -16,7 +16,7 @@ The RTMP output pushes the program to an RTMP ingest, such as VRCDN, which then 
 
 1. Create a stream at the service and note its **ingest URL**, **stream key** and the **viewer URL** it gives out.
 2. In **Manage room → Outputs**, set up the RTMP push with the ingest URL and the stream key.
-3. Under **Manage room → Settings → Outputs**, save the service's viewer URL as the **RTMP viewer URL**. The room view then shows it to everyone under **Watch on the stream**, and that is the URL viewers paste into the world's video player.
+3. Under **Manage room → Outputs → Output settings**, save the service's viewer URL as the **RTMP viewer URL**. The room view then shows it to everyone under **Watch on the stream**, and that is the URL viewers paste into the world's video player.
 
 **Security note:** a plain `rtmp://` ingest URL sends your stream key unencrypted to the service, so someone on the network path could read it. If the service offers an `rtmps://` ingest address, use that instead. If you think a key has leaked, reset it at the service and paste the new one.
 
@@ -26,7 +26,7 @@ HLS players start about three segments behind the live edge, and not all at the 
 
 ## Internet radio (MP3)
 
-The **MP3 audio** output is a Shoutcast/Icecast-style MP3 stream (128 kb/s by default, 44.1 kHz stereo) that any internet-radio player can play: VLC, foobar2000, Winamp, a hardware radio, or a game's radio. The station name is the room's name, and players that show the "now playing" title get `Artist - Title` of what the stream is playing. The room page lists it as **MP3 audio** with its URL (`…/live/<room-link-name>.mp3` for a public or unlisted room, `…/live/<token>.mp3` for a private one) and a Copy button; in a private room, Rotate URL makes a new one (the old one stops at once). Outputs turn off by themselves after 10 minutes with an empty queue or nobody listening, unless the room owner sets them to always on (Manage room → Settings → Outputs); turn it on again on the room page.
+The **MP3 audio** output is a Shoutcast/Icecast-style MP3 stream (128 kb/s by default, 44.1 kHz stereo) that any internet-radio player can play: VLC, foobar2000, Winamp, a hardware radio, or a game's radio. The station name is the room's name, and players that show the "now playing" title get `Artist - Title` of what the stream is playing. The room page lists it as **MP3 audio** with its URL (`…/live/<room-link-name>.mp3` for a public or unlisted room, `…/live/<token>.mp3` for a private one) and a Copy button; in a private room, Rotate URL makes a new one (the old one stops at once). Outputs turn off by themselves after 10 minutes with an empty queue or nobody listening, unless the room owner sets them to always on (Manage room → Outputs → Output settings); turn it on again on the room page.
 
 ### Euro Truck Simulator 2 and American Truck Simulator
 
