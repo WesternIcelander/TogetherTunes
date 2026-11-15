@@ -1137,6 +1137,7 @@ Design: **`docs/ui.md`** (read it whole first) and the drawings `drawings/ui_mai
   - Checked 2026-11-14: the hold step is gone (removed in plan `09f122a`), every other M9 step is `[x]` except the two manual walkthroughs, still `[?]` awaiting Siggi's check: the *(manual)* desktop walkthrough in Chrome and Firefox, and the *(manual)* mobile walkthrough on Android Chrome and Firefox. Tests not run; the gate stays unchecked until both are `[x]`.
   - Re-checked 2026-11-14 after the desktop layout fixes step (`[x]`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
   - Re-checked 2026-11-14 after the link/file requests step (`[x]`, main `ddd519b`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
+  - Re-checked 2026-11-15 after the item page rework (`[x]`, main `5c2625e`, which includes muting the room's audio while the item page's preview plays) and the player bar mute step (`[x]`, main `992fd24`): unchanged, the desktop and mobile *(manual)* walkthroughs are still `[?]`. Tests not run.
 
 ## Before the first release
 
