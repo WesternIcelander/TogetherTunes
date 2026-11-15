@@ -30,6 +30,8 @@ public final class SettingKey<T> {
     private final T defaultValue;
     private final Codec<T> codec;
     private final boolean nullable;
+    /** Whether a string setting is text of several lines (the admin page shows a text area). */
+    private boolean multiline;
 
     private SettingKey(String name, Class<T> type, T defaultValue, boolean nullable, Codec<T> codec) {
         this.name = Objects.requireNonNull(name);
@@ -61,6 +63,11 @@ public final class SettingKey<T> {
     /** Whether {@code null} is a valid value ("not set", e.g. no cookies file). */
     public boolean nullable() {
         return nullable;
+    }
+
+    /** Whether this is a string setting holding text of several lines ({@link #text}). */
+    public boolean multiline() {
+        return multiline;
     }
 
     /** Parses and validates a JSON value; {@link IllegalArgumentException} if it is invalid. */
@@ -196,6 +203,39 @@ public final class SettingKey<T> {
                 return value.isEmpty() ? JsonNull.INSTANCE : new JsonPrimitive(value);
             }
         });
+    }
+
+    /**
+     * Plain text of several lines (e.g. a message shown on a page), empty by default. Line breaks
+     * are normalised to {@code \n} and kept; leading and trailing whitespace is dropped, so
+     * whitespace alone is empty. At most {@code maxLength} code points.
+     */
+    static SettingKey<String> text(String name, int maxLength) {
+        SettingKey<String> key = new SettingKey<>(name, String.class, "", false, new Codec<>() {
+            @Override
+            public String decode(JsonElement json) {
+                JsonPrimitive p = primitive(json);
+                if (!p.isString()) {
+                    throw new IllegalArgumentException("expected a string, got " + json);
+                }
+                String s = p.getAsString().replace("\r\n", "\n").replace('\r', '\n').strip();
+                if (s.indexOf('\0') >= 0) {
+                    throw new IllegalArgumentException("must not contain NUL characters");
+                }
+                int length = s.codePointCount(0, s.length());
+                if (length > maxLength) {
+                    throw new IllegalArgumentException("at most " + maxLength + " characters, got " + length);
+                }
+                return s;
+            }
+
+            @Override
+            public JsonElement encode(String value) {
+                return new JsonPrimitive(value.replace("\r\n", "\n").replace('\r', '\n').strip());
+            }
+        });
+        key.multiline = true;
+        return key;
     }
 
     /** An enum stored by its {@code wireName}. */

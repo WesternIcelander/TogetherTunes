@@ -43,7 +43,7 @@ public final class TestUploads {
         var providers = new io.siggi.togethertunes.auth.Providers(db,
                 new io.siggi.togethertunes.secrets.SecretCipher(new byte[32]));
         var api = new io.siggi.togethertunes.auth.ProvidersApi(providers, new Permissions(db, settings), accounts,
-                config.publicBaseUrl());
+                settings, config.publicBaseUrl());
         // with the login routes, as Main wires them
         var login = new io.siggi.togethertunes.auth.OidcLogin(providers,
                 new io.siggi.togethertunes.auth.OidcDiscovery(), config.publicBaseUrl(), config.secureCookies());

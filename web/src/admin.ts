@@ -49,7 +49,7 @@ type SettingValue = boolean | number | string | string[] | { perHour: number; ma
 interface Setting {
   key: string;
   group: string;
-  type: "boolean" | "integer" | "bytes" | "string" | "enum" | "uploadQuota" | "stringList";
+  type: "boolean" | "integer" | "bytes" | "string" | "text" | "enum" | "uploadQuota" | "stringList";
   value?: SettingValue;
   default?: SettingValue;
   options?: string[];
@@ -600,6 +600,7 @@ function describe(value: SettingValue, type?: Setting["type"], key?: string): st
   if (value === undefined) return (key !== undefined ? UNSET_TEXT[key] : undefined) ?? "(none)";
   if (type === "bytes" && typeof value === "number") return value === 0 ? "0 (off)" : formatGib(value) + " GiB";
   if (Array.isArray(value)) return value.length === 0 ? "(empty)" : `${value.length} entries`;
+  if (type === "text" && typeof value === "string") return value === "" ? "(empty)" : `${value.length} characters`;
   if (typeof value === "object") return `${value.perHour} per hour, ${value.maxItemBytes} bytes per item`;
   return String(value);
 }
@@ -649,6 +650,11 @@ function settingRow(s: Setting): HTMLElement {
         "bytes per item");
       break;
     }
+    case "text":
+      // Plain text shown to everyone (e.g. above the login form); line breaks are kept.
+      input = h("textarea", { name, rows: "4", cols: "50", placeholder: "(nothing shown)",
+        text: typeof s.value === "string" ? s.value : "" });
+      break;
     case "stringList":
       input = h("textarea", { name, rows: "5", cols: "40", placeholder: "One entry per line",
         text: Array.isArray(s.value) ? s.value.join("\n") : "" });
@@ -725,6 +731,9 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
         break;
       case "stringList":
         value = String(data.get(name) ?? "").split("\n").map((line) => line.trim()).filter((line) => line !== "");
+        break;
+      case "text":
+        value = String(data.get(name) ?? "").replace(/\r\n?/g, "\n").trim();
         break;
       case "string": {
         const text = String(data.get(name) ?? "");

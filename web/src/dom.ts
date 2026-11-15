@@ -1,6 +1,8 @@
 // Small DOM helpers shared by the library, item and playlist pages. Text is always set as text,
 // never parsed as HTML.
 
+import { LINK_ATTRIBUTES, linkParts } from "./linkify.js";
+
 export type Child = Node | string | null | undefined | false;
 
 /**
@@ -86,4 +88,17 @@ export function formatBytes(n: number): string {
 
 export function formatTime(ms: number): string {
   return new Date(ms).toLocaleString();
+}
+
+/**
+ * Shows an admin's plain-text message in `el` (the login and register views): as text, its line
+ * breaks kept by the `.admin-message` style (`white-space: pre-line`), only its http(s) addresses
+ * as links (`linkify.ts`). Hidden while the message is empty.
+ */
+export function showMessage(el: HTMLElement, text: string | undefined): void {
+  const message = (text ?? "").trim();
+  el.replaceChildren(...linkParts(message).map((part) => part.href === undefined
+    ? document.createTextNode(part.text)
+    : h("a", { ...LINK_ATTRIBUTES, href: part.href, text: part.text })));
+  el.hidden = message === "";
 }

@@ -676,6 +676,57 @@ class AdminApiTest {
     }
 
     @Test
+    void loginAndRegisterMessages() throws Exception {
+        JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");
+        for (String key : List.of("auth.loginMessage", "auth.registerMessage")) {
+            JsonObject m = find(items, key);
+            assertEquals("text", m.get("type").getAsString());
+            assertEquals("accounts", m.get("group").getAsString());
+            assertEquals("", m.get("value").getAsString());
+            assertEquals("", m.get("default").getAsString());
+        }
+        // signed out: both messages, empty by default, and nothing else new
+        JsonObject empty = call(200, "GET", "/api/auth/providers", null, null);
+        assertEquals(java.util.Set.of("items", "loginMessage", "registerMessage"), empty.keySet());
+        assertEquals("", empty.get("loginMessage").getAsString());
+        assertEquals("", empty.get("registerMessage").getAsString());
+
+        JsonObject patched = call(200, "PATCH", "/api/admin/settings",
+                "{\"auth.loginMessage\":\"Hello!\\r\\nInvites: https://example.org/ask\","
+                        + "\"auth.registerMessage\":\"<b>Closed</b>\\nAsk an admin.\"}", admin);
+        assertEquals("Hello!\nInvites: https://example.org/ask",
+                find(patched.getAsJsonArray("items"), "auth.loginMessage").get("value").getAsString());
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
+        // too long, or not a string: refused, nothing changed
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"auth.registerMessage\":\"" + "x".repeat(2001) + "\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"auth.loginMessage\":42}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"auth.loginMessage\":[\"a\"]}", admin));
+        call(200, "PATCH", "/api/admin/settings", "{\"auth.loginMessage\":\"" + "y".repeat(2000) + "\"}", admin);
+        assertEquals(2000, settings.authLoginMessage().length());
+        call(200, "PATCH", "/api/admin/settings", "{\"auth.loginMessage\":\"Hello!\\nhttps://example.org/ask\"}",
+                admin);
+
+        // the public list (anyone, also guests) carries them as stored, never as HTML
+        HttpResponse<String> list = send("GET", "/api/auth/providers", null, null);
+        assertEquals(200, list.statusCode());
+        assertEquals("no-store", list.headers().firstValue("Cache-Control").orElse(""));
+        JsonObject body = JsonParser.parseString(list.body()).getAsJsonObject();
+        assertEquals(java.util.Set.of("items", "loginMessage", "registerMessage"), body.keySet());
+        assertEquals("Hello!\nhttps://example.org/ask", body.get("loginMessage").getAsString());
+        assertEquals("<b>Closed</b>\nAsk an admin.", body.get("registerMessage").getAsString());
+        assertEquals(0, body.getAsJsonArray("items").size());
+
+        // reset: empty again
+        call(200, "PATCH", "/api/admin/settings", "{\"auth.loginMessage\":null,\"auth.registerMessage\":\"\"}", admin);
+        JsonObject cleared = call(200, "GET", "/api/auth/providers", null, null);
+        assertEquals("", cleared.get("loginMessage").getAsString());
+        assertEquals("", cleared.get("registerMessage").getAsString());
+    }
+
+    @Test
     void storageMinimumAndFreeSpace() throws Exception {
         JsonObject min = find(call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items"),
                 "storage.minFreeBytes");
@@ -787,7 +838,8 @@ class AdminApiTest {
         assertEquals("no-store", list.headers().firstValue("Cache-Control").orElse(""));
         assertEquals("{\"items\":[{\"slug\":\"own\",\"displayName\":\"Own login\",\"allowSignup\":true,"
                 + "\"startUrl\":\"/auth/oidc/own/start\"},{\"slug\":\"chat\",\"displayName\":\"Chat login\","
-                + "\"allowSignup\":false,\"startUrl\":\"/auth/oidc/chat/start\"}]}", list.body());
+                + "\"allowSignup\":false,\"startUrl\":\"/auth/oidc/chat/start\"}],"
+                + "\"loginMessage\":\"\",\"registerMessage\":\"\"}", list.body());
 
         // one user linked to both: both stay listed, each counts its identity
         String userId = createUser("linked", "linked-password");

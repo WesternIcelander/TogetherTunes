@@ -68,6 +68,8 @@ abstract class SettingsContract {
     @Test
     void emptyTableGivesDocumentedDefaults() throws SQLException {
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
+        assertEquals("", settings.authLoginMessage());
+        assertEquals("", settings.authRegisterMessage());
         assertTrue(settings.guestsEnabled());
         assertEquals(GuestIdentity.COOKIE, settings.guestsIdentifyBy());
         assertFalse(settings.guestsAllowCustomNames());
@@ -112,7 +114,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(43, all.size());
+        assertEquals(45, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -196,6 +198,42 @@ abstract class SettingsContract {
     }
 
     @Test
+    void loginAndRegisterMessagesArePlainTextUpTo2000Characters() throws SQLException {
+        // line breaks kept (CRLF and CR become LF), surrounding whitespace dropped
+        settings.setJson("auth.loginMessage", "\"  Welcome!\\r\\nAsk at https://example.org/invite.\\r\\n\\nBye \\n\"");
+        assertEquals("Welcome!\nAsk at https://example.org/invite.\n\nBye", settings.authLoginMessage());
+        assertEquals("\"Welcome!\\nAsk at https://example.org/invite.\\n\\nBye\"", raw("auth.loginMessage"));
+        assertEquals("", settings.authRegisterMessage());
+        // stored as given, never interpreted (the pages show it as text)
+        settings.set(Settings.AUTH_REGISTER_MESSAGE, "<script>alert(1)</script>\rjavascript:alert(1)");
+        assertEquals("<script>alert(1)</script>\njavascript:alert(1)", settings.authRegisterMessage());
+        // whitespace alone is empty
+        settings.setJson("auth.registerMessage", "\" \\n \"");
+        assertEquals("", settings.authRegisterMessage());
+
+        // at most 2000 characters (code points, so an emoji counts once)
+        String max = "x".repeat(1999) + "\uD83C\uDFB5";
+        settings.set(Settings.AUTH_LOGIN_MESSAGE, max);
+        assertEquals(max, settings.authLoginMessage());
+        assertThrows(IllegalArgumentException.class, () -> settings.set(Settings.AUTH_LOGIN_MESSAGE, "x".repeat(2001)));
+        assertThrows(IllegalArgumentException.class,
+                () -> settings.setJson("auth.loginMessage", "\"" + "x".repeat(2001) + "\""));
+        // a string, nothing else; null only through reset
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "1"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "true"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "[\"a\"]"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "{\"a\":1}"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "null"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("auth.loginMessage", "\"a\\u0000b\""));
+        assertEquals(max, settings.authLoginMessage());
+        settings.reset(Settings.AUTH_LOGIN_MESSAGE);
+        assertEquals("", settings.authLoginMessage());
+        assertNull(raw("auth.loginMessage"));
+        assertTrue(Settings.AUTH_LOGIN_MESSAGE.multiline());
+        assertFalse(Settings.YTDLP_COOKIES_FILE.multiline());
+    }
+
+    @Test
     void setJsonValidatesNameAndValue() throws SQLException {
         settings.setJson("guests.canUpload", "true");
         assertTrue(settings.guestsCanUpload());
@@ -258,7 +296,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(43, settings.all().size());
+        assertEquals(45, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

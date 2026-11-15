@@ -6,6 +6,7 @@ import {
   withNext,
 } from "./session.js";
 import { identityChanged, navigate, viewScope } from "./nav.js";
+import { showMessage } from "./dom.js";
 
 /** This view's start (before any await): its signal, and its elements only. */
 const VIEW = viewScope(import.meta.url);
@@ -22,6 +23,12 @@ async function start(): Promise<void> {
   if (invite) {
     (form.elements.namedItem("invite") as HTMLInputElement).value = invite;
   }
+
+  // The admin's message above the form, as text, also while registration is closed or by invite
+  // (docs/auth.md#login-and-registration-messages); it comes with the login providers.
+  api<{ registerMessage?: string }>("GET", "/api/auth/providers").then((r) => {
+    if (!VIEW.signal.aborted) showMessage(element("register-message"), r.registerMessage);
+  }).catch(() => undefined);
 
   // Handled from the start (before the checks below), so an early submit never goes to the browser.
   onSubmit(form, error, async () => {

@@ -81,7 +81,8 @@ import java.util.Set;
  *   <li>{@code GET /api/admin/settings} → {@code {"items": [{"key", "group", "type", "value"?,
  *       "default"?, "options"?}]}} in {@link Settings#KEYS} order. {@code type} is
  *       {@code boolean}, {@code integer}, {@code bytes} (a whole number of bytes; the admin page
- *       shows it in GiB), {@code string}, {@code enum} (with {@code options}),
+ *       shows it in GiB), {@code string}, {@code text} (a string of several lines, {@code ""} =
+ *       none), {@code enum} (with {@code options}),
  *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}) or {@code stringList} (an array
  *       of strings); a {@code null} value (e.g. no
  *       yt-dlp cookies file) is left out.</li>
@@ -657,7 +658,7 @@ public final class AdminApi {
             return "bytes";
         }
         if (t == String.class) {
-            return "string";
+            return key.multiline() ? "text" : "string";
         }
         if (t == UploadQuota.class) {
             return "uploadQuota";
@@ -673,7 +674,7 @@ public final class AdminApi {
 
     /** The admin UI group of a setting ({@code docs/auth.md#server-settings}). */
     static String group(String name) {
-        if (name.startsWith("registration.")) {
+        if (name.startsWith("registration.") || name.startsWith("auth.")) {
             return "accounts";
         }
         if (name.startsWith("guests.")) {

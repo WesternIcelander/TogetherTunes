@@ -40,6 +40,39 @@ class LoginPopupJsTest {
     }
 
     @Test
+    void linkifyUnitTestsPass() throws Exception {
+        NodeTests.run("linkify.test.mjs", Map.of("LINKIFY_JS", "web/js/linkify.js"));
+    }
+
+    /**
+     * The admin's login / register messages (docs/auth.md#login-and-registration-messages): shown as
+     * text with only http(s) links, never parsed as HTML, line breaks kept by the style.
+     */
+    @Test
+    void adminMessagesAreShownAsText() throws Exception {
+        String linkify = read("web/js/linkify.js").replaceAll("(?m)^\\s*(//|/?\\*).*$", "");
+        for (String s : List.of("document.", "window.", "location.", "innerHTML", "fetch(")) {
+            assertFalse(linkify.contains(s), s);
+        }
+        String dom = read("web/js/dom.js");
+        assertContains(dom, List.of("export function showMessage(", "document.createTextNode(part.text)", "linkParts("));
+        for (String file : List.of("web/js/dom.js", "web/js/login.js", "web/js/register.js")) {
+            String js = read(file);
+            for (String s : List.of("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write")) {
+                assertFalse(js.contains(s), file + ": " + s);
+            }
+        }
+        assertContains(read("web/js/login.js"), List.of("showMessage(element(\"login-message\"), result.loginMessage)"));
+        assertContains(read("web/js/register.js"), List.of("\"/api/auth/providers\"",
+                "showMessage(element(\"register-message\"), r.registerMessage)"));
+        assertContains(read("web/index.html"), List.of("<p id=\"login-message\" class=\"admin-message\" hidden>",
+                "<p id=\"register-message\" class=\"admin-message\" hidden>"));
+        String css = read("web/css/main.css");
+        assertTrue(css.matches("(?s).*\\.admin-message \\{[^}]*white-space: pre-line;.*"), "pre-line");
+        assertContains(read("web/js/admin.js"), List.of("case \"text\":"));
+    }
+
+    @Test
     void providerHelpersArePureLogic() throws Exception {
         String js = read("web/js/providers.js").replaceAll("(?m)^\\s*(//|/?\\*).*$", "");
         for (String s : List.of("document.", "window.", "location.", "fetch(", "history.")) {

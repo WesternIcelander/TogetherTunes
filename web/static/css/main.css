@@ -141,6 +141,13 @@ table.list tbody tr.selected {
   opacity: 0.7;
 }
 
+/* The admin's login / register page message: plain text, line breaks kept. */
+.admin-message {
+  white-space: pre-line;
+  overflow-wrap: break-word;
+  max-width: 40rem;
+}
+
 .setting {
   display: flex;
   flex-wrap: wrap;

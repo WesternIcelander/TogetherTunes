@@ -285,7 +285,8 @@ public final class Main {
         admin.diskSpace(diskSpace);
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
         Providers loginProviders = new Providers(database, secrets);
-        ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, config.publicBaseUrl());
+        ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, settings,
+                config.publicBaseUrl());
         // The provider login flow (authorization code + PKCE, ID-token validation), ending in
         // identity resolution (log in, sign up or link by provider and subject, never by email).
         OidcLogin oidcLogin = new OidcLogin(loginProviders, new OidcDiscovery(), config.publicBaseUrl(),

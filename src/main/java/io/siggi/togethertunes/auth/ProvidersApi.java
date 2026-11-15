@@ -6,6 +6,7 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
+import io.siggi.togethertunes.settings.Settings;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,9 +20,11 @@ import java.util.Set;
  *
  * <ul>
  *   <li>{@code GET /api/auth/providers} (anyone) → {@code {"items": [{"slug", "displayName",
- *       "allowSignup", "startUrl"}]}}: the enabled providers, one login button each, oldest
- *       first. {@code startUrl} is {@code /auth/oidc/{slug}/start} (add {@code ?intent=link} to
- *       link the provider to the logged-in account).</li>
+ *       "allowSignup", "startUrl"}], "loginMessage", "registerMessage"}}: the enabled providers,
+ *       one login button each, oldest first. {@code startUrl} is {@code /auth/oidc/{slug}/start}
+ *       (add {@code ?intent=link} to link the provider to the logged-in account). The messages
+ *       are the admin's plain-text {@code auth.loginMessage} / {@code auth.registerMessage}
+ *       ({@code ""} = none), for the login and register views.</li>
  *   <li>{@code GET /api/admin/providers} → {@code {"items": [provider]}} (every provider, oldest
  *       first; not paginated, there are few).</li>
  *   <li>{@code POST /api/admin/providers} {@code {"slug", "displayName", "kind"?, "issuer"?,
@@ -60,9 +63,13 @@ public final class ProvidersApi {
     private final String publicBaseUrl;
     private OidcLogin login;
     private IdentitiesApi identities;
+    private final Settings settings;
 
-    public ProvidersApi(Providers providers, Permissions permissions, Accounts accounts, String publicBaseUrl) {
+    /** @param settings where the login and register page messages come from */
+    public ProvidersApi(Providers providers, Permissions permissions, Accounts accounts, Settings settings,
+                        String publicBaseUrl) {
         this.providers = Objects.requireNonNull(providers);
+        this.settings = Objects.requireNonNull(settings);
         this.permissions = Objects.requireNonNull(permissions);
         this.accounts = Objects.requireNonNull(accounts);
         String base = Objects.requireNonNull(publicBaseUrl);
@@ -115,7 +122,11 @@ public final class ProvidersApi {
             m.put("startUrl", "/auth/oidc/" + p.slug() + "/start");
             items.add(m);
         }
-        send(response, 200, Map.of("items", items));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("items", items);
+        out.put("loginMessage", settings.authLoginMessage());
+        out.put("registerMessage", settings.authRegisterMessage());
+        send(response, 200, out);
     }
 
     private void list(Request request, Response response) throws Exception {

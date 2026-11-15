@@ -12,6 +12,7 @@ import {
   SETUP_PAGE, withNext,
 } from "./session.js";
 import { identityChanged, navigate, viewScope } from "./nav.js";
+import { showMessage } from "./dom.js";
 import {
   LOGIN_CHANNEL, LOGIN_POPUP_FEATURES, LOGIN_POPUP_NAME, parseLoginMessage, providerErrorMessage, providerPopupUrl,
   providerStartUrl, type LoginResult, type ProviderButton,
@@ -78,8 +79,10 @@ class PopupLogin {
 }
 
 async function showProviders(next: string, status: HTMLElement): Promise<void> {
-  const result = await api<{ items: ProviderButton[] }>("GET", "/api/auth/providers");
+  const result = await api<{ items: ProviderButton[]; loginMessage?: string }>("GET", "/api/auth/providers");
   if (VIEW.signal.aborted) return;
+  // The admin's message above the form, as text (docs/auth.md#login-and-registration-messages).
+  showMessage(element("login-message"), result.loginMessage);
   const list = element<HTMLUListElement>("login-provider-list");
   for (const p of result.items) {
     const li = document.createElement("li");

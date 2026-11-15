@@ -45,6 +45,17 @@ public final class Settings {
     // Accounts
     public static final SettingKey<RegistrationMode> REGISTRATION_MODE = SettingKey.enumeration(
             "registration.mode", RegistrationMode.class, RegistrationMode.CLOSED, RegistrationMode::wireName);
+    /** The longest login or register page message, in characters. */
+    public static final int AUTH_MESSAGE_MAX_LENGTH = 2000;
+    /**
+     * Plain text shown above the login form ({@code docs/auth.md#login-and-registration-messages});
+     * empty = nothing shown. Public: anyone reads it through {@code GET /api/auth/providers}.
+     */
+    public static final SettingKey<String> AUTH_LOGIN_MESSAGE = SettingKey.text("auth.loginMessage",
+            AUTH_MESSAGE_MAX_LENGTH);
+    /** As {@link #AUTH_LOGIN_MESSAGE}, for the register page (also shown while registration is closed). */
+    public static final SettingKey<String> AUTH_REGISTER_MESSAGE = SettingKey.text("auth.registerMessage",
+            AUTH_MESSAGE_MAX_LENGTH);
 
     // Guests (docs/auth.md#guest-policy-server-settings)
     public static final SettingKey<Boolean> GUESTS_ENABLED = SettingKey.bool("guests.enabled", true);
@@ -228,7 +239,7 @@ public final class Settings {
 
     static {
         Map<String, SettingKey<?>> keys = new LinkedHashMap<>();
-        for (SettingKey<?> k : List.of(REGISTRATION_MODE,
+        for (SettingKey<?> k : List.of(REGISTRATION_MODE, AUTH_LOGIN_MESSAGE, AUTH_REGISTER_MESSAGE,
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS,
@@ -438,6 +449,14 @@ public final class Settings {
 
     public RegistrationMode registrationMode() throws SQLException {
         return get(REGISTRATION_MODE);
+    }
+
+    public String authLoginMessage() throws SQLException {
+        return get(AUTH_LOGIN_MESSAGE);
+    }
+
+    public String authRegisterMessage() throws SQLException {
+        return get(AUTH_REGISTER_MESSAGE);
     }
 
     public boolean guestsEnabled() throws SQLException {
