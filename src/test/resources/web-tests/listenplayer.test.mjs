@@ -244,3 +244,41 @@ test("where muted play is refused too, the video waits paused and unmuted for th
   assert.equal(v.muted, false);
   assert.equal(overlay.hidden, true);
 });
+
+test("a preview ducks the room: silent and in sync, separate from the listener's own mute and volume", async () => {
+  const { player } = setup("all");
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  await flush();
+  const v = playingVideo();
+  assert.ok(v, "the video plays");
+  player.setVolume(0.5);
+  assert.equal(v.volume, 0.5);
+  player.setDucked(true);
+  assert.equal(player.ducked, true);
+  assert.equal(v.volume, 0, "silent while ducked");
+  assert.equal(player.muted, false, "the listener's mute isn't touched");
+  assert.equal(player.volume, 0.5, "nor the volume");
+  assert.equal(player.debug().ducked, true);
+  for (let i = 0; i < 8; i++) advance(player, 250);
+  assert.equal(v.paused, false, "keeps playing");
+  assert.ok(Math.abs(player.debug().driftMs) < 50, "in sync while ducked");
+  // the volume moves while ducked: still silent, and heard at the new volume afterwards
+  player.setVolume(0.25);
+  assert.equal(v.volume, 0);
+  player.setDucked(false);
+  assert.equal(v.volume, 0.25, "unducked: the listener's volume again");
+  // the listener's own mute outlasts the duck, and the duck outlasts an unmute
+  player.setMuted(true);
+  player.setDucked(true);
+  player.setDucked(false);
+  assert.equal(v.volume, 0, "still muted by the listener");
+  assert.equal(player.muted, true);
+  player.setDucked(true);
+  player.setMuted(false);
+  assert.equal(v.volume, 0, "still ducked");
+  assert.equal(player.ducked, true, "unmuting doesn't lift the duck");
+  player.setDucked(false);
+  assert.equal(v.volume, 0.25);
+  assert.equal(v.muted, false, "the element's own muted flag (the blocked mute) isn't used");
+});

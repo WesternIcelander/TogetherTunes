@@ -115,3 +115,27 @@ test("the audio trim: current range, player view, estimate and body", () => {
   // preview of an audio range on a video plays the part the current video version has
   assert.deepEqual(T.previewSpan(va, { startMs: 0, endMs: 5000 }), { fromS: 0, toS: 3 });
 });
+
+test("Set start / Set end take the player's position on the original's timeline, within the handles' limits", () => {
+  // a video trimmed to 2..9 s: its player's 1.5 s is the original's 3.5 s
+  const v = view({ videoStartMs: 2000, videoEndMs: 9000, originalMs: 13000 });
+  const r = T.currentRange(v);
+  assert.deepEqual(T.startAtPlayhead(r, v, 1.5), { startMs: 3500, endMs: 9000 });
+  assert.deepEqual(T.endAtPlayhead(r, v, 5.25, v), { startMs: 2000, endMs: 7250 });
+  // clamped: the start stays a second before the end, the end a second after the start
+  assert.deepEqual(T.startAtPlayhead(r, v, 6.9), { startMs: 8000, endMs: 9000 });
+  assert.deepEqual(T.endAtPlayhead({ startMs: 5000, endMs: 9000 }, v, 0.5, v), { startMs: 5000, endMs: 6000 });
+  // the end can't go past the original's end; a negative time is the version's start
+  assert.deepEqual(T.endAtPlayhead(r, v, 99, v), { startMs: 2000, endMs: 13000 });
+  assert.deepEqual(T.startAtPlayhead(r, v, -1), { startMs: 2000, endMs: 9000 });
+  // a trimmed audio item: its player (audio.m4a) starts at the audio trim's start
+  const a = view({ originalMs: 10000, audioStartMs: 2000, audioEndMs: 7000 });
+  const pv = T.playerView(a, false);
+  const ar = T.audioRange(a, false);
+  const timeline = { ...a, videoStartMs: 0 };
+  assert.deepEqual(T.startAtPlayhead(ar, pv, 1), { startMs: 3000, endMs: 7000 });
+  assert.deepEqual(T.endAtPlayhead(ar, pv, 4, timeline), { startMs: 2000, endMs: 6000 });
+  // fractions of a millisecond round
+  assert.deepEqual(T.startAtPlayhead(r, v, 0.0004), { startMs: 2000, endMs: 9000 });
+  assert.deepEqual(T.startAtPlayhead(r, v, 0.0016), { startMs: 2002, endMs: 9000 });
+});

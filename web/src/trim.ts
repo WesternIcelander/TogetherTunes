@@ -158,6 +158,19 @@ export function playheadMs(view: TrimView, currentTimeS: number): number {
 }
 
 /**
+ * "Set start": the start moved to the player's position (`currentTimeS` into the version `player`
+ * plays, on the original's timeline as the playhead shows it), within `moveStart`'s limits.
+ */
+export function startAtPlayhead(range: Range, player: TrimView, currentTimeS: number): Range {
+  return moveStart(range, playheadMs(player, currentTimeS));
+}
+
+/** "Set end": the end moved to the player's position, within `moveEnd`'s limits on the timeline `view`. */
+export function endAtPlayhead(range: Range, player: TrimView, currentTimeS: number, view: TrimView): Range {
+  return moveEnd(range, playheadMs(player, currentTimeS), view);
+}
+
+/**
  * What Preview plays from the current version (no encode): the part of the selection the current
  * encode has, in seconds of the current version, or undefined if it has none of it.
  */

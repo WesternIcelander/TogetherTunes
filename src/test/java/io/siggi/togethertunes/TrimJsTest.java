@@ -23,7 +23,9 @@ class TrimJsTest {
     void itemPageUsesTheTrimModule() throws Exception {
         String item = Files.readString(NodeTests.resource("web/js/item.js"), StandardCharsets.UTF_8);
         for (String s : List.of("from \"./trim.js\"", "\"/trim\"", "estimateText", "previewSpan",
-                "audioTrimBody", "Trim audio for audio-only rooms", "Follow the video trim")) {
+                "audioTrimBody", "Trim audio for audio-only rooms", "Follow the video trim",
+                // one Trim section with the player in it; Preview turns into Stop; Set start / Set end
+                "\"Trim\"", "item-trim-player", "\"Stop\"", "Set start", "Set end", "startAtPlayhead", "endAtPlayhead")) {
             assertTrue(item.contains(s), s);
         }
         // the handles move freely: no snapping to keyframes any more (every start change is smart)

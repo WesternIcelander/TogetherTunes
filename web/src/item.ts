@@ -1,7 +1,9 @@
 // The item page (/items/{id}, a direct link anyone may open; docs/libraries.md#visibility):
 // metadata, cover, a player once the item is ready, the ingest job's status (and log, for those
 // who may edit), and for users: add to / remove from the library, add to a playlist, edit
-// the metadata, purge.
+// the metadata, trim, purge (docs/ui.md "Item page"). Processing shows first while the job is queued
+// or running, else at the bottom. For those who can trim, the player sits in the Trim section. The
+// player follows the listener's volume and mute (volume.ts), and while it plays the room is ducked.
 import { withClassification } from "./classifyprompt.js";
 import { api, ApiError } from "./api.js";
 import { allowedTypes, mediaTypeBody, mediaTypeLabel, stillImageWarning } from "./mediatypes.js";
@@ -14,9 +16,10 @@ import { viewScope } from "./nav.js";
 import { checkPasswordChange, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
   audioEstimate, audioRange, audioTrimBody, currentRange, estimate, estimateText, formatTime as formatTrimTime,
-  fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan, trimBody, type Range,
-  type TrimEstimate, type TrimView,
+  endAtPlayhead, fractionToMs, moveEnd, moveStart, msToFraction, parseTime, playerView, playheadMs, previewSpan,
+  startAtPlayhead, trimBody, type Range, type TrimEstimate, type TrimView,
 } from "./trim.js";
+import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
 import { pinPath, pinText, viewPath, viewReporter } from "./views.js";
 
 /**
@@ -38,6 +41,33 @@ let playerFor = "";
 const reportView = viewReporter((id) => api("POST", viewPath(id)));
 /** Whether the job log is expanded (undefined: the default, open for a failed item). */
 let logOpen: boolean | undefined;
+/** Whether "Edit details" is open: open by default, a user's close sticks while on the page. */
+let editOpen = true;
+/** Every player element this view made: each ducks the room while it plays (released when the view goes). */
+const players: HTMLMediaElement[] = [];
+/** The trim part whose preview plays (its button reads Stop), if any. */
+let activePreview: { reset(): void } | undefined;
+
+/** A queued or running job (downloading, encoding). */
+function busy(job: JobView | undefined): boolean {
+  return job !== undefined && (job.state === "queued" || job.state === "running");
+}
+
+/** Whether the Trim section shows (with the player in it): for those who can trim, while no job runs. */
+function trimShown(item: ItemPage, job: JobView | undefined): boolean {
+  return item.you.canEdit && item.trim !== undefined && !busy(job);
+}
+
+/** The player at the listener's volume and mute (volume.ts). */
+function applyLevel(el: HTMLMediaElement): void {
+  const level = previewLevel(listenerVolume.get());
+  try {
+    el.volume = level.volume;
+  } catch {
+    // iOS: volume is read-only.
+  }
+  el.muted = level.muted;
+}
 
 function showError(e: unknown): void {
   if (SIGNAL.aborted) return;
@@ -83,11 +113,12 @@ function field(label: string, value: Node | string | undefined): HTMLElement | n
   return h("div", { class: "field" }, h("dt", { text: label }), h("dd", {}, value));
 }
 
-function renderPlayer(item: ItemPage): HTMLElement | null {
+/** The item's player (kept across re-renders), or undefined until the item is ready. */
+function ensurePlayer(item: ItemPage): HTMLMediaElement | undefined {
   if (item.status !== "ready") {
     player = undefined;
     playerFor = "";
-    return null;
+    return undefined;
   }
   const video = item.kind === "video" && !item.presentAsAudio;
   // The version's URL: a re-encode published while this plays doesn't change the bytes under it.
@@ -101,14 +132,28 @@ function renderPlayer(item: ItemPage): HTMLElement | null {
     const id = item.id;
     // Local playback outside a room is a view (docs/media-types.md#views-auto-delete-and-pins).
     player.addEventListener("play", () => reportView(id));
+    const el = player;
+    players.push(el);
+    applyLevel(el);
+    // While it plays, the room is silent (its own "ducked" mute; native controls' play counts too).
+    for (const type of DUCK_ON_EVENTS) {
+      el.addEventListener(type, () => { if (!SIGNAL.aborted) previewDuck.set(el, true); });
+    }
+    for (const type of DUCK_OFF_EVENTS) {
+      el.addEventListener(type, () => {
+        previewDuck.set(el, false);
+        // A preview ends with it (at the range end, the native controls' pause, ...): Stop → Preview.
+        if (el === player) activePreview?.reset();
+      });
+    }
     playerFor = src;
   }
-  return h("div", { class: "player" }, player);
+  return player;
 }
 
 function renderJob(job: JobView | undefined, item: ItemPage): HTMLElement | null {
   if (job === undefined) return null;
-  const running = job.state === "running" || job.state === "queued";
+  const running = busy(job);
   const box = h("section", { class: "panel" }, h("h2", { text: "Processing" }),
     h("p", {}, jobSummary(job)),
     running ? h("progress", { max: "1", value: String(job.progress) }) : null,
@@ -168,7 +213,10 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       .catch((e: unknown) => { error.textContent = message(e); })
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
-  return h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
+  const details = h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
+  details.open = editOpen;
+  details.addEventListener("toggle", () => { editOpen = details.open; });
+  return details;
 }
 
 /** Stops the trim panels' playhead and preview timers when the panels are replaced. */
@@ -269,29 +317,65 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
 
   // the playhead follows the player (its time is on the current version)
   let previewEnd: number | undefined;
+  const preview = h("button", { type: "button", text: "Preview" });
+  const part = {
+    /** This part's preview stopped (or another part's started): Stop turns back into Preview. */
+    reset(): void {
+      previewEnd = undefined;
+      preview.textContent = "Preview";
+      if (activePreview === part) activePreview = undefined;
+    },
+  };
   const timer = window.setInterval(() => {
     const p = player;
     if (p === undefined) return;
     playhead.style.left = msToFraction(playheadMs(spec.player, p.currentTime), view) * 100 + "%";
     if (previewEnd !== undefined && p.currentTime >= previewEnd) {
       p.pause();
-      previewEnd = undefined;
+      part.reset();
     }
   }, 100);
-  stopTrimPanels.push(() => window.clearInterval(timer));
+  stopTrimPanels.push(() => { window.clearInterval(timer); part.reset(); });
 
-  const preview = button("Preview", async () => {
-    const span = previewSpan(spec.player, range);
+  preview.addEventListener("click", () => {
     const p = player;
+    if (activePreview === part) {
+      // Stop: pauses at once (the pause event resets the button too).
+      p?.pause();
+      part.reset();
+      return;
+    }
+    const span = previewSpan(spec.player, range);
     if (span === undefined || p === undefined) {
       error.textContent = "The current version has none of the selection to preview; Save makes it.";
       return;
     }
     error.textContent = "";
+    activePreview?.reset();
+    activePreview = part;
+    preview.textContent = "Stop";
     p.currentTime = span.fromS;
     previewEnd = span.toS;
-    await p.play();
-  }, (e) => { error.textContent = message(e); });
+    p.play().catch((e: unknown) => {
+      part.reset();
+      error.textContent = message(e);
+    });
+  });
+  // Set start / Set end: the player's position (on the original's timeline, as the playhead shows it).
+  const atPlayhead = (set: (p: HTMLMediaElement) => void): void => {
+    const p = player;
+    if (p === undefined) {
+      error.textContent = "There is no player to take the position from.";
+      return;
+    }
+    error.textContent = "";
+    set(p);
+    draw();
+  };
+  const setStart = h("button", { type: "button", text: "Set start", title: "Start at the player's position" });
+  setStart.addEventListener("click", () => atPlayhead((p) => { range = startAtPlayhead(range, spec.player, p.currentTime); }));
+  const setEnd = h("button", { type: "button", text: "Set end", title: "End at the player's position" });
+  setEnd.addEventListener("click", () => atPlayhead((p) => { range = endAtPlayhead(range, spec.player, p.currentTime, view); }));
   save.addEventListener("click", () => {
     error.textContent = "";
     save.disabled = true;
@@ -299,11 +383,11 @@ function timelinePanel(item: ItemPage, spec: TimelineSpec): HTMLElement {
   });
 
   draw();
-  return h("details", { class: "panel" }, h("summary", { text: spec.title }),
+  return h("div", { class: "trim-part" }, h("h3", { text: spec.title }),
     h("p", { class: "muted small", text: (spec.note === "" ? "" : spec.note + " ") + "Times are on the original file (" + formatTrimTime(view.originalMs) + " long)." }),
     bar,
     h("div", { class: "row" },
-      h("label", {}, "Start ", startInput), h("label", {}, "End ", endInput)),
+      h("label", {}, "Start ", startInput), setStart, h("label", {}, "End ", endInput), setEnd),
     hint,
     h("div", { class: "row" }, preview, save, spec.extra ?? null),
     error);
@@ -320,8 +404,6 @@ async function postTrim(item: ItemPage, body: unknown): Promise<void> {
  * for an audio item, "Trim audio".
  */
 function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
-  for (const stop of stopTrimPanels) stop();
-  stopTrimPanels = [];
   const video = item.kind === "video";
   const audioPanel = timelinePanel(item, {
     title: video ? "Trim audio for audio-only rooms" : "Trim audio",
@@ -350,6 +432,19 @@ function trimPanels(item: ItemPage, view: TrimView): HTMLElement[] {
     estimate: (range) => estimate(view, range),
     body: (range) => trimBody(view, range),
   }), audioPanel];
+}
+
+/** Stops the trim parts' timers (and their previews' Stop state). */
+function stopTrim(): void {
+  for (const stop of stopTrimPanels) stop();
+  stopTrimPanels = [];
+}
+
+/** The Trim section: the player (above the bars) and the trim parts. */
+function trimSection(item: ItemPage, view: TrimView): HTMLElement {
+  const slot = h("div", { class: "player", id: "item-trim-player" });
+  if (player !== undefined) slot.append(player);
+  return h("section", { class: "panel trim-section" }, h("h2", { text: "Trim" }), slot, ...trimPanels(item, view));
 }
 
 function render(item: ItemPage, job: JobView | undefined): void {
@@ -435,10 +530,29 @@ function render(item: ItemPage, job: JobView | undefined): void {
       if (!confirm("Delete this item entirely, as if it had never existed? Its media, its entries in every library,"
         + " playlist and room history, and its jobs go. This can't be undone.")) return;
       await api("DELETE", "/api/admin/items/" + encodeURIComponent(item.id));
+      player?.pause();
       body.replaceChildren(h("p", { text: "The item's record was deleted." }));
+      element("item-forms").replaceChildren();
+      element("item-job").replaceChildren();
       showNotice("Deleted.");
     }, showError, "danger"));
   }
+
+  // The player: in the Trim section when it shows (moved there without restarting), else here.
+  const p = ensurePlayer(item);
+  let playerBox: HTMLElement | null = null;
+  if (p !== undefined) {
+    if (trimShown(item, job)) {
+      const slot = VIEW.find("item-trim-player");
+      if (slot !== null && p.parentElement !== slot) slot.replaceChildren(p);
+    } else {
+      playerBox = h("div", { class: "player" }, p);
+    }
+  }
+  // Processing: first while the job is queued or running, else at the bottom (after the forms).
+  const jobBox = renderJob(job, item);
+  const jobFirst = busy(job);
+  element("item-job").replaceChildren(...nodes(jobFirst ? null : jobBox));
 
   body.replaceChildren(...nodes(
     h("div", { class: "item-head" }, cover,
@@ -464,9 +578,9 @@ function render(item: ItemPage, job: JobView | undefined): void {
           ? "Media expired. Adding it to your library fetches it from YouTube again."
           : "Media expired. Upload the file again to restore it." })
       : null,
-    renderPlayer(item),
-    actions,
-    renderJob(job, item)));
+    jobFirst ? jobBox : null,
+    playerBox,
+    actions));
 }
 
 /**
@@ -475,15 +589,14 @@ function render(item: ItemPage, job: JobView | undefined): void {
  */
 function renderForms(item: ItemPage, job: JobView | undefined): void {
   if (SIGNAL.aborted) return;
+  stopTrim();
   element("item-forms").replaceChildren(
     ...nodes(item.you.canEdit ? editForm(item, (updated) => { render(updated, job); renderForms(updated, job); }) : null,
-      ...(item.trim !== undefined && !(job !== undefined && (job.state === "queued" || job.state === "running"))
-        ? trimPanels(item, item.trim) : [])));
+      trimShown(item, job) && item.trim !== undefined ? trimSection(item, item.trim) : null));
 }
 
 function formsKeyOf(item: ItemPage, job: JobView | undefined): string {
-  const busy = job !== undefined && (job.state === "queued" || job.state === "running");
-  return JSON.stringify([item.mediaVersion, item.status, item.trim ?? null, busy]);
+  return JSON.stringify([item.mediaVersion, item.status, item.trim ?? null, busy(job)]);
 }
 
 async function refresh(): Promise<void> {
@@ -514,6 +627,7 @@ async function refresh(): Promise<void> {
         stopWatching?.();
         if (e instanceof ApiError && e.status === 404) {
           element("item-forms").replaceChildren();
+          element("item-job").replaceChildren();
           element("item-body").replaceChildren(h("h1", { text: "Not found" }),
             h("p", { text: "There is no item at this link." }));
         } else {
@@ -544,11 +658,15 @@ async function start(): Promise<void> {
   await refresh();
 }
 
-// Taken away: the polling stops (watchItem has the signal), and so do the trim panels' timers and the player.
+// The player follows the listener's volume and mute, live while the player bar's slider moves.
+listenerVolume.subscribe(() => { if (player !== undefined) applyLevel(player); }, SIGNAL);
+
+// Taken away: the polling stops (watchItem has the signal), and so do the trim panels' timers and the
+// player, and the room is no longer ducked.
 SIGNAL.addEventListener("abort", () => {
-  for (const stop of stopTrimPanels) stop();
-  stopTrimPanels = [];
+  stopTrim();
   player?.pause();
+  for (const el of players) previewDuck.set(el, false);
 }, { once: true });
 
 onReady(start);

@@ -86,6 +86,7 @@ import {
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
+import { roomGain } from "./volume.js";
 
 const HAVE_METADATA = 1;
 const HAVE_FUTURE_DATA = 3;
@@ -332,6 +333,11 @@ export class ListenPlayer {
   #userVolume = 1;
   /** The listener muted the player (player bar). */
   #userMuted = false;
+  /**
+   * Ducked by a preview (the item page's player plays; volume.ts): silent like the listener's mute,
+   * but separate from it (neither changes the other), and the room keeps running in sync.
+   */
+  #ducked = false;
   /** With Web Audio: the gain every deck plays through (after its meter), set to the listener's volume. */
   #master: GainNode | undefined;
 
@@ -589,9 +595,9 @@ export class ListenPlayer {
     return this.#master;
   }
 
-  /** The listener's gain: 0 while muted, else the volume. */
+  /** The listener's gain: 0 while muted or ducked by a preview, else the volume. */
   #listenerGain(): number {
-    return this.#userMuted ? 0 : this.#userVolume;
+    return roomGain(this.#userVolume, this.#userMuted, this.#ducked);
   }
 
   /** The listener's volume (0..1, a linear gain). */
@@ -615,6 +621,18 @@ export class ListenPlayer {
   setMuted(on: boolean): void {
     if (on === this.#userMuted) return;
     this.#userMuted = on;
+    this.#applyListenerGain();
+  }
+
+  /** Whether a preview ducks the room (its own mute; the listener's mute and volume are kept). */
+  get ducked(): boolean {
+    return this.#ducked;
+  }
+
+  /** A preview starts (on) or stops (off) ducking the room: silent meanwhile, still in sync. */
+  setDucked(on: boolean): void {
+    if (on === this.#ducked) return;
+    this.#ducked = on;
     this.#applyListenerGain();
   }
 
@@ -657,6 +675,7 @@ export class ListenPlayer {
     const sw = this.#switch;
     return {
       mode: this.#mode,
+      ducked: this.#ducked,
       context: this.#ctx?.state ?? "none",
       webAudio: this.#ctx !== undefined,
       webAudioOff: this.#webAudioOff,

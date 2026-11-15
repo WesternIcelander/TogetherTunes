@@ -53,6 +53,7 @@ import { Upload, type UploadProgress } from "./uploads.js";
 import { attachRoom, pageSignal, rememberPlaying, viewStart, type RoomHandle } from "./nav.js";
 import { shouldJoin } from "./alone.js";
 import { OutputsPanel } from "./outputspanel.js";
+import { previewDuck } from "./volume.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
@@ -211,6 +212,9 @@ let chosenMode: RoomMode = "listen";
 let forced = false;
 /** Plays the room in listen mode; created on first entering listen mode, stopped in remote mode. */
 let player: ListenPlayer | undefined;
+// While a preview plays (the item page's player), the room is silent but keeps running in sync
+// (its own mute in the player, separate from the listener's; volume.ts).
+previewDuck.subscribe((ducked) => player?.setDucked(ducked), ROOM_SIGNAL);
 /** The timeline as it was a while ago, for remote mode's delayed view. */
 const delayed = new DelayedTimeline<CurrentEntry | undefined>();
 /** The user's nudge of the remote delay for this room (ms, whole 0.5 s steps). */
@@ -762,6 +766,7 @@ function createPlayer(): ListenPlayer {
   player = p;
   p.setVolume(listenerGain);
   p.setMuted(listenerMuted);
+  p.setDucked(previewDuck.ducked);
   // The user's Web Audio preference (user settings): applied when it loads or changes. A change made in
   // the settings view reaches here inside its change event, a user gesture: the rebuilt elements are
   // unlocked in it.

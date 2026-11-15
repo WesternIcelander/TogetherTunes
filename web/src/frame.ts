@@ -36,6 +36,7 @@ import { itemPath, type Page, type Playlist } from "./media.js";
 import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, Selection, showBarTitle,
   tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
+import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
 import { prefs } from "./prefsclient.js";
 import { offersNextEpisode } from "./shows.js";
@@ -146,6 +147,7 @@ export class Frame {
     });
     this.#tabs("app-panel");
     this.#wirePlayerBar();
+    listenerVolume.set(volumeGain(this.#volume), this.#mute.muted);
     byId<HTMLInputElement>("app-room-search").addEventListener("input", () => {
       window.clearTimeout(this.#roomsTimer);
       this.#roomsTimer = window.setTimeout(() => { void this.#loadRooms(); }, 250);
@@ -813,11 +815,11 @@ export class Frame {
       this.#roomId = id;
       void this.#loadSelections(false).then(() => this.#drawLibrary());
     }
-    if (room !== undefined) {
-      const gain = volumeGain(this.#volume);
-      const muted = this.#mute.current(s?.current?.entryId);
-      room.setVolume(gain, muted);
-    }
+    const gain = volumeGain(this.#volume);
+    const muted = room !== undefined ? this.#mute.current(s?.current?.entryId) : this.#mute.muted;
+    if (room !== undefined) room.setVolume(gain, muted);
+    // The item page's preview follows the listener's volume and mute (volume.ts).
+    listenerVolume.set(gain, muted);
     this.#drawPanel(room, s);
     if (this.#host.roomShown()) this.#drawRoomView(room, s);
     this.#drawPlayerBar(room, s);
