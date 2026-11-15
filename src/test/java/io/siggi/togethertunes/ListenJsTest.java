@@ -46,6 +46,29 @@ class ListenJsTest {
         }
     }
 
+    /**
+     * One window with sound per person (docs/ui.md): the player's third silence is tested in
+     * {@code listenplayer.test.mjs}; here the wiring: the room socket joins with the window id kept
+     * in sessionStorage, hands {@code sound} / {@code sound.released} to the player, and the
+     * overlay's click sends {@code sound.claim}.
+     */
+    @Test
+    void anotherWindowsSoundIsWiredToTheRoomSocket() throws Exception {
+        String client = read("web/js/roomclient.js");
+        for (String s : List.of("sessionStorage", "\"tt.windowId\"", "windowId", "\"sound.claim\"", "\"sound.released\"",
+                "getRandomValues")) {
+            assertTrue(client.contains(s), s);
+        }
+        String room = read("web/js/room.js");
+        for (String s : List.of("soundWindowId()", "claimSound: () => conn.claimSound()", "setOtherWindowHasSound(")) {
+            assertTrue(room.contains(s), s);
+        }
+        String player = read("web/js/listen.js");
+        for (String s : List.of("\"sound-holder\"", "claimSound")) {
+            assertTrue(player.contains(s), s);
+        }
+    }
+
     @Test
     void audioHealthUnitTestsPass() throws Exception {
         NodeTests.run("audiohealth.test.mjs", Map.of("AUDIOHEALTH_JS", "web/js/audiohealth.js"));

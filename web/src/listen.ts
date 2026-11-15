@@ -125,6 +125,8 @@ export interface ListenHooks {
   remember?: (m: WebAudioMemory) => void;
   /** The sound path changed (Web Audio ↔ direct, or a new rate): update the note. */
   onSound?: () => void;
+  /** The overlay was clicked while another window had the sound: take it (`sound.claim`). */
+  claimSound?: () => void;
 }
 
 /** The sound path, for the note next to the setting. */
@@ -338,6 +340,12 @@ export class ListenPlayer {
    * but separate from it (neither changes the other), and the room keeps running in sync.
    */
   #ducked = false;
+  /**
+   * Another window of the same person has the sound (docs/ui.md "One window with sound per person"):
+   * silent and in sync behind "Click to enable sound", separate from the listener's own mute and
+   * volume and from the blocked-sound mute; the overlay's click takes the sound back.
+   */
+  #otherWindow = false;
   /** With Web Audio: the gain every deck plays through (after its meter), set to the listener's volume. */
   #master: GainNode | undefined;
 
@@ -597,7 +605,7 @@ export class ListenPlayer {
 
   /** The listener's gain: 0 while muted or ducked by a preview, else the volume. */
   #listenerGain(): number {
-    return roomGain(this.#userVolume, this.#userMuted, this.#ducked);
+    return roomGain(this.#userVolume, this.#userMuted, this.#ducked || this.#otherWindow);
   }
 
   /** The listener's volume (0..1, a linear gain). */
@@ -634,6 +642,20 @@ export class ListenPlayer {
     if (on === this.#ducked) return;
     this.#ducked = on;
     this.#applyListenerGain();
+  }
+
+  /** Whether another window of the same person has the sound (this one plays silently). */
+  get otherWindowHasSound(): boolean {
+    return this.#otherWindow;
+  }
+
+  /** Another window took the sound (on) or this window has it (off). */
+  setOtherWindowHasSound(on: boolean): void {
+    if (on === this.#otherWindow) return;
+    this.#otherWindow = on;
+    recordEvent("sound-holder", { otherWindow: on });
+    this.#applyListenerGain();
+    this.#updateOverlay();
   }
 
   #applyListenerGain(): void {
@@ -676,6 +698,7 @@ export class ListenPlayer {
     return {
       mode: this.#mode,
       ducked: this.#ducked,
+      otherWindow: this.#otherWindow,
       context: this.#ctx?.state ?? "none",
       webAudio: this.#ctx !== undefined,
       webAudioOff: this.#webAudioOff,
@@ -1355,7 +1378,7 @@ export class ListenPlayer {
     const fixStarting = fix !== undefined && !fix.started
       && (this.#plan.autoFallback || performance.now() - fix.at < RATE_FIX_START_MS);
     const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running" && !fixStarting);
-    this.#overlay.hidden = !(wants && (locked || this.#needsRestore));
+    this.#overlay.hidden = !(wants && (locked || this.#needsRestore || this.#otherWindow));
     const button = this.#overlay.querySelector("button");
     const text = this.#needsRestore ? "Tap to restore sound" : "Click to enable sound";
     if (button !== null && button.textContent !== text) button.textContent = text;
@@ -1363,6 +1386,17 @@ export class ListenPlayer {
 
   /** The overlay's button: "Click to enable sound", or after a mute "Tap to restore sound". */
   #overlayClick(): void {
+    if (this.#otherWindow) {
+      // Take the sound from the other window; the unlock below runs in the same gesture.
+      this.#otherWindow = false;
+      recordEvent("sound-holder", { otherWindow: false, claimed: true });
+      this.#applyListenerGain();
+      try {
+        this.#hooks.claimSound?.();
+      } catch (e) {
+        recordError("claimSound", e);
+      }
+    }
     if (this.#needsRestore) this.#restoreWithoutWebAudio();
     else this.unlock();
   }

@@ -6,6 +6,11 @@
 // deltas. Deltas carry consecutive versions; a gap means a message was missed, and the client asks
 // for the full state again (`sync`).
 //
+// Sound (docs/ui.md "One window with sound per person"): the join carries the page's window id
+// (`soundWindowId`, kept in sessionStorage so a reload keeps it); the server answers `sound`
+// ({holder}) and later `sound.released` when another window of the same person claimed the sound.
+// `claimSound()` sends `sound.claim` (again after a reconnect if it didn't get through).
+//
 // Identity: actions that need one (votes, requests, vote-skip) are refused from an anonymous socket
 // with `identity_required`. `request()` then creates the guest (`POST /api/me/guest`), redeems the
 // returned ticket on the open socket and retries once (see `ensureIdentity`).
@@ -182,6 +187,57 @@ export interface RoomEvents {
   time?(t0: number, ts: number, t1: number): void;
   /** An `ingest` message: what the ingest of the entries' items that aren't ready is doing. */
   ingest?(items: Record<string, IngestStatus>): void;
+  /**
+   * Whether this window has the sound (`sound`; `false` after `sound.released`): only one window of
+   * a user or guest plays sound. Never called for an anonymous socket (it always may).
+   */
+  sound?(holder: boolean): void;
+}
+
+const WINDOW_ID_KEY = "tt.windowId";
+
+/** A random window id: 32 hex digits. */
+function newWindowId(): string {
+  const bytes = new Uint8Array(16);
+  try {
+    crypto.getRandomValues(bytes);
+  } catch {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += ((bytes[i] ?? 0) + 256).toString(16).slice(1);
+  return out;
+}
+
+/**
+ * This window's id for the sound holder: kept in `sessionStorage` (per window, kept across reloads),
+ * made on first use. Without storage it lives as long as the page.
+ */
+export function soundWindowId(store: Pick<Storage, "getItem" | "setItem"> | undefined = sessionStorageOrUndefined()): string {
+  try {
+    const have = store?.getItem(WINDOW_ID_KEY);
+    if (have !== null && have !== undefined && /^[A-Za-z0-9_-]{8,64}$/.test(have)) return have;
+  } catch {
+    // storage blocked
+  }
+  const id = pageWindowId ?? newWindowId();
+  pageWindowId = id;
+  try {
+    store?.setItem(WINDOW_ID_KEY, id);
+  } catch {
+    // storage blocked: the page keeps it
+  }
+  return id;
+}
+
+let pageWindowId: string | undefined;
+
+function sessionStorageOrUndefined(): Storage | undefined {
+  try {
+    return typeof sessionStorage === "undefined" ? undefined : sessionStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Where a timeline is at `serverNowMs` (docs/rooms.md#room-state). */
@@ -218,11 +274,29 @@ export class RoomConnection {
   #joined = false;
   #reconnectTimer: number | undefined;
   #identifying: Promise<void> | undefined;
+  /** The window id sent with `join` (one window with sound per person); none: not taking part. */
+  readonly windowId: string | undefined;
+  /** `sound.claim` was asked for and not confirmed yet (sent again after a reconnect). */
+  #claimPending = false;
 
-  constructor(room: string, mode: RoomMode, events: RoomEvents) {
+  constructor(room: string, mode: RoomMode, events: RoomEvents, windowId?: string) {
     this.room = room;
     this.mode = mode;
     this.#events = events;
+    this.windowId = windowId;
+  }
+
+  #joinMessage(): Record<string, unknown> {
+    const m: Record<string, unknown> = { type: "join", room: this.room, mode: this.mode };
+    if (this.windowId !== undefined) m["windowId"] = this.windowId;
+    return m;
+  }
+
+  /** Takes the sound for this window (`sound.claim`); other windows of the person get `sound.released`. */
+  claimSound(): void {
+    if (this.windowId === undefined) return;
+    this.#claimPending = true;
+    this.send({ type: "sound.claim" });
   }
 
   get joined(): boolean {
@@ -241,9 +315,10 @@ export class RoomConnection {
     }
     this.#ws = ws;
     ws.onopen = () => {
-      this.#request({ type: "join", room: this.room, mode: this.mode }).then(() => {
+      this.#request(this.#joinMessage()).then(() => {
         this.#attempt = 0;
         this.#joined = true;
+        if (this.#claimPending) this.send({ type: "sound.claim" });
         this.#events.connection(true);
       }).catch((e: unknown) => {
         // The room is gone, private, or banned us: nothing to retry.
@@ -430,6 +505,14 @@ export class RoomConnection {
         if (this.#events.time !== undefined && isFinite(t0) && isFinite(ts)) this.#events.time(t0, ts, clientNow());
         return;
       }
+      case "sound": case "sound.released": {
+        const holder = msg["type"] === "sound" && msg["holder"] === true;
+        if (holder) this.#claimPending = false;
+        // A claim on its way wins over the state from before it.
+        else if (this.#claimPending && msg["type"] === "sound") return;
+        if (this.#events.sound !== undefined) this.#events.sound(holder);
+        return;
+      }
       case "identity": {
         this.actor = msg["actor"] as ActorRef | undefined;
         this.#events.identity(this.actor);
@@ -463,7 +546,7 @@ export class RoomConnection {
         if (reason === "room_closed") {
           // The room's executor restarted: join again.
           this.#events.connection(false);
-          this.#request({ type: "join", room: this.room, mode: this.mode }).then(() => {
+          this.#request(this.#joinMessage()).then(() => {
             this.#joined = true;
             this.#events.connection(true);
           }).catch(() => this.#ws?.close());

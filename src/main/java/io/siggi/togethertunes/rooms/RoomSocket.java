@@ -68,6 +68,12 @@ import java.util.concurrent.Semaphore;
  * resumes a stopped autoplay ({@link AutoplaySelections#resume}; ack {@code {"resumed"}}). Unknown
  * message types are ignored.
  *
+ * <p><b>Sound.</b> A {@code join} may carry the page's {@code windowId} (kept in the window's
+ * {@code sessionStorage}): the socket then counts as that window of its user or guest for
+ * {@link SoundHolders} (one window with sound per person) and is told {@code sound}
+ * ({@code holder}); {@code sound.claim} takes the sound for the window, and the actor's other
+ * windows get {@code sound.released}. Anonymous sockets take no part.
+ *
  * <p><b>Sending.</b> Every outgoing message goes through the socket's bounded outbox and one
  * sender thread, so the room executor and broadcaster never wait on a socket. A socket whose
  * outbox overflows ({@value #OUTBOX_LIMIT} messages) is too slow and is closed (1008).
@@ -102,6 +108,7 @@ public final class RoomSocket {
     private volatile RoomOutputs outputs = RoomOutputs.NONE;
     private volatile IngestProgress ingestProgress = IngestProgress.NONE;
     private volatile long ingestIntervalMs = RoomBroadcaster.INGEST_INTERVAL_MS;
+    private volatile SoundHolders sounds = new SoundHolders();
 
     public RoomSocket(ActorResolver actors, IdentityTickets tickets, Guests guests, Settings settings, Rooms rooms,
                       RoomGuests roomGuests, RoomRegistry registry, RoomQueue queue, Database db, Clock clock) {
@@ -192,6 +199,11 @@ public final class RoomSocket {
         }
     }
 
+    /** Another sound-holder registry (tests: a short grace period). */
+    void sounds(SoundHolders sounds) {
+        this.sounds = Objects.requireNonNull(sounds);
+    }
+
     /** How many rooms have a broadcaster (tests). */
     int broadcasterCount() {
         return broadcasters.size();
@@ -212,7 +224,7 @@ public final class RoomSocket {
     private static final String CLOSE_ENDED = "\u0000ended";
 
     /** One socket. Messages are handled on the socket's thread, in order (slow actions aside). */
-    private final class Connection implements WebSockets.Session, RoomBroadcaster.Conn {
+    private final class Connection implements WebSockets.Session, RoomBroadcaster.Conn, SoundHolders.Window {
         private final String id = UuidV7.newId();
         private final SimpleWebsocket ws;
         private final String clientIp;
@@ -227,6 +239,12 @@ public final class RoomSocket {
         private volatile boolean ending;
         /** Guarded by {@link #lock}. */
         private Joined joined;
+        /** The page's window id (from {@code join}); guarded by {@link #lock}. */
+        private String windowId;
+        /** The sound-holder key this socket is registered under, or {@code null}; guarded by {@link #lock}. */
+        private String soundKey;
+        /** The registry it is registered with; guarded by {@link #lock}. */
+        private SoundHolders soundRegistry;
 
         Connection(SimpleWebsocket ws, Actor actor, ActorResolver.Credentials credentials) {
             this.ws = ws;
@@ -329,6 +347,63 @@ public final class RoomSocket {
             send(msg);
         }
 
+        @Override
+        public void sound(boolean holder, boolean released) {
+            JsonObject msg = new JsonObject();
+            if (released) {
+                msg.addProperty("type", "sound.released");
+            } else {
+                msg.addProperty("type", "sound");
+                msg.addProperty("holder", holder);
+            }
+            send(msg);
+        }
+
+        /**
+         * Registers the socket's window for its current actor (again after the actor changed);
+         * nothing without a window id or for an anonymous socket.
+         */
+        private void soundOpen() {
+            synchronized (lock) {
+                String key = SoundHolders.keyOf(actor);
+                if (closed || windowId == null || key == null) {
+                    soundClose();
+                    return;
+                }
+                SoundHolders reg = sounds;
+                if (!key.equals(soundKey) || reg != soundRegistry) {
+                    soundClose();
+                }
+                soundKey = key;
+                soundRegistry = reg;
+                reg.open(key, windowId, this);
+            }
+        }
+
+        /** Unregisters the socket's window (closed, or its actor changed). Holds {@link #lock}. */
+        private void soundClose() {
+            synchronized (lock) {
+                if (soundKey != null) {
+                    soundRegistry.close(soundKey, windowId, this);
+                    soundKey = null;
+                    soundRegistry = null;
+                }
+            }
+        }
+
+        private JsonObject claimSound() {
+            synchronized (lock) {
+                if (soundKey == null) {
+                    if (SoundHolders.keyOf(actor) == null) {
+                        throw new HttpError(401, "identity_required", "Only a user or a guest has a window with sound");
+                    }
+                    throw new HttpError(409, "no_window", "Join a room with a windowId first");
+                }
+                soundRegistry.claim(soundKey, windowId);
+            }
+            return null;
+        }
+
         // ------------------------------------------------------------ receiving
 
         @Override
@@ -371,6 +446,7 @@ public final class RoomSocket {
                 case "leave" -> handle(rid, this::leave);
                 case "mode" -> handle(rid, () -> mode(msg));
                 case "sync" -> handle(rid, this::sync);
+                case "sound.claim" -> handle(rid, this::claimSound);
                 case "queue.add" -> slow(rid, () -> add(ridFinal, msg));
                 case "queue.addPlaylist" -> slow(rid, () -> addPlaylist(msg));
                 case "queue.nextEpisode" -> slow(rid, () -> room((j, a) -> {
@@ -451,6 +527,7 @@ public final class RoomSocket {
         public void onClose(WebSocketCloseInfo info) {
             closed = true;
             leaveRoom();
+            soundClose();
             outbox.clear();
             outbox.offer(POISON);
         }
@@ -545,6 +622,7 @@ public final class RoomSocket {
             actor = guest.actor();
             credentials = null;
             sendIdentity();
+            soundOpen(); // the window now counts for the guest
             synchronized (lock) {
                 if (joined != null) {
                     // From now on the guest's media requests count for this room (not its address's).
@@ -578,6 +656,10 @@ public final class RoomSocket {
         private JsonObject join(JsonObject msg) throws Exception {
             String room = string(msg, "room");
             RoomPresence.Mode mode = parseMode(optionalString(msg, "mode"));
+            String window = optionalString(msg, "windowId");
+            if (window != null && !SoundHolders.validWindowId(window)) {
+                throw new HttpError(400, "invalid_message", "windowId must be 8 to 64 letters, digits, _ or -");
+            }
             refreshActor();
             leaveRoom();
             Actor who = actor;
@@ -609,6 +691,15 @@ public final class RoomSocket {
                     out.addProperty("roomId", roomId);
                     out.addProperty("slug", access.room().slug());
                     out.addProperty("mode", mode.wire());
+                    if (window != null) {
+                        synchronized (lock) {
+                            if (!window.equals(windowId)) {
+                                soundClose();
+                                windowId = window;
+                            }
+                        }
+                        soundOpen();
+                    }
                     return out;
                 } catch (Exception e) {
                     synchronized (lock) {

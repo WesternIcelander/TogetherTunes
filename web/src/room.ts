@@ -44,7 +44,7 @@ import { button, formatBytes, formatDuration, h } from "./dom.js";
 import { itemPath, statusBadge, type ItemSummary, type Page } from "./media.js";
 import { lookupText } from "./jobtext.js";
 import {
-  positionAt, RoomConnection, type CurrentEntry, type NewRequest, type RoomState, type Timeline,
+  positionAt, RoomConnection, soundWindowId, type CurrentEntry, type NewRequest, type RoomState, type Timeline,
 } from "./roomclient.js";
 import {
   checkPasswordChange, element, here, loadMe, LOGIN_PAGE, message, onReady, renderNav, withNext, type Me,
@@ -215,6 +215,8 @@ let player: ListenPlayer | undefined;
 // While a preview plays (the item page's player), the room is silent but keeps running in sync
 // (its own mute in the player, separate from the listener's; volume.ts).
 previewDuck.subscribe((ducked) => player?.setDucked(ducked), ROOM_SIGNAL);
+/** Another window of this person has the sound (the room socket's `sound` / `sound.released`). */
+let otherWindowHasSound = false;
 /** The timeline as it was a while ago, for remote mode's delayed view. */
 const delayed = new DelayedTimeline<CurrentEntry | undefined>();
 /** The user's nudge of the remote delay for this room (ms, whole 0.5 s steps). */
@@ -762,11 +764,13 @@ function createPlayer(): ListenPlayer {
     syncMode, webAudioPlan(urlWebAudio(), loadWebAudioSetting(), loadWebAudioMemory(), canSetVolume()), {
       remember: (m) => storageSet(WEB_AUDIO_MEMORY_KEY, JSON.stringify(m)),
       onSound: showSound,
+      claimSound: () => conn.claimSound(),
     });
   player = p;
   p.setVolume(listenerGain);
   p.setMuted(listenerMuted);
   p.setDucked(previewDuck.ducked);
+  p.setOtherWindowHasSound(otherWindowHasSound);
   // The user's Web Audio preference (user settings): applied when it loads or changes. A change made in
   // the settings view reaches here inside its change event, a user gesture: the rebuilt elements are
   // unlocked in it.
@@ -1020,7 +1024,11 @@ async function start(): Promise<void> {
     identity: () => renderIdentity(),
     chooseGuestName: (generated) => askGuestName(generated),
     time: (t0, ts, t1) => clock?.reply(t0, ts, t1),
-  });
+    sound: (holder) => {
+      otherWindowHasSound = !holder;
+      player?.setOtherWindowHasSound(!holder);
+    },
+  }, soundWindowId());
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;
   // A better clock estimate moves the target: correct at once instead of at the next tick.

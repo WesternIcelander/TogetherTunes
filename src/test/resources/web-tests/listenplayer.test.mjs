@@ -97,7 +97,7 @@ function stateWith(cur, next, anchorServerMs = 0) {
   };
 }
 
-function setup(p = "muted") {
+function setup(p = "muted", hooks = {}) {
   policy = p;
   serverMs = 10000;
   elements.length = 0;
@@ -105,7 +105,7 @@ function setup(p = "muted") {
   const button = { textContent: "" };
   const overlay = { hidden: true, addEventListener: (t, l) => { overlayListeners[t] = l; }, querySelector: () => button };
   const container = { hidden: true, append: () => undefined };
-  const player = new ListenPlayer(container, overlay, () => serverMs, false, "rate", false);
+  const player = new ListenPlayer(container, overlay, () => serverMs, false, "rate", false, hooks);
   return { player, overlay, container, click: () => overlayListeners.click() };
 }
 
@@ -281,4 +281,91 @@ test("a preview ducks the room: silent and in sync, separate from the listener's
   player.setDucked(false);
   assert.equal(v.volume, 0.25);
   assert.equal(v.muted, false, "the element's own muted flag (the blocked mute) isn't used");
+});
+
+test("another window has the sound: silent and in sync behind the overlay; the click claims it", async () => {
+  let claims = 0;
+  const { player, overlay, click } = setup("all", { claimSound: () => { claims++; } });
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  await flush();
+  const v = playingVideo();
+  assert.ok(v, "the video plays");
+  player.setVolume(0.5);
+  assert.equal(overlay.hidden, true);
+  player.setOtherWindowHasSound(true);
+  assert.equal(player.otherWindowHasSound, true);
+  assert.equal(v.volume, 0, "silent");
+  assert.equal(v.muted, false, "not through the element's muted flag (the blocked mute)");
+  assert.equal(player.muted, false, "the listener's own mute isn't touched");
+  assert.equal(player.volume, 0.5, "nor the volume");
+  assert.equal(overlay.hidden, false, "the overlay shows");
+  assert.equal(overlay.querySelector("button").textContent, "Click to enable sound");
+  assert.equal(player.debug().otherWindow, true);
+  for (let i = 0; i < 8; i++) advance(player, 250);
+  assert.equal(v.paused, false, "keeps playing");
+  assert.ok(Math.abs(player.debug().driftMs) < 50, "in sync");
+  // paused: no overlay; playing again: back
+  const paused = stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000);
+  paused.timeline.state = "paused";
+  player.update(paused);
+  assert.equal(overlay.hidden, true, "nothing to enable while paused");
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  assert.equal(overlay.hidden, false);
+  // the click claims the sound and unmutes
+  click();
+  await flush();
+  assert.equal(claims, 1, "sound.claim sent once");
+  assert.equal(player.otherWindowHasSound, false);
+  assert.equal(v.volume, 0.5, "heard again at the listener's volume");
+  assert.equal(overlay.hidden, true);
+  // released by another window: silent with the overlay again
+  player.setOtherWindowHasSound(true);
+  assert.equal(v.volume, 0);
+  assert.equal(overlay.hidden, false);
+  player.setOtherWindowHasSound(false);
+  assert.equal(v.volume, 0.5);
+  assert.equal(overlay.hidden, true);
+});
+
+test("another window's sound and the listener's own mute are independent", async () => {
+  let claims = 0;
+  const { player, overlay, click } = setup("all", { claimSound: () => { claims++; } });
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  await flush();
+  const v = playingVideo();
+  player.setMuted(true);
+  player.setOtherWindowHasSound(true);
+  click();
+  await flush();
+  assert.equal(claims, 1);
+  assert.equal(player.muted, true, "the click doesn't lift the listener's mute");
+  assert.equal(v.volume, 0, "still muted by the listener");
+  assert.equal(overlay.hidden, true);
+  player.setOtherWindowHasSound(true);
+  player.setMuted(false);
+  assert.equal(v.volume, 0, "unmuting doesn't take the sound from the other window");
+  assert.equal(player.otherWindowHasSound, true);
+});
+
+test("blocked by the browser and another window has the sound: one click does both", async () => {
+  let claims = 0;
+  const { player, overlay, click } = setup("muted", { claimSound: () => { claims++; } });
+  player.setOtherWindowHasSound(true);
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  await flush();
+  const v = playingVideo();
+  assert.equal(v.muted, true, "blocked mute");
+  assert.equal(overlay.hidden, false);
+  policy = "all";
+  click();
+  await flush();
+  assert.equal(claims, 1);
+  assert.equal(v.muted, false, "unlocked in the same gesture");
+  assert.equal(v.volume, 1);
+  assert.equal(overlay.hidden, true);
+  assert.equal(player.debug().blocked, false);
 });

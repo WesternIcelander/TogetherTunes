@@ -450,6 +450,101 @@ class RoomSocketTest {
         other.error("room_not_found", "{\"type\":\"join\",\"room\":\"" + aloneId + "\"}");
     }
 
+    /** Joins {@code room} as window {@code windowId} and returns the {@code sound} message's holder flag. */
+    private boolean joinWindow(Client c, String room, String windowId) throws Exception {
+        c.ok("{\"type\":\"join\",\"room\":\"" + room + "\",\"windowId\":\"" + windowId + "\"}");
+        return c.await("sound").get("holder").getAsBoolean();
+    }
+
+    /**
+     * One window with sound per person ({@link SoundHolders}): the first window holds the sound, later
+     * ones are muted, {@code sound.claim} moves it and tells the others (across rooms, the alone room
+     * and devices), a reconnect of the holder window keeps it, the others stay muted when it is gone,
+     * guests count per guest id, anonymous sockets take no part, and two people are independent.
+     */
+    @Test
+    void oneWindowWithSoundPerPerson() throws Exception {
+        wiring.socket().sounds(new SoundHolders(150));
+        room("lounge", "public", "open");
+        String aliceLaptop = sessions.create(aliceId, Actor.Via.BEARER, "laptop", null).token();
+        String aloneId = json(call(alice, "GET", "/api/me/play-session", null)).get("aloneRoomId").getAsString();
+
+        Client phone = connect(alice, null);
+        phone.next("identity");
+        assertTrue(joinWindow(phone, "lounge", "phone-window-1"), "the first window holds the sound");
+        Client laptop = connect(aliceLaptop, null);
+        laptop.next("identity");
+        assertFalse(joinWindow(laptop, aloneId, "laptop-window-1"), "another device, the alone room: muted");
+
+        // the laptop claims: it holds, the phone is released
+        laptop.ok("{\"type\":\"sound.claim\"}");
+        assertTrue(laptop.await("sound").get("holder").getAsBoolean());
+        phone.await("sound.released");
+
+        // the laptop's window reconnects (a reload) within the grace period: it keeps the sound
+        laptop.close();
+        Client laptop2 = connect(aliceLaptop, null);
+        laptop2.next("identity");
+        assertTrue(joinWindow(laptop2, aloneId, "laptop-window-1"));
+        phone.quiet("sound.released");
+
+        // bob is independent
+        Client bobs = connect(bob, null);
+        bobs.next("identity");
+        assertTrue(joinWindow(bobs, "lounge", "bob-window-1"));
+        Client bobs2 = connect(bob, null);
+        bobs2.next("identity");
+        assertFalse(joinWindow(bobs2, "lounge", "bob-window-2"));
+        bobs2.ok("{\"type\":\"sound.claim\"}");
+        bobs.await("sound.released");
+        phone.quiet("sound.released");
+        laptop2.quiet("sound.released");
+
+        // the holder closes for good: the phone stays muted, a new window too, until one claims
+        laptop2.close();
+        Thread.sleep(600);
+        phone.quiet("sound");
+        Client tab = connect(alice, null);
+        tab.next("identity");
+        assertFalse(joinWindow(tab, "lounge", "phone-window-2"), "the phone is still open: nobody takes it");
+        phone.ok("{\"type\":\"sound.claim\"}");
+        assertTrue(phone.await("sound").get("holder").getAsBoolean());
+        tab.await("sound.released");
+
+        // checks
+        phone.error("invalid_message", "{\"type\":\"join\",\"room\":\"lounge\",\"windowId\":\"bad id\"}");
+        Client noWindow = connect(alice, null);
+        noWindow.next("identity");
+        noWindow.ok("{\"type\":\"join\",\"room\":\"lounge\"}");
+        noWindow.error("no_window", "{\"type\":\"sound.claim\"}");
+
+        // guests count per guest id
+        HttpResponse<String> created = call(null, "POST", "/api/me/guest", null);
+        assertEquals(201, created.statusCode(), created.body());
+        String cookie = created.headers().allValues("Set-Cookie").stream().filter(v -> v.startsWith("gid="))
+                .map(v -> v.substring(0, v.indexOf(';'))).findFirst().orElseThrow();
+        Client guest1 = connect(null, cookie);
+        guest1.next("identity");
+        assertTrue(joinWindow(guest1, "lounge", "guest-window-1"));
+        Client guest2 = connect(null, cookie);
+        guest2.next("identity");
+        assertFalse(joinWindow(guest2, "lounge", "guest-window-2"));
+        guest2.ok("{\"type\":\"sound.claim\"}");
+        guest1.await("sound.released");
+        phone.quiet("sound.released");
+
+        // anonymous: no sound messages, no claim; once a guest (identity ticket) it takes part
+        Client anon = connect(null, null);
+        anon.next("identity");
+        anon.ok("{\"type\":\"join\",\"room\":\"lounge\",\"windowId\":\"anon-window-1\"}");
+        anon.quiet("sound");
+        anon.error("identity_required", "{\"type\":\"sound.claim\"}");
+        HttpResponse<String> ticketed = call(null, "POST", "/api/me/guest", null);
+        String ticket = json(ticketed).get("identityTicket").getAsString();
+        anon.ok("{\"type\":\"identity\",\"ticket\":\"" + ticket + "\"}");
+        assertTrue(anon.await("sound").get("holder").getAsBoolean(), "a new guest's first window");
+    }
+
     /** Stops the room's autoplay as {@link AutoplayStop#check} would (nobody was there for 120 min). */
     private void stopAutoplay(String roomId) throws Exception {
         wiring.registry().call(roomId, tx -> {
