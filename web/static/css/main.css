@@ -1825,6 +1825,22 @@ table.songs tbody tr {
     border-radius: 0;
   }
 
+  /* The request parts (quick output buttons, Request Link, Join as guest / the guest's name, a visitor's search
+     and uploads, the RTMP viewer URL) directly under the video: in the room view above its queue, and in Now
+     Playing between the video and Up Next | Recents (frame.ts moves the room view's .rv-request there). */
+  .rv-columns > .rv-request {
+    order: -1;
+  }
+
+  body[data-m-pane="now"] .app-panel > .rv-request {
+    order: -1;
+    margin-bottom: 0.75rem;
+  }
+
+  body[data-m-pane="now"] .app-panel > .rv-request > :first-child:not([hidden]) {
+    margin-top: 0;
+  }
+
   .app-panel .tabs [data-tab="room"] {
     display: none;
   }

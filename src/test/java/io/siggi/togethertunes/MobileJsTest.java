@@ -44,7 +44,8 @@ class MobileJsTest {
         }
         String frame = read("web/js/frame.js");
         for (String s : List.of("MOBILE_QUERY", "mPane", "pushState", "\"popstate\"", "tabAction(", "mobileBack(",
-                "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS")) {
+                "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS",
+                "requestPartsInNowPane(", "\"#app .rv-request\"")) {
             assertTrue(frame.contains(s), s);
         }
         String list = read("web/js/libview.js");
@@ -58,7 +59,8 @@ class MobileJsTest {
         }
         String css = read("web/css/main.css");
         for (String s : List.of("@media (max-width: 799.98px)", "body[data-m-pane=\"now\"] .app-video",
-                "body.m-tabs-on .player-bar", "table.songs .col-album", ".m-tabs:not([hidden])")) {
+                "body.m-tabs-on .player-bar", "table.songs .col-album", ".m-tabs:not([hidden])",
+                ".rv-columns > .rv-request", "body[data-m-pane=\"now\"] .app-panel > .rv-request")) {
             assertTrue(css.contains(s), s);
         }
     }

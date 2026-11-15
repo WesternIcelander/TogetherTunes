@@ -105,3 +105,10 @@ test("the top bar's title shows once the large title is under the bar", () => {
   assert.equal(M.showBarTitle(-10, 44), true);
   assert.equal(M.showBarTitle(undefined, 44), true);
 });
+
+test("the request parts go under the video in Now Playing only on mobile, with a room", () => {
+  assert.equal(M.requestPartsInNowPane(true, "now", true), true);
+  assert.equal(M.requestPartsInNowPane(true, "now", false), false);
+  assert.equal(M.requestPartsInNowPane(false, "now", true), false);
+  for (const pane of ["", "library", "rooms", "account"]) assert.equal(M.requestPartsInNowPane(true, pane, true), false);
+});

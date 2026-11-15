@@ -204,3 +204,13 @@ export function selectedText(n: number): string {
 export function showBarTitle(largeTitleBottom: number | undefined, barBottom: number): boolean {
   return largeTitleBottom === undefined || largeTitleBottom <= barBottom;
 }
+
+/**
+ * Whether the room view's request parts (`.rv-request`: quick output buttons, Request Link, Join as guest /
+ * the guest's name, a visitor's search and uploads, the RTMP viewer URL) are shown in the Now Playing pane,
+ * between the video and Up Next | Recents (docs/ui.md#mobile-narrow-windows): only in the mobile layout,
+ * on that pane, while a room view is open (it owns and draws them; the frame moves the one copy over).
+ */
+export function requestPartsInNowPane(mobile: boolean, pane: MobilePane, roomOpen: boolean): boolean {
+  return mobile && pane === "now" && roomOpen;
+}

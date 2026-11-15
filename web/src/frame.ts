@@ -33,8 +33,8 @@ import { dropFiles, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
-import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, roomSubTab, Selection, showBarTitle,
-  tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
+import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, requestPartsInNowPane, roomSubTab,
+  Selection, showBarTitle, tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
 import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
@@ -138,6 +138,8 @@ export class Frame {
     ? window.matchMedia(MOBILE_QUERY) : undefined;
   /** The mobile pane shown instead of the view ("" = the view); always "" in the desktop layout. */
   #pane: MobilePane = "";
+  /** Where the room view's request parts (`.rv-request`) belong while the Now Playing pane holds them. */
+  #requestHome: HTMLElement | undefined;
 
   constructor(host: FrameHost) {
     this.#host = host;
@@ -379,6 +381,40 @@ export class Frame {
   release(el: HTMLElement): void {
     const video = byId("app-video");
     if (el.contains(video)) byId("app-panel").append(video);
+    // The Now Playing pane may hold this view's request parts: they go back into the view.
+    if (this.#requestHome !== undefined && el.contains(this.#requestHome)) this.#returnRequest();
+  }
+
+  /**
+   * Mobile Now Playing (docs/ui.md#mobile-narrow-windows): the room view's request parts (`.rv-request`, drawn
+   * by room.ts by id) move between the video and Up Next | Recents, and back into the view otherwise. One copy,
+   * moved, so no id is doubled; the room view itself orders them above its queue with CSS.
+   */
+  #placeRequest(): void {
+    const want = requestPartsInNowPane(this.#mobile(), this.#pane, this.#host.room() !== undefined);
+    const panel = byId("app-panel");
+    const held = panel.querySelector<HTMLElement>(":scope > .rv-request");
+    if (held !== null && (!want || this.#requestHome === undefined || !this.#requestHome.isConnected)) {
+      this.#returnRequest();
+    }
+    if (!want || panel.querySelector(":scope > .rv-request") !== null) return;
+    const req = document.querySelector<HTMLElement>("#app > .view:not([hidden]) .rv-request")
+      ?? document.querySelector<HTMLElement>("#app .rv-request");
+    if (req === null || req.parentElement === null) return;
+    this.#requestHome = req.parentElement;
+    const video = byId("app-video");
+    if (video.parentElement === panel) video.after(req);
+    else panel.append(req);
+  }
+
+  /** The request parts go back to the end of their room view's column (where the markup has them). */
+  #returnRequest(): void {
+    const req = byId("app-panel").querySelector<HTMLElement>(":scope > .rv-request");
+    const home = this.#requestHome;
+    this.#requestHome = undefined;
+    if (req === null) return;
+    if (home !== undefined && home.isConnected) home.append(req);
+    else req.remove();
   }
 
   /** The room view is shown: the video panel lives in its video area; otherwise in the right panel. */
@@ -806,6 +842,7 @@ export class Frame {
     const roomView = this.#roomViewShown();
     document.body.classList.toggle("room-view", roomView);
     this.#placeVideo(roomView);
+    this.#placeRequest();
     byId("app-panel").hidden = room === undefined;
     byId("player-bar").hidden = room === undefined && !user;
     document.body.classList.toggle("has-panel", room !== undefined);
