@@ -144,7 +144,10 @@ rooms(id PK, slug UNIQUE, name, owner_id FK, created_at,
       version BIGINT,
       current_audio_only INTEGER,           -- 0|1: the current entry plays audio-only (the mode it
                                             -- started with; rooms.md#audio-only-rooms), migration 0016
-      alone_user_id NULL FK users UNIQUE)   -- set: this is that user's alone room (rooms.md#alone), 0029
+      alone_user_id NULL FK users UNIQUE,   -- set: this is that user's alone room (rooms.md#alone), 0029
+      autoplay_stopped_at BIGINT NULL,      -- autoplay stopped because nobody was there (rooms.md#autoplay,
+      autoplay_stopped_reason TEXT NULL,    -- 'nobody'), with the limit that applied; all NULL while it
+      autoplay_stopped_minutes INTEGER NULL) -- runs, cleared on resume; migration 0034
 
 alone_sessions(user_id PK FK ON DELETE CASCADE,  -- where a user is (rooms.md#alone), 0029
       room_id NULL FK rooms ON DELETE SET NULL,  -- the room they joined; NULL: alone
