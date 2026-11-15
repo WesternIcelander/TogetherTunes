@@ -147,7 +147,7 @@ Actions that need an identity (votes, requests, suggestions, vote-skip) are refu
 ```jsonc
 { "type": "auth", "token": "…" }
 { "type": "time", "t0": 123456.7 }
-{ "type": "join", "room": "slug", "mode": "listen" }    // or "remote" (requests-only mode)
+{ "type": "join", "room": "slug", "mode": "listen", "windowId": "…" }    // or "remote" (requests-only mode); windowId optional (one window with sound per person)
 { "type": "mode", "mode": "remote" }
 { "type": "leave" }  { "type": "sync" }  { "type": "identity", "ticket": "…" }
 
@@ -164,6 +164,7 @@ Actions that need an identity (votes, requests, suggestions, vote-skip) are refu
 { "type": "play" } { "type": "pause" } { "type": "seek", "positionMs": 61000 }
 { "type": "next" } { "type": "previous" } { "type": "voteSkip" }
 { "type": "autoplay.resume", "rid": 8 }   // Resume autoplay (stopped because nobody was there); ack {resumed}
+{ "type": "sound.claim", "rid": 9 }       // this window takes the sound from the person's other windows
 ```
 
 ### Server → client
@@ -193,6 +194,8 @@ Actions that need an identity (votes, requests, suggestions, vote-skip) are refu
 { "type": "request.progress", "rid": 1, "stage": "page", "text": "Reading the video page…" }   // requester only
 { "type": "ingest", "items": { "<itemId>": { "state": "running", "kind": "youtube", "step": "download", "progress": 0.45 } } }
 { "type": "kicked", "reason": "…" }
+{ "type": "sound", "holder": true }          // after a join with windowId: this window has the sound (false: another one has it)
+{ "type": "sound.released" }                 // another window of the same person claimed the sound: mute
 ```
 
 Clients should treat unknown message types and unknown fields as no-ops.
@@ -217,5 +220,6 @@ Clients should treat unknown message types and unknown fields as no-ops.
 - **`ingest`** (added 2026-11-10, `RoomBroadcaster`, `ingest/IngestProgress`): what the ingest of the room's entries whose item isn't ready (current, queued and suggested; `processing` or `failed`, not `purged`) is doing, `{type:"ingest", items: {<itemId>: {state: queued|running|failed, kind?, position?, step?, progress?, error?}}}`, to every socket in the room, **without a `version`** (not a room change). `queued`: `position` is the 1-based place in the whole ingest queue (the jobs page's); `running`: `step` `download`|`encode`|`finish` with that step's own `progress` (0..1, whole percent) once the job has named one; `failed`: `error`, the item's error cut to its first line and 120 characters. An item with no job yet is absent (it reads as waiting). Looked up at most once a second per room and only while such an entry exists; sent only when it changed, right after the full `state` to a socket that joins or `sync`s, and once more with `items: {}` when no entry waits any more. No logs, nothing about other people, no IPs. The web client shows it on the entry's badge ("Waiting to download (3rd in line)", "Downloading 45 %", "Encoding 30 %", "Finishing…", "Failed: …"; `web/src/jobtext.ts` `ingestText`, also used by the Library and item pages).
 - **`presence.people`** (M9, the desktop layout's Room tab, [ui.md](ui.md#layout-desktop)): in every `presence` (state, `presence` message, `queue` delta) besides the counts: `[{actor, mode}]`, the identified people present (users and guests with an identity; anonymous visitors are only counted), each once however many sockets they have, in the order they came; `mode` `listen` if any of their sockets listens, else `remote`. Actors only (`kind, id, name, isGuest`), never an IP address (`RoomPresence.people`, `RoomViews.presence`). A change of who is present sends `presence` even when the counts stay the same.
 - **`kicked`** (`{reason}`) takes the socket out of the room; the socket stays open. Reasons: `room_not_found` (e.g. the room went private), `room_deleted`, `room_closed` (the room's executor stopped; join again), `session_ended` (then closed). Role changes (`PUT`/`DELETE …/members/{userId}`) now go through the room executor as a `MemberChanged` event, so they bump the room `version`. Bans and timeouts don't kick (M9): every socket in the room gets a fresh `state` with its `you.restriction`, and room actions answer `403 banned_from_room` / `403 timed_out` ([rooms.md](rooms.md#bans-and-timeouts)).
+- **One window with sound per person** (2026-11-15, `rooms/SoundHolders`, [ui.md](ui.md#alone-and-in-rooms) "One window with sound per person"): a `join` may carry `windowId` (8 to 64 of `A-Z a-z 0-9 _ -`, else `400 invalid_message`), a random id the page keeps in its `sessionStorage` (`tt.windowId`), so a reload or reconnect of the same window sends the same one. The socket then counts as that window of its user or guest (per user id or guest id; anonymous sockets take no part and get no `sound` messages; an anonymous socket that becomes a guest with `identity` is registered then). Per person at most one window is the **sound holder**, kept in memory only. Right after the join's state the socket gets `{type:"sound", holder}`: `true` when this window holds the sound, or takes it because nobody holds it and no other window of the person is open (the first window); `false` otherwise (another window holds it, or the holder closed and other windows are open: they stay muted until one claims). `sound.claim` (ack `{}`; `401 identity_required` anonymous, `409 no_window` without a `windowId` join) makes the sender's window the holder: its sockets get `sound {holder: true}`, every socket of every other window of the person (any room, the alone room included, any device) gets `{type:"sound.released"}`. When the holder window's last socket closes, it keeps the sound for 10 s (a reload or reconnect with the same `windowId` keeps it); after that nobody holds it. The messages carry no actor. Known limit: a browser's "Duplicate tab" copies `sessionStorage`, so a duplicated tab counts as the same window until it is reloaded in a new tab.
 - **Slow sockets**: each socket has a bounded outbox (1024 messages); one that overflows is closed with 1008.
 
