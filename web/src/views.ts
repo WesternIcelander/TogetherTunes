@@ -43,3 +43,14 @@ export function pinText(pinned: { pinnedAt: number } | undefined, formatTime: (m
   if (pinned === undefined) return undefined;
   return formatTime(pinned.pinnedAt) + " (its media is never deleted automatically)";
 }
+
+/**
+ * Whether the item page has a player (local playback) for this actor: only signed-in users, and
+ * only once the item is ready. Guests and anonymous visitors get media only in a room where the
+ * item is playing or up next (docs/ui.md "Guests never download"), so the page gives them no
+ * player, no trim and requests no media at all, whatever room they are in; it is decided from the
+ * actor the page already knows, never by trying the media.
+ */
+export function itemPlayerShown(actorKind: "user" | "guest" | "anonymous", status: string): boolean {
+  return actorKind === "user" && status === "ready";
+}

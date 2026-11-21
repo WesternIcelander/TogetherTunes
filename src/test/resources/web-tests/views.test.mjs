@@ -49,3 +49,11 @@ test("the pin line", () => {
   assert.equal(V.pinText(undefined, String), undefined);
   assert.equal(V.pinText({ pinnedAt: 5 }, (ms) => "T" + ms), "T5 (its media is never deleted automatically)");
 });
+
+test("the item page's player: signed-in users only, once ready", () => {
+  assert.equal(V.itemPlayerShown("user", "ready"), true);
+  for (const s of ["pending", "failed", "purged"]) assert.equal(V.itemPlayerShown("user", s), false, s);
+  for (const k of ["guest", "anonymous"]) {
+    for (const s of ["ready", "pending", "failed", "purged"]) assert.equal(V.itemPlayerShown(k, s), false, k + " " + s);
+  }
+});

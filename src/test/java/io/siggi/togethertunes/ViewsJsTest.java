@@ -11,7 +11,8 @@ import org.junit.jupiter.api.Test;
 /**
  * Views and pins in the web client ({@code docs/media-types.md#views-auto-delete-and-pins}): runs
  * {@code src/test/resources/web-tests/views.test.mjs} against the compiled {@code web/js/views.js},
- * and checks that the item page reports a view when its player starts and offers the pin.
+ * and checks that the item page reports a view when its player starts, offers the pin, and has a
+ * player only for signed-in users.
  */
 class ViewsJsTest {
     @Test
@@ -26,5 +27,7 @@ class ViewsJsTest {
                 "pinPath(", "canPin", "pinText(")) {
             assertTrue(item.contains(s), s);
         }
+        // no player (and no media request) for guests and anonymous visitors: decided from the actor
+        assertTrue(item.contains("itemPlayerShown(me.kind, item.status)"), "itemPlayerShown");
     }
 }

@@ -1,6 +1,7 @@
 // The item page (/items/{id}, a direct link anyone may open; docs/libraries.md#visibility):
-// metadata, cover, a player once the item is ready, the ingest job's status (and log, for those
-// who may edit), and for users: add to / remove from the library, add to a playlist, edit
+// metadata, cover, a player once the item is ready (signed-in users only: guests and anonymous
+// visitors get no player and no media request, views.ts itemPlayerShown), the ingest job's status
+// (and log, for those who may edit), and for users: add to / remove from the library, add to a playlist, edit
 // the metadata, trim, purge (docs/ui.md "Item page"). Processing shows first while the job is queued
 // or running, else at the bottom. For those who can trim, the player sits in the Trim section. The
 // player follows the listener's volume and mute (volume.ts), and while it plays the room is ducked.
@@ -20,7 +21,7 @@ import {
   PREVIEW_END_MS, previewEndSpan, previewSpan, startAtPlayhead, trimBody, type Range, type TrimEstimate, type TrimView,
 } from "./trim.js";
 import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
-import { pinPath, pinText, viewPath, viewReporter } from "./views.js";
+import { itemPlayerShown, pinPath, pinText, viewPath, viewReporter } from "./views.js";
 
 /**
  * This view's start (taken before any await): its signal stops the polling, the trim panels' timers
@@ -56,9 +57,12 @@ function busy(job: JobView | undefined): boolean {
   return job !== undefined && (job.state === "queued" || job.state === "running");
 }
 
-/** Whether the Trim section shows (with the player in it): for those who can trim, while no job runs. */
+/**
+ * Whether the Trim section shows (with the player in it): for those who can trim, while no job runs,
+ * and never without a player (guests and anonymous visitors have none).
+ */
 function trimShown(item: ItemPage, job: JobView | undefined): boolean {
-  return item.you.canEdit && item.trim !== undefined && !busy(job);
+  return itemPlayerShown(me.kind, item.status) && item.you.canEdit && item.trim !== undefined && !busy(job);
 }
 
 /** The player at the listener's volume and mute (volume.ts). */
@@ -116,9 +120,12 @@ function field(label: string, value: Node | string | undefined): HTMLElement | n
   return h("div", { class: "field" }, h("dt", { text: label }), h("dd", {}, value));
 }
 
-/** The item's player (kept across re-renders), or undefined until the item is ready. */
+/**
+ * The item's player (kept across re-renders), or undefined until the item is ready, and always for
+ * guests and anonymous visitors (no media element, no media requested; views.ts itemPlayerShown).
+ */
 function ensurePlayer(item: ItemPage): HTMLMediaElement | undefined {
-  if (item.status !== "ready") {
+  if (!itemPlayerShown(me.kind, item.status)) {
     player = undefined;
     playerFor = "";
     return undefined;
