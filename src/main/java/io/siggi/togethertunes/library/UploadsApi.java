@@ -23,10 +23,13 @@ import java.util.Objects;
  *       ({@code queue.add {uploadId}} takes it as usual). Errors: {@code 400 invalid_filename},
  *       {@code 400 invalid_size}, {@code 413 payload_too_large} (over {@code ingest.maxUploadBytes},
  *       or a guest's quota size), {@code 429 upload_quota_exceeded} (guests), and the
- *       {@link AddMediaPolicy} errors. A user's {@code roomId} gets {@code 404 room_not_found} until
- *       rooms exist (M3); a guest's goes through the guest rules, whose room half is a stub that
- *       also answers {@code 404 room_not_found} until then. An anonymous visitor who passes every
- *       check becomes a guest here ({@code gid} cookie in cookie mode).</li>
+ *       {@link AddMediaPolicy} errors. A user's {@code roomId} (the upload is a request in that
+ *       room, added afterwards with {@code queue.add {uploadId}}) gets the room's request checks
+ *       up front ({@link AddMediaPolicy#requireUserRoomUpload}: {@code 404 room_not_found} for a
+ *       room they can't see, {@code 403 banned_from_room} / {@code timed_out},
+ *       {@code 403 cannot_request}, {@code 409 request_limit}, {@code 403 upload_requests_off});
+ *       a guest's goes through the guest rules. An anonymous visitor who passes every check
+ *       becomes a guest here ({@code gid} cookie in cookie mode).</li>
  *   <li>{@code PUT /api/uploads/{id}} with {@code Content-Range: bytes start-end/size} and the
  *       chunk as the body (any content type) → {@code 200 {receivedBytes, size}}. Idempotent: bytes
  *       already received are skipped. A chunk must start at or before {@code receivedBytes}
@@ -87,8 +90,8 @@ public final class UploadsApi {
             policy.requireUpload(actor, roomId);
         }
         if (roomId != null && actor instanceof Actor.User) {
-            // TODO(rooms, M3): a user's upload as a request in a room.
-            throw new HttpError(404, "room_not_found", "No such room");
+            // The checks of the room's request by upload, before any bytes are sent.
+            roomId = policy.requireUserRoomUpload(actor, roomId, request.clientIp());
         }
         if (body.size() == null) {
             throw new HttpError(400, "invalid_size", "size is required");

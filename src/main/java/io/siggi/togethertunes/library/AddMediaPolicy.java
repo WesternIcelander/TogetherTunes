@@ -50,8 +50,7 @@ public final class AddMediaPolicy {
     /**
      * Throws unless {@code actor} may start an upload. A user needs {@code library.upload}; a
      * guest or anonymous visitor needs a {@code roomId} and the guest rules (see the class
-     * comment). A user's {@code roomId} isn't checked here (a user's request is checked when it is
-     * added to the queue).
+     * comment). A user's {@code roomId} isn't checked here: see {@link #requireUserRoomUpload}.
      */
     public void requireUpload(Actor actor, String roomId) throws SQLException {
         if (actor instanceof Actor.User) {
@@ -59,6 +58,17 @@ public final class AddMediaPolicy {
             return;
         }
         requireGuest(actor, roomId, RoomGuestRules.Capability.UPLOAD);
+    }
+
+    /**
+     * Throws unless the signed-in {@code user} (who has {@code library.upload}, checked by
+     * {@link #requireUpload}) may upload as a request in the room {@code roomId}: the room's request
+     * checks ({@link RoomGuestRules#requireUserUpload}), seen from {@code clientIp}.
+     *
+     * @return the room's id
+     */
+    public String requireUserRoomUpload(Actor user, String roomId, String clientIp) throws Exception {
+        return rooms.requireUserUpload(roomId, user, clientIp);
     }
 
     /** Throws {@code 403 feature_disabled} unless YouTube imports are on ({@code ytdlp.enabled}). */

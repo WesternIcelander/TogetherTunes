@@ -120,17 +120,8 @@ public final class RoomQueue {
             throw new HttpError(400, "invalid_source",
                     "Give exactly one of itemId, uploadId, youtubeUrl and historyEntryId");
         }
-        ControlPolicy.requireSource(a, source.via());
+        precheck(registry, roomId, a, source.via());
         boolean byId = source.itemId() != null || source.historyEntryId() != null;
-        registry.call(roomId, tx -> {
-            QueueOps.checkAdd(tx.state(), a);
-            if (byId) {
-                requireLibraryRequests(tx.state().settings(), a);
-            } else if (source.uploadId() != null) {
-                requireUploadRequests(tx.state().settings(), a);
-            }
-            return null;
-        });
         String itemId;
         if (source.itemId() != null) {
             itemId = source.itemId();
@@ -156,6 +147,30 @@ public final class RoomQueue {
             addToLibrary(user.userId(), itemId, source.via());
         }
         return added;
+    }
+
+    /**
+     * The checks of {@link #add} that don't depend on the item, read-only: the request path
+     * ({@link ControlPolicy#requireSource}), {@link QueueOps#checkAdd} and the room settings
+     * {@code libraryRequests} (by id: {@code library}, {@code history}) and {@code uploadRequests}
+     * ({@code upload}). Also run when a signed-in user starts an upload as a request in a room
+     * ({@link RoomGuests#requireUserUpload}), so a refused request is refused before any bytes
+     * are sent, with the same error.
+     *
+     * @param via {@code library}, {@code history}, {@code upload} or {@code youtube}
+     */
+    static void precheck(RoomRegistry registry, String roomId, RoomActor a, String via) throws Exception {
+        ControlPolicy.requireSource(a, via);
+        registry.call(roomId, tx -> {
+            QueueOps.checkAdd(tx.state(), a);
+            switch (via) {
+                case "library", "history" -> requireLibraryRequests(tx.state().settings(), a);
+                case "upload" -> requireUploadRequests(tx.state().settings(), a);
+                default -> {
+                }
+            }
+            return null;
+        });
     }
 
     /**

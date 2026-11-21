@@ -234,6 +234,21 @@ public final class RoomGuests implements RoomGuestRules {
         }
     }
 
+    /**
+     * A signed-in user's upload as a request in a room: the room's access check from
+     * {@code clientIp} (so an IP ban or timeout counts too), read-only refused, then the checks a
+     * request by upload makes ({@link RoomQueue#precheck}).
+     */
+    @Override
+    public String requireUserUpload(String roomId, Actor user, String clientIp) throws Exception {
+        Rooms.Access access = rooms.access(user, roomId, clientIp);
+        RoomActor a = roomActor(user, access);
+        a.requireNotReadOnly();
+        String id = access.room().id();
+        RoomQueue.precheck(registry, id, a, "upload");
+        return id;
+    }
+
     // ------------------------------------------------------------------ bans
 
     /** The id of the room with this id or slug, else {@code 404 room_not_found}. */
