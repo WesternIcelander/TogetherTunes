@@ -128,6 +128,44 @@ Every item is transcoded at ingest to one fixed profile, so the packager can spl
 
 `veryfast` (the default quick preset, and the preset of every card) runs fast enough that overlay re-encodes run faster than real time: about 2.8× real time for 1080p30 on 2 cores in testing. The cost is about 10–15% more bitrate than `medium` at the same quality, which at a constant bitrate shows as lower quality; hence the quality preset for library items.
 
+## Song details
+
+(Siggi, 2026-11-22.) Besides title, artist and album, an item can hold the usual music tags. The field names follow TrackSplitter's JSON (`tags`), which is also where an online lookup gets them ([below](#looking-details-up-online)).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `title` | string | Track title (required, as before) |
+| `artist` | string | Track artist as one string (`"Neko Hacker, Rika"`), what lists, cards and the system media controls show |
+| `artists` | string list | Each of the track's artists separately; only kept when there is more than one |
+| `album` | string | Album title |
+| `albumArtist` | string | Album artist |
+| `track`, `trackTotal` | whole numbers ≥ 1 | Track number and the number of tracks on the disc |
+| `disc`, `discTotal` | whole numbers ≥ 1 | Disc number and disc count (albums with more than one disc) |
+| `isrc` | string | The recording's ISRC (12 characters, letters and digits; stored upper case) |
+| `date` | string | Release date: `YYYY`, `YYYY-MM` or `YYYY-MM-DD` |
+| `genre` | string | Genre |
+| `copyright` | string | Copyright line (`"℗ 2010 Interscope Records"`) |
+| `label` | string | Record label |
+| `barcode` | string | The album's UPC/EAN (8 to 14 digits) |
+
+- **Storage:** one nullable column per field on `items` (`artists_json` as a JSON array, `album_artist`, `track_no`, `track_total`, `disc_no`, `disc_total`, `isrc`, `release_date`, `genre`, `copyright`, `label`, `barcode`); not part of `media_versions` (details aren't versioned, like title and artist). Text is cleaned like upload metadata (trimmed, control characters removed, the same length cap).
+- **Artist and artists are one thing in the UI:** the edit form has a single **Artists** field edited as a list of names (add, remove, reorder). Saving a list sets `artists` (only when it has more than one name) and `artist` to the names joined with ", ". An item with only an `artist` string shows it as one name, never split on commas by guesswork (names like "Earth, Wind & Fire" contain ", "). When both are known and `artist` isn't simply the joined list (e.g. "A feat. B"), the item keeps both until someone edits the names. Read-only views show `artist`.
+- **Uploads:** ingest reads these from the container tags as well as title, artist and album: `track` / `disc` as `n` or `n/total` (plus `tracktotal`/`totaltracks`, `disctotal`/`totaldiscs`), `date` (or `year`), `genre`, `copyright`, `label` (or `publisher`, `organization`), `isrc` (`TSRC`), `barcode` (or `upc`, `ean`), `album_artist`, and `ARTISTS` (MP4 freeform `----:com.apple.iTunes:ARTISTS`, ID3 `TXXX:ARTISTS`, repeated Vorbis `ARTISTS`; whatever ffprobe reports for each, tag names compared case-insensitively). A value that doesn't fit its type is dropped, not guessed.
+- **YouTube items** keep what they get today (title, artist, album); their other details start empty.
+
+### Looking details up online
+
+TrackSplitter (Siggi's own tool, a separate program like yt-dlp) looks a track up on several online music catalogues and returns the fields above, plus the album's full-size cover.
+
+- **Config:** `tools.tracksplitter` (path; resolved from `PATH` when unset, like `tools.ytdlp`; not found → the feature is off and its buttons don't show). `tracksplitter.cacheDir` (default `<data.dir>/tracksplitter`, passed as `--cache-dir`), so the server keeps its own cache, rate-limit state and catalogue credentials apart from anyone's personal TrackSplitter. The credentials of the rate-limited catalogue go in that directory's credentials file or TrackSplitter's own environment variables, which the server passes through; without them TrackSplitter just skips that catalogue. `--user-agent` is `TogetherTunes/<version> ( <http.publicBaseUrl> )` (the catalogues ask for a contact). Admin → Settings has an on/off switch (`metadataLookup.enabled`, default on when the tool is found) and **Look up details of new uploads automatically** (`metadataLookup.autoOnUpload`, default on).
+- **Who may trigger it:** only **signed-in users** who may edit the item (the adder while it is in their library, or `library.editAny`). Guests and anonymous visitors never cause a lookup, directly or through an upload, because one catalogue has a small daily quota. A guest's upload merged into an account isn't looked up automatically; its new owner can use the button.
+- **Limits:** one TrackSplitter process at a time server-wide (the others wait in a short queue; their requests fail with `503 lookup_busy` after 60 s), each with a 60 s timeout; per user at most 30 lookups per hour (`429 too_many_lookups` with `Retry-After`). TrackSplitter's own cache means asking again for the same album costs nothing online.
+- **How it's called** (lookup only, never writing a file): `tracksplitter metadata --json --cache-dir … --user-agent … --title <title> --artist <artist> [--album <album>] [--album-artist <albumArtist>]`, adding the item's **original** as the file argument when it is `.m4a`, `.mp3` or `.flac` (then TrackSplitter also uses its embedded cover and store IDs, and `--json` alone changes no file), else `--artwork <cover.jpg>` when the item has a cover. stdout is the JSON document, stderr goes to the log. Without an album TrackSplitter returns the albums that have the track (`--limit 10`) instead of one track.
+- **Edit details → Look up details** (button, signed-in editors only): with an album, the result is shown as a review: each field with its current value and the found one, a checkbox per field (checked where the item has no value, unchecked where it differs), the found cover beside the current one (checked if the item has none). **Apply** saves the checked fields with the normal edit (`PATCH`), never silently. Without an album, the page lists the albums found (album, album artist, year, track number), the person picks one, and the lookup runs again with it. Nothing found → "No details found".
+- **Automatically for new uploads** (signed-in uploader, both settings on): once the item is ready, a background lookup fills **only empty fields** (never title or artist; album only through a single unambiguous match, which never happens without an album, so it is left empty), and the cover only when the item has none or the found cover is larger and the match was by cover or store ID (not by names only). It runs at low priority after ingest, never blocks the item, and a failure only logs.
+- **Covers:** a chosen cover becomes the item's `cover.jpg` (scaled to the size the cards use) and the card is made again with the card-only re-encode ([Cards](#cards)), like any change of title, artist or album.
+- **Where it came from:** the lookup's `album` object (source, ID, URL, how it was matched) is kept in `items.metadata_json` under `lookup`; it is never shown to users. **User-visible text never names the catalogues** (it says "online music catalogues"); TrackSplitter's `notices` (e.g. a catalogue rate limiting) are logged, and shown only as "Some catalogues couldn't be searched right now; try again later."
+
 ## Presets
 
 Added 2026-11-10 (Siggi: "Allow the server admin to choose the preset ... two options -- one for quick encoding, to get a recently requested item to play as quickly as possible, and then another for slower encoding to get better quality, which can start if the room owner (or if someone else on the same server happens to paste the same YouTube link) decides they want to add the item to their library.").
