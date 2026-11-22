@@ -115,7 +115,7 @@ abstract class SettingsContract {
         assertEquals(null, settings.get(Settings.MVFINDER_URL));
         assertEquals("X-Api-Key", settings.get(Settings.MVFINDER_HEADER_NAME));
         assertEquals("", settings.get(Settings.MVFINDER_HEADER_VALUE));
-        assertEquals(LinkPreference.MUSIC_VIDEO, settings.get(Settings.MVFINDER_PREFER));
+        assertEquals(LinkPreference.SONG, settings.get(Settings.MVFINDER_PREFER), "song by default since 2026-11-22");
         assertFalse(settings.get(Settings.MVFINDER_ALLOW_GUESTS));
         assertEquals(15, settings.get(Settings.MVFINDER_MAX_PER_HOUR));
         assertTrue(Settings.MVFINDER_HEADER_VALUE.secret());

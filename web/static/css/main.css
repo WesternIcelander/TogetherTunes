@@ -2432,3 +2432,12 @@ body.now-view-open.pb-idle .app-video * {
 .lookup-covers { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem; margin: 0.5rem 0; }
 .lookup-covers figure { margin: 0; }
 .lookup-covers img.cover { width: 160px; height: 160px; object-fit: contain; }
+
+/* Linked media (docs/library-and-ingest.md#linked-media): the item page's list and the Edit details editor. */
+.link-list { list-style: none; padding: 0; margin: 0.5rem 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.link-list .grow { flex: 1; min-width: 0; overflow-wrap: break-word; word-break: break-word; }
+.link-results { list-style: none; padding: 0; margin: 0.25rem 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.link-pick { text-align: left; }
+.link-add { display: flex; flex-direction: column; gap: 0.4rem; }
+.link-add .row input { min-width: 0; }
+.form .linked-media-editor button { margin-top: 0; }

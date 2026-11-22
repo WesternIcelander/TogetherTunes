@@ -110,6 +110,7 @@ public final class Items {
      *                 who can see the item), else null
      * @param pinned   while the item is pinned (never deleted automatically), for anyone who can
      *                 see the item (not who pinned it), else null
+     * @param links    its linked media ({@link ItemLinks}), in order; empty when none
      */
     public record ItemPage(String id, String kind, String title, String artist, String album,
                            List<String> artists, String albumArtist, Integer track, Integer trackTotal, Integer disc,
@@ -118,7 +119,11 @@ public final class Items {
                            String source, String youtubeId, String status, boolean presentAsAudio,
                            String mediaType, MediaType.Show show, long addedAt,
                            String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover,
-                           StillImageView stillImage, PinView pinned) {
+                           StillImageView stillImage, PinView pinned, List<ItemLinks.Link> links) {
+        public ItemPage {
+            links = links == null ? List.of() : List.copyOf(links);
+        }
+
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, String mediaType, MediaType.Show show,
                         long addedAt, String error, int mediaVersion, You you) {
@@ -135,7 +140,15 @@ public final class Items {
             this(id, kind, title, artist, album, d.artists(), d.albumArtist(), d.track(), d.trackTotal(), d.disc(),
                     d.discTotal(), d.isrc(), d.date(), d.genre(), d.copyright(), d.label(), d.barcode(), durationMs,
                     source, youtubeId, status, presentAsAudio, mediaType, show, addedAt, error, mediaVersion, you,
-                    undo, trim, hasCover, stillImage, pinned);
+                    undo, trim, hasCover, stillImage, pinned, List.of());
+        }
+
+        /** This page with {@code links}. */
+        public ItemPage withLinks(List<ItemLinks.Link> links) {
+            return new ItemPage(id, kind, title, artist, album, artists, albumArtist, track, trackTotal, disc,
+                    discTotal, isrc, date, genre, copyright, label, barcode, durationMs, source, youtubeId, status,
+                    presentAsAudio, mediaType, show, addedAt, error, mediaVersion, you, undo, trim, hasCover,
+                    stillImage, pinned, links);
         }
 
         /** The song details besides title, artist and album. */
@@ -415,7 +428,8 @@ public final class Items {
         return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.details(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.mediaType(), r.show(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
-                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage, pinned);
+                "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage, pinned)
+                .withLinks(ItemLinks.list(c, r.id(), covers));
     }
 
     /**
@@ -736,6 +750,42 @@ public final class Items {
                 throw notFound();
             }
             return page(c, row, you(c, actor, row, rights));
+        });
+    }
+
+    /** {@code audit_log} action of saving an item's linked media. */
+    public static final String AUDIT_LINKS_UPDATED = "item.links_updated";
+
+    /**
+     * Replaces the item's linked media ({@code PUT /api/items/{id}/links},
+     * {@code docs/library-and-ingest.md#linked-media}) for a user who may edit it, and returns the
+     * item page. Audited ({@value #AUDIT_LINKS_UPDATED}, details {@code count}) when the list changed.
+     *
+     * @throws HttpError {@code 404 item_not_found} (the item or a target), {@code 403 forbidden},
+     *                   {@code 400 invalid_link}
+     */
+    public ItemPage setLinks(Actor.User actor, String itemId, List<ItemLinks.NewLink> links, Rights rights,
+                             String clientIp) throws SQLException {
+        Objects.requireNonNull(links);
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            Row row = lockedRow(c, itemId);
+            if (row == null) {
+                throw notFound();
+            }
+            You you = you(c, actor, row, rights);
+            if (!you.canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can change its linked media");
+            }
+            List<ItemLinks.Link> before = ItemLinks.list(c, itemId, Covers.ALWAYS);
+            ItemLinks.replace(c, itemId, links, actor.userId(), now);
+            List<ItemLinks.Link> after = ItemLinks.list(c, itemId, Covers.ALWAYS);
+            if (!before.equals(after)) {
+                AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_LINKS_UPDATED, itemId,
+                        Map.of("count", after.size()));
+            }
+            return page(c, row, you);
         });
     }
 
@@ -1266,6 +1316,7 @@ public final class Items {
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_DELETED, itemId, details);
             MediaVersions.forgetAll(c, itemId);
             PurgedEntries.removeForItem(c, itemId, now);
+            ItemLinks.removeForItem(c, itemId); // its own links and the links to it
             // Votes and skip votes go with their entries (ON DELETE CASCADE).
             for (String sql : List.of("DELETE FROM queue_entries WHERE item_id = ?",
                     "DELETE FROM uploads WHERE item_id = ?",

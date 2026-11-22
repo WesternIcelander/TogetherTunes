@@ -213,6 +213,7 @@ public final class YoutubeImports {
         }
         String videoId;
         MusicLinkResolver.Track fromLink = null;
+        List<MusicLinkResolver.VideoMatch> linkVideos = List.of();
         Optional<String> youtubeId = YoutubeIds.parse(url);
         if (youtubeId.isPresent()) {
             videoId = youtubeId.get();
@@ -227,8 +228,10 @@ public final class YoutubeImports {
             MusicLinkResolver.Resolved resolved = resolver.resolve(actor, link);
             videoId = resolved.videoId();
             fromLink = resolved.track();
+            linkVideos = resolved.videos();
         }
         MusicLinkResolver.Track track = fromLink;
+        List<MusicLinkResolver.VideoMatch> videos = linkVideos;
         boolean library = userId != null && !Boolean.FALSE.equals(addToLibrary);
         ReentrantLock lock = locks[Math.floorMod(videoId.hashCode(), locks.length)];
         lock.lockInterruptibly();
@@ -242,7 +245,7 @@ public final class YoutubeImports {
             String itemId = UuidV7.newId();
             long now = EpochMs.now(clock);
             boolean added = db.write(c -> {
-                insertItem(c, itemId, videoId, meta, track, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
+                insertItem(c, itemId, videoId, meta, track, videos, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
                 boolean add = library && Classify.prepareAdd(c, userId, itemId, classification, userId, now);
                 jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE, add ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                 if (add) {
@@ -599,10 +602,11 @@ public final class YoutubeImports {
      * The new item's row. With {@code track} (the import came from a link to another music service),
      * that track's title, artists, album and ISRC are the item's details instead of what yt-dlp
      * reports (each only where the track has it), and {@code metadata_json} records
-     * {@code link: {service, id}}.
+     * {@code link: {service, id, videos?}} ({@code videos}: MVFinder's video matches that weren't
+     * imported, candidates for "Find a music video"; only when there are any).
      */
     private void insertItem(Connection c, String itemId, String videoId, YoutubeMetadata meta,
-                            MusicLinkResolver.Track track, String userId, String guestId, boolean presentAsAudio,
+                            MusicLinkResolver.Track track, List<MusicLinkResolver.VideoMatch> videos, String userId, String guestId, boolean presentAsAudio,
                             long now) throws SQLException {
         String title = meta.title();
         String artist = meta.artist();
@@ -624,6 +628,11 @@ public final class YoutubeImports {
             com.google.gson.JsonObject link = new com.google.gson.JsonObject();
             link.addProperty("service", track.service().wire());
             link.addProperty("id", track.id());
+            if (!videos.isEmpty()) {
+                com.google.gson.JsonArray v = new com.google.gson.JsonArray();
+                videos.forEach(m -> v.add(m.toJson()));
+                link.add("videos", v);
+            }
             metadata.add("link", link);
         }
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, duration_ms,"

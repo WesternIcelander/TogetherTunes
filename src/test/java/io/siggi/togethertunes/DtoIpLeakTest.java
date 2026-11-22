@@ -135,6 +135,8 @@ class DtoIpLeakTest {
             "io.siggi.togethertunes.library.Classify$Suggestion",
             "io.siggi.togethertunes.library.Classify$SuggestedShow",
             "io.siggi.togethertunes.library.Items$ItemPage",
+            "io.siggi.togethertunes.library.ItemLinks$Link",
+            "io.siggi.togethertunes.library.ItemLinks$Target",
             "io.siggi.togethertunes.library.Items$JobView",
             "io.siggi.togethertunes.library.Items$UndoView",
             "io.siggi.togethertunes.library.Items$StillImageView",
@@ -368,6 +370,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Items$LookupSource", "what an online lookup of an item needs, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Options", "the mvfinder.* settings a link resolution reads, server-side only (its toString leaves the header value out)"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Resolved", "a resolved link's video ID and track, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$VideoMatch", "MVFinder's video matches, kept in the new item's metadata_json (never sent as such)"),
+            Map.entry("io.siggi.togethertunes.library.ItemLinks$NewLink", "a parsed PUT /api/items/{id}/links entry, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Track", "a resolved link's track, written into the new item's columns"),
             Map.entry("io.siggi.togethertunes.library.MusicLinks$Link", "a parsed music-service link, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MetadataLookup$Query", "a TrackSplitter lookup's arguments, server-side only"),
@@ -794,6 +798,11 @@ class DtoIpLeakTest {
                 new io.siggi.togethertunes.library.Classify.SuggestedShow("Some Show", 1, 2)));
         produced.add(new Items.StillImageView(1_700_000_000_000L)); // the item page's still-image warning
         produced.add(new Items.PinView(1_700_000_000_000L)); // the item page's pin (not who pinned it)
+        // the item page's linked media: a linked item's summary and an external link
+        produced.add(new io.siggi.togethertunes.library.ItemLinks.Link("l1", "music_video",
+                new io.siggi.togethertunes.library.ItemLinks.Target("i1", "Song", "Artist", null, "ready", "music_video"),
+                null, null));
+        produced.add(new io.siggi.togethertunes.library.ItemLinks.Link("l2", "external", null, "https://a.example/", "A"));
         // GET /api/library/shows: the library's entries grouped by show and season
         var showsCtor = Class.forName("io.siggi.togethertunes.library.LibraryApi$Shows").getDeclaredConstructors()[0];
         showsCtor.setAccessible(true);
@@ -1267,6 +1276,8 @@ class DtoIpLeakTest {
         expect(200, admin, "DELETE", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PUT", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
+        expect(200, admin, "PUT", "/api/items/" + itemId + "/links",
+                "{\"links\":[{\"type\":\"external\",\"url\":\"https://a.example/\",\"label\":\"A\"}]}");
         // looking its details up online (a fake TrackSplitter), the review's cover, applying the details
         JsonObject found = json(expect(200, admin, "POST", "/api/items/" + itemId + "/lookup", "{}"));
         String lookupToken = found.get("lookupToken").getAsString();

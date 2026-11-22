@@ -41,7 +41,8 @@ import java.util.Set;
  *       "isrc"?, "date"?, "genre"?, "copyright"?, "label"?, "barcode"?, "durationMs"?, "source",
  *       "youtubeId"?, "status", "presentAsAudio", "mediaType", "show"?: {"name", "season"?, "episode"},
  *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry", "canPin", "canDeleteRecord"}, "pinned"?: {"pinnedAt"},
- *       "undo"?: {"changedAt"}}}. The song details ({@link SongDetails}) are left out when empty;
+ *       "undo"?: {"changedAt"}, "links": [{"id", "type", "item"?: {"id", "title", "artist"?, "coverUrl"?,
+ *       "status", "mediaType"}, "url"?, "label"?}]}}. The song details ({@link SongDetails}) are left out when empty;
  *       {@code artists} only with two or more names. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
@@ -68,6 +69,15 @@ import java.util.Set;
  *       digits (stored upper case, hyphens dropped), {@code date} {@code YYYY[-MM[-DD]]},
  *       {@code barcode} 8 to 14 digits. {@code 400 invalid_<field>} in snake case
  *       ({@code invalid_artists}, {@code invalid_album_artist}, {@code invalid_track_total}, …).</li>
+ *   <li>{@code PUT /api/items/{id}/links} {@code {"links": [{"type", "itemId"? | "url"?, "label"?}]}} → the
+ *       item page: replace the item's linked media ({@link ItemLinks}, {@link Items#setLinks}).
+ *       {@code type} {@code music_video} / {@code lyric_video} (with {@code itemId}) or {@code external}
+ *       (with an {@code http(s)} {@code url} and an optional {@code label}, ≤ 100 characters). Users
+ *       who may edit the item ({@code 401 not_authenticated}, {@code 403 forbidden}); {@code 404
+ *       item_not_found} (the item or a target); {@code 400 invalid_link} with {@code reason}
+ *       ({@code bad_type}, {@code not_an_item}, {@code bad_url}, {@code bad_label}, {@code self_link},
+ *       {@code duplicate}, {@code too_many}, {@code bad_body}) and the link's {@code index};
+ *       {@code 400 unknown_field}.</li>
  *   <li>{@code POST /api/items/{id}/undo} (no body) → the item page: go back to the previous media
  *       version ({@code docs/library-and-ingest.md#undo}, {@link Items#undo}). Users who may edit
  *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
@@ -150,6 +160,7 @@ public final class ItemsApi {
         router.get("/api/items/{id}/job", this::job);
         router.post("/api/items/{id}/undo", this::undo);
         router.post("/api/items/{id}/trim", this::trim);
+        router.put("/api/items/{id}/links", this::setLinks);
         router.put("/api/items/{id}/pin", this::pin, permissions.hook(Permission.LIBRARY_PIN));
         router.delete("/api/items/{id}/pin", this::unpin, permissions.hook(Permission.LIBRARY_PIN));
         if (youtube != null) {
@@ -372,6 +383,17 @@ public final class ItemsApi {
         if (lookupAlbum != null) {
             items.saveLookup(itemId, lookupAlbum);
         }
+        response.header("Cache-Control", "no-store");
+        response.json(page);
+    }
+
+    private void setLinks(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        if (!(actor instanceof Actor.User user)) {
+            throw new HttpError(401, "not_authenticated", "Log in first");
+        }
+        List<ItemLinks.NewLink> links = ItemLinks.parse(request.readJson(JsonObject.class));
+        Items.ItemPage page = items.setLinks(user, request.pathParam("id"), links, rights(user), request.clientIp());
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

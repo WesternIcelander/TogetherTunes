@@ -690,7 +690,7 @@ class AdminApiTest {
         assertFalse(value.get("isSet").getAsBoolean());
         assertEquals("X-Api-Key", find(items, "mvfinder.headerName").get("value").getAsString());
         assertFalse(find(items, "mvfinder.url").has("value"), "off by default");
-        assertEquals("music_video", find(items, "mvfinder.prefer").get("value").getAsString());
+        assertEquals("song", find(items, "mvfinder.prefer").get("value").getAsString());
         assertEquals(List.of("music_video", "song"), strings(find(items, "mvfinder.prefer").getAsJsonArray("options")));
         assertFalse(find(items, "mvfinder.allowGuests").get("value").getAsBoolean());
         assertEquals(15, find(items, "mvfinder.maxPerHour").get("value").getAsInt());

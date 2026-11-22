@@ -155,6 +155,41 @@ class MusicLinkResolverTest {
     }
 
     @Test
+    void songIsTheDefaultAndTheVideoMatchesAreKept() throws Exception {
+        assertEquals(LinkPreference.SONG, io.siggi.togethertunes.settings.Settings.MVFINDER_PREFER.defaultValue());
+        options = options(fake.url(), SECRET, io.siggi.togethertunes.settings.Settings.MVFINDER_PREFER.defaultValue(),
+                false, 15);
+        MusicLinkResolver.Resolved r = resolver.resolve(alice, TRACK);
+        assertEquals(FakeMvfinder.SONG_ID, r.videoId());
+        assertEquals(List.of(new MusicLinkResolver.VideoMatch(FakeMvfinder.VIDEO_ID, "リモコン -NT ver.-/ 鏡音リンレンNT - ワンオポ",
+                List.of("Wonderfulopportunity"), 314_000L, "music_video")), r.videos());
+
+        // every video type is kept, in MVFinder's order; songs, user uploads, bad IDs and repeats aren't
+        fake.body = "{\"source\":{},\"matches\":["
+                + "{\"type\":\"song\",\"videoId\":\"" + FakeMvfinder.SONG_ID + "\"},"
+                + "{\"type\":\"lyric_video\",\"videoId\":\"lllllllllll\",\"title\":\"L\"},"
+                + "{\"type\":\"user_video\",\"videoId\":\"uuuuuuuuuuu\"},"
+                + "{\"type\":\"visualizer\",\"videoId\":\"vvvvvvvvvvv\"},"
+                + "{\"type\":\"official_video\",\"videoId\":\"ooooooooooo\"},"
+                + "{\"type\":\"music_video\",\"videoId\":\"bad\"},"
+                + "{\"type\":\"music_video\",\"videoId\":\"lllllllllll\"}]}";
+        r = resolver.resolve(alice, TRACK);
+        assertEquals(FakeMvfinder.SONG_ID, r.videoId());
+        assertEquals(List.of("lllllllllll", "vvvvvvvvvvv", "ooooooooooo"),
+                r.videos().stream().map(MusicLinkResolver.VideoMatch::videoId).toList());
+        assertEquals(List.of("lyric_video", "visualizer", "official_video"),
+                r.videos().stream().map(MusicLinkResolver.VideoMatch::type).toList());
+        assertNull(r.videos().get(1).durationMs());
+
+        // the imported video isn't among them
+        options = options(fake.url(), SECRET, LinkPreference.MUSIC_VIDEO, false, 15);
+        fake.body = FakeMvfinder.README_TRACK;
+        r = resolver.resolve(alice, TRACK);
+        assertEquals(FakeMvfinder.VIDEO_ID, r.videoId());
+        assertEquals(List.of(), r.videos());
+    }
+
+    @Test
     void errors() {
         fake.status = 404;
         fake.body = "{\"error\":{\"status\":404,\"message\":\"Spotify track not found\"}}";

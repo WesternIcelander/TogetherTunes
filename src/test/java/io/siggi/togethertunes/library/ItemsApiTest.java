@@ -378,7 +378,7 @@ class ItemsApiTest {
         assertEquals(JsonParser.parseString("{\"id\":\"" + id + "\",\"kind\":\"video\",\"title\":\"Song\","
                 + "\"artist\":\"Artist\",\"source\":\"upload\",\"status\":\"ready\",\"presentAsAudio\":false,"
                 + "\"mediaType\":\"uncategorized\",\"addedAt\":3,\"mediaVersion\":0,\"hasCover\":false,\"you\":{\"inLibrary\":false,\"canEdit\":false,\"canPurge\":false,"
-                + "\"canRetry\":false,\"canPin\":false,\"canDeleteRecord\":false}}"), page);
+                + "\"canRetry\":false,\"canPin\":false,\"canDeleteRecord\":false},\"links\":[]}"), page);
         JsonObject mine = json(call("GET", "/api/items/" + id, alice, null)).getAsJsonObject("you");
         assertTrue(mine.get("inLibrary").getAsBoolean() && mine.get("canEdit").getAsBoolean());
         assertFalse(mine.get("canPurge").getAsBoolean());

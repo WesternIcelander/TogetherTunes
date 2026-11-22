@@ -6,6 +6,7 @@ import { withClassification } from "./classifyprompt.js";
 import { h } from "./dom.js";
 import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
 import { mediaTypeLabel, type MediaType, type ShowInfo } from "./mediatypes.js";
+import type { ItemLink } from "./links.js";
 import type { SongDetails } from "./songdetails.js";
 
 export type ItemStatus = "pending" | "processing" | "ready" | "failed" | "purged";
@@ -55,6 +56,8 @@ export interface ItemPage extends ItemSummary, SongDetails {
     videoStartMs: number; videoEndMs?: number; originalMs: number;
     audioStartMs?: number; audioEndMs?: number; audioOnlyMs?: number; firstGopFrames?: number;
   };
+  /** Its linked media (docs/library-and-ingest.md#linked-media), in order. */
+  links?: ItemLink[];
 }
 
 export interface LibraryEntry {

@@ -82,8 +82,46 @@ public final class MusicLinkResolver {
                         String isrc) {
     }
 
-    /** A resolved link: the YouTube video to import and the link's track. */
-    public record Resolved(String videoId, Track track) {
+    /**
+     * One of MVFinder's video matches ({@code music_video}, {@code lyric_video},
+     * {@code official_video}, {@code visualizer}) that wasn't imported: kept in the new item's
+     * {@code metadata_json.link.videos} as a candidate for "Find a music video"
+     * ({@code docs/library-and-ingest.md#linked-media}).
+     *
+     * @param durationMs null when MVFinder didn't say
+     */
+    public record VideoMatch(String videoId, String title, List<String> artists, Long durationMs, String type) {
+        /** The JSON stored in {@code metadata_json.link.videos}. */
+        public JsonObject toJson() {
+            JsonObject o = new JsonObject();
+            o.addProperty("videoId", videoId);
+            if (title != null) {
+                o.addProperty("title", title);
+            }
+            JsonArray a = new JsonArray();
+            artists.forEach(a::add);
+            o.add("artists", a);
+            if (durationMs != null) {
+                o.addProperty("durationMs", durationMs);
+            }
+            o.addProperty("type", type);
+            return o;
+        }
+    }
+
+    /** Video match types kept as candidates ({@link VideoMatch}). */
+    static final List<String> VIDEO_TYPES = List.of("music_video", "lyric_video", "official_video", "visualizer");
+    /** At most this many video matches are kept. */
+    static final int MAX_VIDEOS = 10;
+
+    /**
+     * A resolved link: the YouTube video to import, the link's track, and MVFinder's video matches
+     * other than the imported one (in MVFinder's order, at most {@link #MAX_VIDEOS}).
+     */
+    public record Resolved(String videoId, Track track, List<VideoMatch> videos) {
+        public Resolved(String videoId, Track track) {
+            this(videoId, track, List.of());
+        }
     }
 
     private final OptionsSource options;
@@ -262,7 +300,45 @@ public final class MusicLinkResolver {
         if (chosen == null) {
             throw notResolved();
         }
-        return new Resolved(chosen, track(answer, link));
+        return new Resolved(chosen, track(answer, link), videos(matchesEl.getAsJsonArray(), chosen));
+    }
+
+    /** MVFinder's video matches ({@link #VIDEO_TYPES}) except {@code chosen}, deduplicated by ID. */
+    static List<VideoMatch> videos(JsonArray matches, String chosen) {
+        List<VideoMatch> out = new ArrayList<>();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        seen.add(chosen);
+        for (JsonElement m : matches) {
+            if (!m.isJsonObject() || out.size() >= MAX_VIDEOS) {
+                continue;
+            }
+            JsonObject o = m.getAsJsonObject();
+            String type = string(o, "type");
+            String videoId = string(o, "videoId");
+            if (type == null || !VIDEO_TYPES.contains(type) || !YoutubeIds.isValidId(videoId) || !seen.add(videoId)) {
+                continue;
+            }
+            List<String> artists = new ArrayList<>();
+            JsonElement a = o.get("artists");
+            if (a != null && a.isJsonArray()) {
+                for (JsonElement n : (JsonArray) a) {
+                    if (n.isJsonPrimitive() && n.getAsJsonPrimitive().isString()) {
+                        artists.add(n.getAsString());
+                    }
+                }
+            }
+            Long durationMs = null;
+            JsonElement d = o.get("durationMs");
+            if (d != null && d.isJsonPrimitive() && d.getAsJsonPrimitive().isNumber()) {
+                double v = d.getAsDouble();
+                if (v > 0 && v < 1e12) {
+                    durationMs = (long) v;
+                }
+            }
+            out.add(new VideoMatch(videoId, UploadMetadata.clean(string(o, "title")), SongDetails.cleanNames(artists),
+                    durationMs, type));
+        }
+        return List.copyOf(out);
     }
 
     private static Track track(JsonObject answer, MusicLinks.Link link) {

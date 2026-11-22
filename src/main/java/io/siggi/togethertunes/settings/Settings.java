@@ -98,7 +98,7 @@ public final class Settings {
     public static final SettingKey<String> MVFINDER_HEADER_VALUE = SettingKey.secret("mvfinder.headerValue", 1000);
     /** Which match a resolved link imports. */
     public static final SettingKey<LinkPreference> MVFINDER_PREFER = SettingKey.enumeration("mvfinder.prefer",
-            LinkPreference.class, LinkPreference.MUSIC_VIDEO, LinkPreference::wireName);
+            LinkPreference.class, LinkPreference.SONG, LinkPreference::wireName);
     /** Whether guests may request such links (each new one can spend the music services' quotas). */
     public static final SettingKey<Boolean> MVFINDER_ALLOW_GUESTS = SettingKey.bool("mvfinder.allowGuests", false);
     /** Link resolutions per actor (user or guest) per hour. */

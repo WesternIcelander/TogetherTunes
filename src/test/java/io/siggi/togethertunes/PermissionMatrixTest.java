@@ -304,6 +304,9 @@ class PermissionMatrixTest {
             row("PUT /api/items/{id}/cover", c -> Call.put("/api/items/" + c.itemId() + "/cover",
                     "{\"lookupToken\":\"made-up\"}"), 401, 401, 403, 400),
             // Pins: library.pin (not in the default user role; admins hold every permission).
+            // Linked media: those who may edit (an empty list is a valid save; ItemLinksApiTest covers the rest).
+            row("PUT /api/items/{id}/links", c -> Call.put("/api/items/" + c.itemId() + "/links", "{\"links\":[]}"),
+                    401, 401, 403, 200),
             row("PUT /api/items/{id}/pin", c -> Call.put("/api/items/" + c.itemId() + "/pin", null), 401, 401, 403, 200),
             row("DELETE /api/items/{id}/pin", c -> Call.delete("/api/items/" + c.itemId() + "/pin"), 401, 401, 403, 200),
             // A view (playback outside a room): whoever may play the item, as for its media files.

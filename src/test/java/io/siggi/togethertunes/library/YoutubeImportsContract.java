@@ -828,6 +828,27 @@ abstract class YoutubeImportsContract {
     }
 
     @Test
+    void preferSongKeepsTheVideoMatchesAsCandidates() throws Exception {
+        try (FakeMvfinder fake = new FakeMvfinder()) {
+            imports.linkResolver(new MusicLinkResolver(() -> new MusicLinkResolver.Options(fake.url(), "X-Api-Key", "",
+                    io.siggi.togethertunes.settings.LinkPreference.SONG, false, 15), clock));
+            YoutubeImports.Imported r = imports.importUrl(alice, SPOTIFY_LINK, null, null, MV);
+            assertEquals(FakeMvfinder.SONG_ID, item(r.itemId()).get("youtube_id"), "the song is imported");
+            var link = JsonParser.parseString((String) item(r.itemId()).get("metadata_json")).getAsJsonObject()
+                    .getAsJsonObject("link");
+            assertEquals("spotify", link.get("service").getAsString());
+            var videos = link.getAsJsonArray("videos");
+            assertEquals(1, videos.size());
+            var v = videos.get(0).getAsJsonObject();
+            assertEquals(FakeMvfinder.VIDEO_ID, v.get("videoId").getAsString());
+            assertEquals("music_video", v.get("type").getAsString());
+            assertEquals(314_000L, v.get("durationMs").getAsLong());
+            assertEquals("[\"Wonderfulopportunity\"]", v.get("artists").toString());
+            assertEquals(1, calls().size(), "the video isn't imported");
+        }
+    }
+
+    @Test
     void aLinkToAnItemThatAlreadyExistsKeepsItsDetails() throws Exception {
         YoutubeImports.Imported first = imports.importUrl(alice, "https://youtu.be/" + FakeMvfinder.VIDEO_ID, null, null, MV);
         try (FakeMvfinder fake = new FakeMvfinder()) {

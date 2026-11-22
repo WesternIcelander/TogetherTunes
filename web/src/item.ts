@@ -10,8 +10,8 @@ import { api, ApiError } from "./api.js";
 import { allowedTypes, mediaTypeBody, mediaTypeLabel, stillImageWarning } from "./mediatypes.js";
 import { button, formatDuration, formatTime, h } from "./dom.js";
 import {
-  ingestBadge, jobSummary, kindLabel, mediaPath, playlistPicker, removeFromLibrary, watchItem, type ItemPage,
-  type JobView,
+  ingestBadge, itemPath, jobSummary, kindLabel, mediaPath, playlistPicker, removeFromLibrary, watchItem, type ItemPage,
+  type JobView, type LibraryEntry, type Page,
 } from "./media.js";
 import { viewScope } from "./nav.js";
 import { checkPasswordChange, loadMe, message, onReady, renderNav, type Me } from "./session.js";
@@ -26,6 +26,10 @@ import {
   applyBody, ARTWORK_TYPES, artworkProblem, candidateText, coverChecked, NOTHING_FOUND, pickBody, reviewRows, sizeText,
   type LookupResult, type ReviewField,
 } from "./lookup.js";
+import {
+  addProblem, externalText, invalidLinkText, LINK_TYPES, linkNames, linksBody, linkTypeLabel, moveLink, removeLink,
+  sameLinks, type ItemLink, type LinkTarget, type LinkType,
+} from "./links.js";
 import {
   addName, detailRows, detailsBody, detailsInput, fieldOfError, initialArtists, moveName, removeName, type DetailsInput,
   type FieldErrors,
@@ -365,6 +369,159 @@ function artworkPanel(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLEl
   return h("div", { class: "row artwork" }, pick, input, error);
 }
 
+/**
+ * The Linked media section of the item page (docs/library-and-ingest.md#linked-media): music and
+ * lyric videos with title and artist, linking to their item pages; external links with their label
+ * or host, opening in a new tab.
+ */
+function linksSection(item: ItemPage): HTMLElement | null {
+  const links = item.links ?? [];
+  if (links.length === 0) return null;
+  const names = linkNames(links);
+  return h("section", { class: "panel linked-media" }, h("h2", { text: "Linked media" }),
+    h("ul", { class: "link-list" }, ...links.map((l, i) => h("li", {},
+      h("span", { class: "muted", text: (names[i] ?? linkTypeLabel(l.type)) + ": " }),
+      ...linkNodes(l)))));
+}
+
+/** A link's title (an item page link, or the external link in a new tab) and artist. */
+function linkNodes(l: ItemLink): Node[] {
+  if (l.type === "external") {
+    return [h("a", { href: l.url ?? "", target: "_blank", rel: "noopener noreferrer", text: externalText(l) })];
+  }
+  const t = l.item;
+  if (t === undefined) return [];
+  return nodes(h("a", { href: itemPath(t.id), text: t.title }),
+    t.artist !== undefined && t.artist !== "" ? h("span", { class: "muted", text: " · " + t.artist }) : null,
+    t.status === "purged" ? h("span", { class: "muted", text: " (media expired)" }) : null);
+}
+
+/** A library entry's item as a link target. */
+function targetOf(e: { id: string; title: string; artist?: string; status: string; mediaType: string }): LinkTarget {
+  const t: LinkTarget = { id: e.id, title: e.title, status: e.status, mediaType: e.mediaType };
+  if (e.artist !== undefined) t.artist = e.artist;
+  return t;
+}
+
+/**
+ * Edit details → Linked media: the list (reorder, remove) and Add: the type; for a video type,
+ * choose an item from your library (a search over it) or paste a link (imported like Add from link,
+ * into your library); for External, a URL and an optional label. `links()` is the list as it stands;
+ * it is saved with the details (`PUT /api/items/{id}/links`).
+ */
+function linksEditor(item: ItemPage): { el: HTMLElement; links(): ItemLink[] } {
+  let links: ItemLink[] = (item.links ?? []).slice();
+  const list = h("ul", { class: "link-list link-editor" });
+  const error = h("p", { class: "error", role: "alert" });
+  const draw = (): void => {
+    const names = linkNames(links);
+    list.replaceChildren(...links.map((l, i) => h("li", { class: "artist-row" },
+      h("span", { class: "grow" }, h("span", { class: "muted", text: (names[i] ?? "") + ": " }), ...linkNodes(l)),
+      smallButton("↑", "Move up", () => { links = moveLink(links, i, -1); draw(); }, i === 0),
+      smallButton("↓", "Move down", () => { links = moveLink(links, i, 1); draw(); }, i === links.length - 1),
+      smallButton("✕", "Remove", () => { links = removeLink(links, i); draw(); }))));
+    if (links.length === 0) list.append(h("li", { class: "muted", text: "None yet." }));
+  };
+  const add = (l: ItemLink): boolean => {
+    const problem = addProblem(item.id, links, l);
+    error.textContent = problem ?? "";
+    if (problem !== undefined) return false;
+    links = links.concat([l]);
+    draw();
+    return true;
+  };
+
+  const type = h("select", { "aria-label": "Type" },
+    ...LINK_TYPES.map((t) => h("option", { value: t, text: linkTypeLabel(t) })));
+  // video types: choose from the library, or paste a link
+  const search = h("input", { type: "search", placeholder: "Search your library", "aria-label": "Search your library",
+    class: "grow" });
+  const results = h("ul", { class: "link-results" });
+  let searchSeq = 0;
+  const runSearch = (): void => {
+    const q = search.value.trim();
+    const seq = ++searchSeq;
+    if (q === "") {
+      results.replaceChildren();
+      return;
+    }
+    api<Page<LibraryEntry>>("GET", "/api/library?q=" + encodeURIComponent(q) + "&limit=10")
+      .then((page) => {
+        if (seq !== searchSeq || SIGNAL.aborted) return;
+        const entries = page.items.filter((e) => e.item.id !== item.id);
+        results.replaceChildren(...(entries.length === 0 ? [h("li", { class: "muted", text: "Nothing found." })]
+          : entries.map((e) => {
+            const pick = h("button", { type: "button", class: "link-pick" }, h("strong", { text: e.item.title }),
+              e.item.artist !== undefined ? h("span", { class: "muted", text: " · " + e.item.artist }) : "");
+            pick.addEventListener("click", () => {
+              if (add({ type: type.value as LinkType, item: targetOf(e.item) })) {
+                search.value = "";
+                results.replaceChildren();
+              }
+            });
+            return h("li", {}, pick);
+          })));
+      })
+      .catch((e: unknown) => { if (seq === searchSeq) error.textContent = message(e); });
+  };
+  let searchTimer = 0;
+  search.addEventListener("input", () => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(runSearch, 250);
+  });
+  search.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); runSearch(); } });
+  // text inputs (not type=url): a half-typed link here must not block the form's Save
+  const paste = h("input", { type: "text", inputmode: "url", placeholder: "https://…", "aria-label": "Link to a video",
+    class: "grow" });
+  const status = h("p", { class: "muted small", role: "status" });
+  const importLink = button("Add link", async () => {
+    const url = paste.value.trim();
+    if (url === "") return;
+    error.textContent = "";
+    status.textContent = "Looking up the link…";
+    try {
+      const r = await withClassification((c) => api<{ itemId: string; status: string }>("POST", "/api/imports/youtube",
+        c === undefined ? { url, addToLibrary: true } : { url, addToLibrary: true, ...c }), url, true);
+      if (r === null) return;
+      const target = await api<ItemPage>("GET", "/api/items/" + encodeURIComponent(r.itemId));
+      if (SIGNAL.aborted) return;
+      if (add({ type: type.value as LinkType, item: targetOf(target) })) paste.value = "";
+    } finally {
+      status.textContent = "";
+    }
+  }, (e) => { status.textContent = ""; error.textContent = message(e); });
+  const canImport = me.kind === "user" && me.permissions.indexOf("library.youtube") >= 0;
+  const videoPart = h("div", { class: "link-add-video" },
+    h("div", { class: "row" }, search), results,
+    canImport ? h("div", { class: "row" }, paste, importLink) : null, status);
+  // external: URL and label
+  const url = h("input", { type: "text", inputmode: "url", placeholder: "https://…", "aria-label": "Link", class: "grow" });
+  const label = h("input", { maxlength: "100", placeholder: "Label (optional)", "aria-label": "Label" });
+  const addExternal = smallButton("Add", "Add the link", () => {
+    if (add({ type: "external", url: url.value.trim(), label: label.value })) {
+      url.value = "";
+      label.value = "";
+    }
+  });
+  const externalPart = h("div", { class: "row link-add-external" }, url, label, addExternal);
+  // Enter in an Add field adds (instead of saving the whole form)
+  for (const [input, go] of [[paste, importLink], [url, addExternal], [label, addExternal]] as const) {
+    input.addEventListener("keydown", (ev) => { if (ev.key === "Enter") { ev.preventDefault(); go.click(); } });
+  }
+  const showPart = (): void => {
+    const external = type.value === "external";
+    videoPart.hidden = external;
+    externalPart.hidden = !external;
+    error.textContent = "";
+  };
+  type.addEventListener("change", showPart);
+  showPart();
+  draw();
+  const el = h("fieldset", { class: "linked-media-editor" }, h("legend", { text: "Linked media" }), list,
+    h("div", { class: "link-add" }, h("label", {}, "Add ", type), videoPart, externalPart), error);
+  return { el, links: () => links.slice() };
+}
+
 function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
   const start = detailsInput(item);
   /** The inline problem beside each song details field. */
@@ -382,6 +539,7 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       h("label", {}, "of", h("input", { name: total, inputmode: "numeric", value: start[total], size: "4" }),
         fieldError(total)));
   const artists = artistsField(item, fieldError("artists"));
+  const linked = linksEditor(item);
   const form = h("form", { class: "form" },
     h("label", {}, "Title", h("input", { name: "title", required: true, maxlength: "300", value: item.title })),
     artists.el,
@@ -405,6 +563,7 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
         h("label", {}, "Season", h("input", { name: "season", inputmode: "numeric", value: item.show?.season !== undefined ? String(item.show.season) : "" })),
         h("label", {}, "Episode", h("input", { name: "episode", inputmode: "numeric", value: item.show !== undefined ? String(item.show.episode) : "" })))
       : null,
+    linked.el,
     h("button", { type: "submit", text: "Save" }));
   const error = h("p", { class: "error", role: "alert" });
   const showFieldErrors = (errors: FieldErrors): void => {
@@ -437,12 +596,25 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
     }
     const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
     if (submit !== null) submit.disabled = true;
-    api<ItemPage>("PATCH", "/api/items/" + encodeURIComponent(item.id), body)
-      .then((updated) => { showNotice("Saved."); onSaved(updated); })
+    // the details, then the linked media when they changed (the whole list)
+    const links = linked.links();
+    const path = "/api/items/" + encodeURIComponent(item.id);
+    api<ItemPage>("PATCH", path, body)
+      .then(async (updated) => {
+        if (!sameLinks(links, item.links ?? [])) {
+          // a refused list keeps the form as it is (the details are saved), with the reason below
+          showNotice("Details saved.");
+          updated = await api<ItemPage>("PUT", path + "/links", linksBody(links));
+        }
+        showNotice("Saved.");
+        onSaved(updated);
+      })
       .catch((e: unknown) => {
         const field = e instanceof ApiError ? fieldOfError(e.code) : undefined;
         if (field !== undefined) showFieldErrors({ [field]: message(e) });
-        error.textContent = message(e);
+        error.textContent = e instanceof ApiError && e.code === "invalid_link"
+          ? invalidLinkText(typeof e.details?.["reason"] === "string" ? e.details["reason"] as string : undefined)
+          : message(e);
       })
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
@@ -834,7 +1006,8 @@ function render(item: ItemPage, job: JobView | undefined): void {
       : null,
     jobFirst ? jobBox : null,
     playerBox,
-    actions));
+    actions,
+    linksSection(item)));
 }
 
 /**

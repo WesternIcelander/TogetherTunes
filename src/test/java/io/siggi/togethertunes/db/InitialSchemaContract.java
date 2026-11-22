@@ -61,6 +61,7 @@ abstract class InitialSchemaContract {
         t("library_entries", "user_id", "item_id", "added_at", "via");
         t("playlists", "id", "owner_id", "name", "description", "created_at", "updated_at", "builtin", "position");
         t("playlist_entries", "id", "playlist_id", "item_id", "position", "added_at");
+        t("item_links", "id", "item_id", "position", "kind", "target_item_id", "url", "label", "added_by", "added_at");
         t("rooms", "id", "slug", "name", "owner_id", "created_at", "visibility", "control_mode", "settings_json",
                 "playback_state", "current_entry_id", "anchor_server_ms", "anchor_position_ms", "version",
                 "current_audio_only", "alone_user_id", "autoplay_stopped_at", "autoplay_stopped_reason",
@@ -159,6 +160,34 @@ abstract class InitialSchemaContract {
         assertThrows(SQLException.class, () -> exec(
                 "INSERT INTO sessions (id, user_id, token_hash, kind, created_at, last_seen_at, expires_at)"
                         + " VALUES ('s1', 'nobody', 'h', 'cookie', 1, 1, 2)"));
+    }
+
+    @Test
+    void itemLinksKeepTheirShape() throws SQLException {
+        seedUserGuestItemRoom();
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ('i2', 'video', 'Video', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        exec("INSERT INTO item_links (id, item_id, position, kind, target_item_id, added_by, added_at)"
+                + " VALUES ('l1', 'i1', 0, 'music_video', 'i2', 'u1', 1)");
+        exec("INSERT INTO item_links (id, item_id, position, kind, url, label, added_at)"
+                + " VALUES ('l2', 'i1', 1, 'external', 'https://a.example/', 'A', 1)");
+        // the same target or URL twice
+        assertThrows(SQLException.class, () -> exec("INSERT INTO item_links (id, item_id, position, kind,"
+                + " target_item_id, added_at) VALUES ('l3', 'i1', 2, 'lyric_video', 'i2', 1)"));
+        assertThrows(SQLException.class, () -> exec("INSERT INTO item_links (id, item_id, position, kind, url,"
+                + " added_at) VALUES ('l3', 'i1', 2, 'external', 'https://a.example/', 1)"));
+        // a link to itself, an unknown kind, a video without a target, an external link without a URL or with a target
+        for (String values : List.of("'music_video', 'i2', NULL", "'karaoke', 'i1', NULL", "'lyric_video', NULL, NULL",
+                "'external', NULL, NULL", "'external', 'i1', 'https://b.example/'", "'music_video', 'i1', 'https://b.example/'")) {
+            assertThrows(SQLException.class, () -> exec("INSERT INTO item_links (id, item_id, position, kind,"
+                    + " target_item_id, url, added_at) VALUES ('l9', 'i2', 0, " + values + ", 1)"), values);
+        }
+        // a target that doesn't exist
+        assertThrows(SQLException.class, () -> exec("INSERT INTO item_links (id, item_id, position, kind,"
+                + " target_item_id, added_at) VALUES ('l9', 'i2', 0, 'music_video', 'nope', 1)"));
+        // no ON DELETE on the items: a delete record removes the rows first
+        assertThrows(SQLException.class, () -> exec("DELETE FROM items WHERE id = 'i2'"));
+        assertEquals(2, count("item_links"));
     }
 
     @Test
