@@ -138,4 +138,52 @@ class RoomViewsTest {
         assertFalse(item("upload", "original.wma", false, -1.0).has("originalType"));
         assertFalse(item("youtube", "original.m4a", true, -1.0).has("originalUrl"));
     }
+    /**
+     * From the database: an audio upload's original is offered only when its personal data was
+     * removed (or it is a format that wasn't cleaned); an .m4a not cleaned yet, or any whose
+     * cleaning failed, plays audio.m4a (docs/library-and-ingest.md#looking-details-up-online).
+     */
+    @Test
+    void originalsWithPersonalDataAreNotOffered(@TempDir Path dir) throws Exception {
+        io.siggi.togethertunes.db.Database db = io.siggi.togethertunes.db.Database.open(
+                "jdbc:sqlite:" + dir.resolve("t.db"), new java.util.Properties(),
+                io.siggi.togethertunes.db.Database.PoolSettings.defaults(io.siggi.togethertunes.db.SqliteDialect.INSTANCE));
+        try {
+            io.siggi.togethertunes.db.MigrationRunner.migrate(db);
+            db.write(conn -> {
+                try (java.sql.PreparedStatement ps = conn.prepareStatement("INSERT INTO users (id, username, display_name,"
+                        + " created_at, disabled) VALUES ('u1', 'uploader', 'uploader', 1, 0)")) {
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+            String[][] cases = {{"original.m4a", null, "false"}, {"original.m4a", "0", "false"}, {"original.m4a", "1", "true"},
+                    {"original.flac", "0", "false"}, {"original.mp3", null, "true"}};
+            java.util.List<QueueEntry> entries = new java.util.ArrayList<>();
+            for (String[] c : cases) {
+                String id = io.siggi.togethertunes.db.UuidV7.newId();
+                db.write(conn -> {
+                    try (java.sql.PreparedStatement ps = conn.prepareStatement("INSERT INTO items (id, kind, title, source,"
+                            + " added_by_user_id, added_at, status, output_profile, last_referenced_at, duration_ms, original_file,"
+                            + " original_web, original_cleaned) VALUES (?, 'audio', 'T', 'upload', 'u1', 1, 'ready', '720p30', 1,"
+                            + " 1000, ?, 1, ?)")) {
+                        ps.setString(1, id);
+                        ps.setString(2, c[0]);
+                        ps.setObject(3, c[1] == null ? null : Integer.valueOf(c[1]));
+                        ps.executeUpdate();
+                    }
+                    return null;
+                });
+                c[1] = id; // from here: the item id
+                entries.add(new QueueEntry("e" + entries.size(), id, null, null, 1, QueueEntry.State.QUEUED, 1, false,
+                        null, "ready", 1000L, true, null, false));
+            }
+            RoomViews.Lookup l = new RoomViews(db).lookup(entries, java.util.List.of());
+            for (String[] c : cases) {
+                assertEquals(Boolean.parseBoolean(c[2]), RoomViews.item(l, c[1]).has("originalUrl"), c[0]);
+            }
+        } finally {
+            db.close();
+        }
+    }
 }

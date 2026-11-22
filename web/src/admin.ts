@@ -526,7 +526,10 @@ function withoutFonts(items: Setting[]): Setting[] {
 }
 
 async function loadSettings(): Promise<void> {
-  loadedSettings = withoutFonts((await api<{ items: Setting[] }>("GET", "/api/admin/settings")).items);
+  const r = await api<{ items: Setting[]; purchaseDataRemoval?: boolean }>("GET", "/api/admin/settings");
+  loadedSettings = withoutFonts(r.items);
+  // Without TrackSplitter, personal data can't be removed from uploads (docs/library-and-ingest.md#looking-details-up-online).
+  element("cleaning-note").hidden = r.purchaseDataRemoval !== false;
   renderSettings();
   await loadStorage();
   await loadYtdlp();

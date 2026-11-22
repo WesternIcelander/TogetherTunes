@@ -167,6 +167,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final Supplier<String> cookiesFile;
     private final EncodePresets presets;
     private volatile MediaVersions versions;
+    private volatile OriginalCleaner cleaner;
+    /**
+     * One lock per item, held for the whole of each of its jobs: the one-time cleaning pass
+     * ({@link OriginalCleaning}) replaces an original only while it holds it, so a job that linked the
+     * old original never publishes it back over the cleaned one.
+     */
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock> itemLocks =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Without a cookies file. */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
@@ -222,6 +230,20 @@ public final class IngestPipeline implements IngestQueue.Handler {
         this.maxDurationSec = Objects.requireNonNull(maxDurationSec);
     }
 
+    /**
+     * What removes personal data from audio uploads before their original is kept
+     * ({@link OriginalCleaner}); without one (or with TrackSplitter not installed) nothing is
+     * cleaned, and an {@code .m4a} original isn't served until the one-time pass cleans it.
+     */
+    public void cleaner(OriginalCleaner cleaner) {
+        this.cleaner = cleaner;
+    }
+
+    /** The lock an item's jobs hold while they run ({@link OriginalCleaning} takes it with {@code tryLock}). */
+    java.util.concurrent.locks.ReentrantLock itemLock(String itemId) {
+        return itemLocks.computeIfAbsent(itemId, k -> new java.util.concurrent.locks.ReentrantLock());
+    }
+
     /** The presets this pipeline encodes with. */
     public EncodePresets presets() {
         return presets;
@@ -254,6 +276,16 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     @Override
     public void run(IngestQueue.Context ctx) throws Exception {
+        java.util.concurrent.locks.ReentrantLock lock = itemLock(ctx.job().itemId());
+        lock.lockInterruptibly();
+        try {
+            runJob(ctx);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void runJob(IngestQueue.Context ctx) throws Exception {
         IngestJob job = ctx.job();
         JobLog log = ctx.log();
         ReferenceCard reference = this.reference.get();
@@ -685,6 +717,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
         // original: every source except a previous encode is kept; only an audio upload's may be played
         Originals.Original original = null;
+        // items.original_cleaned of a new upload's original (null: not cleaned)
+        Boolean cleaned = null;
         if (still != null) {
             // only the audio is kept: the video goes with the kept video version
             original = audioOriginal(source, probe, work, log);
@@ -704,7 +738,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
             log.append("[ingest] kept the original as " + original.file() + " (" + original.codec()
                     + "); not played in browsers while the item is trimmed");
         } else if (sourceKind != SourceKind.PREVIOUS) {
-            long originalUs = probe.durationUs() > 0 ? probe.durationUs() : sourceAudioEndUs;
+            // a new upload's personal data is removed first; the checks below look at the cleaned copy
+            Cleaned clean = sourceKind == SourceKind.STAGED ? cleanUpload(source, probe, scratch, log) : null;
+            MediaProbe keptProbe = clean == null ? probe : clean.probe();
+            cleaned = clean == null ? null : clean.cleaned();
+            long originalUs = keptProbe.durationUs() > 0 ? keptProbe.durationUs() : sourceAudioEndUs;
             // the original is played at the loudness audio.m4a actually has (loudnorm may have compressed it)
             Loudness.Measurement output = null;
             if (applied.usable()) {
@@ -712,8 +750,17 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append(String.format(Locale.ROOT, "[ingest] audio.m4a measures %.2f LUFS, %.2f dBTP",
                         output.inputI(), output.inputTp()));
             }
-            original = Originals.describe(probe, source.getFileName().toString(), applied, output, originalUs, durationUs);
-            linkOrCopy(source, work.resolve(original.file()));
+            original = Originals.describe(keptProbe, source.getFileName().toString(), applied, output, originalUs,
+                    durationUs);
+            if (Boolean.FALSE.equals(cleaned)) {
+                // never served: the web client plays audio.m4a, which carries no tags
+                original = new Originals.Original(original.file(), original.codec(), false, null);
+            }
+            if (clean != null && !clean.file().equals(source)) {
+                Files.move(clean.file(), work.resolve(original.file()));
+            } else {
+                linkOrCopy(source, work.resolve(original.file()));
+            }
             String mismatch = Originals.loudnessMismatch(applied, output);
             log.append("[ingest] kept the original as " + original.file() + " (" + original.codec() + ", "
                     + (original.web() ? "web-playable" : "not web-playable") + ", duration " + seconds(originalUs)
@@ -726,6 +773,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Double lufs = fromPrevious && !normalizePrevious ? item.loudnessLufs()
                 : loudness.usable() ? round2(loudness.inputI()) : null;
         Originals.Original kept = original;
+        if (sourceKind == SourceKind.STAGED) {
+            // before the publish, so the new original is never served without it
+            items.originalCleaned(item.id(), cleaned);
+        }
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         // A re-encode made by the system keeps the previous version for the undo window too, but
         // without Undo (docs/library-and-ingest.md#undo); it is made with the current edit settings.
@@ -749,6 +800,61 @@ public final class IngestPipeline implements IngestQueue.Handler {
             deleteQuietly(staging);
         }
         ctx.progress(1);
+    }
+
+    // ------------------------------------------------------------------ personal data
+
+    /**
+     * The original an audio upload keeps: the cleaned scratch copy (with its probe), or the upload
+     * itself; {@code cleaned} as {@code items.original_cleaned} records it.
+     */
+    private record Cleaned(Path file, Boolean cleaned, MediaProbe probe) {
+    }
+
+    /**
+     * Removes personal data from a new audio upload ({@link OriginalCleaner};
+     * {@code docs/library-and-ingest.md#looking-details-up-online}): an {@code .m4a}, {@code .mp3}
+     * or {@code .flac} is copied into the job's scratch directory (the staged upload may be
+     * hard-linked) and cleaned there with TrackSplitter, then probed again, so the duration check of
+     * {@code original_web} looks at the file that is kept. A failure keeps the upload as it is,
+     * never served ({@code original_cleaned} 0); without TrackSplitter nothing is cleaned (null).
+     */
+    private Cleaned cleanUpload(Path source, MediaProbe probe, Path scratch, JobLog log)
+            throws IOException, InterruptedException {
+        String ext = Originals.extension(probe, source.getFileName().toString());
+        if (!OriginalCleaner.EXTENSIONS.contains(ext)) {
+            return new Cleaned(source, null, probe);
+        }
+        OriginalCleaner c = cleaner;
+        if (c == null || !c.installed()) {
+            log.append("[ingest] personal data: TrackSplitter isn't installed, so purchase data can't be removed"
+                    + ("m4a".equals(ext) ? "; the original isn't played in browsers or served until it is" : ""));
+            return new Cleaned(source, null, probe);
+        }
+        step(log, "remove personal data");
+        Files.createDirectories(scratch);
+        Path copy = scratch.resolve("clean." + ext);
+        Files.copy(source, copy, StandardCopyOption.REPLACE_EXISTING);
+        String why = c.clean(copy, log);
+        MediaProbe after = null;
+        if (why == null) {
+            try {
+                after = MediaProbe.probe(tools, copy, log);
+                if (after.audio() == null || !Originals.codec(after).equals(Originals.codec(probe))) {
+                    why = "the cleaned file isn't the same audio any more ("
+                            + (after.audio() == null ? "no audio" : Originals.codec(after)) + ")";
+                }
+            } catch (ToolException | IngestFailure e) {
+                why = "the cleaned file can't be read: " + e.getMessage();
+            }
+        }
+        if (why != null) {
+            Files.deleteIfExists(copy);
+            log.append("[ingest] personal data couldn't be removed: " + why
+                    + "; the original is kept for re-encodes but never played in browsers or served");
+            return new Cleaned(source, false, probe);
+        }
+        return new Cleaned(copy, true, after);
     }
 
     // ------------------------------------------------------------------ still images

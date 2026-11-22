@@ -42,6 +42,14 @@ public final class ContentIdBackfill {
 
     /** Starts {@link #run} on a daemon thread of minimum priority. */
     public Thread start() {
+        return start(null);
+    }
+
+    /**
+     * Starts {@link #run} on a daemon thread of minimum priority, then {@code then} on the same
+     * thread (work that changes originals, which must come after their content IDs are recorded).
+     */
+    public Thread start(Runnable then) {
         Thread t = new Thread(() -> {
             try {
                 int n = run();
@@ -50,6 +58,9 @@ public final class ContentIdBackfill {
                 }
             } catch (SQLException | RuntimeException e) {
                 LOG.log(System.Logger.Level.WARNING, "Content ID backfill stopped", e);
+            }
+            if (then != null) {
+                then.run();
             }
         }, "content-id-backfill");
         t.setDaemon(true);

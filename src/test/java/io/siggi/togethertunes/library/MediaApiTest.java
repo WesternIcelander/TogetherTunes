@@ -344,6 +344,36 @@ class MediaApiTest {
         assertEquals("file_not_found", code(get("/media/" + video + "/original", alice)));
     }
 
+    /**
+     * Personal data (docs/library-and-ingest.md#looking-details-up-online): an original whose
+     * cleaning failed is never served, an .m4a one only once it was cleaned; other originals that
+     * weren't cleaned are served as before.
+     */
+    @Test
+    void originalsWithPersonalDataAreNotServed() throws Exception {
+        record Case(String file, Integer cleaned, int status) {
+        }
+        for (Case c : java.util.List.of(new Case("original.m4a", null, 404), new Case("original.m4a", 0, 404),
+                new Case("original.m4a", 1, 200), new Case("original.flac", 0, 404), new Case("original.flac", 1, 200),
+                new Case("original.mp3", null, 200), new Case("original.wav", null, 200))) {
+            String song = item("audio", "ready", c.file());
+            write(song, c.file(), 100);
+            db.write(conn -> {
+                try (PreparedStatement ps = conn.prepareStatement("UPDATE items SET original_cleaned = ? WHERE id = ?")) {
+                    ps.setObject(1, c.cleaned());
+                    ps.setString(2, song);
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+            HttpResponse<byte[]> r = get("/media/" + song + "/original", alice);
+            assertEquals(c.status(), r.statusCode(), c.toString());
+            if (c.status() == 404) {
+                assertEquals("file_not_found", code(r));
+            }
+        }
+    }
+
     private void setVersion(String itemId, int version) throws Exception {
         db.write(c -> {
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_version = ? WHERE id = ?")) {

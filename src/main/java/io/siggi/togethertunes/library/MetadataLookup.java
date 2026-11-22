@@ -6,6 +6,9 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.google.gson.JsonPrimitive;
 import io.siggi.togethertunes.http.HttpError;
+import io.siggi.togethertunes.ingest.JobLog;
+import io.siggi.togethertunes.ingest.OriginalCleaner;
+import io.siggi.togethertunes.ingest.PurchaseData;
 import io.siggi.togethertunes.ingest.ToolCall;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.ToolResult;
@@ -22,6 +25,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
@@ -46,14 +50,20 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>Catalogue names (the album's {@code source}) and TrackSplitter's {@code notices} are logged and
  * kept server-side only; callers learn that there were notices ({@link Result#notices}) and show
  * {@link #NOTICE_TEXT}.
+ *
+ * <p>It also removes personal data from audio uploads ({@link #clean}, {@link OriginalCleaner}):
+ * {@code metadata --no-lookup --in-place} on a scratch copy, never online, not counted against the
+ * hourly limit, in the same one-at-a-time queue as background work.
  */
-public final class MetadataLookup {
+public final class MetadataLookup implements OriginalCleaner {
     private static final System.Logger LOG = System.getLogger(MetadataLookup.class.getName());
 
     /** How long a person's lookup waits for the running one. */
     public static final Duration QUEUE_WAIT = Duration.ofSeconds(60);
     /** How long one TrackSplitter process may take. */
     public static final Duration TIMEOUT = Duration.ofSeconds(60);
+    /** How long one cleaning ({@link #clean}) may take: the whole file may be rewritten. */
+    public static final Duration CLEAN_TIMEOUT = Duration.ofSeconds(120);
     /** Lookups per user per hour. */
     public static final int PER_HOUR = 30;
     /** How many albums a lookup without an album lists. */
@@ -122,6 +132,7 @@ public final class MetadataLookup {
     private final Clock clock;
     private volatile Duration queueWait = QUEUE_WAIT;
     private volatile Duration timeout = TIMEOUT;
+    private volatile Duration cleanTimeout = CLEAN_TIMEOUT;
     private final Map<String, Deque<Long>> starts = new HashMap<>();
 
     private final ReentrantLock lock = new ReentrantLock();
@@ -145,6 +156,7 @@ public final class MetadataLookup {
     }
 
     /** Whether TrackSplitter is installed (else the feature is off). */
+    @Override
     public boolean installed() {
         return executable != null && cacheDir != null;
     }
@@ -153,6 +165,11 @@ public final class MetadataLookup {
     void limits(Duration queueWait, Duration timeout) {
         this.queueWait = Objects.requireNonNull(queueWait);
         this.timeout = Objects.requireNonNull(timeout);
+    }
+
+    /** A shorter cleaning timeout than {@link #CLEAN_TIMEOUT} (for tests). */
+    public void cleanTimeout(Duration cleanTimeout) {
+        this.cleanTimeout = Objects.requireNonNull(cleanTimeout);
     }
 
     /** TrackSplitter's cache directory. */
@@ -308,6 +325,103 @@ public final class MetadataLookup {
 
     private static HttpError failed() {
         return new HttpError(502, "lookup_failed", "The details couldn't be looked up; try again later");
+    }
+
+    // ------------------------------------------------------------------ cleaning uploads
+
+    /**
+     * The arguments that clean {@code file} in place (after the executable): never online
+     * ({@code --no-lookup}), the audio not decoded except where purchase info is to be removed
+     * (TrackSplitter then still checks it plays without it), {@code --} before the path.
+     */
+    List<String> cleanArguments(Path file) {
+        List<String> args = new ArrayList<>(List.of("metadata", "--no-lookup", "--json", "--in-place",
+                "--no-decode-check", "--cache-dir", cacheDir.toString()));
+        if (ffmpeg != null) {
+            args.addAll(List.of("--ffmpeg", ffmpeg));
+        }
+        args.add("--");
+        args.add(file.toAbsolutePath().toString());
+        return args;
+    }
+
+    /**
+     * Removes personal data from {@code file} (a scratch copy of an upload) with
+     * {@code tracksplitter metadata --no-lookup --in-place}: waits for the other TrackSplitter
+     * processes (as background work, after people's lookups), not counted against any hourly limit.
+     * Clean means: exit code 0, no error for the file, and (an {@code .m4a}) no purchase data left
+     * ({@link PurchaseData}).
+     */
+    @Override
+    public String clean(Path file, JobLog log) throws InterruptedException {
+        Objects.requireNonNull(file);
+        if (!installed()) {
+            return "TrackSplitter isn't installed";
+        }
+        List<String> args = cleanArguments(file);
+        return exclusive(Priority.BACKGROUND, () -> runClean(args, file, log));
+    }
+
+    private String runClean(List<String> args, Path file, JobLog log) throws InterruptedException {
+        boolean mp4 = file.getFileName().toString().endsWith(".m4a");
+        Set<String> before;
+        try {
+            before = mp4 ? PurchaseData.find(file) : Set.of();
+        } catch (IOException e) {
+            return "the file can't be read: " + e.getMessage();
+        }
+        ToolResult result;
+        try {
+            result = new ToolCall("tracksplitter", executable, args).timeout(cleanTimeout).idleTimeout(cleanTimeout)
+                    .stdoutToString(MAX_STDOUT).allowFailure()
+                    .stderrLines(line -> LOG.log(System.Logger.Level.DEBUG, "tracksplitter: " + line))
+                    .run();
+        } catch (ToolException e) {
+            if (e.kind() == ToolException.Kind.TIMEOUT || e.kind() == ToolException.Kind.IDLE_TIMEOUT) {
+                return "TrackSplitter took longer than " + cleanTimeout.toSeconds() + " s";
+            }
+            return "TrackSplitter couldn't be run: " + e.reason();
+        }
+        String error = null;
+        try {
+            JsonElement e = JsonParser.parseString(new String(result.stdout(), StandardCharsets.UTF_8));
+            if (e instanceof JsonObject doc && doc.get("tracks") instanceof JsonArray tracks && !tracks.isEmpty()
+                    && tracks.get(0) instanceof JsonObject t) {
+                error = string(t.get("error"));
+            } else if (result.exitCode() == 0) {
+                error = "its output names no file";
+            }
+        } catch (RuntimeException e) {
+            if (result.exitCode() == 0) {
+                error = "its output isn't JSON";
+            }
+        }
+        if (result.exitCode() != 0) {
+            LOG.log(System.Logger.Level.WARNING, "tracksplitter (cleaning, exit " + result.exitCode() + "): "
+                    + (error != null ? error : result.stderrTail()));
+            return "TrackSplitter failed (exit code " + result.exitCode() + ")" + (error != null ? ": " + error : "");
+        }
+        if (error != null) {
+            return "TrackSplitter failed: " + error;
+        }
+        if (mp4) {
+            Set<String> left;
+            try {
+                left = PurchaseData.find(file);
+            } catch (IOException e) {
+                return "the cleaned file can't be read: " + e.getMessage();
+            }
+            if (!left.isEmpty()) {
+                // e.g. audio that doesn't decode without its purchase info (copy-protected or damaged)
+                return "purchase data was left in place (" + String.join(", ", left)
+                        + "); the audio may be copy-protected or damaged";
+            }
+        }
+        if (log != null) {
+            log.append("[ingest] personal data: " + (before.isEmpty() ? "none found"
+                    : "removed " + String.join(", ", before)) + " (TrackSplitter, offline)");
+        }
+        return null;
     }
 
     // ------------------------------------------------------------------ parsing

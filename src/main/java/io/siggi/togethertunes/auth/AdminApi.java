@@ -85,7 +85,8 @@ import java.util.Set;
  *       none), {@code enum} (with {@code options}),
  *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}) or {@code stringList} (an array
  *       of strings); a {@code null} value (e.g. no
- *       yt-dlp cookies file) is left out.</li>
+ *       yt-dlp cookies file) is left out. {@code purchaseDataRemoval}: whether personal data can be
+ *       removed from audio uploads (TrackSplitter is installed, {@link #purchaseDataRemoval}).</li>
  *   <li>{@code PATCH /api/admin/settings} {@code {"key": value, ...}} → the same as {@code GET}.
  *       {@code null} resets a setting to its default. All or nothing: {@code 400 unknown_setting}
  *       or {@code 400 invalid_setting} change nothing. {@code invalid_setting} also covers a value
@@ -127,6 +128,7 @@ public final class AdminApi {
     private volatile Runnable settingsListener = () -> { };
     private volatile SettingCheck settingCheck = (key, value) -> { };
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
+    private volatile java.util.function.BooleanSupplier purchaseDataRemoval = () -> true;
     private volatile EncodingInfo encodingInfo;
 
     /** What {@code GET /api/admin/encoding} reports on. */
@@ -179,6 +181,14 @@ public final class AdminApi {
     /** The data volume {@code GET /api/admin/storage} reports on. */
     public void diskSpace(DiskSpace diskSpace) {
         this.diskSpace = Objects.requireNonNull(diskSpace);
+    }
+
+    /**
+     * Whether personal data can be removed from audio uploads (TrackSplitter is installed); sent
+     * with the settings as {@code purchaseDataRemoval}, so the admin page can note when it can't.
+     */
+    public void purchaseDataRemoval(java.util.function.BooleanSupplier installed) {
+        this.purchaseDataRemoval = Objects.requireNonNull(installed);
     }
 
     public void register(Router router) {
@@ -639,7 +649,10 @@ public final class AdminApi {
             }
             items.add(m);
         }
-        return Map.of("items", items);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("items", items);
+        out.put("purchaseDataRemoval", purchaseDataRemoval.getAsBoolean());
+        return out;
     }
 
     private static <T> JsonElement encode(SettingKey<T> key, Object value) {

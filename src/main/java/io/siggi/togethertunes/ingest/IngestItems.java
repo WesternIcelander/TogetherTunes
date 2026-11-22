@@ -89,6 +89,26 @@ public final class IngestItems {
         });
     }
 
+    /**
+     * Records whether a new upload's original was cleaned of personal data
+     * ({@code items.original_cleaned}, {@link OriginalCleaner}): true, false (failed: never served)
+     * or null (not cleaned).
+     */
+    public void originalCleaned(String id, Boolean cleaned) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET original_cleaned = ? WHERE id = ?")) {
+                if (cleaned == null) {
+                    ps.setNull(1, Types.INTEGER);
+                } else {
+                    ps.setInt(1, cleaned ? 1 : 0);
+                }
+                ps.setString(2, id);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
     /** The edit settings (JSON) {@code version} of the item was made with, or null (none, or no row). */
     public String editJson(String id, int version) throws SQLException {
         return db.read(c -> MediaVersions.editJson(c, id, version));

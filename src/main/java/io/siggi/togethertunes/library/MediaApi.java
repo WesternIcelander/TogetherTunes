@@ -13,6 +13,7 @@ import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
 import io.siggi.togethertunes.ingest.MediaVersions;
+import io.siggi.togethertunes.ingest.OriginalCleaner;
 import io.siggi.togethertunes.rooms.GuestMediaAccess;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -32,7 +33,8 @@ import java.util.regex.Pattern;
  * {@code GET /media/{itemId}/{file}} with {@code file} one of {@code audio.m4a},
  * {@code audio-only.m4a} (a video's audio-only file, for audio-only rooms), {@code mezz.mp4}, {@code original} (the kept original of an audio upload,
  * {@code items.original_file}; the originals of video and YouTube items only feed re-encodes and
- * are never served) and {@code cover.jpg}.
+ * are never served, nor is an original whose personal data couldn't be removed, or an {@code .m4a}
+ * one not cleaned yet, {@link OriginalCleaner#served}) and {@code cover.jpg}.
  *
  * <p><b>Versions</b> ({@code ingest.MediaVersions}). {@code GET /media/{itemId}/v/{N}/{file}}
  * serves version {@code N} of the item's files, as long as it still exists (an old version is kept
@@ -256,12 +258,12 @@ public final class MediaApi {
      */
     private Located locate(String itemId, String name) throws SQLException {
         String[] row = db.read(c -> {
-            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file, kind, source, media_version"
-                    + " FROM items WHERE id = ?")) {
+            try (PreparedStatement ps = c.prepareStatement("SELECT status, original_file, kind, source, media_version,"
+                    + " original_cleaned FROM items WHERE id = ?")) {
                 ps.setString(1, itemId);
                 try (ResultSet rs = ps.executeQuery()) {
                     return rs.next() ? new String[] {rs.getString(1), rs.getString(2), rs.getString(3),
-                            rs.getString(4), Integer.toString(rs.getInt(5))} : null;
+                            rs.getString(4), Integer.toString(rs.getInt(5)), rs.getString(6)} : null;
                 }
             }
         });
@@ -278,6 +280,10 @@ public final class MediaApi {
         String original = row[1];
         // only an audio upload's original is played; a video or YouTube item's is for re-encodes
         if (!"audio".equals(row[2]) || !"upload".equals(row[3])) {
+            original = null;
+        }
+        // nor one whose personal data couldn't be removed (or an .m4a not cleaned yet)
+        if (original != null && !OriginalCleaner.served(original, row[5] == null ? null : Integer.valueOf(row[5]))) {
             original = null;
         }
         if (original == null || !ORIGINAL_FILE.matcher(original).matches()) {

@@ -68,6 +68,7 @@ import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.JobsApi;
 import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.OriginalCleaning;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.OutputAssets;
 import io.siggi.togethertunes.ingest.PlayableFiles;
@@ -239,8 +240,20 @@ public final class Main {
         Supplier<String> cookiesFile = cookiesFile(settings);
         // The quick and quality x264 presets, each checked against the reference avcC before use.
         EncodePresets presets = encodePresets(config, dataDir, outputAssets, settings, System.err);
+        // TrackSplitter (docs/library-and-ingest.md#looking-details-up-online): the item page's Look up
+        // details, the automatic lookup of signed-in users' new uploads, and removing personal data
+        // from audio uploads before their original is kept (ingest).
+        MetadataLookup metadataLookup = new MetadataLookup(config.tracksplitter(), config.tracksplitterCacheDir(),
+                "TogetherTunes/" + version() + " ( " + config.publicBaseUrl() + " )", config.ffmpeg(),
+                Clock.systemUTC());
+        if (!metadataLookup.installed()) {
+            System.out.println("TrackSplitter was not found (" + ConfigLoader.TOOLS_TRACKSPLITTER
+                    + "): looking up song details online is off, and personal data can't be removed from uploads"
+                    + " (.m4a originals aren't played in browsers)");
+        }
         IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
                 referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
+        pipeline.cleaner(metadataLookup);
         pipeline.reference(outputAssets::reference);
         pipeline.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
         // Old media versions are deleted once nobody can still be playing them (rooms set inUse below).
@@ -286,6 +299,7 @@ public final class Main {
                 config.publicBaseUrl()));
         AdminApi admin = new AdminApi(database, accounts, users, new Roles(database), permissions, settings);
         admin.diskSpace(diskSpace);
+        admin.purchaseDataRemoval(metadataLookup::installed);
         // Login providers (OpenID Connect and OAuth); client secrets are stored encrypted with the server key.
         Providers loginProviders = new Providers(database, secrets);
         ProvidersApi providersApi = new ProvidersApi(loginProviders, permissions, accounts, settings,
@@ -329,7 +343,11 @@ public final class Main {
         uploads.libraryAddListener(qualityOnLibraryAdd);
         uploads.diskSpace(diskSpace);
         uploads.precheck(uploadPrecheck(config));
-        new ContentIdBackfill(database, dataDir).start();
+        // Content IDs are recorded from the originals as uploaded, so before the one-time pass that
+        // removes personal data from old audio uploads' originals.
+        OriginalCleaning originalCleaning = new OriginalCleaning(database, dataDir, Tools.from(config), pipeline,
+                metadataLookup);
+        new ContentIdBackfill(database, dataDir).start(originalCleaning::runLogged);
         try {
             int swept = uploads.sweep();
             if (swept > 0) {
@@ -417,15 +435,6 @@ public final class Main {
         // retention.purgedEntryDays = 0: a purge also removes the item's library and playlist entries.
         items.purgedEntryDays(settings::retentionPurgedEntryDays);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
-        // Looking song details up online with TrackSplitter (docs/library-and-ingest.md#looking-details-up-online):
-        // the item page's Look up details, and the automatic lookup of signed-in users' new uploads.
-        MetadataLookup metadataLookup = new MetadataLookup(config.tracksplitter(), config.tracksplitterCacheDir(),
-                "TogetherTunes/" + version() + " ( " + config.publicBaseUrl() + " )", config.ffmpeg(),
-                Clock.systemUTC());
-        if (!metadataLookup.installed()) {
-            System.out.println("TrackSplitter was not found (" + ConfigLoader.TOOLS_TRACKSPLITTER
-                    + "): looking up song details online is off");
-        }
         MetadataLookupApi metadataLookupApi = new MetadataLookupApi(items, permissions, settings, metadataLookup,
                 Tools.from(config), dataDir, ingest.jobs(), Clock.systemUTC());
         itemsApi.lookup(metadataLookupApi);

@@ -58,6 +58,8 @@ class AdminApiTest {
     private Database database;
     private Settings settings;
     private final long freeBytes = 8 * Settings.GIB;
+    /** Whether "TrackSplitter is installed" for the settings' purchaseDataRemoval. */
+    private volatile boolean purchaseDataRemoval;
     private WebServer server;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(System.currentTimeMillis());
@@ -104,6 +106,7 @@ class AdminApiTest {
                 return target.equals(io.siggi.togethertunes.config.OutputEncoding.DEFAULT) ? 0 : 7;
             }
         });
+        adminApi.purchaseDataRemoval(() -> purchaseDataRemoval);
         // a fake data volume: 8 GiB free of 100, against the storage.minFreeBytes setting
         adminApi.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
                 () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(freeBytes, 100 * Settings.GIB),
@@ -724,6 +727,16 @@ class AdminApiTest {
         JsonObject cleared = call(200, "GET", "/api/auth/providers", null, null);
         assertEquals("", cleared.get("loginMessage").getAsString());
         assertEquals("", cleared.get("registerMessage").getAsString());
+    }
+
+    /** The settings say whether personal data can be removed from uploads (the admin page's note). */
+    @Test
+    void purchaseDataRemovalIsReported() throws Exception {
+        assertFalse(call(200, "GET", "/api/admin/settings", null, admin).get("purchaseDataRemoval").getAsBoolean());
+        purchaseDataRemoval = true;
+        assertTrue(call(200, "GET", "/api/admin/settings", null, admin).get("purchaseDataRemoval").getAsBoolean());
+        assertTrue(call(200, "PATCH", "/api/admin/settings", "{\"storage.minFreeBytes\":0}", admin)
+                .get("purchaseDataRemoval").getAsBoolean());
     }
 
     @Test

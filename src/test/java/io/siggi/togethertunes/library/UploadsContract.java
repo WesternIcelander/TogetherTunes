@@ -35,6 +35,9 @@ import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
+import io.siggi.togethertunes.ingest.JobLog;
+import io.siggi.togethertunes.ingest.OriginalCleaner;
+import io.siggi.togethertunes.ingest.PurchaseFixtures;
 import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
@@ -949,6 +952,63 @@ abstract class UploadsContract {
         assertArrayEquals(flac, Files.readAllBytes(itemDir.resolve("original.flac")));
         assertTrue(Files.size(itemDir.resolve("v1").resolve("cover.jpg")) > 1000, "the embedded cover became cover.jpg");
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, itemId)), "the staging dir is gone");
+    }
+
+    /**
+     * Removing personal data doesn't change the content hash ({@code docs/library-and-ingest.md#looking-details-up-online}):
+     * an uploaded .m4a with purchase data is cleaned before it is kept (here by a stand-in cleaner
+     * that blanks its pinf box), so the stored original differs from the upload, but the item keeps
+     * the uploaded bytes' hash and content ID, and uploading the same bytes again finds it.
+     */
+    @Test
+    void cleanedOriginalStillDedupes() throws Exception {
+        needFfmpeg();
+        media("bought.m4a", "-f", "lavfi", "-i", "sine=f=440:r=44100:d=2", "-c:a", "aac", "-metadata", "title=Bought");
+        Path m4a = dir.resolve("media").resolve("bought.m4a");
+        PurchaseFixtures.addPurchaseData(m4a);
+        byte[] bytes = Files.readAllBytes(m4a);
+        String id = upload(alice, "bought.m4a", bytes, 64 * 1024);
+        String itemId = expect(200, complete(alice, id, null)).json().get("itemId").getAsString();
+
+        ReferenceCard reference = ReferenceCard.ensure(tools, data.cards(), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
+        IngestJobs jobs = new IngestJobs(db);
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, MAX_SECONDS);
+        pipeline.cleaner(new OriginalCleaner() {
+            @Override
+            public boolean installed() {
+                return true;
+            }
+
+            @Override
+            public String clean(Path file, JobLog log) {
+                try {
+                    return PurchaseFixtures.blankPinf(file) ? null : "no pinf";
+                } catch (java.io.IOException e) {
+                    return e.toString();
+                }
+            }
+        });
+        IngestQueue queue = new IngestQueue(jobs, 1, pipeline, Clock.systemUTC(), Duration.ofMillis(100), Duration.ZERO);
+        queues.add(queue);
+        queue.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
+        IngestJob job = jobs.latestForItem(itemId).orElseThrow();
+        while (!job.state().finished() && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+            job = jobs.latestForItem(itemId).orElseThrow();
+        }
+        assertEquals(IngestJob.State.DONE, job.state(), job.log());
+        byte[] kept = Files.readAllBytes(IngestPipeline.itemDir(data, itemId).resolve("original.m4a"));
+        assertFalse(Arrays.equals(bytes, kept), "the kept original is the cleaned one");
+        assertFalse(PurchaseFixtures.contains(kept, "pinf"), "the stand-in cleaner blanked the box");
+        assertEquals(sha256(bytes), item(itemId).get("content_sha256"), "the hash of the bytes as uploaded");
+        assertEquals(ContentId.of(new ByteArrayInputStream(bytes)), contentIdOf(itemId));
+
+        String again = upload(bob, "same.m4a", bytes, 64 * 1024);
+        JsonObject dup = expect(200, complete(bob, again, null)).json();
+        assertEquals(itemId, dup.get("itemId").getAsString());
+        assertTrue(dup.get("deduplicated").getAsBoolean());
+        assertEquals(1, count("SELECT COUNT(*) FROM items"));
     }
 
     private SongDetails details(String itemId) throws SQLException {

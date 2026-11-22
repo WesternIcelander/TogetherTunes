@@ -81,6 +81,62 @@ class MetadataLookupTest {
         }
     }
 
+    /** Cleaning an upload: offline, in place, the audio checked only where purchase info goes, `--` before the path. */
+    @Test
+    void cleaningArguments() {
+        String cache = fake.cacheDir.toAbsolutePath().toString();
+        assertEquals(List.of("metadata", "--no-lookup", "--json", "--in-place", "--no-decode-check", "--cache-dir", cache,
+                "--ffmpeg", "/usr/bin/ffmpeg", "--", "/tmp/jobs/j/clean.m4a"),
+                lookup.cleanArguments(Path.of("/tmp/jobs/j/clean.m4a")));
+        MetadataLookup noFfmpeg = new MetadataLookup(fake.script.toString(), fake.cacheDir, UA, null, clock);
+        assertEquals(List.of("metadata", "--no-lookup", "--json", "--in-place", "--no-decode-check", "--cache-dir", cache,
+                "--", "/x/-a.flac"), noFfmpeg.cleanArguments(Path.of("/x/-a.flac")));
+    }
+
+    /** What counts as cleaned: exit 0 with the file and no error; anything else is a reason (for the job log). */
+    @Test
+    void cleaning() throws Exception {
+        Path file = dir.resolve("clean.mp3");
+        java.nio.file.Files.writeString(file, "not really an mp3");
+        String ok = "{\"tracks\":[{\"path\":\"clean.mp3\",\"tags\":{\"title\":\"T\"},\"changes\":[],"
+                + "\"written\":false,\"warnings\":[\"album not identified\"]}],\"notices\":[]}";
+        fake.respond(ok, 0);
+        assertNull(lookup.clean(file, null));
+        assertEquals(file.toAbsolutePath().toString(), fake.lastArgs().get(fake.lastArgs().size() - 1));
+        assertTrue(fake.lastArgs().contains("--no-lookup"));
+
+        fake.respond("{\"tracks\":[{\"path\":\"clean.mp3\",\"error\":\"cannot write tags\"}],\"notices\":[]}", 1);
+        assertEquals("TrackSplitter failed (exit code 1): cannot write tags", lookup.clean(file, null));
+        fake.respond("{\"tracks\":[{\"path\":\"clean.mp3\",\"error\":\"damaged\"}],\"notices\":[]}", 0);
+        assertEquals("TrackSplitter failed: damaged", lookup.clean(file, null));
+        fake.respond("garbage", 0);
+        assertEquals("TrackSplitter failed: its output names no file", lookup.clean(file, null));
+        fake.respond("{\"tracks\":[", 0);
+        assertEquals("TrackSplitter failed: its output isn't JSON", lookup.clean(file, null));
+        fake.respond("", 2);
+        assertEquals("TrackSplitter failed (exit code 2)", lookup.clean(file, null));
+
+        fake.respond(ok, 0).sleep(5);
+        lookup.cleanTimeout(Duration.ofMillis(700));
+        long start = System.nanoTime();
+        assertTrue(lookup.clean(file, null).startsWith("TrackSplitter took longer than"));
+        assertTrue(System.nanoTime() - start < TimeUnit.SECONDS.toNanos(4), "killed at the timeout");
+        fake.sleep(0);
+
+        MetadataLookup none = new MetadataLookup(null, fake.cacheDir, UA, null, clock);
+        assertEquals("TrackSplitter isn't installed", none.clean(file, null));
+        MetadataLookup gone = new MetadataLookup(dir.resolve("no-such-tracksplitter").toString(), fake.cacheDir, UA,
+                null, clock);
+        assertTrue(gone.clean(file, null).startsWith("TrackSplitter couldn't be run"));
+
+        // never counted against a person's lookups
+        for (int i = 0; i < MetadataLookup.PER_HOUR + 1; i++) {
+            fake.respond(ok, 0);
+            assertNull(lookup.clean(file, null));
+        }
+        assertEquals(0, lookup.retryInMs("u1"));
+    }
+
     @Test
     void oneTrack() throws Exception {
         Path cover = fake.artwork("catalogue-0D8.jpg", 64, 64);

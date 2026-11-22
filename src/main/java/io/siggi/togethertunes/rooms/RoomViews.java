@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import io.siggi.togethertunes.auth.ActorRef;
 import io.siggi.togethertunes.db.Database;
+import io.siggi.togethertunes.ingest.OriginalCleaner;
 import io.siggi.togethertunes.library.Covers;
 import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.MediaType;
@@ -177,7 +178,7 @@ final class RoomViews {
             for (List<String> chunk : chunks(itemIds)) {
                 try (PreparedStatement ps = c.prepareStatement("SELECT id, kind, title, artist, duration_ms, status,"
                         + " source, " + MediaType.columns(null) + ", original_file, original_web, original_gain_db,"
-                        + " media_version, audio_only_ms, album FROM items"
+                        + " media_version, audio_only_ms, album, original_cleaned FROM items"
                         + " WHERE id IN (" + marks(chunk.size()) + ")")) {
                     bind(ps, chunk);
                     try (ResultSet rs = ps.executeQuery()) {
@@ -194,9 +195,14 @@ final class RoomViews {
                             String mediaType = MediaType.effective(kind, rs.getString(8));
                             int version = rs.getInt(15);
                             boolean hasCover = "ready".equals(status) && cv.exists(id, version);
+                            int cleanedValue = rs.getInt(18);
+                            Integer cleaned = rs.wasNull() ? null : cleanedValue;
+                            String originalFile = rs.getString(12);
+                            // an original whose personal data wasn't removed is never played
+                            boolean originalWeb = rs.getInt(13) != 0 && OriginalCleaner.served(originalFile, cleaned);
                             items.put(id, new ItemRow(id, kind, rs.getString(3),
                                     rs.getString(4), durationMs, status, rs.getString(7),
-                                    MediaType.presentAsAudio(kind, mediaType), rs.getString(12), rs.getInt(13) != 0,
+                                    MediaType.presentAsAudio(kind, mediaType), originalFile, originalWeb,
                                     gainDb, version, audioOnlyMs, hasCover, mediaType, MediaType.show(rs, 8),
                                     rs.getString(17)));
                         }

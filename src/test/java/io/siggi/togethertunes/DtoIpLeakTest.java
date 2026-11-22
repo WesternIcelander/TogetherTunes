@@ -388,6 +388,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Uploads$Existing", "content-hash lookup"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Started", "start's result; the API builds its own map"),
             Map.entry("io.siggi.togethertunes.library.ContentIdBackfill$Row", "backfill work item, never sent"),
+            Map.entry("io.siggi.togethertunes.ingest.OriginalCleaning$Row", "cleaning pass work item, never sent"),
+            Map.entry("io.siggi.togethertunes.ingest.IngestPipeline$Cleaned", "an upload's cleaned original, ingest-internal"),
             Map.entry("io.siggi.togethertunes.rooms.RoomSettings$Patched", "patch result; settings go out as toJson"),
             Map.entry("io.siggi.togethertunes.rooms.Rooms$Updated",
                     "update result; the API sends its RoomView (a DTO) plus the adjusted names"),
