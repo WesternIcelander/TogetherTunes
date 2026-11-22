@@ -205,9 +205,21 @@ public final class Items {
      *                  hold every permission)
      * @param canDeleteRecord whether the caller is an admin, who may delete the item's record
      *                  ({@code DELETE /api/admin/items/{id}})
+     * @param canLookUp true when the caller may look the item's details up online
+     *                  ({@code POST /api/items/{id}/lookup}: may edit it, and the feature is on), else
+     *                  null (left out of the JSON)
      */
     public record You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin,
-                      boolean canDeleteRecord) {
+                      boolean canDeleteRecord, Boolean canLookUp) {
+        public You {
+            canLookUp = Boolean.TRUE.equals(canLookUp) ? Boolean.TRUE : null;
+        }
+
+        public You(boolean inLibrary, boolean canEdit, boolean canPurge, boolean canRetry, boolean canPin,
+                   boolean canDeleteRecord) {
+            this(inLibrary, canEdit, canPurge, canRetry, canPin, canDeleteRecord, null);
+        }
+
         public You(boolean inLibrary, boolean canEdit, boolean canPurge) {
             this(inLibrary, canEdit, canPurge, false, false, false);
         }
@@ -268,9 +280,14 @@ public final class Items {
      * @param youtube  YouTube imports are on ({@code ytdlp.enabled}); retries need it
      * @param pin      holds {@code library.pin}: may pin and unpin any item
      * @param admin    is an admin (the built-in admin role): may delete records
+     * @param lookup   looking details up online is available ({@code metadataLookup.enabled}, TrackSplitter installed)
      */
     public record Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin,
-                         boolean admin) {
+                         boolean admin, boolean lookup) {
+        public Rights(boolean editAny, boolean purge, boolean retryAny, boolean youtube, boolean pin, boolean admin) {
+            this(editAny, purge, retryAny, youtube, pin, admin, false);
+        }
+
         public Rights(boolean editAny, boolean purge) {
             this(editAny, purge, false, false, false, false);
         }
@@ -346,7 +363,7 @@ public final class Items {
         boolean retryable = "youtube".equals(row.source()) && "failed".equals(row.status());
         return new You(inLibrary, canEdit, user && rights.purge(),
                 retryable && rights.youtube() && (canEdit || user && rights.retryAny()), user && rights.pin(),
-                user && rights.admin());
+                user && rights.admin(), canEdit && rights.lookup());
     }
 
     private ItemPage page(Connection c, Row r, You you) throws SQLException {
@@ -694,6 +711,190 @@ public final class Items {
                 throw notFound();
             }
             return page(c, row, you(c, actor, row, rights));
+        });
+    }
+
+    // ------------------------------------------------------------------ online lookup
+
+    /** {@code audit_log} action of a new cover chosen from an online lookup. */
+    public static final String AUDIT_COVER_CHANGED = "item.cover_changed";
+
+    /**
+     * What an online lookup of an item needs ({@code docs/library-and-ingest.md#looking-details-up-online}).
+     *
+     * @param original the kept original, if it is there, else null
+     * @param cover    the current version's {@code cover.jpg}, if it is there, else null
+     * @param uploader the signed-in user who uploaded it (not a guest, even after a guest merge), else null
+     */
+    public record LookupSource(String id, String kind, String status, String title, String artist, String album,
+                               SongDetails details, Path original, Path cover, String uploader) {
+    }
+
+    /**
+     * {@link LookupSource} for {@code actor}, who must be allowed to edit the item.
+     *
+     * @throws HttpError {@code 404 item_not_found}, {@code 403 forbidden}
+     */
+    public LookupSource lookupSource(Actor.User actor, String itemId, Rights rights) throws SQLException {
+        return db.read(c -> {
+            Row row = row(c, itemId, false);
+            if (row == null) {
+                throw notFound();
+            }
+            if (!you(c, actor, row, rights).canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can look up its details");
+            }
+            return lookupSource(c, row);
+        });
+    }
+
+    /** {@link LookupSource} of an item for the server itself (no permission check); null if there is none. */
+    public LookupSource lookupSource(String itemId) throws SQLException {
+        return db.read(c -> {
+            Row row = row(c, itemId, false);
+            return row == null ? null : lookupSource(c, row);
+        });
+    }
+
+    private LookupSource lookupSource(Connection c, Row row) throws SQLException {
+        String original = null;
+        try (PreparedStatement ps = c.prepareStatement("SELECT original_file FROM items WHERE id = ?")) {
+            ps.setString(1, row.id());
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    original = rs.getString(1);
+                }
+            }
+        }
+        Path itemDir = IngestPipeline.itemDir(dataDir, row.id());
+        Path originalPath = null;
+        if (original != null && !original.isEmpty() && !original.startsWith(".") && !original.contains("/")
+                && !original.contains("\\") && java.nio.file.Files.isRegularFile(itemDir.resolve(original))) {
+            originalPath = itemDir.resolve(original);
+        }
+        Path cover = null;
+        if ("ready".equals(row.status()) && covers.exists(row.id(), row.mediaVersion())) {
+            cover = MediaVersions.versionDir(itemDir, row.mediaVersion()).resolve(IngestPipeline.COVER);
+        }
+        // the uploader: a guest's upload stays a guest's (also after a merge into an account)
+        String uploader = null;
+        boolean guestUpload = false;
+        try (PreparedStatement ps = c.prepareStatement("SELECT user_id, guest_id FROM uploads"
+                + " WHERE item_id = ? AND deduplicated = 0")) {
+            ps.setString(1, row.id());
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if (rs.getString(2) != null) {
+                        guestUpload = true;
+                    } else if (uploader == null) {
+                        uploader = rs.getString(1);
+                    }
+                }
+            }
+        }
+        if (guestUpload) {
+            uploader = null;
+        } else if (uploader == null && "upload".equals(row.source())) {
+            uploader = row.addedByUserId();
+        }
+        return new LookupSource(row.id(), row.kind(), row.status(), row.title(), row.artist(), row.album(),
+                row.details(), originalPath, cover, "upload".equals(row.source()) ? uploader : null);
+    }
+
+    /**
+     * Keeps a lookup's {@code album} object (source, ID, URL, how it was matched) in
+     * {@code items.metadata_json} under {@code lookup}; never shown to users. Joins the caller's
+     * transaction.
+     */
+    public void saveLookup(String itemId, com.google.gson.JsonObject album) throws SQLException {
+        if (album == null) {
+            return;
+        }
+        db.write(c -> {
+            String json = null;
+            try (PreparedStatement ps = c.prepareStatement("SELECT metadata_json FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                    json = rs.getString(1);
+                }
+            }
+            com.google.gson.JsonObject doc = null;
+            if (json != null) {
+                try {
+                    com.google.gson.JsonElement e = com.google.gson.JsonParser.parseString(json);
+                    doc = e.isJsonObject() ? e.getAsJsonObject() : null;
+                } catch (RuntimeException e) {
+                    doc = null;
+                }
+            }
+            if (doc == null) {
+                doc = new com.google.gson.JsonObject();
+            }
+            doc.add("lookup", album.deepCopy());
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET metadata_json = ? WHERE id = ?")) {
+                ps.setString(1, doc.toString());
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * The automatic lookup of a new upload: sets the song details of {@code found} that the item
+     * doesn't have yet (checked again in the transaction; never title, artist or album), keeps the
+     * lookup's {@code album} object, and audits the change ({@value #AUDIT_UPDATED}, by nobody, with
+     * {@code "via": "lookup"}). Returns the fields set (empty: nothing changed).
+     */
+    public Map<String, Object> fillEmpty(String itemId, SongDetails found, com.google.gson.JsonObject album)
+            throws SQLException {
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            Row row = lockedRow(c, itemId);
+            if (row == null) {
+                return Map.of();
+            }
+            SongDetails current = row.details();
+            SongDetails next = current;
+            for (String f : SongDetails.FIELDS) {
+                Object value = found.get(f);
+                if (value == null || current.get(f) != null) {
+                    continue;
+                }
+                if (f.equals("artists") && !Objects.equals(SongDetails.joinNames(found.artists()), row.artist())) {
+                    // only the same artist split into its names (the artist itself is never changed)
+                    continue;
+                }
+                next = next.with(f, value);
+            }
+            Map<String, Object> changed = new LinkedHashMap<>(current.changesTo(next));
+            if (!changed.isEmpty()) {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET " + SongDetails.assignments()
+                        + " WHERE id = ?")) {
+                    ps.setString(next.bind(ps, 1), itemId);
+                    ps.executeUpdate();
+                }
+                Map<String, Object> audit = new LinkedHashMap<>(changed);
+                audit.put("via", "lookup");
+                AuditLog.write(c, now, null, null, null, AUDIT_UPDATED, itemId, audit);
+            }
+            saveLookup(itemId, album);
+            return changed;
+        });
+    }
+
+    /** Audits a new cover from a lookup ({@value #AUDIT_COVER_CHANGED}); {@code actor} null: the automatic lookup. */
+    public void auditCover(String actorUserId, String itemId, String clientIp) throws SQLException {
+        long now = EpochMs.now(clock);
+        db.write(c -> {
+            Map<String, Object> details = new LinkedHashMap<>();
+            details.put("via", "lookup");
+            AuditLog.write(c, now, actorUserId, null, clientIp, AUDIT_COVER_CHANGED, itemId, details);
+            return null;
         });
     }
 

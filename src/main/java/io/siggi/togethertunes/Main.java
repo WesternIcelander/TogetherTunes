@@ -105,6 +105,8 @@ import io.siggi.togethertunes.library.Library;
 import io.siggi.togethertunes.library.LibraryAddListener;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
+import io.siggi.togethertunes.library.MetadataLookup;
+import io.siggi.togethertunes.library.MetadataLookupApi;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Playlists;
@@ -415,6 +417,19 @@ public final class Main {
         // retention.purgedEntryDays = 0: a purge also removes the item's library and playlist entries.
         items.purgedEntryDays(settings::retentionPurgedEntryDays);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtubeImports);
+        // Looking song details up online with TrackSplitter (docs/library-and-ingest.md#looking-details-up-online):
+        // the item page's Look up details, and the automatic lookup of signed-in users' new uploads.
+        MetadataLookup metadataLookup = new MetadataLookup(config.tracksplitter(), config.tracksplitterCacheDir(),
+                "TogetherTunes/" + version() + " ( " + config.publicBaseUrl() + " )", config.ffmpeg(),
+                Clock.systemUTC());
+        if (!metadataLookup.installed()) {
+            System.out.println("TrackSplitter was not found (" + ConfigLoader.TOOLS_TRACKSPLITTER
+                    + "): looking up song details online is off");
+        }
+        MetadataLookupApi metadataLookupApi = new MetadataLookupApi(items, permissions, settings, metadataLookup,
+                Tools.from(config), dataDir, ingest.jobs(), Clock.systemUTC());
+        itemsApi.lookup(metadataLookupApi);
+        ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);
         // "Add from link" imports straight into a playlist (and the library).
@@ -1406,7 +1421,11 @@ public final class Main {
                 + " When set, plain-HTTP\n"
                 + "  requests are redirected to " + ConfigLoader.HTTP_PUBLIC_BASE_URL + ", except public and unlisted"
                 + " rooms' stream URLs\n"
-                + "  (for players that can't use HTTPS).";
+                + "  (for players that can't use HTTPS).\n"
+                + "  " + ConfigLoader.TOOLS_TRACKSPLITTER + " (optional; found on PATH when unset): TrackSplitter, for looking up"
+                + " song details online;\n"
+                + "  without it that feature is off. " + ConfigLoader.TRACKSPLITTER_CACHE_DIR
+                + " (default <data.dir>/tracksplitter): its cache.";
     }
 
     /**

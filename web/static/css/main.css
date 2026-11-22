@@ -2420,3 +2420,15 @@ body.now-view-open.pb-idle .app-video,
 body.now-view-open.pb-idle .app-video * {
   cursor: none;
 }
+
+/* Look up details (item page, docs/library-and-ingest.md#looking-details-up-online) */
+.lookup { margin-bottom: 1rem; }
+.lookup-result:empty { display: none; }
+.lookup-review { border-collapse: collapse; margin: 0.5rem 0; }
+.lookup-review th, .lookup-review td { text-align: left; padding: 0.2rem 0.6rem 0.2rem 0; vertical-align: top; }
+.lookup-review tbody th { font-weight: normal; }
+.lookup-albums { list-style: none; padding: 0; margin: 0.5rem 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.lookup-album { text-align: left; }
+.lookup-covers { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 1rem; margin: 0.5rem 0; }
+.lookup-covers figure { margin: 0; }
+.lookup-covers img.cover { width: 160px; height: 160px; object-fit: contain; }

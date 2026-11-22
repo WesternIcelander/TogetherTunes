@@ -293,6 +293,16 @@ class PermissionMatrixTest {
             // (ItemsApiTest and TrimTest cover the trim itself).
             row("POST /api/items/{id}/trim", c -> Call.post("/api/items/" + c.itemId() + "/trim",
                     "{\"videoStartMs\":2000}"), 401, 401, 403, 409),
+            // Looking details up online (a fake TrackSplitter that finds one track): signed-in users who may
+            // edit the item, never guests (the matrix item is the setup admin's, so the user gets 403). The
+            // review's cover and setting it need the caller's own lookup token: a made-up one is 404 / 400
+            // (MetadataLookupApiTest covers the real flow).
+            row("POST /api/items/{id}/lookup", c -> Call.post("/api/items/" + c.itemId() + "/lookup", "{\"album\":\"Album\"}"),
+                    401, 401, 403, 200),
+            row("GET /api/items/{id}/lookup/{token}/cover", c -> Call.get("/api/items/" + c.itemId()
+                    + "/lookup/made-up/cover"), 401, 401, 404, 404),
+            row("PUT /api/items/{id}/cover", c -> Call.put("/api/items/" + c.itemId() + "/cover",
+                    "{\"lookupToken\":\"made-up\"}"), 401, 401, 403, 400),
             // Pins: library.pin (not in the default user role; admins hold every permission).
             row("PUT /api/items/{id}/pin", c -> Call.put("/api/items/" + c.itemId() + "/pin", null), 401, 401, 403, 200),
             row("DELETE /api/items/{id}/pin", c -> Call.delete("/api/items/" + c.itemId() + "/pin"), 401, 401, 403, 200),

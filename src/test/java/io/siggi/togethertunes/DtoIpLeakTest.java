@@ -365,6 +365,13 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.SongDetails$NumberOf", "a parsed n/total tag, server-internal"),
             Map.entry("io.siggi.togethertunes.library.SongDetails$Patch", "a parsed PATCH body's song details, server-internal"),
             Map.entry("io.siggi.togethertunes.library.Items$Edit", "PATCH body, parsed"),
+            Map.entry("io.siggi.togethertunes.library.Items$LookupSource", "what an online lookup of an item needs, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookup$Query", "a TrackSplitter lookup's arguments, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookup$Track", "TrackSplitter's result, parsed; the lookup API sends its own maps without the album object"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookup$Found", "a lookup's outcome, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookup$Albums", "a lookup's outcome, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookup$NotFound", "a lookup's outcome, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MetadataLookupApi$Token", "a lookup kept in memory for its review; only its id is sent"),
             Map.entry("io.siggi.togethertunes.library.Items$Rights", "the caller's permissions, computed per request"),
             Map.entry("io.siggi.togethertunes.library.Items$Row", "items row; ItemPage is what is sent"),
             Map.entry("io.siggi.togethertunes.library.Items$Purged", "purge result; the API answers 204"),
@@ -1033,6 +1040,7 @@ class DtoIpLeakTest {
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/library/uncategorized", "/api/items/search", "/api/items/search?q=video", "/api/search", "/api/search?q=video", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
+                "/api/items/" + f.itemId + "/lookup/expired/cover",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/me/likes", "/api/me/likes/" + f.itemId,
                 "/api/library/" + f.itemId + "/playlists",
                 "/api/users", "/api/users?q=ali", "/api/users/" + f.aliceId + "/library",
@@ -1252,6 +1260,13 @@ class DtoIpLeakTest {
         expect(200, admin, "DELETE", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PUT", "/api/items/" + itemId + "/pin", null);
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
+        // looking its details up online (a fake TrackSplitter), the review's cover, applying the details
+        JsonObject found = json(expect(200, admin, "POST", "/api/items/" + itemId + "/lookup", "{}"));
+        String lookupToken = found.get("lookupToken").getAsString();
+        expect(200, admin, "GET", found.getAsJsonObject("cover").get("url").getAsString(), null);
+        expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"label\":\"Label\",\"lookupToken\":\"" + lookupToken
+                + "\"}");
+        expect(202, admin, "PUT", "/api/items/" + itemId + "/cover", "{\"lookupToken\":\"" + lookupToken + "\"}");
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
         expect(204, admin, "DELETE", "/api/admin/items/" + insertItem(adminId), null);
         // undo of a media change: alice's own item, edited (version 2, version 1 kept for undo), undone

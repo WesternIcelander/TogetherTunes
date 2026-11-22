@@ -32,7 +32,11 @@ import org.junit.jupiter.api.Test;
 class ProductNamesTest {
     /** The names the UI must not contain. Case-insensitive, except ETS2/ATS-style abbreviations. */
     static final Pattern NAMES = Pattern.compile(
-            "(?i:vrchat|vrcdn|euro\\s*truck|american\\s*truck)|\\bETS2\\b|\\bATS2?\\b");
+            "(?i:vrchat|vrcdn|euro\\s*truck|american\\s*truck"
+                    // the online music catalogues TrackSplitter looks details up in (they are "online
+                    // music catalogues" in the UI; docs/library-and-ingest.md#looking-details-up-online)
+                    + "|spotify|apple\\s*music|itunes|deezer|musicbrainz)"
+                    + "|\\bETS2\\b|\\bATS2?\\b");
 
     /** Removes {@code //} and block comments from JS/TS/Java/CSS source, keeping strings and newlines. */
     static String stripCodeComments(String src) {

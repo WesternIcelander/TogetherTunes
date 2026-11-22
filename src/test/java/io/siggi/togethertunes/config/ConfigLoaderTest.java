@@ -219,11 +219,31 @@ class ConfigLoaderTest {
     void everyDocumentedKeyIsKnown() {
         // docs/architecture.md#configuration
         assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "http.insecureBaseUrl", "data.dir", "db.url",
-                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "output.profile", "output.videoBitrateKbps",
-                "output.audioOnlyBitrateKbps", "ingest.workers",
+                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "tools.tracksplitter", "tracksplitter.cacheDir",
+                "output.profile", "output.videoBitrateKbps", "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
                 "overlay.workers",
                 "overlay.cacheMaxBytes", "http.trustedProxies"), ConfigLoader.KEYS);
+    }
+
+    @Test
+    void trackSplitterIsOptional() throws Exception {
+        // not on PATH and not set: off, without a warning (docs/library-and-ingest.md#looking-details-up-online)
+        ConfigLoader.Loaded loaded = loader().loadFromJson(null, URL_ONLY);
+        assertNull(loaded.config().tracksplitter());
+        assertTrue(loaded.warnings().stream().noneMatch(w -> w.contains("tracksplitter")), loaded.warnings().toString());
+        assertEquals(dir.resolve("data").resolve("tracksplitter"), loaded.config().tracksplitterCacheDir());
+        // on PATH: found
+        Path ts = executable(bin.resolve("tracksplitter"));
+        assertEquals(ts.toString(), load(URL_ONLY).tracksplitter());
+        // set explicitly: must exist; the cache directory follows the setting (relative to the working dir)
+        env.put("TOGETHERTUNES_TOOLS_TRACKSPLITTER", "./bin/tracksplitter");
+        env.put("TOGETHERTUNES_TRACKSPLITTER_CACHE_DIR", "ts-cache");
+        Config c = load(URL_ONLY);
+        assertEquals(ts.toString(), c.tracksplitter());
+        assertEquals(dir.resolve("ts-cache"), c.tracksplitterCacheDir());
+        env.put("TOGETHERTUNES_TOOLS_TRACKSPLITTER", "./bin/missing");
+        assertProblem(fails(URL_ONLY), "not an executable file");
     }
 
     @Test

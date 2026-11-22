@@ -40,6 +40,12 @@ import java.util.List;
  *                                 set (and {@link #publicBaseUrl()} is {@code https}), plain-HTTP
  *                                 requests are redirected to {@link #publicBaseUrl()}, except public
  *                                 and unlisted rooms' stream URLs ({@code docs/architecture.md#plain-http})
+ * @param tracksplitter            TrackSplitter's path ({@code tools.tracksplitter}), or {@code null} when
+ *                                 it isn't installed: looking song details up online is then off
+ *                                 ({@code docs/library-and-ingest.md#looking-details-up-online})
+ * @param tracksplitterCacheDir    TrackSplitter's cache directory for this server
+ *                                 ({@code tracksplitter.cacheDir}, default {@code <data.dir>/tracksplitter}),
+ *                                 absolute; null only where there is no data directory (tests)
  */
 public record Config(
         String httpBind,
@@ -61,10 +67,25 @@ public record Config(
         X264Preset ingestQualityPreset,
         int overlayWorkers,
         long overlayCacheMaxBytes,
-        String insecureBaseUrl) {
+        String insecureBaseUrl,
+        String tracksplitter,
+        Path tracksplitterCacheDir) {
 
     public Config {
         trustedProxies = List.copyOf(trustedProxies);
+    }
+
+    /** Without TrackSplitter (tests). */
+    public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
+                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
+                  long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
+                  X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
+                  String insecureBaseUrl) {
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+                outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
+                ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
+                insecureBaseUrl, null, dataDir == null ? null : dataDir.resolve("tracksplitter"));
     }
 
     /** The output profile and video bitrate cap every encode is made for. */

@@ -55,6 +55,7 @@ public final class IngestJobs {
     private final Database db;
     private final Clock clock;
     private volatile ItemStatusListener statusListener = ItemStatusListener.NONE;
+    private volatile java.util.function.Consumer<String> uploadReadyListener = itemId -> { };
     private volatile Runnable enqueueListener = () -> { };
     private volatile Supplier<X264Preset> qualityPreset;
     private volatile WantedItems wanted = WantedItems.NONE;
@@ -172,6 +173,52 @@ public final class IngestJobs {
             }
             return enqueue(itemId, Kind.TRIM, null, editJson);
         });
+    }
+
+    /**
+     * Queues the card-only re-encode that applies a new cover ({@code docs/library-and-ingest.md#looking-details-up-online},
+     * "Covers"): the cover waits as {@link IngestPipeline#PENDING_COVER} in the item's directory and
+     * the next {@code reencode} of the item takes it. The item's unfinished job decides: none → a new
+     * {@code reencode} job; a queued {@code reencode} job takes it as it is; a queued {@code quality}
+     * job is dropped (like for a trim; the item gets it again when the re-encode ends, if it still
+     * needs it); a running job, a queued {@code trim} or a queued new-item job → {@link ItemBusy}.
+     * Joins the caller's transaction.
+     */
+    public IngestJob enqueueCover(String itemId) throws SQLException {
+        Objects.requireNonNull(itemId);
+        long now = EpochMs.now(clock);
+        return db.write(c -> {
+            IngestJob active = activeForItem(c, itemId);
+            if (active != null) {
+                if (active.state() == State.RUNNING || active.kind().ownsItemStatus() || active.kind() == Kind.TRIM) {
+                    throw new ItemBusy("This item is being processed right now; try again when its job has ended");
+                }
+                if (active.kind() == Kind.REENCODE) {
+                    return active;
+                }
+                JobLog log = JobLog.resume(active.log());
+                log.append("[ingest] Dropped at " + EpochMs.format(now) + ": a new cover re-encodes the item first");
+                try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = ?, finished_at = ?,"
+                        + " log = ? WHERE id = ? AND state = ?")) {
+                    ps.setString(1, State.DONE.wire());
+                    ps.setLong(2, now);
+                    ps.setString(3, log.tail());
+                    ps.setString(4, active.id());
+                    ps.setString(5, State.QUEUED.wire());
+                    ps.executeUpdate();
+                }
+            }
+            return enqueue(itemId, Kind.REENCODE, null, null);
+        });
+    }
+
+    /**
+     * Who is told (with the item id, after the commit, on the worker's thread; must return quickly)
+     * when an {@code upload} job finished and its item is ready: the automatic details lookup
+     * ({@code docs/library-and-ingest.md#looking-details-up-online}).
+     */
+    public void uploadReadyListener(java.util.function.Consumer<String> listener) {
+        this.uploadReadyListener = listener == null ? id -> { } : listener;
     }
 
     /**
@@ -789,6 +836,10 @@ public final class IngestJobs {
             }
             if (job.kind().ownsItemStatus()) {
                 setItemStatus(c, job.itemId(), state == State.DONE ? "ready" : "failed", error);
+                if (state == State.DONE && job.kind() == Kind.UPLOAD) {
+                    String itemId = job.itemId();
+                    db.afterCommit(() -> uploadReadyListener.accept(itemId));
+                }
             } else if (state == State.DONE) {
                 // A re-encode published new files: the item may be playable by the program output
                 // now (files of the current encoding), so the rooms look again.

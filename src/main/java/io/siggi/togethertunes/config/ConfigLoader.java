@@ -75,6 +75,8 @@ public final class ConfigLoader {
     public static final String TOOLS_FFMPEG = "tools.ffmpeg";
     public static final String TOOLS_FFPROBE = "tools.ffprobe";
     public static final String TOOLS_YTDLP = "tools.ytdlp";
+    public static final String TOOLS_TRACKSPLITTER = "tools.tracksplitter";
+    public static final String TRACKSPLITTER_CACHE_DIR = "tracksplitter.cacheDir";
     public static final String OUTPUT_PROFILE = "output.profile";
     public static final String OUTPUT_VIDEO_BITRATE_KBPS = "output.videoBitrateKbps";
     public static final String OUTPUT_AUDIO_ONLY_BITRATE_KBPS = "output.audioOnlyBitrateKbps";
@@ -89,7 +91,7 @@ public final class ConfigLoader {
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
             HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, HTTP_INSECURE_BASE_URL, DATA_DIR, DB_URL,
-            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
+            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, TOOLS_TRACKSPLITTER, TRACKSPLITTER_CACHE_DIR, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             OUTPUT_AUDIO_ONLY_BITRATE_KBPS, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
             OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES);
@@ -303,6 +305,18 @@ public final class ConfigLoader {
         String ffmpeg = tool(v, TOOLS_FFMPEG, "ffmpeg", problems, warnings);
         String ffprobe = tool(v, TOOLS_FFPROBE, "ffprobe", problems, warnings);
         String ytdlp = tool(v, TOOLS_YTDLP, "yt-dlp", problems, warnings);
+        // Optional: without it, looking song details up online is off (no warning).
+        String tracksplitter = v.isSet(TOOLS_TRACKSPLITTER)
+                ? tool(v, TOOLS_TRACKSPLITTER, "tracksplitter", problems, warnings)
+                : optionalTool("tracksplitter");
+        Path tracksplitterCache = v.check(TRACKSPLITTER_CACHE_DIR,
+                dataDir == null ? null : dataDir.resolve("tracksplitter"), s -> {
+                    try {
+                        return workingDir.resolve(s).toAbsolutePath().normalize();
+                    } catch (InvalidPathException e) {
+                        throw new IllegalArgumentException("invalid path: " + e.getMessage());
+                    }
+                });
 
         OutputProfile profile = v.check(OUTPUT_PROFILE, OutputProfile.DEFAULT, s -> {
             OutputProfile p = OutputProfile.byId(s);
@@ -335,7 +349,8 @@ public final class ConfigLoader {
         }
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
                 ffmpeg, ffprobe, ytdlp, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
-                quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl);
+                quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl, tracksplitter,
+                tracksplitterCache);
         return new Loaded(config, json == null ? null : file, warnings);
     }
 
@@ -645,6 +660,12 @@ public final class ConfigLoader {
      * {@code PATH} is an error; a missing default is only a warning (the features that need
      * the tool fail later with a clear message).
      */
+    /** An optional tool's absolute path when {@code name} is on PATH, else null. */
+    private String optionalTool(String name) {
+        Path found = findOnPath(name);
+        return found == null ? null : found.toString();
+    }
+
     private String tool(Values v, String key, String dflt, List<String> problems, List<String> warnings) {
         boolean explicit = v.isSet(key);
         String value = v.string(key, dflt);

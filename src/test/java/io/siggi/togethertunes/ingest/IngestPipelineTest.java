@@ -647,6 +647,41 @@ class IngestPipelineTest extends IngestPipelineTestBase {
     }
 
     /**
+     * A cover chosen from an online lookup ({@code docs/library-and-ingest.md#looking-details-up-online}):
+     * staged as {@link IngestPipeline#PENDING_COVER} (scaled like every cover) and applied by a card-only
+     * re-encode, which then removes it; the audio is taken over unchanged.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void aNewCoverIsAppliedByACardOnlyReencode() throws Exception {
+        String audio = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=330:r=44100", "-t", "3", "-c:a", "aac",
+                stage(audio, "source.m4a").toString());
+        assertEquals(State.DONE, run(Kind.UPLOAD, audio).state());
+        Path before = cur(audio);
+        assertFalse(Files.exists(before.resolve(IngestPipeline.COVER)), "no cover yet");
+        Path found = dir.resolve("found.png");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=1600x1600", "-frames:v", "1", found.toString());
+        IngestPipeline.stagePendingCover(tools, data, audio, found);
+        Path pending = IngestPipeline.pendingCover(data, audio);
+        java.awt.image.BufferedImage staged = javax.imageio.ImageIO.read(pending.toFile());
+        assertEquals(1200, staged.getWidth(), "scaled like every cover.jpg");
+        byte[] stagedBytes = Files.readAllBytes(pending);
+        jobs.enqueueCover(audio);
+        IngestJob job = run(Kind.REENCODE, audio);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("card only: a new cover"), job.log());
+        Path after = cur(audio);
+        assertFalse(after.equals(before));
+        assertArrayEquals(stagedBytes, Files.readAllBytes(after.resolve(IngestPipeline.COVER)), "the staged cover");
+        assertEquals(1200, javax.imageio.ImageIO.read(after.resolve(IngestPipeline.COVER).toFile()).getWidth());
+        assertFalse(Files.exists(pending), "applied: no longer waiting");
+        assertTrue(Files.isSameFile(before.resolve("audio.m4a"), after.resolve("audio.m4a")));
+        CardEncoderTest.checkSkipFrameCard(tools, after.resolve("card.mp4"), reference.encoding());
+        assertNoLeftovers();
+    }
+
+    /**
      * Movies and shows skip the loudness normalisation (docs/media-types.md#loudness): a movie is
      * encoded without it; changing its type to a music video queues a system re-encode of only the
      * audio (normalised now, the video frames unchanged, no Undo), and changing it back one without.

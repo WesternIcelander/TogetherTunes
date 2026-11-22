@@ -124,6 +124,7 @@ public final class ItemsApi {
     private final YoutubeImports youtube;
     private final ItemSearch search;
     private volatile RoomSearch roomSearch;
+    private volatile MetadataLookupApi lookup;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -153,16 +154,39 @@ public final class ItemsApi {
         if (youtube != null) {
             router.post("/api/items/{id}/retry", this::retry);
         }
+        MetadataLookupApi l = lookup;
+        if (l != null) {
+            l.register(router);
+        }
+    }
+
+    /**
+     * Looking details up online ({@link MetadataLookupApi}): its routes are registered with these, and
+     * {@code PATCH} then takes {@code lookupToken}. Set before {@link #register}.
+     */
+    public void lookup(MetadataLookupApi lookup) {
+        this.lookup = lookup;
+        if (lookup != null) {
+            lookup.rights(user -> {
+                try {
+                    return rights(user);
+                } catch (SQLException e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+        }
     }
 
     private Items.Rights rights(Actor actor) throws SQLException {
         if (!(actor instanceof Actor.User)) {
             return new Items.Rights(false, false);
         }
+        MetadataLookupApi l = lookup;
         return new Items.Rights(permissions.allowed(actor, Permission.LIBRARY_EDIT_ANY),
                 permissions.allowed(actor, Permission.LIBRARY_PURGE), permissions.allowed(actor, Permission.ADMIN_JOBS),
                 youtube != null && permissions.enabled(Feature.YOUTUBE),
-                permissions.allowed(actor, Permission.LIBRARY_PIN), permissions.isAdmin(actor));
+                permissions.allowed(actor, Permission.LIBRARY_PIN), permissions.isAdmin(actor),
+                l != null && l.available());
     }
 
     private void pin(Request request, Response response) throws Exception {
@@ -290,8 +314,23 @@ public final class ItemsApi {
             // Guests have no library, so they can never edit (like a permission-gated route).
             throw new HttpError(401, "not_authenticated", "Log in first");
         }
-        Items.Edit edit = parse(request.readJson(JsonObject.class));
-        Items.ItemPage page = items.update(user, request.pathParam("id"), edit, rights(user), request.clientIp());
+        JsonObject body = request.readJson(JsonObject.class);
+        // lookupToken: the online lookup these details came from; its album object is kept
+        JsonObject lookupAlbum = null;
+        String itemId = request.pathParam("id");
+        if (body != null && body.has("lookupToken")) {
+            JsonElement t = body.remove("lookupToken");
+            MetadataLookupApi l = lookup;
+            if (l == null || !(t instanceof JsonPrimitive p) || !p.isString()) {
+                throw new HttpError(400, "invalid_lookup_token", "This lookup has expired; look the details up again");
+            }
+            lookupAlbum = l.albumFor(user.userId(), itemId, p.getAsString());
+        }
+        Items.Edit edit = parse(body);
+        Items.ItemPage page = items.update(user, itemId, edit, rights(user), request.clientIp());
+        if (lookupAlbum != null) {
+            items.saveLookup(itemId, lookupAlbum);
+        }
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

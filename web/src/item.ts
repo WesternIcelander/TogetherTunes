@@ -23,6 +23,10 @@ import {
 import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
 import { itemPlayerShown, pinPath, pinText, viewPath, viewReporter } from "./views.js";
 import {
+  applyBody, candidateText, coverChecked, NOTHING_FOUND, pickBody, reviewRows, sizeText, type LookupResult,
+  type ReviewField,
+} from "./lookup.js";
+import {
   addName, detailRows, detailsBody, detailsInput, fieldOfError, initialArtists, moveName, removeName, type DetailsInput,
   type FieldErrors,
 } from "./songdetails.js";
@@ -217,6 +221,120 @@ function artistsField(item: ItemPage, error: HTMLElement): { el: HTMLElement; na
   return { el, names: () => names.slice() };
 }
 
+/**
+ * Look up details (docs/library-and-ingest.md#looking-details-up-online): looks the item up in online
+ * music catalogues, then shows the review (each found field with the item's value, a checkbox per
+ * field, the found cover beside the current one) or, without an album, the albums to pick from.
+ * Apply saves the checked fields with the normal edit, and the cover if checked.
+ */
+function lookupPanel(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
+  const out = h("div", { class: "lookup-result" });
+  const error = h("p", { class: "error", role: "alert" });
+  const path = "/api/items/" + encodeURIComponent(item.id);
+  const run = async (body: unknown, trigger: HTMLButtonElement): Promise<void> => {
+    error.textContent = "";
+    trigger.disabled = true;
+    out.replaceChildren(h("p", { class: "muted", text: "Looking up the details…" }));
+    try {
+      const r = await api<LookupResult>("POST", path + "/lookup", body);
+      if (SIGNAL.aborted) return;
+      show(r);
+    } catch (e) {
+      out.replaceChildren();
+      error.textContent = message(e);
+    } finally {
+      trigger.disabled = false;
+    }
+  };
+  const notice = (text: string | undefined): HTMLElement | null =>
+    text === undefined ? null : h("p", { class: "muted", text });
+  const show = (r: LookupResult): void => {
+    if (r.result === "none") {
+      out.replaceChildren(h("p", { text: NOTHING_FOUND + "." }), ...nodes(notice(r.notice)));
+      return;
+    }
+    if (r.result === "albums") {
+      const list = h("ul", { class: "lookup-albums" }, ...r.albums.map((c) => {
+        const t = candidateText(c);
+        const pick = h("button", { type: "button", class: "lookup-album" }, h("strong", { text: t.name }),
+          t.detail !== "" ? h("span", { class: "muted", text: " " + t.detail }) : "");
+        pick.addEventListener("click", () => { void run(pickBody(c), pick); });
+        return h("li", {}, pick);
+      }));
+      out.replaceChildren(h("p", { text: r.albums.length === 0 ? NOTHING_FOUND + "."
+        : "Which album is it on? Pick one to look its details up." }), list, ...nodes(notice(r.notice)));
+      return;
+    }
+    const rows = reviewRows(item, r.details);
+    const boxes = new Map<ReviewField, HTMLInputElement>();
+    const table = h("table", { class: "lookup-review" },
+      h("thead", {}, h("tr", {}, h("th", { text: "" }), h("th", { text: "Field" }), h("th", { text: "Now" }),
+        h("th", { text: "Found" }))),
+      h("tbody", {}, ...rows.map((row) => {
+        let cell: HTMLElement;
+        if (row.same) {
+          cell = h("span", { class: "muted", text: "same", title: "The item already has this" });
+        } else {
+          const box = h("input", { type: "checkbox", checked: row.checked, "aria-label": "Use the found " + row.label });
+          boxes.set(row.field, box);
+          cell = box;
+        }
+        return h("tr", {}, h("td", {}, cell), h("th", { scope: "row", text: row.label }),
+          h("td", { text: row.current === "" ? "—" : row.current }), h("td", { text: row.found }));
+      })));
+    let coverBox: HTMLInputElement | undefined;
+    let coverRow: HTMLElement | null = null;
+    if (r.cover !== undefined && item.status === "ready") {
+      coverBox = h("input", { type: "checkbox", checked: coverChecked(item.hasCover) });
+      const current = item.hasCover
+        ? h("img", { class: "cover", alt: "Current cover", src: mediaPath(item.id, "cover.jpg", item.mediaVersion) })
+        : h("span", { class: "muted", text: "No cover now" });
+      coverRow = h("div", { class: "lookup-covers" },
+        h("figure", {}, current, h("figcaption", { text: "Now" })),
+        h("figure", {}, h("img", { class: "cover", alt: "Found cover", src: r.cover.url }),
+          h("figcaption", { text: ["Found", sizeText(r.cover.width, r.cover.height)].filter((x) => x !== "").join(" · ") })),
+        h("label", {}, coverBox, " Use the found cover"));
+    }
+    const apply = h("button", { type: "button", text: "Apply" });
+    const cancel = h("button", { type: "button", text: "Cancel" });
+    cancel.addEventListener("click", () => { out.replaceChildren(); });
+    apply.addEventListener("click", () => {
+      const checked = rows.filter((row) => boxes.get(row.field)?.checked === true).map((row) => row.field);
+      const body = applyBody(r.details, checked, r.lookupToken);
+      const useCover = coverBox?.checked === true;
+      if (body === null && !useCover) {
+        error.textContent = "Nothing is checked.";
+        return;
+      }
+      error.textContent = "";
+      apply.disabled = true;
+      void (async () => {
+        try {
+          let updated: ItemPage | undefined;
+          if (body !== null) updated = await api<ItemPage>("PATCH", path, body);
+          if (useCover) updated = await api<ItemPage>("PUT", path + "/cover", { lookupToken: r.lookupToken });
+          showNotice(useCover ? "Applied. The new cover shows once the card is made again." : "Applied.");
+          if (updated !== undefined) onSaved(updated);
+        } catch (e) {
+          error.textContent = message(e);
+        } finally {
+          apply.disabled = false;
+        }
+      })();
+    });
+    out.replaceChildren(
+      r.namesOnly === true ? h("p", { class: "muted", text: "Matched by names only: check that it's the right album." }) : "",
+      ...nodes(notice(r.notice)),
+      rows.length > 0 ? table : h("p", { text: "Nothing more than the item has." }),
+      ...nodes(coverRow),
+      h("div", { class: "row" }, apply, cancel));
+  };
+  const look = h("button", { type: "button", text: "Look up details",
+    title: "Look up this song's details in online music catalogues" });
+  look.addEventListener("click", () => { void run({}, look); });
+  return h("div", { class: "lookup" }, look, error, out);
+}
+
 function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
   const start = detailsInput(item);
   /** The inline problem beside each song details field. */
@@ -298,7 +416,8 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       })
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
-  const details = h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
+  const details = h("details", { class: "panel" }, h("summary", { text: "Edit details" }),
+    ...nodes(item.you.canLookUp === true ? lookupPanel(item, onSaved) : null), form, error);
   details.open = editOpen;
   details.addEventListener("toggle", () => { editOpen = details.open; });
   return details;

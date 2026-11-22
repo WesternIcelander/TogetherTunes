@@ -9,6 +9,12 @@
   "data": {
     "dir": "./data"
   },
+  "tools": {
+    "tracksplitter": null
+  },
+  "tracksplitter": {
+    "cacheDir": null
+  },
   "output": {
     "profile": "720p30",
     "videoBitrateKbps": 3000,

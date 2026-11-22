@@ -15,6 +15,11 @@ import java.util.Objects;
 public enum Feature {
     /** {@code ytdlp.enabled}: YouTube imports ({@link Permission#LIBRARY_YOUTUBE}). */
     YOUTUBE(Settings.YTDLP_ENABLED, "YouTube imports are disabled on this server"),
+    /**
+     * {@code metadataLookup.enabled}: looking song details up online (also off while TrackSplitter
+     * isn't installed; {@code library.MetadataLookup}).
+     */
+    METADATA_LOOKUP(Settings.METADATA_LOOKUP_ENABLED, "Looking up song details online is turned off on this server"),
     /** {@code outputs.rtmp.enabled}: RTMP push outputs. */
     OUTPUT_RTMP(Settings.OUTPUTS_RTMP_ENABLED, "RTMP outputs are disabled on this server"),
     /** {@code outputs.ts.enabled}: MPEG-TS outputs. */

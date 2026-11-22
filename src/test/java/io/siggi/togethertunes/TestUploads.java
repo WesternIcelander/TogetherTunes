@@ -111,11 +111,38 @@ public final class TestUploads {
                     data, db, clock::millis, io.siggi.togethertunes.ingest.MediaVersions.GRACE);
             versions.undoWindow(() -> 48 * 3_600_000L);
             items.mediaVersions(versions);
-            items.trimJobs(new io.siggi.togethertunes.ingest.IngestJobs(db, clock));
-            return new ItemsApi(items, permissions);
+            io.siggi.togethertunes.ingest.IngestJobs jobs = new io.siggi.togethertunes.ingest.IngestJobs(db, clock);
+            items.trimJobs(jobs);
+            ItemsApi api = new ItemsApi(items, permissions);
+            // looking details up online, with a fake TrackSplitter that finds one track
+            io.siggi.togethertunes.library.FakeTrackSplitter fake =
+                    new io.siggi.togethertunes.library.FakeTrackSplitter(dir.resolve("tracksplitter"));
+            fake.respond(io.siggi.togethertunes.library.FakeTrackSplitter.singleTrack(
+                    fake.artwork("catalogue-1.jpg", 32, 32), "name"), 0);
+            api.lookup(new io.siggi.togethertunes.library.MetadataLookupApi(items, permissions,
+                    new io.siggi.togethertunes.settings.Settings(db),
+                    new io.siggi.togethertunes.library.MetadataLookup(fake.script.toString(), fake.cacheDir,
+                            "TogetherTunes/test", null, clock),
+                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs, clock));
+            return api;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
+    }
+
+    /** A tool's path when it is on PATH (setting a found cover scales it with ffmpeg), else null. */
+    static String onPath(String name) {
+        String path = System.getenv("PATH");
+        if (path == null) {
+            return null;
+        }
+        for (String d : path.split(java.io.File.pathSeparator)) {
+            Path p = Path.of(d).resolve(name);
+            if (java.nio.file.Files.isExecutable(p)) {
+                return p.toString();
+            }
+        }
+        return null;
     }
 
     /** The media files API with data in {@code <dir>/data}, the rooms' guest access stubbed by {@code access}. */

@@ -78,6 +78,14 @@ public final class Settings {
     // Library
     public static final SettingKey<Boolean> YTDLP_ENABLED = SettingKey.bool("ytdlp.enabled", true);
     public static final SettingKey<String> YTDLP_COOKIES_FILE = SettingKey.optionalString("ytdlp.cookiesFile");
+    /**
+     * Looking song details up online with TrackSplitter ({@code docs/library-and-ingest.md#looking-details-up-online});
+     * only works while {@code tools.tracksplitter} is found.
+     */
+    public static final SettingKey<Boolean> METADATA_LOOKUP_ENABLED = SettingKey.bool("metadataLookup.enabled", true);
+    /** Look up the details of a signed-in user's new upload automatically (fills empty fields only). */
+    public static final SettingKey<Boolean> METADATA_LOOKUP_AUTO_ON_UPLOAD = SettingKey.bool(
+            "metadataLookup.autoOnUpload", true);
     public static final SettingKey<Integer> RETENTION_UNREFERENCED_DAYS = SettingKey.integer(
             "retention.unreferencedDays", 14, 0, 36_500);
     /** Days a never-viewed movie or show is kept after it was added; 0 = off ({@code docs/media-types.md}). */
@@ -242,7 +250,8 @@ public final class Settings {
         for (SettingKey<?> k : List.of(REGISTRATION_MODE, AUTH_LOGIN_MESSAGE, AUTH_REGISTER_MESSAGE,
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
-                YTDLP_ENABLED, YTDLP_COOKIES_FILE, RETENTION_UNREFERENCED_DAYS,
+                YTDLP_ENABLED, YTDLP_COOKIES_FILE, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
+                RETENTION_UNREFERENCED_DAYS,
                 RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, RETENTION_PURGED_ENTRY_DAYS,
                 INGEST_MAX_DURATION_SECONDS,
                 INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES,

@@ -140,6 +140,13 @@ public final class IngestPipeline implements IngestQueue.Handler {
     public static final String PURGE_PREFIX = ".purge-";
     /** Longest edge of {@code cover.jpg}. */
     static final int COVER_MAX = 1200;
+    /**
+     * A new cover waiting in the item's directory for its card-only re-encode
+     * ({@link IngestJobs#enqueueCover}; {@code docs/library-and-ingest.md#looking-details-up-online}),
+     * already scaled like {@link #COVER}. The next {@code reencode} of the item uses it and deletes it
+     * once published (unless a newer one replaced it meanwhile).
+     */
+    public static final String PENDING_COVER = "cover-next.jpg";
 
     /** Share of the progress bar for a YouTube download; the rest is scaled into what's left. */
     static final double DOWNLOAD_SHARE = 0.35;
@@ -263,10 +270,14 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append("[ingest] the item is " + item.status() + "; nothing to re-encode");
                 return;
             }
+            boolean newCover = Files.isRegularFile(itemDir(dataDir, item.id()).resolve(PENDING_COVER));
             if (reference.encoding().id().equals(item.outputProfile())) {
                 if (loudnessStale(item)) {
-                    // the media type changed into or out of movie/show (docs/library-and-ingest.md#loudness-and-media-types)
-                    loudnessOnly = true;
+                    // the media type changed into or out of movie/show (docs/library-and-ingest.md#loudness-and-media-types);
+                    // with a new cover waiting, the full re-encode does both
+                    loudnessOnly = !newCover;
+                } else if (newCover) {
+                    cardOnly = true;
                 } else if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION && cardFontsCurrent(item)) {
                     log.append("[ingest] the item is already encoded for " + reference.encoding().id());
                     return;
@@ -502,8 +513,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
         boolean fromPrevious = sourceKind == SourceKind.PREVIOUS;
         // probe, loudness measurement and encode read as one "encode" step for people
         ctx.stage(STEP_ENCODE, base, base + rest * (MEASURE_SHARE + ENCODE_SHARE));
-        // the item's own cover for a re-encode; the downloaded thumbnail for a YouTube item
-        Path stagedCover = reencode ? existingFile(currentDir.resolve(COVER)) : null;
+        // a new cover waiting (a reencode), else the item's own cover for a re-encode; the downloaded
+        // thumbnail for a YouTube item
+        Path pendingCover = job.kind() == Kind.REENCODE ? snapshotPendingCover(itemDir, scratch) : null;
+        Path stagedCover = pendingCover != null ? pendingCover
+                : reencode ? existingFile(currentDir.resolve(COVER)) : null;
         if (stagedCover == null) {
             stagedCover = staged(sourceKind == SourceKind.DOWNLOAD ? scratch : staging, COVER_NAME);
         }
@@ -725,6 +739,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION, cardFonts, normalized));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
+        clearPendingCover(itemDir, pendingCover, log);
         retire(item, itemDir, hadOld, original, durationUs / 1000);
         if (keepVideo) {
             publishStillAudio(ctx, item, itemDir, version, source, probe, still, reference, preset, lufs, kept,
@@ -1418,11 +1433,16 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 return false;
             }
         }
-        log.append("[ingest] card only: the card is in an older format or its fonts changed; the rest of version "
-                + item.mediaVersion() + " is kept");
+        Path pending = itemDir.resolve(PENDING_COVER);
+        boolean newCover = Files.isRegularFile(pending);
+        log.append("[ingest] card only: " + (newCover ? "a new cover" : "the card is in an older format or its fonts changed")
+                + "; the rest of version " + item.mediaVersion() + " is kept");
         ctx.stage(STEP_FINISH, 0, 1);
         for (String f : List.of(MEZZ, AUDIO, COVER, AUDIO_ONLY, SampleIndex.FILE_NAME)) {
-            if (Files.isRegularFile(currentDir.resolve(f))) {
+            if (f.equals(COVER) && newCover) {
+                // a copy, not a link: a newer cover may replace the waiting one meanwhile
+                Files.copy(pending, work.resolve(COVER), StandardCopyOption.REPLACE_EXISTING);
+            } else if (Files.isRegularFile(currentDir.resolve(f))) {
                 linkOrCopy(currentDir.resolve(f), work.resolve(f));
             }
         }
@@ -1467,12 +1487,84 @@ public final class IngestPipeline implements IngestQueue.Handler {
                         System.currentTimeMillis()));
         log.append("[ingest] published the new card as version " + version + (hadOld ? "; version "
                 + item.mediaVersion() + " is kept until nobody can still be playing it" : ""));
+        if (newCover) {
+            clearPendingCover(itemDir, MediaVersions.versionDir(itemDir, version).resolve(COVER), log);
+        }
         MediaVersions v = versions;
         if (hadOld && v != null) {
             v.retired(item.id(), item.mediaVersion(), durationUs / 1000);
         }
         ctx.progress(1);
         return true;
+    }
+
+    /**
+     * A copy of the item's waiting new cover ({@link #PENDING_COVER}) in the job's scratch directory,
+     * or null when there is none. The copy is what the job uses, so a newer cover written meanwhile
+     * is left for the next job ({@link #clearPendingCover}).
+     */
+    static Path snapshotPendingCover(Path itemDir, Path scratch) throws IOException {
+        Path pending = itemDir.resolve(PENDING_COVER);
+        if (!Files.isRegularFile(pending)) {
+            return null;
+        }
+        Path copy = scratch.resolve("pending-" + COVER);
+        try {
+            Files.copy(pending, copy, StandardCopyOption.REPLACE_EXISTING);
+        } catch (java.nio.file.NoSuchFileException e) {
+            return null;
+        }
+        return copy;
+    }
+
+    /**
+     * After a publish that used the waiting cover {@code used} (a copy of it): deletes
+     * {@link #PENDING_COVER} unless a different cover replaced it meanwhile. Nothing for null.
+     */
+    static void clearPendingCover(Path itemDir, Path used, JobLog log) {
+        if (used == null) {
+            return;
+        }
+        Path pending = itemDir.resolve(PENDING_COVER);
+        try {
+            if (Files.isRegularFile(pending) && Files.mismatch(pending, used) == -1L) {
+                Files.delete(pending);
+            }
+            log.append("[ingest] the new cover is in place");
+        } catch (IOException e) {
+            log.append("[ingest] could not remove the applied cover " + PENDING_COVER + ": " + e.getMessage());
+        }
+    }
+
+    /** {@link #PENDING_COVER} of an item: where {@link #stagePendingCover} puts a new cover. */
+    public static Path pendingCover(DataDir dataDir, String itemId) {
+        return itemDir(dataDir, itemId).resolve(PENDING_COVER);
+    }
+
+    /**
+     * Writes {@code image} scaled like every {@link #COVER} as the item's waiting new cover
+     * ({@link #PENDING_COVER}, replacing one that is already waiting), for the card-only re-encode
+     * {@link IngestJobs#enqueueCover} queues. The item's directory must exist.
+     *
+     * @throws ToolException if ffmpeg can't read or convert the image
+     */
+    public static void stagePendingCover(Tools tools, DataDir dataDir, String itemId, Path image)
+            throws IOException, ToolException, InterruptedException {
+        Path dir = itemDir(dataDir, itemId);
+        if (!Files.isDirectory(dir)) {
+            throw new IOException("the item has no media directory");
+        }
+        Path tmp = dir.resolve(".cover-next-" + java.util.UUID.randomUUID() + ".jpg");
+        try {
+            tools.ffmpeg(coverArgs(image, "0:v:0", tmp)).timeout(java.time.Duration.ofMinutes(1)).run();
+            if (CardRenderer.readImage(tmp) == null) {
+                throw new IOException("the cover image could not be read");
+            }
+            Files.move(tmp, dir.resolve(PENDING_COVER), StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE);
+        } finally {
+            Files.deleteIfExists(tmp);
+        }
     }
 
     /**
