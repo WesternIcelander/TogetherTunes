@@ -72,6 +72,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
       original_web INTEGER,                 -- 1 if browsers can play the original (audio uploads only)
       original_gain_db REAL NULL,           -- gain the web client applies to the original (audio uploads only)
+      original_cleaned INTEGER NULL,        -- personal data removed from an audio upload's .m4a/.mp3/.flac original (migration 0036, library-and-ingest.md#looking-details-up-online): 1 cleaned, 0 the cleaning failed (never served, original_web 0), NULL not cleaned (other formats; or made before 0036 / without TrackSplitter: the one-time pass cleans those, and an .m4a isn't served meanwhile). Not in media_versions (one original per item)
       media_type TEXT,                      -- 'audio'|'uncategorized'|'music_video'|'movie'|'show' (migration 0023, media-types.md); replaced present_as_audio: a video item of type 'audio' plays with its card. Audio items are always 'audio'; new videos 'uncategorized'
       show_name TEXT NULL, season_number INTEGER NULL, episode_number INTEGER NULL,  -- type 'show' only (name and episode required, numbers >= 0); NULL for every other type
       artists_json TEXT NULL,               -- song details (migration 0035, library-and-ingest.md#song-details): JSON array of the track's artists, only with two or more names (artist stays the one string)
