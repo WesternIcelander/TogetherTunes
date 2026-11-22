@@ -74,6 +74,12 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       original_gain_db REAL NULL,           -- gain the web client applies to the original (audio uploads only)
       media_type TEXT,                      -- 'audio'|'uncategorized'|'music_video'|'movie'|'show' (migration 0023, media-types.md); replaced present_as_audio: a video item of type 'audio' plays with its card. Audio items are always 'audio'; new videos 'uncategorized'
       show_name TEXT NULL, season_number INTEGER NULL, episode_number INTEGER NULL,  -- type 'show' only (name and episode required, numbers >= 0); NULL for every other type
+      artists_json TEXT NULL,               -- song details (migration 0035, library-and-ingest.md#song-details): JSON array of the track's artists, only with two or more names (artist stays the one string)
+      album_artist TEXT NULL, genre TEXT NULL, copyright TEXT NULL, label TEXT NULL,  -- cleaned like the title
+      track_no INTEGER NULL, track_total INTEGER NULL, disc_no INTEGER NULL, disc_total INTEGER NULL,  -- whole numbers >= 1 (CHECK); the API takes 1..9999
+      isrc TEXT NULL,                       -- 12 letters and digits, upper case
+      release_date TEXT NULL,               -- 'YYYY', 'YYYY-MM' or 'YYYY-MM-DD'
+      barcode TEXT NULL,                    -- UPC/EAN, 8 to 14 digits. Not in media_versions: details aren't versioned
       last_viewed_at BIGINT NULL,           -- most recent view (media-types.md#views-auto-delete-and-pins)
       pinned_at BIGINT NULL, pinned_by_user_id NULL FK users ON DELETE SET NULL,  -- pinned: never deleted automatically
       encode_preset TEXT NULL,              -- x264 preset its files were made with (NULL: before presets were recorded)
