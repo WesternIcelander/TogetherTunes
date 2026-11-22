@@ -1017,11 +1017,32 @@ class AdminApiTest {
         assertError("not_authenticated", call(401, "GET", "/api/admin/providers", null, null));
     }
 
+    /**
+     * {@code /admin/} is a view of the single-page app (docs/ui.md#single-page-app): the app document
+     * with its shell module and the admin view's template; the router maps the path to the
+     * {@code admin} view, and that view's module is served.
+     */
     @Test
     void adminPageLoads() throws Exception {
         HttpResponse<String> page = send("GET", "/admin/", null, null);
         assertEquals(200, page.statusCode());
-        assertTrue(page.body().contains("/js/admin.js"), page.body());
-        assertEquals(200, send("GET", "/js/admin.js", null, null).statusCode());
+        assertTrue(page.headers().firstValue("Content-Type").orElse("").startsWith("text/html"));
+        String body = page.body();
+        assertTrue(body.contains("<script type=\"module\" src=\"/js/app.js\"></script>"), body);
+        assertTrue(body.contains("<template id=\"view-admin\""), body);
+        assertTrue(body.contains("id=\"admin-tabs\""), body);
+        assertEquals(body, send("GET", "/admin", null, null).body());
+
+        HttpResponse<String> router = send("GET", "/js/router.js", null, null);
+        assertEquals(200, router.statusCode());
+        assertTrue(router.body().contains("admin: { template: \"view-admin\", module: \"admin\" }"), router.body());
+        assertTrue(router.body().contains("\"/admin/\": [\"admin\", \"/admin/\"]"), router.body());
+
+        for (String path : List.of("/js/admin.js", "/js/admin.js?mount=3")) {
+            HttpResponse<String> js = send("GET", path, null, null);
+            assertEquals(200, js.statusCode(), path);
+            assertTrue(js.headers().firstValue("Content-Type").orElse("").startsWith("text/javascript"), path);
+            assertTrue(js.body().contains("admin-tabs"), path);
+        }
     }
 }
