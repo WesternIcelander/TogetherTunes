@@ -9,6 +9,7 @@ import io.siggi.togethertunes.db.PostgresDialect;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.EditSettings;
 import io.siggi.togethertunes.ingest.IngestJob;
+import io.siggi.togethertunes.ingest.CardRenderer;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestPipeline;
 import io.siggi.togethertunes.ingest.IngestQueue;
@@ -629,8 +630,10 @@ public final class Items {
         } catch (MediaVersions.UndoRefused e) {
             throw new HttpError(409, e.code(), e.getMessage());
         }
-        // the restored files may not follow the item's type's loudness rule (the type changed since)
+        // the restored files may not follow the item's type's loudness rule (the type changed since),
+        // and their card may show older text
         loudnessFollowsType(itemId);
+        cardTextFollows(itemId);
         return get(actor, itemId, rights);
     }
 
@@ -643,6 +646,28 @@ public final class Items {
         IngestJobs jobs = trimJobs;
         if (jobs != null) {
             jobs.enqueueLoudnessIfNeeded(itemId);
+        }
+    }
+
+    /**
+     * Queues the card-only re-encode for edited card text ({@link IngestJobs#enqueueCardText}).
+     * Joins the caller's transaction; nothing without the ingest queue (tests).
+     */
+    private void cardFollowsText(String itemId) throws SQLException {
+        IngestJobs jobs = trimJobs;
+        if (jobs != null) {
+            jobs.enqueueCardText(itemId);
+        }
+    }
+
+    /**
+     * Queues the card-only re-encode if the item's card (e.g. one an undo restored) draws other text
+     * than the item has ({@link IngestJobs#enqueueCardTextIfStale}); nothing without the ingest queue.
+     */
+    private void cardTextFollows(String itemId) throws SQLException {
+        IngestJobs jobs = trimJobs;
+        if (jobs != null) {
+            jobs.enqueueCardTextIfStale(itemId);
         }
     }
 
@@ -746,6 +771,24 @@ public final class Items {
                         + " someone with library.editAny can look up its details");
             }
             return lookupSource(c, row);
+        });
+    }
+
+    /**
+     * Throws unless {@code actor} may edit the item's details (the right {@link #update} checks):
+     * {@code 404 item_not_found}, {@code 403 forbidden}. Returns the item's status.
+     */
+    public String requireEdit(Actor.User actor, String itemId, Rights rights) throws SQLException {
+        return db.read(c -> {
+            Row row = row(c, itemId, false);
+            if (row == null) {
+                throw notFound();
+            }
+            if (!you(c, actor, row, rights).canEdit()) {
+                throw HttpError.forbidden("Only the user who added this item (while it is in their library) or"
+                        + " someone with library.editAny can edit it");
+            }
+            return row.status();
         });
     }
 
@@ -889,10 +932,18 @@ public final class Items {
 
     /** Audits a new cover from a lookup ({@value #AUDIT_COVER_CHANGED}); {@code actor} null: the automatic lookup. */
     public void auditCover(String actorUserId, String itemId, String clientIp) throws SQLException {
+        auditCover(actorUserId, itemId, clientIp, "lookup");
+    }
+
+    /**
+     * {@link #auditCover(String, String, String)} with where the cover came from ({@code via}:
+     * {@code lookup}, or {@code upload} for a replaced artwork).
+     */
+    public void auditCover(String actorUserId, String itemId, String clientIp, String via) throws SQLException {
         long now = EpochMs.now(clock);
         db.write(c -> {
             Map<String, Object> details = new LinkedHashMap<>();
-            details.put("via", "lookup");
+            details.put("via", via);
             AuditLog.write(c, now, actorUserId, null, clientIp, AUDIT_COVER_CHANGED, itemId, details);
             return null;
         });
@@ -997,8 +1048,6 @@ public final class Items {
             if (changed.isEmpty()) {
                 return page(c, row, you);
             }
-            // TODO(M4): the item's card.mp4 still shows the old title/artist/album; re-render it
-            // (and its index for audio items) before the packager shows cards.
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET title = ?, artist = ?, album = ?,"
                     + " media_type = ?, show_name = ?, season_number = ?, episode_number = ?, "
                     + SongDetails.assignments() + " WHERE id = ?")) {
@@ -1028,6 +1077,13 @@ public final class Items {
                 // normalisation (docs/library-and-ingest.md#loudness-and-media-types)
                 loudnessFollowsType(itemId);
             }
+            if (!CardRenderer.textKey(title, artist, album).equals(
+                    CardRenderer.textKey(row.title(), row.artist(), row.album()))) {
+                // the card draws the title, artist and album: a card-only re-encode makes it again
+                // (docs/library-and-ingest.md#cards); a job holding the item queues it when it ends
+                cardFollowsText(itemId);
+            }
+            db.afterCommit(() -> statusListener.itemDetailsChanged(itemId));
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_UPDATED, itemId, changed);
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),
                     row.youtubeId(), row.status(), mediaType, show, row.addedAt(), row.error(), row.addedByUserId(),
@@ -1084,6 +1140,8 @@ public final class Items {
         } catch (MediaVersions.UndoRefused e) {
             throw new HttpError(409, e.code(), e.getMessage());
         }
+        // the video's card may show older text than the item has now
+        cardTextFollows(itemId);
     }
 
     private volatile java.util.function.Consumer<String> purgeListener = itemId -> {

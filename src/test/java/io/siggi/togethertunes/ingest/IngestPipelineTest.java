@@ -681,6 +681,92 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertNoLeftovers();
     }
 
+    /** The first frame of a card as decoded RGB bytes. */
+    private byte[] cardPicture(Path card, String name) throws Exception {
+        Path raw = dir.resolve(name + ".rgb");
+        ffmpeg("-i", card.toString(), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", raw.toString());
+        return Files.readAllBytes(raw);
+    }
+
+    private void setTitle(String item, String title) throws Exception {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET title = ? WHERE id = ?")) {
+                ps.setString(1, title);
+                ps.setString(2, item);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * docs/library-and-ingest.md#cards: an edited title makes the card again with a card-only
+     * re-encode (the decoded card differs, its avcC is the reference's, invariant 1; the audio is
+     * taken over); the new card's text is recorded, so a later re-encode finds it current.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void cardOnlyReencodeForAnEditedTitle() throws Exception {
+        String audio = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=330:r=44100", "-t", "3", "-c:a", "aac",
+                stage(audio, "source.m4a").toString());
+        assertEquals(State.DONE, run(Kind.UPLOAD, audio).state());
+        IngestItems items = new IngestItems(db);
+        assertEquals(CardRenderer.textKey("Song", null, null), items.cardText(audio), "a new card records its text");
+        Path before = cur(audio);
+        byte[] oldPicture = cardPicture(before.resolve("card.mp4"), "old");
+        IngestQueue q = queue(tools, reference, 1800);
+        setTitle(audio, "A Completely Different Title");
+        IngestJob job = awaitJob(jobs.enqueueCardText(audio).id());
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("card only: the card's text changed"), job.log());
+        Path after = cur(audio);
+        assertFalse(after.equals(before), "a new version");
+        assertFalse(java.util.Arrays.equals(oldPicture, cardPicture(after.resolve("card.mp4"), "new")),
+                "the card shows the new title");
+        assertTrue(Files.isSameFile(before.resolve("audio.m4a"), after.resolve("audio.m4a")));
+        assertSameAvcC("edited title", audio, false);
+        CardEncoderTest.checkSkipFrameCard(tools, after.resolve("card.mp4"), reference.encoding());
+        assertEquals(CardRenderer.textKey("A Completely Different Title", null, null), items.cardText(audio));
+        assertFalse(jobs.enqueueCardTextIfStale(audio), "the card matches its text now");
+        IngestJob again = run(q, Kind.REENCODE, audio);
+        assertTrue(again.log().contains("already encoded for"), again.log());
+        assertNoLeftovers();
+    }
+
+    /**
+     * Replace artwork (docs/library-and-ingest.md#cards): an image the user uploads (here a PNG) is
+     * staged like a found cover and applied by a card-only re-encode; the decoded card differs, its
+     * avcC is the reference's (invariant 1), and the new cover.jpg is the scaled upload.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void cardOnlyReencodeForAReplacedArtwork() throws Exception {
+        String audio = fixtures.item("pending");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=330:r=44100", "-t", "3", "-c:a", "aac",
+                stage(audio, "source.m4a").toString());
+        assertEquals(State.DONE, run(Kind.UPLOAD, audio).state());
+        Path before = cur(audio);
+        byte[] oldPicture = cardPicture(before.resolve("card.mp4"), "old");
+        Path upload = dir.resolve("mine.png");
+        ffmpeg("-f", "lavfi", "-i", "color=c=red:s=500x500", "-frames:v", "1", upload.toString());
+        IngestPipeline.stagePendingCover(tools, data, audio, upload);
+        IngestJob job = run(Kind.REENCODE, audio);
+        assertEquals(State.DONE, job.state(), job.log());
+        assertTrue(job.log().contains("card only: a new cover"), job.log());
+        Path after = cur(audio);
+        java.awt.image.BufferedImage cover = javax.imageio.ImageIO.read(after.resolve(IngestPipeline.COVER).toFile());
+        assertEquals(500, cover.getWidth());
+        int rgb = cover.getRGB(250, 250);
+        assertTrue(((rgb >> 16) & 0xFF) > 200 && ((rgb >> 8) & 0xFF) < 60, "the uploaded red image");
+        assertFalse(java.util.Arrays.equals(oldPicture, cardPicture(after.resolve("card.mp4"), "new")),
+                "the card shows the new artwork");
+        assertSameAvcC("replaced artwork", audio, false);
+        CardEncoderTest.checkSkipFrameCard(tools, after.resolve("card.mp4"), reference.encoding());
+        assertFalse(Files.exists(IngestPipeline.pendingCover(data, audio)));
+        assertNoLeftovers();
+    }
+
     /**
      * Movies and shows skip the loudness normalisation (docs/media-types.md#loudness): a movie is
      * encoded without it; changing its type to a music video queues a system re-encode of only the

@@ -286,6 +286,43 @@ abstract class ItemsContract {
         assertEquals("item_not_found", code(() -> items.update(alice, UuidV7.newId(), title("x"), EDIT_ANY, null)));
     }
 
+    /**
+     * docs/library-and-ingest.md#cards: an edit of what the card draws (title, artist, album) queues
+     * one card-only re-encode, several quick edits share it, and edits of other fields (genre, ISRC,
+     * a title differing only in spaces) queue nothing. The rooms hear about every saved edit.
+     */
+    @Test
+    void cardTextEditsQueueACardRemake() throws Exception {
+        items.trimJobs(jobs);
+        List<String> told = new java.util.concurrent.CopyOnWriteArrayList<>();
+        items.statusListener(new io.siggi.togethertunes.ingest.ItemStatusListener() {
+            @Override
+            public void itemStatusChanged(String itemId) {
+                told.add("status " + itemId);
+            }
+
+            @Override
+            public void itemDetailsChanged(String itemId) {
+                told.add("details " + itemId);
+            }
+        });
+        String id = aliceItem("audio");
+        items.update(alice, id, new Items.Edit(null, null, false, null, false, null, null,
+                new SongDetails.Patch(java.util.Set.of("genre", "isrc"),
+                        SongDetails.EMPTY.with("genre", "Pop").with("isrc", "JPVI02201530"))), NONE, null);
+        items.update(alice, id, title("  Song "), NONE, null);
+        assertTrue(jobs.latestForItem(id).isEmpty(), "nothing on the card changed");
+        assertEquals(List.of("details " + id, "details " + id), told);
+
+        items.update(alice, id, title("New Title"), NONE, null);
+        IngestJob remake = jobs.latestForItem(id).orElseThrow();
+        assertEquals(IngestJob.Kind.REENCODE, remake.kind());
+        items.update(alice, id, new Items.Edit(null, "Other Artist", false, "Album", false), NONE, null);
+        items.update(alice, id, new Items.Edit(null, null, true, null, false), NONE, null);
+        assertEquals(remake.id(), jobs.latestForItem(id).orElseThrow().id(), "one remake for quick edits");
+        assertEquals(1, jobs.list(IngestJob.State.QUEUED, 10).size());
+    }
+
     /** docs/library-and-ingest.md#song-details: stored per column, shown on the page, audited by field. */
     @Test
     void songDetailsAreStoredAndAudited() throws Exception {

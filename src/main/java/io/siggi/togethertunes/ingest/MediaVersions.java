@@ -536,7 +536,7 @@ public final class MediaVersions implements AutoCloseable {
 
     /** The columns an undo restores as they are. */
     private static final String RESTORED_COLUMNS = "kind, duration_ms, output_profile, loudness_lufs, encode_preset,"
-            + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version, card_fonts, loudness_normalized";
+            + " encode_quality, audio_only_ms, original_web, original_gain_db, card_version, card_fonts, card_text, loudness_normalized";
     /** What a version was made with: {@link #RESTORED_COLUMNS} and the media type. */
     private static final String VERSION_COLUMNS = RESTORED_COLUMNS + ", media_type";
 
@@ -934,7 +934,7 @@ public final class MediaVersions implements AutoCloseable {
             retired(itemId, k.current(), k.currentDurationMs());
             LOG.log(System.Logger.Level.INFO, "Undo: item " + itemId + " is back on the files of version "
                     + k.version() + " (as version " + newVersion + "); version " + k.current() + " is kept for undo");
-            statusListener.itemStatusChanged(itemId);
+            statusListener.itemDetailsChanged(itemId);
             return result[0];
         } finally {
             if (!done && taken != null) {

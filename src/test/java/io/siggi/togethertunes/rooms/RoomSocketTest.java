@@ -1509,6 +1509,32 @@ class RoomSocketTest {
         owner.quiet("state");
     }
 
+    /**
+     * An edited title (or a new cover or card) of an item the room plays reaches the open pages: the
+     * room sends its state again with the item's new details (docs/library-and-ingest.md#cards).
+     */
+    @Test
+    void editedItemDetailsReachThePages() throws Exception {
+        room("edits", "public", "owner");
+        String song = item("Old Title");
+        Client owner = connect(alice, null);
+        owner.ok("{\"type\":\"join\",\"room\":\"edits\",\"mode\":\"listen\"}");
+        owner.await("state");
+        owner.await("presence");
+        owner.ok("{\"type\":\"queue.add\",\"itemId\":\"" + song + "\"}");
+        JsonObject state = owner.await("state");
+        assertEquals("Old Title", state.getAsJsonObject("current").getAsJsonObject("item").get("title").getAsString());
+        long v = version(state);
+        sql("UPDATE items SET title = ? WHERE id = ?", "New Title", song);
+        wiring.registry().itemDetailsChanged(song);
+        state = owner.await("state");
+        assertEquals(v + 1, version(state), state.toString());
+        assertEquals("New Title", state.getAsJsonObject("current").getAsJsonObject("item").get("title").getAsString());
+        // an item the room doesn't have: nothing is sent
+        wiring.registry().itemDetailsChanged(item("Elsewhere"));
+        owner.quiet("state");
+    }
+
     @Test
     void aFinishedIngestTurnsTheEntryReadyWhileSomethingElsePlays() throws Exception {
         room("busy", "public", "owner");

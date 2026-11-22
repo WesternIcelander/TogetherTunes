@@ -185,19 +185,83 @@ public final class IngestJobs {
      * Joins the caller's transaction.
      */
     public IngestJob enqueueCover(String itemId) throws SQLException {
+        IngestJob job = enqueueCardJob(itemId, "a new cover");
+        if (job == null) {
+            throw new ItemBusy("This item is being processed right now; try again when its job has ended");
+        }
+        return job;
+    }
+
+    /**
+     * Queues the card-only re-encode that makes the item's card show its edited title, artist or
+     * album ({@code docs/library-and-ingest.md#cards}), like {@link #enqueueCover} (a queued
+     * {@code reencode} is reused, so several quick edits make one new card with the latest text; a
+     * queued {@code quality} job is dropped), except that a busy item (a running job, a queued
+     * {@code trim} or new-item job) isn't refused: nothing is queued now, and when that job ends
+     * {@link #finish} queues the remake if the card's text ({@code items.card_text}) still doesn't
+     * match. Nothing for an item that isn't {@code ready} (a new-item job draws the latest text
+     * anyway). Joins the caller's transaction.
+     *
+     * @return the queued (or reused) job, or null if none was queued
+     */
+    public IngestJob enqueueCardText(String itemId) throws SQLException {
+        Objects.requireNonNull(itemId);
+        return db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT 1 FROM items WHERE id = ? AND status = 'ready'")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) {
+                        return null;
+                    }
+                }
+            }
+            return enqueueCardJob(itemId, "new card text");
+        });
+    }
+
+    /**
+     * Queues a card-only re-encode if the item's card doesn't draw the text the item has now
+     * ({@code items.card_text} recorded and not {@link CardRenderer#textKey} of its title, artist
+     * and album), e.g. after an undo brought back a card drawn with older text. Busy items as in
+     * {@link #enqueueCardText}. Joins the caller's transaction.
+     *
+     * @return whether a job was queued (or a queued one reused)
+     */
+    public boolean enqueueCardTextIfStale(String itemId) throws SQLException {
+        Objects.requireNonNull(itemId);
+        return db.write(c -> cardTextStale(c, itemId) && enqueueCardJob(itemId, "new card text") != null);
+    }
+
+    /** Whether the item is {@code ready} and its recorded card text isn't the one its text gives now. */
+    private static boolean cardTextStale(Connection c, String itemId) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement("SELECT card_text, title, artist, album FROM items"
+                + " WHERE id = ? AND status = 'ready' AND card_text IS NOT NULL")) {
+            ps.setString(1, itemId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() && !rs.getString(1).equals(
+                        CardRenderer.textKey(rs.getString(2), rs.getString(3), rs.getString(4)));
+            }
+        }
+    }
+
+    /**
+     * {@link #enqueueCover}'s rule: the queued {@code reencode} (reused or new), or null when the item
+     * is busy (nothing changed then). {@code why} goes into a dropped {@code quality} job's log.
+     */
+    private IngestJob enqueueCardJob(String itemId, String why) throws SQLException {
         Objects.requireNonNull(itemId);
         long now = EpochMs.now(clock);
         return db.write(c -> {
             IngestJob active = activeForItem(c, itemId);
             if (active != null) {
                 if (active.state() == State.RUNNING || active.kind().ownsItemStatus() || active.kind() == Kind.TRIM) {
-                    throw new ItemBusy("This item is being processed right now; try again when its job has ended");
+                    return null;
                 }
                 if (active.kind() == Kind.REENCODE) {
                     return active;
                 }
                 JobLog log = JobLog.resume(active.log());
-                log.append("[ingest] Dropped at " + EpochMs.format(now) + ": a new cover re-encodes the item first");
+                log.append("[ingest] Dropped at " + EpochMs.format(now) + ": " + why + " re-encodes the item first");
                 try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = ?, finished_at = ?,"
                         + " log = ? WHERE id = ? AND state = ?")) {
                     ps.setString(1, State.DONE.wire());
@@ -435,8 +499,8 @@ public final class IngestJobs {
         Objects.requireNonNull(encoding);
         return db.write(c -> {
             List<String> stale = new ArrayList<>();
-            try (PreparedStatement ps = c.prepareStatement("SELECT id, card_version, card_fonts, title, artist, album"
-                    + " FROM items i WHERE status = 'ready' AND output_profile = ?"
+            try (PreparedStatement ps = c.prepareStatement("SELECT id, card_version, card_fonts, title, artist, album,"
+                    + " card_text FROM items i WHERE status = 'ready' AND output_profile = ?"
                     + (fontKey == null ? " AND card_version < " + CardEncoder.CARD_VERSION : "")
                     + " AND NOT EXISTS (SELECT 1 FROM ingest_jobs j WHERE j.item_id = i.id AND j.state IN (?, ?))"
                     + " ORDER BY added_at, id")) {
@@ -446,8 +510,11 @@ public final class IngestJobs {
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
                         boolean old = rs.getInt(2) < CardEncoder.CARD_VERSION;
+                        String text = rs.getString(7);
                         if (old || !Objects.equals(rs.getString(3),
-                                fontKey.of(rs.getString(4), rs.getString(5), rs.getString(6)))) {
+                                fontKey.of(rs.getString(4), rs.getString(5), rs.getString(6)))
+                                || (text != null && !text.equals(
+                                        CardRenderer.textKey(rs.getString(4), rs.getString(5), rs.getString(6))))) {
                             stale.add(rs.getString(1));
                         }
                     }
@@ -842,14 +909,23 @@ public final class IngestJobs {
                 }
             } else if (state == State.DONE) {
                 // A re-encode published new files: the item may be playable by the program output
-                // now (files of the current encoding), so the rooms look again.
+                // now (files of the current encoding), so the rooms look again; its cover URL (by
+                // version) and card may be new, so their pages get the item again.
                 String itemId = job.itemId();
-                db.afterCommit(() -> statusListener.itemStatusChanged(itemId));
+                db.afterCommit(() -> statusListener.itemDetailsChanged(itemId));
             }
             // A running job references its item; it stops doing so now.
             References.touch(c, job.itemId(), now);
             if (state == State.DONE && !enqueueReencodeIfStale(c, job.itemId())) {
-                enqueueQualityIfNeeded(job.itemId());
+                // the card's text was edited while this job held the item (enqueueCardText)
+                if (!(cardTextStale(c, job.itemId()) && enqueueCardJob(job.itemId(), "new card text") != null)) {
+                    enqueueQualityIfNeeded(job.itemId());
+                }
+            } else if (state == State.FAILED && job.kind() != Kind.REENCODE && !job.kind().ownsItemStatus()
+                    && cardTextStale(c, job.itemId())) {
+                // a failed trim or quality encode leaves the item as it was: its card still needs the
+                // edited text (never after a failed re-encode, which would only fail again)
+                enqueueCardJob(job.itemId(), "new card text");
             }
             return true;
         });

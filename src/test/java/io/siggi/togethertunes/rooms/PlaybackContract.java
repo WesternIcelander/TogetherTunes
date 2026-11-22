@@ -751,6 +751,27 @@ abstract class PlaybackContract {
         assertEquals(List.of(third[0]), queueOrder());
     }
 
+    /**
+     * An item's details changed (an edited title, a new cover or card): a room whose current or
+     * waiting entry plays it announces {@link RoomEvent.ItemDetailsChanged}, so its pages get the
+     * item again; a room without it changes nothing.
+     */
+    @Test
+    void itemDetailsChangesAreAnnouncedWhereTheItemIsQueued() throws Exception {
+        String[] a = entry("ready", 60_000L);
+        String[] b = entry("ready", 30_000L);
+        registry.call(roomId, Playback::startIfIdle);
+        changes.clear();
+        assertTrue((boolean) registry.call(roomId, tx -> Playback.itemDetailsChanged(tx, b[1])));
+        RoomChange change = changes.poll(5, TimeUnit.SECONDS);
+        assertNotNull(change);
+        assertEquals(List.of(new RoomEvent.ItemDetailsChanged(b[1])), change.events());
+        assertTrue((boolean) registry.call(roomId, tx -> Playback.itemDetailsChanged(tx, a[1])), "the current entry");
+        changes.clear();
+        assertFalse((boolean) registry.call(roomId, tx -> Playback.itemDetailsChanged(tx, UuidV7.newId())));
+        assertNull(changes.poll(200, TimeUnit.MILLISECONDS), "nothing for an item the room doesn't have");
+    }
+
     @Test
     void aProcessingFirstEntryStaysOnTopAndPlaysOnceReady() throws Exception {
         caseAProcessingFirstEntry(false);

@@ -64,6 +64,13 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         /** The room's timeline changed (any thread). */
         void update(ProgramCue cue);
 
+        /**
+         * The item has new files (an {@link RoomEvent.ItemDetailsChanged}): its next play loads them
+         * ({@link ProgramMedia#itemChanged}). Any thread.
+         */
+        default void itemChanged(String itemId) {
+        }
+
         /** Stops the packager (closing its consumers) and frees what the output holds. */
         @Override
         void close();
@@ -303,6 +310,17 @@ public final class ProgramOutputs implements PackagerHook, AutoCloseable {
         }
         RoomOutput ro = rooms.get(roomId);
         if (ro != null) {
+            Output feeding;
+            synchronized (ro.feed) {
+                feeding = ro.feeding;
+            }
+            if (feeding != null) {
+                for (RoomEvent e : change.events()) {
+                    if (e instanceof RoomEvent.ItemDetailsChanged d) {
+                        feeding.itemChanged(d.itemId());
+                    }
+                }
+            }
             offer(ro, snapshot(state));
         }
     }

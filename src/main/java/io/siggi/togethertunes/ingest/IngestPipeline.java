@@ -310,7 +310,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     loudnessOnly = !newCover;
                 } else if (newCover) {
                     cardOnly = true;
-                } else if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION && cardFontsCurrent(item)) {
+                } else if (items.cardVersion(item.id()) >= CardEncoder.CARD_VERSION && cardFontsCurrent(item)
+                        && cardTextCurrent(item)) {
                     log.append("[ingest] the item is already encoded for " + reference.encoding().id());
                     return;
                 } else {
@@ -680,6 +681,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         BufferedImage card = renderer.renderItem(
                 new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
         String cardFonts = CardRenderer.fontKey(renderer.fonts(), item.title(), item.artist(), item.album());
+        String cardText = CardRenderer.textKey(item.title(), item.artist(), item.album());
         Path cardFile = work.resolve(CARD);
         CardEncoder.encode(tools, card, cardFile, reference, log);
         ctx.progress(after += stepShare);
@@ -787,7 +789,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Long variantMs = audioOnlyMs;
         int version = publish(work, itemDir, item.mediaVersion(), original == null ? null : original.file(),
                 v -> items.published(item.id(), video, durationUs / 1000, profile, preset, qualityEncode || !video,
-                        lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION, cardFonts, normalized));
+                        lufs, kept, v, change, variantMs, CardEncoder.CARD_VERSION, cardFonts, cardText, normalized));
         log.append("[ingest] published as version " + version + (hadOld ? "; version " + item.mediaVersion()
                 + " is kept until nobody can still be playing it (and for the undo window)" : ""));
         clearPendingCover(itemDir, pendingCover, log);
@@ -945,6 +947,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
             BufferedImage card = renderer.renderItem(
                     new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
             String cardFonts = CardRenderer.fontKey(renderer.fonts(), item.title(), item.artist(), item.album());
+            String cardText = CardRenderer.textKey(item.title(), item.artist(), item.album());
             Path cardFile = work.resolve(CARD);
             CardEncoder.encode(tools, card, cardFile, reference, log);
             SampleIndex index = IndexBuilder.build(tools, profile, cardFile, audio, work.resolve(SampleIndex.FILE_NAME), log);
@@ -954,7 +957,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
                     System.currentTimeMillis());
             int version = publish(work, itemDir, videoVersion, null, v -> items.published(item.id(), false,
                     durationUs / 1000, profile, preset, true, lufs, original, v, change, null,
-                    CardEncoder.CARD_VERSION, cardFonts));
+                    CardEncoder.CARD_VERSION, cardFonts, cardText, null));
             MediaVersions v = versions;
             if (v != null) {
                 v.retired(item.id(), videoVersion, durationUs / 1000);
@@ -1541,7 +1544,8 @@ public final class IngestPipeline implements IngestQueue.Handler {
         }
         Path pending = itemDir.resolve(PENDING_COVER);
         boolean newCover = Files.isRegularFile(pending);
-        log.append("[ingest] card only: " + (newCover ? "a new cover" : "the card is in an older format or its fonts changed")
+        log.append("[ingest] card only: " + (newCover ? "a new cover"
+                : "the card's text changed, or it is in an older format or its fonts changed")
                 + "; the rest of version " + item.mediaVersion() + " is kept");
         ctx.stage(STEP_FINISH, 0, 1);
         for (String f : List.of(MEZZ, AUDIO, COVER, AUDIO_ONLY, SampleIndex.FILE_NAME)) {
@@ -1566,6 +1570,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         BufferedImage card = renderer.renderItem(
                 new CardRenderer.ItemCard(item.title(), item.artist(), item.album(), artwork));
         String cardFonts = CardRenderer.fontKey(renderer.fonts(), item.title(), item.artist(), item.album());
+        String cardText = CardRenderer.textKey(item.title(), item.artist(), item.album());
         CardEncoder.encode(tools, card, work.resolve(CARD), reference, log);
         ctx.progress(0.5);
 
@@ -1589,7 +1594,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         step(log, "publish");
         boolean hadOld = MediaVersions.exists(itemDir, item.mediaVersion());
         int version = publish(work, itemDir, item.mediaVersion(), null,
-                v -> items.cardRemade(item.id(), item.mediaVersion(), v, CardEncoder.CARD_VERSION, cardFonts, hadOld,
+                v -> items.cardRemade(item.id(), item.mediaVersion(), v, CardEncoder.CARD_VERSION, cardFonts, cardText, hadOld,
                         System.currentTimeMillis()));
         log.append("[ingest] published the new card as version " + version + (hadOld ? "; version "
                 + item.mediaVersion() + " is kept until nobody can still be playing it" : ""));
@@ -1681,6 +1686,16 @@ public final class IngestPipeline implements IngestQueue.Handler {
         String stored = items.cardFonts(item.id());
         return stored != null && stored.equals(CardRenderer.fontKey(CardFonts.installed(), item.title(), item.artist(),
                 item.album()));
+    }
+
+    /**
+     * Whether the item's card draws the text it has now ({@code items.card_text} equals
+     * {@link CardRenderer#textKey}; {@code docs/library-and-ingest.md#cards}). Not recorded counts as
+     * stale here: a re-encode queued for an item already in the current encoding remakes its card.
+     */
+    private boolean cardTextCurrent(IngestItems.Item item) throws java.sql.SQLException {
+        String stored = items.cardText(item.id());
+        return stored != null && stored.equals(CardRenderer.textKey(item.title(), item.artist(), item.album()));
     }
 
     /** Checks an index rebuilt around a new card: the reference avcC, the GOP grid, the same audio length. */

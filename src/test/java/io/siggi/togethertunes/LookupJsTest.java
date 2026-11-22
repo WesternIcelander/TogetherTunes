@@ -25,7 +25,8 @@ class LookupJsTest {
         String item = Files.readString(NodeTests.resource("web/js/item.js"), StandardCharsets.UTF_8);
         for (String s : List.of("from \"./lookup.js\"", "reviewRows(item, r.details)", "applyBody(", "candidateText(c)",
                 "coverChecked(item.hasCover)", "item.you.canLookUp === true", "\"Look up details\"", "/lookup\"",
-                "/cover\"")) {
+                "/cover\"", "artworkPanel(item, onSaved)", "\"Replace artwork\"", "artworkProblem(file)",
+                "ARTWORK_TYPES.join(\",\")")) {
             assertTrue(item.contains(s), s);
         }
         // the review shows the found cover from the server only

@@ -125,6 +125,7 @@ public final class ItemsApi {
     private final ItemSearch search;
     private volatile RoomSearch roomSearch;
     private volatile MetadataLookupApi lookup;
+    private volatile CoverUpload coverUpload;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -158,6 +159,46 @@ public final class ItemsApi {
         if (l != null) {
             l.register(router);
         }
+        if (l != null || coverUpload != null) {
+            router.put("/api/items/{id}/cover", this::setCover);
+        }
+    }
+
+    /**
+     * Replace artwork ({@link CoverUpload}): {@code PUT /api/items/{id}/cover} with an image body.
+     * Set before {@link #register}.
+     */
+    public void coverUpload(CoverUpload coverUpload) {
+        this.coverUpload = coverUpload;
+    }
+
+    /**
+     * {@code PUT /api/items/{id}/cover}: a JSON body {@code {"lookupToken"}} sets a lookup's found
+     * cover ({@link MetadataLookupApi}); any other body is an uploaded image ({@link CoverUpload}).
+     * Both answer {@code 202} with the item page.
+     */
+    private void setCover(Request request, Response response) throws Exception {
+        String type = request.header("Content-Type");
+        boolean json = type != null && type.trim().toLowerCase(java.util.Locale.ROOT).startsWith("application/json");
+        MetadataLookupApi l = lookup;
+        if (json) {
+            if (l == null) {
+                throw new HttpError(403, "feature_disabled", "Looking up song details online isn't available on this server");
+            }
+            l.setCover(request, response);
+            return;
+        }
+        CoverUpload upload = coverUpload;
+        if (upload == null) {
+            throw HttpError.unsupportedMediaType("Send {\"lookupToken\"} as JSON");
+        }
+        Actor actor = ActorResolver.actor(request);
+        String itemId = request.pathParam("id");
+        Items.Rights r = rights(actor);
+        upload.replace(actor, itemId, r, request, request.clientIp());
+        Items.ItemPage page = items.get(actor, itemId, r);
+        response.header("Cache-Control", "no-store");
+        response.json(202, page);
     }
 
     /**

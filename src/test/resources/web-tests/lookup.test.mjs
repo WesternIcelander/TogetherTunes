@@ -85,3 +85,16 @@ test("sizes and texts", () => {
   assert.equal(L.sizeText(undefined, 3), "");
   assert.equal(L.NOTHING_FOUND, "No details found");
 });
+
+test("replace artwork: JPEG, PNG and WebP up to 20 MB; empty, too large and other types refused", () => {
+  assert.deepEqual([...L.ARTWORK_TYPES], ["image/jpeg", "image/png", "image/webp"]);
+  assert.equal(L.ARTWORK_MAX_BYTES, 20 * 1024 * 1024);
+  for (const type of ["image/jpeg", "image/png", "image/webp", ""]) {
+    assert.equal(L.artworkProblem({ type, size: 1000 }), undefined, type);
+  }
+  assert.equal(L.artworkProblem({ type: "image/png", size: L.ARTWORK_MAX_BYTES }), undefined, "at the limit");
+  assert.match(L.artworkProblem({ type: "image/png", size: L.ARTWORK_MAX_BYTES + 1 }), /20 MB/);
+  assert.match(L.artworkProblem({ type: "image/png", size: 0 }), /empty/);
+  assert.match(L.artworkProblem({ type: "image/gif", size: 10 }), /JPEG, PNG or WebP/);
+  assert.match(L.artworkProblem({ type: "application/pdf", size: 10 }), /JPEG, PNG or WebP/);
+});

@@ -120,6 +120,13 @@ public final class ProgramPipeline implements ProgramOutputs.OutputFactory {
         }
 
         @Override
+        public void itemChanged(String itemId) {
+            if (sources instanceof ProgramMedia media) {
+                media.itemChanged(itemId);
+            }
+        }
+
+        @Override
         public void close() {
             packager.close(); // also closes the follower (on the packager thread)
             closeQuietly(sources);

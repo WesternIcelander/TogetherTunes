@@ -23,8 +23,8 @@ import {
 import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
 import { itemPlayerShown, pinPath, pinText, viewPath, viewReporter } from "./views.js";
 import {
-  applyBody, candidateText, coverChecked, NOTHING_FOUND, pickBody, reviewRows, sizeText, type LookupResult,
-  type ReviewField,
+  applyBody, ARTWORK_TYPES, artworkProblem, candidateText, coverChecked, NOTHING_FOUND, pickBody, reviewRows, sizeText,
+  type LookupResult, type ReviewField,
 } from "./lookup.js";
 import {
   addName, detailRows, detailsBody, detailsInput, fieldOfError, initialArtists, moveName, removeName, type DetailsInput,
@@ -335,6 +335,36 @@ function lookupPanel(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLEle
   return h("div", { class: "lookup" }, look, error, out);
 }
 
+/**
+ * Replace artwork (docs/library-and-ingest.md#cards): picks a JPEG, PNG or WebP image and sends it as
+ * the item's new cover; the server scales it and makes the card again (card-only re-encode).
+ */
+function artworkPanel(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
+  const error = h("p", { class: "error", role: "alert" });
+  const input = h("input", { type: "file", accept: ARTWORK_TYPES.join(","), hidden: true,
+    "aria-label": "Artwork image" });
+  const pick = h("button", { type: "button", text: "Replace artwork",
+    title: "Use an image of your own as this item's cover" });
+  pick.addEventListener("click", () => { input.click(); });
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (file === undefined) return;
+    const problem = artworkProblem(file);
+    error.textContent = problem ?? "";
+    if (problem !== undefined) return;
+    pick.disabled = true;
+    api<ItemPage>("PUT", "/api/items/" + encodeURIComponent(item.id) + "/cover", file)
+      .then((updated) => {
+        showNotice("Artwork replaced. The new cover shows once the card is made again.");
+        onSaved(updated);
+      })
+      .catch((e: unknown) => { error.textContent = message(e); })
+      .finally(() => { pick.disabled = false; });
+  });
+  return h("div", { class: "row artwork" }, pick, input, error);
+}
+
 function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
   const start = detailsInput(item);
   /** The inline problem beside each song details field. */
@@ -417,7 +447,8 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
   const details = h("details", { class: "panel" }, h("summary", { text: "Edit details" }),
-    ...nodes(item.you.canLookUp === true ? lookupPanel(item, onSaved) : null), form, error);
+    ...nodes(item.you.canLookUp === true ? lookupPanel(item, onSaved) : null,
+      item.status === "ready" ? artworkPanel(item, onSaved) : null), form, error);
   details.open = editOpen;
   details.addEventListener("toggle", () => { editOpen = details.open; });
   return details;

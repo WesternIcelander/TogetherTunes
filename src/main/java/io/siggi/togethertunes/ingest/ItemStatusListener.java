@@ -19,4 +19,14 @@ public interface ItemStatusListener {
     };
 
     void itemStatusChanged(String itemId);
+
+    /**
+     * What the rooms show of the item changed besides its status: its title, artist or album was
+     * edited, or a re-encode or an undo published or restored other files (a new cover URL, which
+     * carries the version, and a new card). Includes {@link #itemStatusChanged}; the rooms send the
+     * item again to every page showing it (and so to the system media controls).
+     */
+    default void itemDetailsChanged(String itemId) {
+        itemStatusChanged(itemId);
+    }
 }

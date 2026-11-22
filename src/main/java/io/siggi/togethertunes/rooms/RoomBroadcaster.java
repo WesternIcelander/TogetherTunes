@@ -385,6 +385,7 @@ final class RoomBroadcaster implements RoomListener {
                 case RoomEvent.RestrictionsChanged ignored -> recheckAll = true;
                 case RoomEvent.MemberChanged mc -> recheckUsers.add(mc.userId());
                 case RoomEvent.AutoplayStopChanged ignored -> fullAll = true; // room.autoplayStopped
+                case RoomEvent.ItemDetailsChanged ignored -> fullAll = true; // entries' item views (title, cover)
                 default -> {
                 }
             }

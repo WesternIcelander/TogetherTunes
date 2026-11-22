@@ -574,6 +574,27 @@ class PermissionMatrixTest {
         assertEquals(List.of(), wrong, "permission matrix mismatches (guests by " + identifyBy + ")");
     }
 
+    /**
+     * {@code PUT /api/items/{id}/cover} with an image body (Replace artwork, not the lookup's JSON the
+     * matrix row sends): the same edit right, never guests; a body that isn't an image is 400.
+     */
+    @Test
+    void replaceArtworkFollowsTheEditRight() throws Exception {
+        Map<Who, Integer> want = Map.of(Who.ANONYMOUS, 401, Who.GUEST, 401, Who.USER, 403, Who.ADMIN, 400);
+        Map<Who, Integer> got = new LinkedHashMap<>();
+        for (Who who : Who.values()) {
+            Cell cell = newCell(who);
+            Call call = Call.put("/api/items/" + cell.itemId() + "/cover", "not an image")
+                    .withHeader("Content-Type", "application/octet-stream");
+            Result r = cell.perform(call);
+            got.put(who, r.status());
+            if (who == Who.ADMIN) {
+                assertEquals("invalid_image", r.errorCode(), r.body());
+            }
+        }
+        assertEquals(want, got);
+    }
+
     @Test
     void callerKindsAreWhatTheyClaim() throws Exception {
         Map<Who, String> kinds = new LinkedHashMap<>();
@@ -1070,7 +1091,7 @@ class PermissionMatrixTest {
                 .method(call.method(), call.body() == null ? HttpRequest.BodyPublishers.noBody()
                         : HttpRequest.BodyPublishers.ofString(call.body()))
                 .header("Origin", PUBLIC_BASE_URL);
-        if (call.body() != null) {
+        if (call.body() != null && !call.headers().containsKey("Content-Type")) {
             b.header("Content-Type", "application/json");
         }
         if (cookie != null) {

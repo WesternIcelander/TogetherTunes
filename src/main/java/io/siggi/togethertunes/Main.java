@@ -108,6 +108,7 @@ import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
 import io.siggi.togethertunes.library.MetadataLookup;
 import io.siggi.togethertunes.library.MusicLinkResolver;
+import io.siggi.togethertunes.library.CoverUpload;
 import io.siggi.togethertunes.library.MetadataLookupApi;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.MediaApi;
@@ -442,6 +443,7 @@ public final class Main {
         MetadataLookupApi metadataLookupApi = new MetadataLookupApi(items, permissions, settings, metadataLookup,
                 Tools.from(config), dataDir, ingest.jobs(), Clock.systemUTC());
         itemsApi.lookup(metadataLookupApi);
+        itemsApi.coverUpload(new CoverUpload(items, Tools.from(config), dataDir, ingest.jobs()));
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);

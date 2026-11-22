@@ -36,6 +36,13 @@ public interface RoomEvent {
     }
 
     /**
+     * What the pages show of an item in the room changed besides its status (title, artist, album,
+     * cover, card); the new values are read when the state is sent.
+     */
+    record ItemDetailsChanged(String itemId) implements RoomEvent {
+    }
+
+    /**
      * The items of these entries (queued, suggested or the current one) changed status or
      * duration, e.g. their ingest finished or failed, or the item was purged; the new values are
      * in the {@link RoomState}'s entries.

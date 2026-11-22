@@ -452,6 +452,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.rooms.GuestMerge$CookieGuest", "the guest a gid cookie names, for the"
                     + " merge checks; the response is built from an ActorRef"),
             Map.entry("io.siggi.togethertunes.rooms.RoomEvent$EntryItemsChanged", "executor -> listeners, in memory only"),
+            Map.entry("io.siggi.togethertunes.rooms.RoomEvent$ItemDetailsChanged", "executor -> listeners, in memory only"),
             Map.entry("io.siggi.togethertunes.rooms.QueueOps$Added", "entry/item ids and state; the WebSocket layer"
                     + " acks with it"),
             Map.entry("io.siggi.togethertunes.rooms.QueueOps$PlaylistAdded", "entry ids and a count; the WebSocket"
@@ -1273,6 +1274,15 @@ class DtoIpLeakTest {
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"label\":\"Label\",\"lookupToken\":\"" + lookupToken
                 + "\"}");
         expect(202, admin, "PUT", "/api/items/" + itemId + "/cover", "{\"lookupToken\":\"" + lookupToken + "\"}");
+        // Replace artwork: an uploaded PNG (ffmpeg scales it, so only where ffmpeg is installed)
+        if (TestUploads.onPath("ffmpeg") != null) {
+            java.io.ByteArrayOutputStream png = new java.io.ByteArrayOutputStream();
+            javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(40, 40,
+                    java.awt.image.BufferedImage.TYPE_INT_RGB), "png", png);
+            expect(202, admin, "PUT", "/api/items/" + itemId + "/cover",
+                    new String(png.toByteArray(), java.nio.charset.StandardCharsets.ISO_8859_1),
+                    Map.of("Content-Type", "application/octet-stream"));
+        }
         expect(204, admin, "DELETE", "/api/items/" + insertItem(adminId), null);
         expect(204, admin, "DELETE", "/api/admin/items/" + insertItem(adminId), null);
         // undo of a media change: alice's own item, edited (version 2, version 1 kept for undo), undone
@@ -1562,9 +1572,13 @@ class DtoIpLeakTest {
     private HttpResponse<String> send(Who who, String method, String path, String body, Map<String, String> headers)
             throws Exception {
         HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
-                .method(method, body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body))
+                .method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                        // a body with its own Content-Type is binary: one char per byte
+                        : headers.containsKey("Content-Type")
+                        ? HttpRequest.BodyPublishers.ofString(body, java.nio.charset.StandardCharsets.ISO_8859_1)
+                        : HttpRequest.BodyPublishers.ofString(body))
                 .header("Origin", PUBLIC_BASE_URL);
-        if (body != null) {
+        if (body != null && !headers.containsKey("Content-Type")) {
             b.header("Content-Type", "application/json");
         }
         if (who.cookie() != null) {

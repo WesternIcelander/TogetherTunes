@@ -103,6 +103,25 @@ export function reviewRows(item: LookupDetails, found: LookupDetails): ReviewRow
   return rows;
 }
 
+/** The largest image Replace artwork sends (the server's limit, `CoverUpload.MAX_BYTES`). */
+export const ARTWORK_MAX_BYTES = 20 * 1024 * 1024;
+
+/** The image types Replace artwork takes (the file picker's `accept`). */
+export const ARTWORK_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+/**
+ * Why a picked file can't be the new artwork, or undefined when it can be sent. An empty type (some
+ * pickers give none) is left to the server, which checks the bytes anyway.
+ */
+export function artworkProblem(file: { type: string; size: number }): string | undefined {
+  if (file.size === 0) return "The file is empty.";
+  if (file.size > ARTWORK_MAX_BYTES) return "The image is larger than 20 MB.";
+  if (file.type !== "" && (ARTWORK_TYPES as readonly string[]).indexOf(file.type) < 0) {
+    return "Pick a JPEG, PNG or WebP image.";
+  }
+  return undefined;
+}
+
 /** Whether the found cover starts checked: only when the item has none. */
 export function coverChecked(itemHasCover: boolean): boolean {
   return !itemHasCover;

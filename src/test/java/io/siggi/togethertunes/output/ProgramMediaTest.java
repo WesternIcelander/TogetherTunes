@@ -132,6 +132,40 @@ class ProgramMediaTest {
         }
     }
 
+    /**
+     * An item got new files (a card made again, docs/library-and-ingest.md#cards): its loaded files
+     * are dropped and the next entry's load starts again (so it plays the new version); the item
+     * playing keeps its files; another item is untouched.
+     */
+    @Test
+    void anItemWithNewFilesLoadsAgainUnlessItIsPlaying() throws IOException {
+        write("video1", SourcesTest.videoItem());
+        write("audio1", SourcesTest.audioItem());
+        try (ProgramMedia pm = queuedMedia()) {
+            pm.prepare(cue(VIDEO, AUDIO));
+            runLoads();
+            assertNotNull(pm.item(VIDEO, 0));
+            assertEquals(Set.of("video1", "audio1"), pm.loadedItems());
+            pm.itemChanged("audio1");
+            assertEquals(Set.of("video1"), pm.loadedItems(), "the next entry's old files are dropped");
+            assertEquals(1, queued.size(), "and loaded again at once");
+            runLoads();
+            assertEquals(Set.of("video1", "audio1"), pm.loadedItems());
+            pm.itemChanged("video1");
+            assertEquals(Set.of("video1", "audio1"), pm.loadedItems(), "the playing item keeps its files");
+            assertTrue(queued.isEmpty());
+            pm.itemChanged("nope");
+            assertEquals(Set.of("video1", "audio1"), pm.loadedItems());
+            // once it has stopped playing, its old files go and it loads again (here as the next entry)
+            assertInstanceOf(AudioItemSource.class, pm.item(AUDIO, 0));
+            pm.prepare(cue(AUDIO, VIDEO));
+            assertEquals(Set.of("audio1"), pm.loadedItems());
+            assertEquals(1, queued.size());
+            runLoads();
+            assertEquals(Set.of("video1", "audio1"), pm.loadedItems());
+        }
+    }
+
     @Test
     void positionalReadsFromTheItemFiles() throws IOException {
         write("video1", SourcesTest.videoItem());

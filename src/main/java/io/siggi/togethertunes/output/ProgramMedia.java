@@ -201,6 +201,11 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
          */
         boolean transitionCardWanted;
         long cardFailedAtMs;
+        /**
+         * The item got new files while this slot played ({@link #itemChanged}): dropped as soon as
+         * it isn't playing any more, so the item's next play loads them.
+         */
+        boolean stale;
 
         SampleIndex index;
         FileSampleData data;
@@ -378,6 +383,40 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
             }
             planNextVideo();
             refreshFillers(FILLER_CUE_RECHECK_MS);
+        }
+    }
+
+    /**
+     * The item has new files (a new media version: a card made again after an edit or a new cover,
+     * a re-encode; {@code docs/library-and-ingest.md#cards}): what is loaded of it is dropped unless
+     * it is playing right now, and the cue's next entry, if it plays the item, loads the new version
+     * at once, so its next play shows the new card. A play in progress finishes on its version; its
+     * files are dropped once it has ended (a play of the same item right after it still uses them).
+     */
+    public void itemChanged(String itemId) {
+        synchronized (this) {
+            if (closed || itemId == null) {
+                return;
+            }
+            for (Iterator<Slot> it = slots.values().iterator(); it.hasNext(); ) {
+                Slot s = it.next();
+                if (!s.itemId.equals(itemId)) {
+                    continue;
+                }
+                if (s.key.equals(playing)) {
+                    s.stale = true;
+                } else {
+                    it.remove();
+                    closeQuietly(s);
+                }
+            }
+            entryCards.values().removeIf(ec -> ec.entry.itemId().equals(itemId)
+                    && !ec.entry.entryId().equals(playingEntry));
+            ProgramCue.Entry next = nextEntry;
+            if (next != null && next.itemId().equals(itemId)) {
+                ensure(next);
+                ensureEntryCard(next);
+            }
         }
     }
 
@@ -701,7 +740,7 @@ public final class ProgramMedia implements TimelineFollower.SourceFactory, AutoC
     private void evict(String keep) {
         for (Iterator<Slot> it = slots.values().iterator(); it.hasNext(); ) {
             Slot s = it.next();
-            if (wanted.contains(s.key) || s.key.equals(playing) || s.key.equals(keep)) {
+            if (s.key.equals(playing) || (!s.stale && (wanted.contains(s.key) || s.key.equals(keep)))) {
                 continue;
             }
             it.remove();

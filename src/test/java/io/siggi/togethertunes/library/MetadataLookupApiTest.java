@@ -58,6 +58,7 @@ class MetadataLookupApiTest {
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
     private Settings settings;
+    private Config config;
     private DataDir data;
     private IngestJobs jobs;
     private FakeTrackSplitter fake;
@@ -70,7 +71,7 @@ class MetadataLookupApiTest {
     void setUp() throws Exception {
         Map<String, String> env = new HashMap<>(System.getenv());
         env.put("TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example");
-        Config config = new ConfigLoader(env, 4, dir).load(null).config();
+        config = new ConfigLoader(env, 4, dir).load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
@@ -87,6 +88,7 @@ class MetadataLookupApiTest {
                 new MetadataLookup(fake.script.toString(), fake.cacheDir, "TogetherTunes/test", null, clock),
                 Tools.from(config), data, jobs, clock);
         itemsApi.lookup(lookupApi);
+        itemsApi.coverUpload(new CoverUpload(items, Tools.from(config), data, jobs));
         itemsApi.register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
@@ -291,6 +293,79 @@ class MetadataLookupApiTest {
         assertEquals(202, call("PUT", "/api/items/" + id + "/cover", alice, "{\"lookupToken\":\"" + token + "\"}")
                 .statusCode());
         assertEquals(job.id(), jobs.latestForItem(id).orElseThrow().id());
+    }
+
+    private HttpResponse<String> upload(String path, String token, byte[] body) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .PUT(HttpRequest.BodyPublishers.ofByteArray(body)).header("Content-Type", "application/octet-stream");
+        if (token != null) {
+            b.header("Authorization", "Bearer " + token);
+        }
+        return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private static byte[] png(int width, int height) throws Exception {
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(new java.awt.image.BufferedImage(width, height,
+                java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out);
+        return out.toByteArray();
+    }
+
+    /**
+     * Replace artwork (docs/library-and-ingest.md#cards): a signed-in editor's image body on
+     * {@code PUT /api/items/{id}/cover} becomes the waiting cover and queues the card-only re-encode,
+     * also while looking details up is off; guests 401, others 403, non-images 400 invalid_image,
+     * over 20 MB 413, a busy item 409; audited with {@code via: upload}.
+     */
+    @Test
+    void replaceArtworkTakesAnUploadedImage() throws Exception {
+        settings.set(Settings.METADATA_LOOKUP_ENABLED, false);
+        String id = item("Album", null, true);
+        String path = "/api/items/" + id + "/cover";
+        assertEquals(401, upload(path, null, png(40, 40)).statusCode());
+        assertEquals("forbidden", code(upload(path, bob, png(40, 40))));
+        assertEquals("invalid_image", code(upload(path, alice, "not an image".getBytes())));
+        assertEquals("invalid_image", code(upload(path, alice, new byte[0])));
+        // a PNG header with nothing decodable behind it
+        assertEquals("invalid_image", code(upload(path, alice,
+                new byte[] {(byte) 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n', 0, 0, 0, 0})));
+        assertEquals(413, upload(path, alice, new byte[(int) CoverUpload.MAX_BYTES + 1]).statusCode());
+        assertTrue(jobs.latestForItem(id).isEmpty(), "nothing queued for refused uploads");
+        assertFalse(Files.exists(IngestPipeline.pendingCover(data, id)));
+
+        HttpResponse<String> r = upload(path, alice, png(1600, 900));
+        assertEquals(202, r.statusCode(), r.body());
+        assertEquals(id, json(r).get("id").getAsString());
+        java.awt.image.BufferedImage staged = javax.imageio.ImageIO.read(IngestPipeline.pendingCover(data, id).toFile());
+        assertEquals(1200, staged.getWidth(), "scaled like every cover.jpg");
+        IngestJob job = jobs.latestForItem(id).orElseThrow();
+        assertEquals(IngestJob.Kind.REENCODE, job.kind());
+        assertEquals(IngestJob.State.QUEUED, job.state());
+        assertEquals("{\"via\":\"upload\"}", db.<String>read(cn -> {
+            try (PreparedStatement ps = cn.prepareStatement(
+                    "SELECT details_json FROM audit_log WHERE action = 'item.cover_changed' AND target = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        }));
+        // a WebP while that job waits: the same job takes the newer cover
+        Path webp = dir.resolve("art.webp");
+        Tools.from(config).ffmpeg(List.of("-v", "error", "-y", "-f", "lavfi", "-i",
+                "color=c=blue:s=300x200", "-frames:v", "1", webp.toString())).run();
+        assertEquals(202, upload(path, alice, Files.readAllBytes(webp)).statusCode());
+        assertEquals(job.id(), jobs.latestForItem(id).orElseThrow().id());
+        assertEquals(300, javax.imageio.ImageIO.read(IngestPipeline.pendingCover(data, id).toFile()).getWidth());
+
+        // busy: a running job holds the item
+        String busy = item("Album", null, true);
+        jobs.cancel(job.id(), null);
+        IngestJob running = jobs.enqueue(busy, IngestJob.Kind.QUALITY);
+        assertEquals(running.id(), jobs.claimNext().id());
+        assertEquals("item_busy", code(upload("/api/items/" + busy + "/cover", alice, png(40, 40))));
+        assertFalse(Files.exists(IngestPipeline.pendingCover(data, busy)));
     }
 
     @Test

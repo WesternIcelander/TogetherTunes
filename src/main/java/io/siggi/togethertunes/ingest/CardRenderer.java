@@ -145,6 +145,25 @@ public final class CardRenderer {
         return fonts.key(t.isEmpty() ? UNTITLED : t, clean(artist), clean(album));
     }
 
+    /**
+     * Which text an item card draws ({@code items.card_text}, {@code docs/library-and-ingest.md#cards}):
+     * a SHA-256 (hex) over the title, artist and album as {@link #renderItem} draws them (cleaned,
+     * an empty title as {@value #UNTITLED}). It changes exactly when the card's text would change,
+     * so an edit that only touches other fields (genre, ISRC, ...) keeps it.
+     */
+    public static String textKey(String title, String artist, String album) {
+        String t = clean(title);
+        // clean() turns every line break into a space, so '\n' can't occur inside a part
+        String text = (t.isEmpty() ? UNTITLED : t) + "\n" + clean(artist) + "\n" + clean(album);
+        try {
+            byte[] hash = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(text.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(hash);
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     /** Renders an item card: artwork on the left, title/artist/album to its right. */
     public BufferedImage renderItem(ItemCard item) {
         Objects.requireNonNull(item);

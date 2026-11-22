@@ -264,12 +264,25 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
      */
     @Override
     public void itemStatusChanged(String itemId) {
+        notifyLater(itemId, false);
+    }
+
+    /**
+     * {@link #itemStatusChanged}, and each such room also sends the item again to the pages in it
+     * ({@link Playback#itemDetailsChanged}): an edited title, a new cover or card.
+     */
+    @Override
+    public void itemDetailsChanged(String itemId) {
+        notifyLater(itemId, true);
+    }
+
+    private void notifyLater(String itemId, boolean details) {
         if (closed || itemId == null) {
             return;
         }
         Thread.ofVirtual().name("item-status-" + itemId).start(() -> {
             try {
-                notifyRooms(itemId);
+                notifyRooms(itemId, details);
             } catch (Throwable t) {
                 LOG.log(System.Logger.Level.WARNING, "Could not tell the rooms about item " + itemId, t);
             }
@@ -387,6 +400,11 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
 
     /** {@link #itemStatusChanged}, on the calling thread; the futures complete when each room is done (tests). */
     List<CompletableFuture<Boolean>> notifyRooms(String itemId) throws SQLException {
+        return notifyRooms(itemId, false);
+    }
+
+    /** {@link #itemDetailsChanged} ({@code details}) or {@link #itemStatusChanged}, on the calling thread (tests). */
+    List<CompletableFuture<Boolean>> notifyRooms(String itemId, boolean details) throws SQLException {
         List<String> roomIds = store.db().read(c -> {
             List<String> out = new ArrayList<>();
             try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT DISTINCT room_id FROM queue_entries"
@@ -409,7 +427,9 @@ public final class RoomRegistry implements AutoCloseable, ItemStatusListener {
                 break;
             }
             try {
-                CompletableFuture<Boolean> f = executor(roomId).submit(Playback::itemsChanged);
+                CompletableFuture<Boolean> f = executor(roomId).submit(details
+                        ? tx -> Playback.itemsChanged(tx) | Playback.itemDetailsChanged(tx, itemId)
+                        : Playback::itemsChanged);
                 f.whenComplete((changed, failure) -> {
                     if (failure != null && !(failure instanceof RoomClosedException)) {
                         LOG.log(System.Logger.Level.WARNING, "Room " + roomId + " could not take the status of item "

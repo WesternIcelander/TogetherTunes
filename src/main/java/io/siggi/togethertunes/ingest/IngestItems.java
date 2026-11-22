@@ -259,6 +259,19 @@ public final class IngestItems {
                           boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
                           VersionChange change, Long audioOnlyMs, Integer cardVersion, String cardFonts,
                           Boolean normalized) throws SQLException {
+        published(id, video, durationMs, encoding, preset, quality, loudnessLufs, original, mediaVersion, change,
+                audioOnlyMs, cardVersion, cardFonts, null, normalized);
+    }
+
+    /**
+     * See {@link #published(String, boolean, long, OutputEncoding, X264Preset, boolean, Double, Originals.Original, int, VersionChange, Long, Integer, String, Boolean)};
+     * with a new card ({@code cardVersion} not null) also records which text it draws
+     * ({@code card_text}, {@link CardRenderer#textKey}; null: unknown).
+     */
+    public void published(String id, boolean video, long durationMs, OutputEncoding encoding, X264Preset preset,
+                          boolean quality, Double loudnessLufs, Originals.Original original, int mediaVersion,
+                          VersionChange change, Long audioOnlyMs, Integer cardVersion, String cardFonts,
+                          String cardText, Boolean normalized) throws SQLException {
         db.write(c -> {
             if (mediaVersion >= 0 && change != null && change.keptVersion() != null) {
                 MediaVersions.snapshotIfMissing(c, id, change.keptVersion(), change.atMs());
@@ -269,7 +282,7 @@ public final class IngestItems {
                     + " output_profile = ?, loudness_lufs = ?, original_file = ?, original_codec = ?,"
                     + " original_web = ?, original_gain_db = ?, encode_preset = ?, encode_quality = ?, audio_only_ms = ?,"
                     + (mediaVersion >= 0 ? " media_version = " + mediaVersion + "," : "")
-                    + (cardVersion != null ? " card_version = " + cardVersion.intValue() + ", card_fonts = ?," : "")
+                    + (cardVersion != null ? " card_version = " + cardVersion.intValue() + ", card_fonts = ?, card_text = ?," : "")
                     + (normalized != null ? " loudness_normalized = " + (normalized ? 1 : 0) + "," : "")
                     + " purged_at = NULL WHERE id = ?")) {
                 ps.setString(1, video ? "video" : "audio");
@@ -290,6 +303,7 @@ public final class IngestItems {
                 int next = 12;
                 if (cardVersion != null) {
                     ps.setString(next++, cardFonts);
+                    ps.setString(next++, cardText);
                 }
                 ps.setString(next, id);
                 if (ps.executeUpdate() != 1) {
@@ -337,6 +351,21 @@ public final class IngestItems {
     }
 
     /**
+     * Which text the item's current card draws ({@code card_text}, {@link CardRenderer#textKey}), or
+     * null if not recorded (or no such item).
+     */
+    public String cardText(String id) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT card_text FROM items WHERE id = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getString(1) : null;
+                }
+            }
+        });
+    }
+
+    /**
      * Switches the item from version {@code from} to {@code mediaVersion}, which differs from it
      * only in its card (a card-only re-encode, {@code docs/library-and-ingest.md#cards}): records the
      * new card format and the new version like {@link #published} does, keeping {@code from} for the
@@ -352,18 +381,29 @@ public final class IngestItems {
     /** {@link #cardRemade(String, int, int, int, boolean, long)}, recording the card's fonts ({@code card_fonts}). */
     public void cardRemade(String id, int from, int mediaVersion, int cardVersion, String cardFonts, boolean keepFrom,
                            long atMs) throws SQLException {
+        cardRemade(id, from, mediaVersion, cardVersion, cardFonts, null, keepFrom, atMs);
+    }
+
+    /**
+     * {@link #cardRemade(String, int, int, int, String, boolean, long)}, also recording which text the
+     * card draws ({@code card_text}, {@link CardRenderer#textKey}; null: unknown).
+     */
+    public void cardRemade(String id, int from, int mediaVersion, int cardVersion, String cardFonts, String cardText,
+                           boolean keepFrom, long atMs) throws SQLException {
         db.write(c -> {
             if (keepFrom) {
                 MediaVersions.snapshotIfMissing(c, id, from, atMs);
             }
             String editJson = MediaVersions.editJson(c, id, from);
             try (PreparedStatement ps = c.prepareStatement(
-                    "UPDATE items SET media_version = ?, card_version = ?, card_fonts = ? WHERE id = ? AND media_version = ?")) {
+                    "UPDATE items SET media_version = ?, card_version = ?, card_fonts = ?, card_text = ?"
+                    + " WHERE id = ? AND media_version = ?")) {
                 ps.setInt(1, mediaVersion);
                 ps.setInt(2, cardVersion);
                 ps.setString(3, cardFonts);
-                ps.setString(4, id);
-                ps.setInt(5, from);
+                ps.setString(4, cardText);
+                ps.setString(5, id);
+                ps.setInt(6, from);
                 if (ps.executeUpdate() != 1) {
                     throw new SQLException("item " + id + " no longer exists or is no longer at version " + from);
                 }

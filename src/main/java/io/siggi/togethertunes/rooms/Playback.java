@@ -267,6 +267,29 @@ public final class Playback {
     }
 
     /**
+     * What the pages show of an item changed besides its status (an edited title, artist or album; a
+     * new cover or card, {@link io.siggi.togethertunes.ingest.ItemStatusListener#itemDetailsChanged}):
+     * if the current entry or a waiting one plays it, {@link RoomEvent.ItemDetailsChanged} makes the
+     * room send its state again (with the item's new title and cover URL).
+     *
+     * @return whether the room has the item
+     */
+    public static boolean itemDetailsChanged(RoomTx tx, String itemId) {
+        RoomState s = tx.state();
+        boolean has = s.current() != null && itemId.equals(s.current().itemId());
+        for (QueueEntry e : s.queue()) {
+            has |= itemId.equals(e.itemId());
+        }
+        for (QueueEntry e : s.suggestions()) {
+            has |= itemId.equals(e.itemId());
+        }
+        if (has) {
+            tx.event(new RoomEvent.ItemDetailsChanged(itemId));
+        }
+        return has;
+    }
+
+    /**
      * Resumes a paused timeline from its position; when idle, starts the next eligible entry.
      *
      * @return whether the timeline changed

@@ -127,7 +127,6 @@ public final class MetadataLookupApi {
     void register(Router router) {
         router.post("/api/items/{id}/lookup", this::lookup);
         router.get("/api/items/{id}/lookup/{token}/cover", this::cover);
-        router.put("/api/items/{id}/cover", this::setCover);
     }
 
     /** Whether lookups are possible now: TrackSplitter installed and {@code metadataLookup.enabled} on. */
@@ -238,7 +237,8 @@ public final class MetadataLookupApi {
         response.raw().returnFile(token.cover().toFile(), "image/jpeg");
     }
 
-    private void setCover(Request request, Response response) throws Exception {
+    /** {@code PUT /api/items/{id}/cover} with {@code {"lookupToken"}} (routed by {@link ItemsApi}). */
+    void setCover(Request request, Response response) throws Exception {
         Actor.User user = caller(request);
         String itemId = request.pathParam("id");
         Items.Rights r = rightsOf(user);

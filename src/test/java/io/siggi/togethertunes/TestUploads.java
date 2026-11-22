@@ -124,6 +124,9 @@ public final class TestUploads {
                     new io.siggi.togethertunes.library.MetadataLookup(fake.script.toString(), fake.cacheDir,
                             "TogetherTunes/test", null, clock),
                     new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs, clock));
+            // Replace artwork: an image body on the same cover route
+            api.coverUpload(new io.siggi.togethertunes.library.CoverUpload(items,
+                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs));
             return api;
         } catch (IOException e) {
             throw new UncheckedIOException(e);

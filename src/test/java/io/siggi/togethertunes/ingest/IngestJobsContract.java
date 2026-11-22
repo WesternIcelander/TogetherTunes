@@ -673,6 +673,68 @@ abstract class IngestJobsContract {
         assertEquals("key-new", items.cardFonts(unknown), "a publish that took the card over keeps it");
     }
 
+    /** Sets an item's title and the text its card was drawn with ({@code card_text}; null: not recorded). */
+    private void cardText(String itemId, String title, String drawnTitle) throws SQLException {
+        db.write(c -> {
+            try (var ps = c.prepareStatement("UPDATE items SET title = ?, card_text = ? WHERE id = ?")) {
+                ps.setString(1, title);
+                ps.setString(2, drawnTitle == null ? null : CardRenderer.textKey(drawnTitle, null, null));
+                ps.setString(3, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Card text edits ({@code docs/library-and-ingest.md#cards}): an edit queues one card-only
+     * {@code reencode} (several quick edits reuse it; a queued quality job is dropped for it); a busy
+     * item isn't refused but gets nothing now, and when its job ends the remake is queued if the
+     * card's recorded text still differs; an item that isn't ready gets nothing.
+     */
+    @Test
+    void cardTextEditsQueueOneCardRemake() throws SQLException {
+        String item = fixtures.item("ready");
+        cardText(item, "New", "Old");
+        IngestJob first = jobs.enqueueCardText(item);
+        assertEquals(Kind.REENCODE, first.kind());
+        assertEquals(first.id(), jobs.enqueueCardText(item).id(), "a second quick edit reuses the queued remake");
+        assertEquals(1, jobs.list(State.QUEUED, 10).size());
+
+        String withQuality = fixtures.item("ready");
+        IngestJob quality = jobs.enqueue(withQuality, Kind.QUALITY);
+        IngestJob remake = jobs.enqueueCardText(withQuality);
+        assertEquals(Kind.REENCODE, remake.kind());
+        assertEquals(State.DONE, jobs.get(quality.id()).orElseThrow().state(), "the queued quality job is dropped");
+
+        assertNull(jobs.enqueueCardText(fixtures.item("processing")), "not ready: the new-item job draws the text");
+
+        // busy: a running job holds the item; the edit isn't refused, and the remake comes after it
+        jobs.cancel(first.id(), null);
+        jobs.cancel(remake.id(), null);
+        String busy = fixtures.item("ready");
+        IngestJob running = jobs.enqueue(busy, Kind.QUALITY);
+        assertEquals(running.id(), jobs.claimNext().id());
+        cardText(busy, "Edited", "Before");
+        assertNull(jobs.enqueueCardText(busy), "busy: nothing queued now");
+        assertFalse(jobs.enqueueCardTextIfStale(busy));
+        assertTrue(jobs.complete(running.id(), "log"));
+        IngestJob after = jobs.latestForItem(busy).orElseThrow();
+        assertEquals(Kind.REENCODE, after.kind(), "queued when the job ended");
+        assertEquals(State.QUEUED, after.state());
+
+        // a matching or unrecorded card text queues nothing (an undo's check); a different one does
+        String same = fixtures.item("ready");
+        cardText(same, "Same", "Same");
+        assertFalse(jobs.enqueueCardTextIfStale(same));
+        String unknown = fixtures.item("ready");
+        cardText(unknown, "Whatever", null);
+        assertFalse(jobs.enqueueCardTextIfStale(unknown));
+        String stale = fixtures.item("ready");
+        cardText(stale, "Restored", "Older");
+        assertTrue(jobs.enqueueCardTextIfStale(stale), "e.g. an undo brought back a card with older text");
+    }
+
     /**
      * The encoding changed while a job ran (an admin changed output.profile or the bitrate): the
      * job finishes for the old encoding, so its item gets a {@code reencode} at once; an item that
