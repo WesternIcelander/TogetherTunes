@@ -10,7 +10,9 @@ import javax.imageio.ImageIO;
 
 /**
  * A fake {@code tracksplitter} for tests ({@link MetadataLookup}): a shell script that records its
- * arguments, optionally sleeps, prints the JSON it was given and exits with the given code.
+ * arguments, optionally sleeps, prints the JSON it was given and exits with the given code. Like
+ * the real one, a lookup without {@code --lookup} (and without {@code --in-place}) only reads the
+ * cache: it prints an empty result and exits 0 whatever it was given.
  */
 public final class FakeTrackSplitter {
     public final Path dir;
@@ -29,6 +31,9 @@ public final class FakeTrackSplitter {
                 + "mv \"$d/args.tmp\" \"$d/args.txt\"\n"
                 + "echo x >> \"$d/calls\"\n"
                 + "if [ -f \"$d/sleep\" ]; then sleep \"$(cat \"$d/sleep\")\"; fi\n"
+                + "online=; inplace=\n"
+                + "for a in \"$@\"; do case \"$a\" in --lookup) online=1;; --in-place) inplace=1;; esac; done\n"
+                + "if [ -z \"$online\" ] && [ -z \"$inplace\" ]; then echo '{\"tracks\":[],\"notices\":[]}'; exit 0; fi\n"
                 + "echo 'looking it up' >&2\n"
                 + "cat \"$d/out.json\"\n"
                 + "exit \"$(cat \"$d/exit\")\"\n");

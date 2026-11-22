@@ -264,7 +264,8 @@ class OriginalCleaningTest extends IngestPipelineTestBase {
         Path cleaned = Path.of(args.get(args.size() - 1));
         assertEquals(IngestPipeline.scratchDir(data, job.id()).resolve("clean.m4a"), cleaned, "a scratch copy");
         for (String a : args) {
-            assertFalse(a.equals("--user-agent") || a.equals("--title") || a.equals("--refresh"), args.toString());
+            assertFalse(a.equals("--user-agent") || a.equals("--title") || a.equals("--refresh")
+                    || a.equals("--lookup"), args.toString());
         }
         assertArrayEquals(new Object[] {1, 1}, cleanRow(item));
         assertEquals(1, fake.calls());

@@ -60,24 +60,25 @@ class MetadataLookupTest {
     void theExactArguments() {
         String cache = fake.cacheDir.toAbsolutePath().toString();
         // with an album and the original: the file (never -o or --in-place; nothing is written)
-        assertEquals(List.of("metadata", "--json", "--cache-dir", cache, "--user-agent", UA,
+        assertEquals(List.of("metadata", "--lookup", "--json", "--cache-dir", cache, "--user-agent", UA,
                 "--title", "Good is YEAH!", "--artist", "Wonderful★opportunity!", "--album", "Album",
                 "--no-decode-check", "--ffmpeg", "/usr/bin/ffmpeg", "--", "/m/original.m4a"),
                 lookup.arguments(query("Album", Path.of("/m/original.m4a"), Path.of("/m/cover.jpg"))));
         // with an album, no such original: the cover as --artwork
-        assertEquals(List.of("metadata", "--json", "--cache-dir", cache, "--user-agent", UA,
+        assertEquals(List.of("metadata", "--lookup", "--json", "--cache-dir", cache, "--user-agent", UA,
                 "--title", "Good is YEAH!", "--artist", "Wonderful★opportunity!", "--album", "Album",
                 "--album-artist", "AA", "--artwork", "/m/cover.jpg"),
                 lookup.arguments(new MetadataLookup.Query("Good is YEAH!", "Wonderful★opportunity!", "Album", "AA",
                         null, Path.of("/m/cover.jpg"))));
         // without an album: the album list, never a file or a cover
-        assertEquals(List.of("metadata", "--json", "--cache-dir", cache, "--user-agent", UA,
+        assertEquals(List.of("metadata", "--lookup", "--json", "--cache-dir", cache, "--user-agent", UA,
                 "--title", "Good is YEAH!", "--artist", "Wonderful★opportunity!", "--limit", "10"),
                 lookup.arguments(query(null, Path.of("/m/original.m4a"), Path.of("/m/cover.jpg"))));
         for (List<String> args : List.of(lookup.arguments(query("A", Path.of("/x.m4a"), null)),
                 lookup.arguments(query(null, null, null)))) {
             assertFalse(args.contains("-o") || args.contains("--output") || args.contains("--in-place"), args.toString());
             assertTrue(args.contains("--json"));
+            assertFalse(args.contains("--no-lookup"), args.toString());
         }
     }
 
@@ -104,6 +105,7 @@ class MetadataLookupTest {
         assertNull(lookup.clean(file, null));
         assertEquals(file.toAbsolutePath().toString(), fake.lastArgs().get(fake.lastArgs().size() - 1));
         assertTrue(fake.lastArgs().contains("--no-lookup"));
+        assertFalse(fake.lastArgs().contains("--lookup"), "cleaning stays offline");
 
         fake.respond("{\"tracks\":[{\"path\":\"clean.mp3\",\"error\":\"cannot write tags\"}],\"notices\":[]}", 1);
         assertEquals("TrackSplitter failed (exit code 1): cannot write tags", lookup.clean(file, null));

@@ -32,8 +32,8 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Looks song details up online with TrackSplitter ({@code docs/library-and-ingest.md#looking-details-up-online}):
- * runs {@code tracksplitter metadata --json …} (never {@code -o} or {@code --in-place}, so it writes no
- * file of ours) and parses its JSON: one track (with its album's cover in TrackSplitter's cache), the
+ * runs {@code tracksplitter metadata --lookup --json …} (without {@code --lookup} it only reads its
+ * cache; never {@code -o} or {@code --in-place}, so it writes no file of ours) and parses its JSON: one track (with its album's cover in TrackSplitter's cache), the
  * albums that have the track (without an album), or nothing.
  *
  * <ul>
@@ -179,8 +179,9 @@ public final class MetadataLookup implements OriginalCleaner {
 
     /** The arguments of a lookup (after the executable). */
     List<String> arguments(Query q) {
-        List<String> args = new ArrayList<>(List.of("metadata", "--json", "--cache-dir", cacheDir.toString(),
-                "--user-agent", userAgent));
+        // --lookup: without it, metadata only reads the cache
+        List<String> args = new ArrayList<>(List.of("metadata", "--lookup", "--json", "--cache-dir",
+                cacheDir.toString(), "--user-agent", userAgent));
         if (q.title() != null) {
             args.addAll(List.of("--title", q.title()));
         }

@@ -234,6 +234,7 @@ class MetadataLookupApiTest {
         // the original is the file argument (an .m4a), not the cover
         List<String> args = fake.lastArgs();
         assertEquals(IngestPipeline.itemDir(data, id).resolve("original.m4a").toString(), args.get(args.size() - 1));
+        assertEquals(List.of("metadata", "--lookup"), args.subList(0, 2), "an online lookup");
         assertFalse(args.contains("--artwork"));
         JsonObject body = json(r);
         assertEquals("found", body.get("result").getAsString());
@@ -406,6 +407,7 @@ class MetadataLookupApiTest {
         List<String> args = fake.lastArgs();
         assertEquals("Troubadour", args.get(args.indexOf("--album") + 1));
         assertEquals("K'naan", args.get(args.indexOf("--album-artist") + 1));
+        assertEquals(List.of("metadata", "--lookup"), args.subList(0, 2), "an online lookup");
         assertFalse(json(r).has("cover"));
         assertEquals("unknown_field", code(call("POST", "/api/items/" + id + "/lookup", alice, "{\"x\":1}")));
     }
