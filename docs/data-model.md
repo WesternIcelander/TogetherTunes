@@ -66,7 +66,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       content_id TEXT NULL,                 -- 'sha256c8m:<size>:<hex>', chunked SHA-256 of the upload; the pre-check (0012)
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
-      error NULL, loudness_lufs NULL, metadata_json,  -- JSON: {"youtube": {id, uploader?, durationSec?, series?, seasonNumber?, episodeNumber?, track?, artist?}} (yt-dlp's own fields; series..artist since M8, for the classify suggestion) or {"upload": {filename}} (since M8); plus "lookup": {source, id, url, artist, title, matchedBy, namesOnly} once details were looked up online (TrackSplitter's album object, never shown; library-and-ingest.md#looking-details-up-online)
+      error NULL, loudness_lufs NULL, metadata_json,  -- JSON: {"youtube": {id, uploader?, durationSec?, series?, seasonNumber?, episodeNumber?, track?, artist?}} (yt-dlp's own fields; series..artist since M8, for the classify suggestion) or {"upload": {filename}} (since M8); plus "link": {service, id, videos?} for an item imported from another music service's link (videos: MVFinder's video matches that weren't imported, [{videoId, title?, artists, durationMs?, type}], since 2026-11-22); plus "lookup": {source, id, url, artist, title, matchedBy, namesOnly} once details were looked up online (TrackSplitter's album object, never shown; library-and-ingest.md#looking-details-up-online)
       output_profile TEXT,                  -- encoding its files were made for: profile + video bitrate, e.g. '720p30-3000k-v2'
       original_file TEXT NULL,              -- e.g. 'original.flac', 'original.mkv'; the kept source (every item since 2026-11-10); 'original.audio.mka' = only the audio of a still image
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
@@ -135,6 +135,15 @@ playlists(id PK, owner_id FK, name, description NULL, created_at, updated_at,
       position BIGINT)                      -- the user's own order of their playlists (smallest first;
                                             -- the built-in one is always listed first)
 playlist_entries(id PK, playlist_id FK, item_id FK, position REAL, added_at)
+
+item_links(id PK, item_id FK items,         -- linked media (migration 0038, library-and-ingest.md#linked-media)
+      position INTEGER,                     -- the editor's order (0, 1, …)
+      kind TEXT,                            -- 'music_video' | 'lyric_video' | 'external' (CHECK)
+      target_item_id NULL FK items,         -- the linked item: video kinds only, never item_id itself (CHECK)
+      url TEXT NULL, label TEXT NULL,       -- 'external' only (CHECK): http(s) URL; optional label <= 100 chars
+      added_by NULL FK users ON DELETE SET NULL, added_at BIGINT)
+      -- UNIQUE(item_id, target_item_id), UNIQUE(item_id, url); at most 20 per item (checked by the API).
+      -- No ON DELETE on the item references: a delete record of either item removes the rows explicitly.
 ```
 
 **An item in a playlist is always in its owner's library** (M9, [libraries.md](libraries.md#playlists)): every `playlist_entries` row has a `library_entries` row for `(playlists.owner_id, item_id)`. Migration `0028_playlists_v2` added the missing ones (`via 'manual'`, `added_at` = when the item first went into one of that user's playlists; uncategorized videos among them stay uncategorized) and numbered each user's playlists 1..n in the order they were listed (most recently changed first).
