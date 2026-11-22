@@ -286,6 +286,39 @@ abstract class ItemsContract {
         assertEquals("item_not_found", code(() -> items.update(alice, UuidV7.newId(), title("x"), EDIT_ANY, null)));
     }
 
+    /** docs/library-and-ingest.md#song-details: stored per column, shown on the page, audited by field. */
+    @Test
+    void songDetailsAreStoredAndAudited() throws Exception {
+        String id = aliceItem("audio");
+        assertEquals(SongDetails.EMPTY, items.get(alice, id, NONE).details());
+        SongDetails all = new SongDetails(List.of("A", "B"), "AA", 1, 2, 3, 4, "JPVI02201530", "2022-06-29", "Pop",
+                "\u2117 2010 X", "Label", "4573556731873");
+        Items.ItemPage page = items.update(alice, id, new Items.Edit(null, "A, B", false, null, false, null, null,
+                new SongDetails.Patch(java.util.Set.copyOf(SongDetails.FIELDS), all)), NONE, null);
+        assertEquals(all, page.details());
+        assertEquals("A, B", page.artist());
+        assertEquals(page, items.get(alice, id, NONE));
+        assertEquals("[\"A\",\"B\"]", column(id, "artists_json"));
+        assertEquals("2022-06-29", column(id, "release_date"));
+        assertEquals(List.of(alice.userId() + " " + id + " {\"artist\":\"A, B\",\"artists\":[\"A\",\"B\"],"
+                + "\"albumArtist\":\"AA\",\"track\":1,\"trackTotal\":2,\"disc\":3,\"discTotal\":4,"
+                + "\"isrc\":\"JPVI02201530\",\"date\":\"2022-06-29\",\"genre\":\"Pop\",\"copyright\":\"\u2117 2010 X\","
+                + "\"label\":\"Label\",\"barcode\":\"4573556731873\"} null"), audit(Items.AUDIT_UPDATED));
+
+        // only the named fields change; the same values again write nothing
+        Items.ItemPage some = items.update(alice, id, new Items.Edit(null, null, false, null, false, null, null,
+                new SongDetails.Patch(java.util.Set.of("track", "genre"), SongDetails.EMPTY.with("track", 7))), NONE, null);
+        assertEquals(all.with("track", 7).with("genre", null), some.details());
+        items.update(alice, id, new Items.Edit(null, null, false, null, false, null, null,
+                new SongDetails.Patch(java.util.Set.of("track"), SongDetails.EMPTY.with("track", 7))), NONE, null);
+        assertEquals(2, audit(Items.AUDIT_UPDATED).size());
+        assertNull(column(id, "genre"));
+        // others still can't
+        assertEquals("forbidden", code(() -> items.update(bob, id, new Items.Edit(null, null, false, null, false,
+                null, null, new SongDetails.Patch(java.util.Set.of("genre"), SongDetails.EMPTY.with("genre", "x"))),
+                NONE, null)));
+    }
+
     private static Items.Edit type(MediaType type, MediaType.Show show) {
         return new Items.Edit(null, null, false, null, false, type, show);
     }

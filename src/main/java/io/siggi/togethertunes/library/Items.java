@@ -110,7 +110,10 @@ public final class Items {
      * @param pinned   while the item is pinned (never deleted automatically), for anyone who can
      *                 see the item (not who pinned it), else null
      */
-    public record ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
+    public record ItemPage(String id, String kind, String title, String artist, String album,
+                           List<String> artists, String albumArtist, Integer track, Integer trackTotal, Integer disc,
+                           Integer discTotal, String isrc, String date, String genre, String copyright, String label,
+                           String barcode, Long durationMs,
                            String source, String youtubeId, String status, boolean presentAsAudio,
                            String mediaType, MediaType.Show show, long addedAt,
                            String error, int mediaVersion, You you, UndoView undo, TrimView trim, boolean hasCover,
@@ -118,9 +121,26 @@ public final class Items {
         public ItemPage(String id, String kind, String title, String artist, String album, Long durationMs,
                         String source, String youtubeId, String status, String mediaType, MediaType.Show show,
                         long addedAt, String error, int mediaVersion, You you) {
-            this(id, kind, title, artist, album, durationMs, source, youtubeId, status,
+            this(id, kind, title, artist, album, SongDetails.EMPTY, durationMs, source, youtubeId, status,
                     MediaType.presentAsAudio(kind, mediaType), mediaType, show, addedAt, error,
                     mediaVersion, you, null, null, false, null, null);
+        }
+
+        /** With the song details as their own fields (the JSON has them flat, each left out when empty). */
+        public ItemPage(String id, String kind, String title, String artist, String album, SongDetails d,
+                        Long durationMs, String source, String youtubeId, String status, boolean presentAsAudio,
+                        String mediaType, MediaType.Show show, long addedAt, String error, int mediaVersion, You you,
+                        UndoView undo, TrimView trim, boolean hasCover, StillImageView stillImage, PinView pinned) {
+            this(id, kind, title, artist, album, d.artists(), d.albumArtist(), d.track(), d.trackTotal(), d.disc(),
+                    d.discTotal(), d.isrc(), d.date(), d.genre(), d.copyright(), d.label(), d.barcode(), durationMs,
+                    source, youtubeId, status, presentAsAudio, mediaType, show, addedAt, error, mediaVersion, you,
+                    undo, trim, hasCover, stillImage, pinned);
+        }
+
+        /** The song details besides title, artist and album. */
+        public SongDetails details() {
+            return new SongDetails(artists, albumArtist, track, trackTotal, disc, discTotal, isrc, date, genre,
+                    copyright, label, barcode);
         }
     }
 
@@ -218,16 +238,26 @@ public final class Items {
      * A metadata edit; a null field is left unchanged. {@code artist}/{@code album} are cleared
      * by {@link #clearArtist}/{@link #clearAlbum}. {@code show} sets a {@code show}'s details
      * (the resulting type must be {@code show}); a type changed away from {@code show} clears them.
+     * {@code details} changes the song details it names ({@code docs/library-and-ingest.md#song-details}).
      */
     public record Edit(String title, String artist, boolean clearArtist, String album, boolean clearAlbum,
-                       MediaType mediaType, MediaType.Show show) {
+                       MediaType mediaType, MediaType.Show show, SongDetails.Patch details) {
+        public Edit {
+            details = details == null ? SongDetails.Patch.NONE : details;
+        }
+
         public Edit(String title, String artist, boolean clearArtist, String album, boolean clearAlbum) {
-            this(title, artist, clearArtist, album, clearAlbum, null, null);
+            this(title, artist, clearArtist, album, clearAlbum, null, null, null);
+        }
+
+        public Edit(String title, String artist, boolean clearArtist, String album, boolean clearAlbum,
+                    MediaType mediaType, MediaType.Show show) {
+            this(title, artist, clearArtist, album, clearAlbum, mediaType, show, null);
         }
 
         public boolean isEmpty() {
             return title == null && artist == null && !clearArtist && album == null && !clearAlbum
-                    && mediaType == null && show == null;
+                    && mediaType == null && show == null && details.isEmpty();
         }
     }
 
@@ -257,14 +287,15 @@ public final class Items {
     /** The columns {@link #page} and the checks need. */
     record Row(String id, String kind, String title, String artist, String album, Long durationMs, String source,
                String youtubeId, String status, String mediaType, MediaType.Show show, long addedAt, String error,
-               String addedByUserId, int mediaVersion) {
+               String addedByUserId, int mediaVersion, SongDetails details) {
         boolean presentAsAudio() {
             return MediaType.presentAsAudio(kind, mediaType);
         }
     }
 
     private static final String ROW = "SELECT id, kind, title, artist, album, duration_ms, source, youtube_id, status,"
-            + " added_at, error, added_by_user_id, media_version, " + MediaType.columns(null) + " FROM items WHERE id = ?";
+            + " added_at, error, added_by_user_id, media_version, " + MediaType.columns(null) + ", "
+            + SongDetails.columns(null) + " FROM items WHERE id = ?";
 
     static Row row(Connection c, String itemId, boolean lock) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement(ROW + (lock ? " FOR UPDATE" : ""))) {
@@ -278,7 +309,8 @@ public final class Items {
                 return new Row(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getString(5),
                         durationMs, rs.getString(7), rs.getString(8), rs.getString(9),
                         MediaType.effective(rs.getString(2), rs.getString(14)),
-                        MediaType.show(rs, 14), rs.getLong(10), rs.getString(11), rs.getString(12), rs.getInt(13));
+                        MediaType.show(rs, 14), rs.getLong(10), rs.getString(11), rs.getString(12), rs.getInt(13),
+                        SongDetails.read(rs, 18));
             }
         }
     }
@@ -362,7 +394,7 @@ public final class Items {
                     edit.audioStartMs(), edit.audioEndMs(), video ? audioOnlyMs : null,
                     video ? EditSettings.firstGopFrames(editJson) : null);
         }
-        return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.durationMs(), r.source(),
+        return new ItemPage(r.id(), r.kind(), r.title(), r.artist(), r.album(), r.details(), r.durationMs(), r.source(),
                 r.youtubeId(), r.status(), r.presentAsAudio(), r.mediaType(), r.show(), r.addedAt(),
                 "failed".equals(r.status()) ? r.error() : null, r.mediaVersion(), you, undo, trim,
                 "ready".equals(r.status()) && covers.exists(r.id(), r.mediaVersion()), stillImage, pinned);
@@ -759,13 +791,16 @@ public final class Items {
             if (!Objects.equals(show, row.show())) {
                 changed.put("show", show);
             }
+            SongDetails details = edit.details().apply(row.details());
+            changed.putAll(row.details().changesTo(details));
             if (changed.isEmpty()) {
                 return page(c, row, you);
             }
             // TODO(M4): the item's card.mp4 still shows the old title/artist/album; re-render it
             // (and its index for audio items) before the packager shows cards.
             try (PreparedStatement ps = c.prepareStatement("UPDATE items SET title = ?, artist = ?, album = ?,"
-                    + " media_type = ?, show_name = ?, season_number = ?, episode_number = ? WHERE id = ?")) {
+                    + " media_type = ?, show_name = ?, season_number = ?, episode_number = ?, "
+                    + SongDetails.assignments() + " WHERE id = ?")) {
                 ps.setString(1, title);
                 ps.setString(2, artist);
                 ps.setString(3, album);
@@ -781,7 +816,7 @@ public final class Items {
                 } else {
                     ps.setInt(7, show.episode());
                 }
-                ps.setString(8, itemId);
+                ps.setString(details.bind(ps, 8), itemId);
                 ps.executeUpdate();
             }
             if (!mediaType.equals(row.mediaType())) {
@@ -795,7 +830,7 @@ public final class Items {
             AuditLog.write(c, now, actor.userId(), null, clientIp, AUDIT_UPDATED, itemId, changed);
             Row after = new Row(row.id(), row.kind(), title, artist, album, row.durationMs(), row.source(),
                     row.youtubeId(), row.status(), mediaType, show, row.addedAt(), row.error(), row.addedByUserId(),
-                    row.mediaVersion());
+                    row.mediaVersion(), details);
             return page(c, after, you);
         });
     }

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.MediaProbe;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -41,6 +42,60 @@ class UploadMetadataTest {
         assertEquals(new UploadMetadata("Mine", "Me", "Record"), m);
         // a blank override falls back
         assertEquals("Song", UploadMetadata.of(probe(Map.of("title", "Song")), "f.mp3", " \n", null).title());
+    }
+
+    private static SongDetails details(Map<String, String> tags) {
+        return UploadMetadata.of(probe(tags), "a.mp3", null, null).details();
+    }
+
+    /** docs/library-and-ingest.md#song-details: what each tag becomes, and what is dropped. */
+    @Test
+    void songDetailsFromTags() {
+        assertEquals(SongDetails.EMPTY, details(Map.of("title", "x")));
+        assertEquals(new SongDetails(List.of("A", "B C"), "AA", 1, 2, 3, 4, "JPVI02201530", "2022-06-29", "Pop",
+                        "\u2117 2010 X", "Lab", "4573556731873"),
+                details(Map.ofEntries(Map.entry("artists", " A ;B\tC;;A"), Map.entry("album_artist", "AA"),
+                        Map.entry("track", "1/2"), Map.entry("disc", " 3 / 4 "), Map.entry("isrc", "jpvi02201530"),
+                        Map.entry("date", "2022-06-29"), Map.entry("genre", "Pop"), Map.entry("copyright", "\u2117 2010 X"),
+                        Map.entry("label", "Lab"), Map.entry("barcode", "4573556731873"))));
+        // other names for the same tags
+        assertEquals(new SongDetails(null, "AA", 5, 9, 2, 3, "USS1Z9900001", "1999", null, null, "Pub", "012345678905"),
+                details(Map.of("albumartist", "AA", "track", "05", "tracktotal", "9", "disc", "2", "totaldiscs", "3",
+                        "tsrc", "US-S1Z-99-00001", "year", "1999", "publisher", "Pub", "upc", "012345678905")));
+        assertEquals(new SongDetails(null, null, null, 12, null, 2, null, "2022-06", null, null, "Org", "12345678"),
+                details(Map.of("totaltracks", "12", "disctotal", "2", "date", "2022-06", "organization", "Org",
+                        "ean", "12345678")));
+        // n/total wins over a separate total; a bad part is dropped, not guessed
+        assertEquals(new SongDetails(null, null, 1, 2, null, null, null, null, null, null, null, null),
+                details(Map.of("track", "1/2", "tracktotal", "7")));
+        for (Map<String, String> bad : List.of(Map.of("track", "0"), Map.of("track", "1/2;3"), Map.of("track", "A1"),
+                Map.of("track", "10000"), Map.of("disc", "-1"), Map.of("tracktotal", "x"), Map.of("isrc", "JPVI0220153"),
+                Map.of("isrc", "12VI02201530"), Map.of("date", "2022-13-01"), Map.of("date", "2023-02-29"),
+                Map.of("date", "June 2022"), Map.of("year", "99"), Map.of("barcode", "1234567"),
+                Map.of("barcode", "123456789012345"), Map.of("barcode", "12345678x"), Map.of("artists", "Solo"),
+                Map.of("genre", " \u0000 "))) {
+            assertEquals(SongDetails.EMPTY, details(bad), bad.toString());
+        }
+        assertEquals(new SongDetails(null, null, 1, null, null, null, null, null, null, null, null, null),
+                details(Map.of("track", "1/0")), "a bad total alone is dropped");
+        assertEquals("2022-06-29", details(Map.of("date", "2022-06-29T00:00:00Z")).date(), "the date of a timestamp");
+        assertEquals("2001", details(Map.of("date", "bad", "year", "2001")).date());
+    }
+
+    /** The artist: the tag, else the ARTISTS names joined, else the album artist; the uploader's replaces the list. */
+    @Test
+    void artistAndArtists() {
+        UploadMetadata m = UploadMetadata.of(probe(Map.of("artists", "A;B")), "a.mp3", null, null);
+        assertEquals("A, B", m.artist());
+        assertEquals(List.of("A", "B"), m.details().artists());
+        m = UploadMetadata.of(probe(Map.of("artists", "A;B", "artist", "A feat. B")), "a.mp3", null, null);
+        assertEquals("A feat. B", m.artist(), "both kept");
+        assertEquals(List.of("A", "B"), m.details().artists());
+        m = UploadMetadata.of(probe(Map.of("artists", "A;B")), "a.mp3", null, "Me");
+        assertEquals("Me", m.artist());
+        assertNull(m.details().artists());
+        m = UploadMetadata.of(probe(Map.of("artists", "A;B")), "a.mp3", null, "A, B");
+        assertEquals(List.of("A", "B"), m.details().artists(), "the uploader typed the same names");
     }
 
     @Test

@@ -22,6 +22,10 @@ import {
 } from "./trim.js";
 import { DUCK_OFF_EVENTS, DUCK_ON_EVENTS, listenerVolume, previewDuck, previewLevel } from "./volume.js";
 import { itemPlayerShown, pinPath, pinText, viewPath, viewReporter } from "./views.js";
+import {
+  addName, detailRows, detailsBody, detailsInput, fieldOfError, initialArtists, moveName, removeName, type DetailsInput,
+  type FieldErrors,
+} from "./songdetails.js";
 
 /**
  * This view's start (taken before any await): its signal stops the polling, the trim panels' timers
@@ -181,11 +185,68 @@ function renderJob(job: JobView | undefined, item: ItemPage): HTMLElement | null
   return box;
 }
 
+/** A small button that isn't the form's submit. */
+function smallButton(text: string, label: string, onClick: () => void, disabled = false): HTMLButtonElement {
+  const b = h("button", { type: "button", class: "small", text, "aria-label": label, title: label, disabled });
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+/**
+ * The Artists field: one list of names (add, remove, reorder), never separate Artist and Artists
+ * fields (docs/library-and-ingest.md#song-details). `names()` is the list as it stands.
+ */
+function artistsField(item: ItemPage, error: HTMLElement): { el: HTMLElement; names(): string[] } {
+  let names = initialArtists(item);
+  const list = h("div", { class: "artist-list" });
+  const draw = (focus?: number): void => {
+    const rows = names.map((name, i) => {
+      const input = h("input", { maxlength: "300", value: name, "aria-label": "Artist " + (i + 1) });
+      input.addEventListener("input", () => { names[i] = input.value; });
+      return h("div", { class: "artist-row" }, input,
+        smallButton("↑", "Move up", () => { names = moveName(names, i, -1); draw(i - 1); }, i === 0),
+        smallButton("↓", "Move down", () => { names = moveName(names, i, 1); draw(i + 1); }, i === names.length - 1),
+        smallButton("✕", "Remove", () => { names = removeName(names, i); draw(); }));
+    });
+    list.replaceChildren(...rows,
+      smallButton("+ Add artist", "Add artist", () => { names = addName(names); draw(names.length - 1); }));
+    if (focus !== undefined) rows[focus]?.querySelector("input")?.focus();
+  };
+  draw();
+  const el = h("fieldset", { class: "artists" }, h("legend", { text: "Artists" }), list, error);
+  return { el, names: () => names.slice() };
+}
+
 function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElement {
+  const start = detailsInput(item);
+  /** The inline problem beside each song details field. */
+  const fieldErrors = new Map<string, HTMLElement>();
+  const fieldError = (name: string): HTMLElement => {
+    const el = h("small", { class: "error field-error", role: "alert" });
+    fieldErrors.set(name, el);
+    return el;
+  };
+  const text = (label: string, name: keyof DetailsInput, extra: Record<string, string> = {}): HTMLElement =>
+    h("label", {}, label, h("input", { name, maxlength: "300", value: start[name], ...extra }), fieldError(name));
+  const pair = (label: string, name: keyof DetailsInput, total: keyof DetailsInput): HTMLElement =>
+    h("div", { class: "of-pair" },
+      h("label", {}, label, h("input", { name, inputmode: "numeric", value: start[name], size: "4" }), fieldError(name)),
+      h("label", {}, "of", h("input", { name: total, inputmode: "numeric", value: start[total], size: "4" }),
+        fieldError(total)));
+  const artists = artistsField(item, fieldError("artists"));
   const form = h("form", { class: "form" },
     h("label", {}, "Title", h("input", { name: "title", required: true, maxlength: "300", value: item.title })),
-    h("label", {}, "Artist", h("input", { name: "artist", maxlength: "300", value: item.artist ?? "" })),
+    artists.el,
     h("label", {}, "Album", h("input", { name: "album", maxlength: "300", value: item.album ?? "" })),
+    text("Album artist", "albumArtist"),
+    pair("Track", "track", "trackTotal"),
+    pair("Disc", "disc", "discTotal"),
+    text("Release date", "date", { placeholder: "YYYY-MM-DD" }),
+    text("Genre", "genre"),
+    text("Label", "label"),
+    text("Copyright", "copyright"),
+    text("ISRC", "isrc", { placeholder: "CC-XXX-YY-NNNNN" }),
+    text("Barcode (UPC/EAN)", "barcode", { inputmode: "numeric" }),
     item.kind === "video" || item.stillImage !== undefined
       ? h("label", {}, "Media type", h("select", { name: "mediaType" },
         ...allowedTypes(item.kind, item.stillImage !== undefined).map((t) => h("option", { value: t, text: mediaTypeLabel(t), selected: t === item.mediaType }))))
@@ -198,29 +259,43 @@ function editForm(item: ItemPage, onSaved: (item: ItemPage) => void): HTMLElemen
       : null,
     h("button", { type: "submit", text: "Save" }));
   const error = h("p", { class: "error", role: "alert" });
+  const showFieldErrors = (errors: FieldErrors): void => {
+    for (const [name, el] of fieldErrors) el.textContent = errors[name as keyof FieldErrors] ?? "";
+  };
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
     error.textContent = "";
+    showFieldErrors({});
     const data = new FormData(form);
-    const body: Record<string, unknown> = {
-      title: String(data.get("title") ?? ""),
-      artist: String(data.get("artist") ?? ""),
-      album: String(data.get("album") ?? ""),
-    };
+    const value = (name: string): string => String(data.get(name) ?? "");
+    const details = detailsBody(item, artists.names(), {
+      albumArtist: value("albumArtist"), track: value("track"), trackTotal: value("trackTotal"), disc: value("disc"),
+      discTotal: value("discTotal"), isrc: value("isrc"), date: value("date"), genre: value("genre"),
+      copyright: value("copyright"), label: value("label"), barcode: value("barcode"),
+    });
+    if ("errors" in details) {
+      showFieldErrors(details.errors);
+      error.textContent = "Check the fields marked above.";
+      return;
+    }
+    const body: Record<string, unknown> = { title: value("title"), album: value("album"), ...details.body };
     if (item.kind === "video" || item.stillImage !== undefined) {
-      const typed = mediaTypeBody(String(data.get("mediaType") ?? ""), String(data.get("showName") ?? ""),
-        String(data.get("season") ?? ""), String(data.get("episode") ?? ""));
+      const typed = mediaTypeBody(value("mediaType"), value("showName"), value("season"), value("episode"));
       if ("error" in typed) {
         error.textContent = typed.error;
         return;
       }
       Object.assign(body, typed.body);
     }
-    const submit = form.querySelector("button");
+    const submit = form.querySelector<HTMLButtonElement>("button[type=submit]");
     if (submit !== null) submit.disabled = true;
     api<ItemPage>("PATCH", "/api/items/" + encodeURIComponent(item.id), body)
       .then((updated) => { showNotice("Saved."); onSaved(updated); })
-      .catch((e: unknown) => { error.textContent = message(e); })
+      .catch((e: unknown) => {
+        const field = e instanceof ApiError ? fieldOfError(e.code) : undefined;
+        if (field !== undefined) showFieldErrors({ [field]: message(e) });
+        error.textContent = message(e);
+      })
       .finally(() => { if (submit !== null) submit.disabled = false; });
   });
   const details = h("details", { class: "panel" }, h("summary", { text: "Edit details" }), form, error);
@@ -589,6 +664,7 @@ function render(item: ItemPage, job: JobView | undefined): void {
         item.artist !== undefined ? h("p", { class: "item-artist", text: item.artist }) : null,
         h("dl", { class: "fields" },
           field("Album", item.album),
+          ...detailRows(item).map(([label, value]) => field(label, value)),
           field("Length", formatDuration(item.durationMs)),
           field("Kind", kindLabel(item)),
           field("Source", source),

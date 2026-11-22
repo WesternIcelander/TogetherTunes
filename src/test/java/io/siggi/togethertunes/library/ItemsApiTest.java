@@ -468,6 +468,92 @@ class ItemsApiTest {
         assertEquals(404, missing.statusCode());
     }
 
+    /** docs/library-and-ingest.md#song-details: the item page carries them, PATCH sets and clears them. */
+    @Test
+    void patchSongDetails() throws Exception {
+        String id = item("audio");
+        JsonObject page = json(call("PATCH", "/api/items/" + id, alice, "{\"artists\":[\" Wonderful★opportunity! \","
+                + "\"Kagamine Rin & Kagamine Len\",\"\"],\"albumArtist\":\"Wonderful★opportunity!\",\"track\":1,"
+                + "\"trackTotal\":2,\"disc\":1,\"discTotal\":2.0,\"isrc\":\"jp-vi0-22-01530\",\"date\":\"2022-06-29\","
+                + "\"genre\":\"Vocaloid\",\"copyright\":\"Crypton Future Media, INC. www.piapro.net\",\"label\":\"FlyingDog\","
+                + "\"barcode\":\"4573556731873\"}"));
+        assertEquals("Wonderful★opportunity!, Kagamine Rin & Kagamine Len", page.get("artist").getAsString(),
+                "the names joined");
+        JsonObject expected = JsonParser.parseString("{\"artists\":[\"Wonderful★opportunity!\","
+                + "\"Kagamine Rin & Kagamine Len\"],\"albumArtist\":\"Wonderful★opportunity!\",\"track\":1,"
+                + "\"trackTotal\":2,\"disc\":1,\"discTotal\":2,\"isrc\":\"JPVI02201530\",\"date\":\"2022-06-29\","
+                + "\"genre\":\"Vocaloid\",\"copyright\":\"Crypton Future Media, INC. www.piapro.net\","
+                + "\"label\":\"FlyingDog\",\"barcode\":\"4573556731873\"}").getAsJsonObject();
+        for (String f : expected.keySet()) {
+            assertEquals(expected.get(f), page.get(f), f);
+        }
+        JsonObject anyone = json(call("GET", "/api/items/" + id, null, null));
+        for (String f : expected.keySet()) {
+            assertEquals(expected.get(f), anyone.get(f), f);
+        }
+
+        // reordered: the artist follows; artist and artists together keep both ("A feat. B")
+        JsonObject reordered = json(call("PATCH", "/api/items/" + id, alice,
+                "{\"artists\":[\"Kagamine Rin & Kagamine Len\",\"Wonderful★opportunity!\"]}"));
+        assertEquals("Kagamine Rin & Kagamine Len, Wonderful★opportunity!", reordered.get("artist").getAsString());
+        JsonObject both = json(call("PATCH", "/api/items/" + id, alice,
+                "{\"artist\":\"A feat. B\",\"artists\":[\"A\",\"B\"]}"));
+        assertEquals("A feat. B", both.get("artist").getAsString());
+        assertEquals(JsonParser.parseString("[\"A\",\"B\"]"), both.get("artists"));
+        // one name: no list; artist alone clears the list
+        JsonObject one = json(call("PATCH", "/api/items/" + id, alice, "{\"artists\":[\"Solo\",\" Solo \"]}"));
+        assertEquals("Solo", one.get("artist").getAsString());
+        assertFalse(one.has("artists"));
+        call("PATCH", "/api/items/" + id, alice, "{\"artists\":[\"A\",\"B\"]}");
+        JsonObject plain = json(call("PATCH", "/api/items/" + id, alice, "{\"artist\":\"Someone\"}"));
+        assertEquals("Someone", plain.get("artist").getAsString());
+        assertFalse(plain.has("artists"), "artist alone clears the list");
+        JsonObject none = json(call("PATCH", "/api/items/" + id, alice, "{\"artists\":[]}"));
+        assertFalse(none.has("artist") || none.has("artists"), "no names: both cleared");
+
+        // null or blank clears; other fields stay
+        JsonObject cleared = json(call("PATCH", "/api/items/" + id, alice,
+                "{\"track\":null,\"isrc\":\"  \",\"label\":null,\"date\":\"\"}"));
+        for (String f : List.of("track", "isrc", "label", "date")) {
+            assertFalse(cleared.has(f), f);
+        }
+        assertEquals(2, cleared.get("trackTotal").getAsInt());
+        assertEquals("Vocaloid", cleared.get("genre").getAsString());
+        assertEquals(JsonParser.parseString("\"2022\""), json(call("PATCH", "/api/items/" + id, alice,
+                "{\"date\":\"2022\"}")).get("date"));
+
+        Map<String, String> bad = new java.util.HashMap<>(Map.of(
+                "{\"artists\":\"A, B\"}", "invalid_artists",
+                "{\"artists\":[\"A\",5]}", "invalid_artists",
+                "{\"artists\":[\"" + "x".repeat(UploadMetadata.MAX_CHARS + 1) + "\"]}", "metadata_too_long",
+                "{\"artists\":[\"" + "x".repeat(200) + "\",\"" + "y".repeat(200) + "\"]}", "metadata_too_long",
+                "{\"albumArtist\":3}", "invalid_album_artist",
+                "{\"track\":0}", "invalid_track",
+                "{\"trackTotal\":1.5}", "invalid_track_total",
+                "{\"disc\":\"1\"}", "invalid_disc",
+                "{\"discTotal\":10000}", "invalid_disc_total",
+                "{\"isrc\":\"ABC\"}", "invalid_isrc"));
+        bad.putAll(Map.of(
+                "{\"date\":\"2023-02-29\"}", "invalid_date",
+                "{\"date\":\"29.06.2022\"}", "invalid_date",
+                "{\"barcode\":\"1234567\"}", "invalid_barcode",
+                "{\"genre\":[]}", "invalid_genre",
+                "{\"copyright\":{}}", "invalid_copyright",
+                "{\"label\":true}", "invalid_label"));
+        StringBuilder many = new StringBuilder("{\"artists\":[");
+        for (int i = 0; i <= SongDetails.MAX_ARTISTS; i++) {
+            many.append(i == 0 ? "" : ",").append("\"N").append(i).append("\"");
+        }
+        bad.put(many.append("]}").toString(), "invalid_artists");
+        for (Map.Entry<String, String> e : bad.entrySet()) {
+            HttpResponse<String> refused = call("PATCH", "/api/items/" + id, alice, e.getKey());
+            assertEquals(400, refused.statusCode(), e.getKey());
+            assertEquals(e.getValue(), code(refused), e.getKey());
+        }
+        assertEquals(401, call("PATCH", "/api/items/" + id, null, "{\"genre\":\"x\"}").statusCode());
+        assertEquals(403, call("PATCH", "/api/items/" + id, bob, "{\"genre\":\"x\"}").statusCode());
+    }
+
     @Test
     void deletePurges() throws Exception {
         String id = item("audio");
@@ -488,7 +574,9 @@ class ItemsApiTest {
     @Test
     void parseKeepsAbsentFieldsUnchanged() {
         assertEquals(new Items.Edit(null, null, false, null, false), ItemsApi.parse(new JsonObject()));
-        assertEquals(new Items.Edit(null, null, true, null, true),
+        // a plain artist (here cleared) also clears the list of artists
+        assertEquals(new Items.Edit(null, null, true, null, true, null, null,
+                        new SongDetails.Patch(java.util.Set.of("artists"), SongDetails.EMPTY)),
                 ItemsApi.parse(JsonParser.parseString("{\"artist\":null,\"album\":\"\"}").getAsJsonObject()));
         HttpError e = org.junit.jupiter.api.Assertions.assertThrows(HttpError.class,
                 () -> ItemsApi.parse(JsonParser.parseString("{\"mediaType\":5}").getAsJsonObject()));

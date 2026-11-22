@@ -905,8 +905,9 @@ public final class Uploads {
                             String contentId, Upload upload, long now) throws SQLException {
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, source,"
                 + " content_sha256, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " last_referenced_at, content_id, media_type, metadata_json)"
-                + " VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)")) {
+                + " last_referenced_at, content_id, media_type, metadata_json, " + SongDetails.columns(null) + ")"
+                + " VALUES (?, ?, ?, ?, ?, 'upload', ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                + " ?, ?)")) {
             ps.setString(1, itemId);
             ps.setString(2, kind);
             ps.setString(3, meta.title());
@@ -926,6 +927,7 @@ public final class Uploads {
             com.google.gson.JsonObject metadata = new com.google.gson.JsonObject();
             metadata.add("upload", file);
             ps.setString(14, metadata.toString());
+            meta.details().bind(ps, 15);
             ps.executeUpdate();
         }
     }

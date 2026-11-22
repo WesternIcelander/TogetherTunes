@@ -53,7 +53,8 @@ abstract class InitialSchemaContract {
                 "original_web", "original_gain_db", "last_referenced_at", "purged_at", "encode_preset",
                 "encode_quality", "media_version", "content_id", "audio_only_ms", "card_version", "card_fonts",
                 "media_type", "show_name", "season_number", "episode_number", "last_viewed_at", "pinned_at",
-                "pinned_by_user_id", "loudness_normalized");
+                "pinned_by_user_id", "loudness_normalized", "artists_json", "album_artist", "track_no", "track_total",
+                "disc_no", "disc_total", "isrc", "release_date", "genre", "copyright", "label", "barcode");
         t("ingest_jobs", "id", "item_id", "kind", "state", "attempts", "progress", "created_at", "started_at",
                 "finished_at", "log", "tier", "edit_json");
         t("library_entries", "user_id", "item_id", "added_at", "via");

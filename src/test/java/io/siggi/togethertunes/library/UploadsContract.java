@@ -951,6 +951,98 @@ abstract class UploadsContract {
         assertFalse(Files.exists(IngestPipeline.stagingDir(data, itemId)), "the staging dir is gone");
     }
 
+    private SongDetails details(String itemId) throws SQLException {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT " + SongDetails.columns(null)
+                    + " FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? SongDetails.read(rs, 1) : null;
+                }
+            }
+        });
+    }
+
+    private String uploadFile(String filename, byte[] file) throws Exception {
+        String id = upload(alice, filename, file, 1_000_000);
+        return expect(200, complete(alice, id, null)).json().get("itemId").getAsString();
+    }
+
+    /**
+     * Song details from real tagged files (docs/library-and-ingest.md#song-details): an .m4a with
+     * iTunes freeform ISRC/LABEL/BARCODE/ARTISTS atoms (as TrackSplitter writes them), an .mp3
+     * with ID3 TSRC, TPUB and TXXX frames, and a .flac with repeated Vorbis ARTISTS and separate
+     * totals. ffprobe reports only the first of several values in one MP4 or ID3 item, so such a
+     * list isn't kept (the artist string stays); repeated FLAC fields come joined with ";".
+     */
+    @Test
+    void songDetailsFromTags() throws Exception {
+        needFfmpeg();
+        media("tagged.m4a", "-f", "lavfi", "-i", "sine=f=440:d=1", "-c:a", "aac",
+                "-metadata", "title=Good is YEAH!", "-metadata", "artist=Wonderful★opportunity!, Kagamine Rin & Kagamine Len",
+                "-metadata", "album_artist=Wonderful★opportunity!", "-metadata", "album=Good is YEAH!",
+                "-metadata", "track=1/2", "-metadata", "disc=1/2", "-metadata", "date=2022-06-29",
+                "-metadata", "genre=Vocaloid", "-metadata", "copyright=Crypton Future Media, INC. www.piapro.net");
+        Path m4a = dir.resolve("media").resolve("tagged.m4a");
+        Map<String, List<String>> freeform = new java.util.LinkedHashMap<>();
+        freeform.put("ISRC", List.of("JPVI02201530"));
+        freeform.put("LABEL", List.of("FlyingDog"));
+        freeform.put("BARCODE", List.of("4573556731873"));
+        freeform.put("ARTISTS", List.of("Wonderful★opportunity!", "Kagamine Rin & Kagamine Len"));
+        TagFixtures.mp4Freeform(m4a, freeform);
+        String a = uploadFile("good.m4a", Files.readAllBytes(m4a));
+        assertEquals("Good is YEAH!", item(a).get("title"));
+        assertEquals("Wonderful★opportunity!, Kagamine Rin & Kagamine Len", item(a).get("artist"));
+        assertEquals(new SongDetails(null, "Wonderful★opportunity!", 1, 2, 1, 2, "JPVI02201530", "2022-06-29",
+                "Vocaloid", "Crypton Future Media, INC. www.piapro.net", "FlyingDog", "4573556731873"), details(a));
+
+        byte[] mp3 = media("details.mp3", "-f", "lavfi", "-i", "sine=f=330:d=1", "-c:a", "libmp3lame",
+                "-metadata", "title=Song", "-metadata", "artist=Neko Hacker, Rika", "-metadata", "track=03/12",
+                "-metadata", "disc=2", "-metadata", "date=2010", "-metadata", "TSRC=us-s1z-99-00001",
+                "-metadata", "publisher=Interscope", "-metadata", "BARCODE=bad", "-metadata", "ARTISTS=Neko Hacker;Rika",
+                "-metadata", "copyright=\u2117 2010 Interscope Records");
+        String b = uploadFile("details.mp3", mp3);
+        assertEquals("Neko Hacker, Rika", item(b).get("artist"));
+        assertEquals(new SongDetails(List.of("Neko Hacker", "Rika"), null, 3, 12, 2, null, "USS1Z9900001", "2010",
+                null, "\u2117 2010 Interscope Records", "Interscope", null), details(b), "a bad barcode is dropped");
+
+        media("details.flac", "-f", "lavfi", "-i", "sine=f=550:d=1", "-c:a", "flac");
+        Path flac = dir.resolve("media").resolve("details.flac");
+        TagFixtures.flacComments(flac, List.of("TITLE=Flac Song", "ARTISTS=Earth, Wind & Fire", "ARTISTS=Someone",
+                "TRACKNUMBER=7", "TRACKTOTAL=9", "DISCNUMBER=1", "DISCTOTAL=2", "DATE=2022-06-29T00:00:00Z",
+                "ALBUMARTIST=Various Artists", "ISRC=JPVI0220153", "LABEL=Label", "UPC=012345678905", "GENRE= Funk "));
+        String c = uploadFile("details.flac", Files.readAllBytes(flac));
+        assertEquals("Earth, Wind & Fire, Someone", item(c).get("artist"), "no artist tag: the names joined");
+        assertEquals(new SongDetails(List.of("Earth, Wind & Fire", "Someone"), "Various Artists", 7, 9, 1, 2, null,
+                "2022-06-29", "Funk", null, "Label", "012345678905"), details(c), "an 11-character ISRC is dropped");
+
+        // the uploader's own artist replaces the tags' list
+        String d = upload(alice, "again.mp3", media("again.mp3", "-f", "lavfi", "-i", "sine=f=660:d=1",
+                "-c:a", "libmp3lame", "-metadata", "ARTISTS=A;B", "-metadata", "track=1"), 1_000_000);
+        String itemD = expect(200, complete(alice, d, "{\"artist\":\"Me\"}")).json().get("itemId").getAsString();
+        assertEquals("Me", item(itemD).get("artist"));
+        assertEquals(new SongDetails(null, null, 1, null, null, null, null, null, null, null, null, null), details(itemD));
+    }
+
+    /**
+     * A real file TrackSplitter made (its example output next to this repository, copied, never
+     * changed there; skipped where it isn't): title, artist, album, album artist and track from
+     * its tags, probed as an upload is (the file is longer than this test server takes).
+     */
+    @Test
+    void trackSplitterOutputTags() throws Exception {
+        needFfmpeg();
+        Path real = Path.of("..", "..", "TrackSplitter", "2026-11-15 21-39-57.tracks",
+                "04 - leon chang - skipping stones.m4a");
+        assumeTrue(Files.isRegularFile(real), "TrackSplitter's example output isn't here");
+        Path copy = dir.resolve("skipping stones.m4a");
+        Files.copy(real, copy);
+        UploadMetadata meta = UploadMetadata.of(io.siggi.togethertunes.ingest.MediaProbe.probe(tools, copy, null),
+                "04 - leon chang - skipping stones.m4a", null, null);
+        assertEquals(new UploadMetadata("skipping stones", "leon chang", "re:treat",
+                new SongDetails(null, "leon chang", 4, 4, null, null, null, null, null, null, null, null)), meta);
+    }
+
     /** Uploads untouched for a day go, with their files; so do part files without a row. */
     @Test
     void sweepDeletesAbandonedUploads() throws Exception {

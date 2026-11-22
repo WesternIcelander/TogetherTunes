@@ -74,6 +74,59 @@ body {
   margin-top: 0.5rem;
 }
 
+/* Item page, Edit details: the Artists list (one field, a list of names) and "Track _ of _". */
+.form fieldset.artists {
+  border: none;
+  padding: 0;
+  margin: 0;
+}
+
+.form fieldset.artists legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
+}
+
+.artist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.artist-row {
+  display: flex;
+  gap: 0.25rem;
+  align-items: center;
+}
+
+.artist-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.form .artist-list button,
+.form .artist-row button {
+  margin-top: 0;
+}
+
+.of-pair {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.of-pair label {
+  flex: 1;
+  min-width: 0;
+}
+
+.form small.field-error {
+  opacity: 1;
+  margin-top: 0;
+}
+
+.form small.field-error:empty {
+  display: none;
+}
+
 .error {
   color: #c62828;
 }

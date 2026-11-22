@@ -6,7 +6,8 @@ import java.util.Locale;
 /**
  * Title, artist and album of an uploaded file ({@code docs/library-and-ingest.md#upload}): what
  * the uploader typed in {@code complete}, else the container tags ffprobe reports, else (title
- * only) the file name without its extension.
+ * only) the file name without its extension; and the other song details from the tags
+ * ({@code docs/library-and-ingest.md#song-details}).
  *
  * <p>Values are cleaned for display: control characters and line breaks become spaces, runs of
  * whitespace collapse to one, and the result is trimmed and cut to {@link #MAX_CHARS} code points.
@@ -15,8 +16,18 @@ import java.util.Locale;
  * @param title  never blank ({@code "Untitled"} as the last resort)
  * @param artist null if unknown
  * @param album  null if unknown
+ * @param details the other song details in the tags ({@link SongDetails#fromTags}); the tags'
+ *               {@code artists} only while the artist is theirs (not the uploader's own)
  */
-public record UploadMetadata(String title, String artist, String album) {
+public record UploadMetadata(String title, String artist, String album, SongDetails details) {
+    public UploadMetadata {
+        details = details == null ? SongDetails.EMPTY : details;
+    }
+
+    public UploadMetadata(String title, String artist, String album) {
+        this(title, artist, album, SongDetails.EMPTY);
+    }
+
     /** Longest title, artist or album kept, in code points. */
     public static final int MAX_CHARS = 300;
 
@@ -40,11 +51,22 @@ public record UploadMetadata(String title, String artist, String album) {
         if (title == null) {
             title = "Untitled";
         }
+        SongDetails details = SongDetails.fromTags(probe);
         String artist = clean(artistOverride);
-        for (int i = 0; artist == null && i < ARTIST_TAGS.length; i++) {
-            artist = clean(probe.tag(ARTIST_TAGS[i]));
+        if (artist != null) {
+            if (details.artists() != null && !artist.equals(SongDetails.joinNames(details.artists()))) {
+                details = details.with("artists", null); // the uploader's own artist, not the tags' list
+            }
+        } else {
+            artist = clean(probe.tag("artist"));
+            if (artist == null && details.artists() != null) {
+                artist = clean(SongDetails.joinNames(details.artists()));
+            }
+            for (int i = 0; artist == null && i < ARTIST_TAGS.length; i++) {
+                artist = clean(probe.tag(ARTIST_TAGS[i]));
+            }
         }
-        return new UploadMetadata(title, artist, clean(probe.tag("album")));
+        return new UploadMetadata(title, artist, clean(probe.tag("album")), details);
     }
 
     /**

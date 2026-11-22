@@ -13,6 +13,7 @@ import io.siggi.togethertunes.http.Request;
 import io.siggi.togethertunes.http.Response;
 import io.siggi.togethertunes.http.Router;
 import java.sql.SQLException;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 
@@ -36,13 +37,16 @@ import java.util.Set;
  *       {@code library_requests_off}); without one {@code 401 not_authenticated}. A user's
  *       {@code roomId} is ignored.</li>
  *   <li>{@code GET /api/items/{id}} (any actor, by direct link) → {@code {"id", "kind", "title",
- *       "artist"?, "album"?, "durationMs"?, "source", "youtubeId"?, "status", "presentAsAudio",
- *       "mediaType", "show"?: {"name", "season"?, "episode"},
+ *       "artist"?, "album"?, "artists"?, "albumArtist"?, "track"?, "trackTotal"?, "disc"?, "discTotal"?,
+ *       "isrc"?, "date"?, "genre"?, "copyright"?, "label"?, "barcode"?, "durationMs"?, "source",
+ *       "youtubeId"?, "status", "presentAsAudio", "mediaType", "show"?: {"name", "season"?, "episode"},
  *       "addedAt", "error"?, "mediaVersion", "hasCover", "you": {"inLibrary", "canEdit", "canPurge", "canRetry", "canPin", "canDeleteRecord"}, "pinned"?: {"pinnedAt"},
- *       "undo"?: {"changedAt"}}}. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
+ *       "undo"?: {"changedAt"}}}. The song details ({@link SongDetails}) are left out when empty;
+ *       {@code artists} only with two or more names. {@code hasCover}: the current version has a {@code cover.jpg}. {@code error} only for a failed item; {@code undo} only for callers
  *       who may edit the item, while a change can be undone. Nothing about who added the item or whose libraries it is in.
  *       {@code 404 item_not_found}.</li>
- *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "mediaType"?, "show"?}} →
+ *   <li>{@code PATCH /api/items/{id}} {@code {"title"?, "artist"?, "album"?, "mediaType"?, "show"?}}
+ *       plus the song details ({@code "artists"?, "albumArtist"?, "track"?, …}) →
  *       the item page. The adder while it is in their library, or {@code library.editAny}
  *       ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403 forbidden} for
  *       other users). Values are
@@ -55,7 +59,15 @@ import java.util.Set;
  *       {@code unknown_field}, {@code not_a_video} (a type other than {@code audio} on an audio
  *       item), {@code show_required} (type {@code show} without show details), {@code not_a_show}
  *       (show details for another type). Show details are cleared when the type changes away from
- *       {@code show}. {@code presentAsAudio} is derived: a video item of type {@code audio}.</li>
+ *       {@code show}. {@code presentAsAudio} is derived: a video item of type {@code audio}.
+ *       Song details ({@code docs/library-and-ingest.md#song-details}): {@code null} or blank clears
+ *       one; {@code artists} (a list of names) sets the list (kept with two or more names) and
+ *       {@code artist} to the names joined with ", " (unless {@code artist} is given too; {@code []}
+ *       or null clears both), while {@code artist} alone clears the list; track and disc numbers and
+ *       totals are whole numbers 1..{@value SongDetails#MAX_NUMBER}; {@code isrc} 12 letters and
+ *       digits (stored upper case, hyphens dropped), {@code date} {@code YYYY[-MM[-DD]]},
+ *       {@code barcode} 8 to 14 digits. {@code 400 invalid_<field>} in snake case
+ *       ({@code invalid_artists}, {@code invalid_album_artist}, {@code invalid_track_total}, …).</li>
  *   <li>{@code POST /api/items/{id}/undo} (no body) → the item page: go back to the previous media
  *       version ({@code docs/library-and-ingest.md#undo}, {@link Items#undo}). Users who may edit
  *       the item ({@code 401 not_authenticated} for guests and anonymous callers, {@code 403
@@ -99,7 +111,13 @@ import java.util.Set;
  * </ul>
  */
 public final class ItemsApi {
-    private static final Set<String> FIELDS = Set.of("title", "artist", "album", "mediaType", "show");
+    private static final Set<String> FIELDS;
+
+    static {
+        Set<String> fields = new java.util.HashSet<>(Set.of("title", "artist", "album", "mediaType", "show"));
+        fields.addAll(SongDetails.FIELDS);
+        FIELDS = Set.copyOf(fields);
+    }
 
     private final Items items;
     private final Permissions permissions;
@@ -402,7 +420,52 @@ public final class ItemsApi {
             }
         }
         String artist = body.has("artist") ? text(body.get("artist"), "invalid_artist") : null;
+        boolean artistGiven = body.has("artist");
         String album = body.has("album") ? text(body.get("album"), "invalid_album") : null;
+        Set<String> detailFields = new java.util.HashSet<>();
+        SongDetails values = SongDetails.EMPTY;
+        if (body.has("artists")) {
+            List<String> names = artists(body.get("artists"));
+            detailFields.add("artists");
+            values = values.with("artists", names);
+            if (!artistGiven) {
+                artist = SongDetails.joinNames(names);
+                if (artist != null && artist.codePointCount(0, artist.length()) > UploadMetadata.MAX_CHARS) {
+                    throw new HttpError(400, "metadata_too_long",
+                            "The artists' names together take at most " + UploadMetadata.MAX_CHARS + " characters");
+                }
+                artistGiven = true;
+            }
+        } else if (artistGiven) {
+            detailFields.add("artists"); // a plain artist replaces the list of names
+        }
+        for (String f : List.of("albumArtist", "genre", "copyright", "label")) {
+            if (body.has(f)) {
+                detailFields.add(f);
+                values = values.with(f, text(body.get(f), code(f)));
+            }
+        }
+        for (String f : List.of("track", "trackTotal", "disc", "discTotal")) {
+            if (body.has(f)) {
+                detailFields.add(f);
+                values = values.with(f, detailNumber(body.get(f), f));
+            }
+        }
+        if (body.has("isrc")) {
+            detailFields.add("isrc");
+            values = values.with("isrc", checked(body.get("isrc"), "isrc", SongDetails::isrc,
+                    "An ISRC has 12 letters and digits, like JPVI02201530"));
+        }
+        if (body.has("date")) {
+            detailFields.add("date");
+            values = values.with("date", checked(body.get("date"), "date", SongDetails::date,
+                    "The release date must be YYYY, YYYY-MM or YYYY-MM-DD"));
+        }
+        if (body.has("barcode")) {
+            detailFields.add("barcode");
+            values = values.with("barcode", checked(body.get("barcode"), "barcode", SongDetails::barcode,
+                    "A barcode (UPC/EAN) has 8 to 14 digits"));
+        }
         MediaType mediaType = null;
         if (body.has("mediaType")) {
             JsonElement e = body.get("mediaType");
@@ -413,8 +476,74 @@ public final class ItemsApi {
             }
         }
         MediaType.Show show = body.has("show") ? show(body.get("show")) : null;
-        return new Items.Edit(title, artist, body.has("artist") && artist == null, album,
-                body.has("album") && album == null, mediaType, show);
+        return new Items.Edit(title, artist, artistGiven && artist == null, album,
+                body.has("album") && album == null, mediaType, show,
+                detailFields.isEmpty() ? null : new SongDetails.Patch(detailFields, values));
+    }
+
+    /** {@code invalid_<field>} in snake case ({@code trackTotal} → {@code invalid_track_total}). */
+    static String code(String field) {
+        return "invalid_" + field.replaceAll("([A-Z])", "_$1").toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * {@code artists}: a list of names (strings), cleaned, blanks and repeats dropped; null or
+     * {@code []} for none. {@code 400 invalid_artists} (not a list of strings, more than
+     * {@value SongDetails#MAX_ARTISTS} names), {@code metadata_too_long} (a name over
+     * {@value UploadMetadata#MAX_CHARS} characters).
+     */
+    static List<String> artists(JsonElement e) {
+        if (e == null || e.isJsonNull()) {
+            return List.of();
+        }
+        if (!e.isJsonArray()) {
+            throw new HttpError(400, "invalid_artists", "artists must be a list of names");
+        }
+        java.util.ArrayList<String> raw = new java.util.ArrayList<>();
+        for (JsonElement n : e.getAsJsonArray()) {
+            if (!(n instanceof JsonPrimitive p) || !p.isString()) {
+                throw new HttpError(400, "invalid_artists", "Each artist must be a name (a string)");
+            }
+            String name = p.getAsString();
+            if (name.codePointCount(0, name.length()) > UploadMetadata.MAX_CHARS) {
+                throw new HttpError(400, "metadata_too_long", "At most " + UploadMetadata.MAX_CHARS + " characters");
+            }
+            raw.add(name);
+        }
+        List<String> names = SongDetails.cleanNames(raw);
+        if (names.size() > SongDetails.MAX_ARTISTS) {
+            throw new HttpError(400, "invalid_artists", "At most " + SongDetails.MAX_ARTISTS + " artists");
+        }
+        return names;
+    }
+
+    /** A track or disc number or total: whole, 1..{@value SongDetails#MAX_NUMBER}; null clears. */
+    private static Integer detailNumber(JsonElement e, String field) {
+        if (e == null || e.isJsonNull()) {
+            return null;
+        }
+        if (e instanceof JsonPrimitive p && p.isNumber()) {
+            double d = p.getAsDouble();
+            if (Double.isFinite(d) && d >= 1 && d <= SongDetails.MAX_NUMBER && d == Math.rint(d)) {
+                return (int) d;
+            }
+        }
+        throw new HttpError(400, code(field), field + " must be a whole number from 1 to " + SongDetails.MAX_NUMBER
+                + ", or null");
+    }
+
+    /** A string field with a format: null or blank clears; else {@code check} must accept it. */
+    private static String checked(JsonElement e, String field, java.util.function.UnaryOperator<String> check,
+                                  String message) {
+        String value = text(e, code(field));
+        if (value == null) {
+            return null;
+        }
+        String ok = check.apply(value);
+        if (ok == null) {
+            throw new HttpError(400, code(field), message);
+        }
+        return ok;
     }
 
     /**

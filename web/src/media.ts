@@ -6,6 +6,7 @@ import { withClassification } from "./classifyprompt.js";
 import { h } from "./dom.js";
 import { ingestText, jobIngestStatus, type IngestStep } from "./jobtext.js";
 import { mediaTypeLabel, type MediaType, type ShowInfo } from "./mediatypes.js";
+import type { SongDetails } from "./songdetails.js";
 
 export type ItemStatus = "pending" | "processing" | "ready" | "failed" | "purged";
 
@@ -27,8 +28,8 @@ export interface ItemSummary {
   show?: ShowInfo;
 }
 
-/** `GET /api/items/{id}`. */
-export interface ItemPage extends ItemSummary {
+/** `GET /api/items/{id}`, with the song details (docs/library-and-ingest.md#song-details). */
+export interface ItemPage extends ItemSummary, SongDetails {
   addedAt: number;
   error?: string;
   /** The current version of its files: play `/media/{id}/v/{mediaVersion}/…` (docs/api.md#media-files). */
