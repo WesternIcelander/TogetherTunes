@@ -13,7 +13,12 @@ import {
   ingestBadge, itemPath, jobSummary, kindLabel, mediaPath, playlistPicker, removeFromLibrary, watchItem, type ItemPage,
   type JobView, type LibraryEntry, type Page,
 } from "./media.js";
-import { viewScope } from "./nav.js";
+import { currentRoom, viewScope } from "./nav.js";
+import { doubleClickAction, songMenuEntries, type SongMenuEntry } from "./interactions.js";
+import { prefs } from "./prefsclient.js";
+import { findVideo, queueItem } from "./songmenu.js";
+import { openMenu } from "./touch.js";
+import { pickedText } from "./videosearch.js";
 import { checkPasswordChange, loadMe, message, onReady, renderNav, type Me } from "./session.js";
 import {
   audioEstimate, audioRange, audioTrimBody, currentRange, estimate, estimateText, formatTime as formatTrimTime,
@@ -872,6 +877,71 @@ function trimSection(item: ItemPage, view: TrimView): HTMLElement {
       h("div", { class: "trim-parts" }, ...trimPanels(item, view))));
 }
 
+/** Adds `itemId` to the room open here (a request; alone Play now or Add to Queue) and says so. */
+async function addHere(itemId: string, title: string, how: "request" | "queue" | "playNow", before = ""):
+    Promise<void> {
+  const room = currentRoom();
+  if (room === undefined) {
+    showNotice(before + "Open a room first to add it to the queue.");
+    return;
+  }
+  const outcome = await queueItem(room, itemId, how);
+  showNotice(before + (outcome === "playing" ? "Playing " + title + "."
+    : title + (outcome === "suggested" ? " suggested to " : " added to ") + room.name() + "."));
+}
+
+/**
+ * The item page's ⋯ menu (docs/library-and-ingest.md#linked-media): with a room open, Add to Queue
+ * (alone Play now and Add to Queue) for the item and each linked music or lyric video, its external
+ * links, and Find a music video… when it has no linked video (signed-in users with YouTube imports).
+ */
+function openItemMenu(item: ItemPage, anchor: HTMLElement): void {
+  const room = currentRoom();
+  const alone = room?.state()?.room.alone === true;
+  const signedIn = me.kind === "user";
+  const entries = songMenuEntries({ room: room !== undefined, alone, list: "item", signedIn,
+    youtube: me.kind === "user" && me.permissions.indexOf("library.youtube") >= 0, links: item.links ?? [] });
+  if (entries.length === 0) {
+    showNotice("Open a room first to add it to the queue.");
+    return;
+  }
+  openMenu(anchor, entries.map((e) => ({ label: e.label, action: () => {
+    runMenuEntry(item, e, alone).catch(showError);
+  } })), item.title);
+}
+
+async function runMenuEntry(item: ItemPage, e: SongMenuEntry, alone: boolean): Promise<void> {
+  showError("");
+  switch (e.kind) {
+    case "song":
+      if (e.action === "request" || e.action === "queue" || e.action === "playNow") {
+        await addHere(item.id, item.title, e.action);
+      }
+      return;
+    case "request":
+    case "queue":
+    case "playNow": {
+      const target = (item.links ?? []).find((l) => l.item?.id === e.itemId)?.item;
+      await addHere(e.itemId, target?.title ?? "", e.kind);
+      return;
+    }
+    case "open":
+      window.open(e.url, "_blank", "noopener,noreferrer");
+      return;
+    case "findVideo": {
+      const found = await findVideo(item);
+      if (found === null || SIGNAL.aborted) return;
+      await refresh();
+      showNotice(pickedText(found, item.title));
+      if (currentRoom() === undefined) return;
+      const how = doubleClickAction(alone, alone ? await prefs.load().then((p) => p.doubleClickAlone, () => undefined)
+        : undefined);
+      await addHere(found.itemId, found.title, how, pickedText(found, item.title) + " ");
+      return;
+    }
+  }
+}
+
 function render(item: ItemPage, job: JobView | undefined): void {
   if (SIGNAL.aborted) return;
   document.title = item.title + " · TogetherTunes";
@@ -909,6 +979,11 @@ function render(item: ItemPage, job: JobView | undefined): void {
       else showNotice(text);
     }));
   }
+  // the song menu (⋯): add it or one of its linked media to the room, Find a music video…
+  const more = h("button", { type: "button", class: "icon item-more", text: "⋯", title: "More",
+    "aria-label": "More for " + item.title, "aria-haspopup": "true" });
+  more.addEventListener("click", () => openItemMenu(item, more));
+  actions.append(more);
   actions.append(button("Copy link", async () => {
     const url = location.origin + "/items/" + encodeURIComponent(item.id);
     try {

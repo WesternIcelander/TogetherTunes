@@ -371,6 +371,10 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Options", "the mvfinder.* settings a link resolution reads, server-side only (its toString leaves the header value out)"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Resolved", "a resolved link's video ID and track, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$VideoMatch", "MVFinder's video matches, kept in the new item's metadata_json (never sent as such)"),
+            Map.entry("io.siggi.togethertunes.library.VideoSearch$Candidate", "a Find a music video candidate; the API sends its own maps (video, title, channel, length, type)"),
+            Map.entry("io.siggi.togethertunes.library.VideoSearch$Picked", "a pick's outcome; the API sends its own map"),
+            Map.entry("io.siggi.togethertunes.library.VideoSearch$Song", "the song's fields a search reads, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.VideoSearch$Offered", "a search's candidates kept in memory for the pick, server-side only"),
             Map.entry("io.siggi.togethertunes.library.ItemLinks$NewLink", "a parsed PUT /api/items/{id}/links entry, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Track", "a resolved link's track, written into the new item's columns"),
             Map.entry("io.siggi.togethertunes.library.MusicLinks$Link", "a parsed music-service link, server-side only"),
@@ -1278,6 +1282,10 @@ class DtoIpLeakTest {
         expect(200, admin, "PATCH", "/api/items/" + itemId, "{\"album\":\"Album\"}");
         expect(200, admin, "PUT", "/api/items/" + itemId + "/links",
                 "{\"links\":[{\"type\":\"external\",\"url\":\"https://a.example/\",\"label\":\"A\"}]}");
+        // Find a music video (a fake yt-dlp search), then picking the video found: imported and linked
+        expect(200, alice, "POST", "/api/items/" + itemId + "/video-search", null);
+        expect(200, alice, "POST", "/api/items/" + itemId + "/video-search/pick",
+                "{\"videoId\":\"" + TestUploads.FOUND_VIDEO_ID + "\"}");
         // looking its details up online (a fake TrackSplitter), the review's cover, applying the details
         JsonObject found = json(expect(200, admin, "POST", "/api/items/" + itemId + "/lookup", "{}"));
         String lookupToken = found.get("lookupToken").getAsString();

@@ -307,6 +307,13 @@ class PermissionMatrixTest {
             // Linked media: those who may edit (an empty list is a valid save; ItemLinksApiTest covers the rest).
             row("PUT /api/items/{id}/links", c -> Call.put("/api/items/" + c.itemId() + "/links", "{\"links\":[]}"),
                     401, 401, 403, 200),
+            // Find a music video: signed-in users with library.youtube (a fake yt-dlp search); a pick
+            // needs a video the caller was offered for that item, so a made-up one is 400
+            // (VideoSearchApiTest covers the real flow).
+            row("POST /api/items/{id}/video-search", c -> Call.post("/api/items/" + c.itemId() + "/video-search", null),
+                    401, 401, 200, 200),
+            row("POST /api/items/{id}/video-search/pick", c -> Call.post("/api/items/" + c.itemId()
+                    + "/video-search/pick", "{\"videoId\":\"zzzzzzzzzzz\"}"), 401, 401, 400, 400),
             row("PUT /api/items/{id}/pin", c -> Call.put("/api/items/" + c.itemId() + "/pin", null), 401, 401, 403, 200),
             row("DELETE /api/items/{id}/pin", c -> Call.delete("/api/items/" + c.itemId() + "/pin"), 401, 401, 403, 200),
             // A view (playback outside a room): whoever may play the item, as for its media files.

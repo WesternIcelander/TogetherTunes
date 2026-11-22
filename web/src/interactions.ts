@@ -6,6 +6,7 @@
 // Pure logic (no DOM), run under Node in the tests (src/test/resources/web-tests/interactions.test.mjs);
 // frame.ts and libview.ts draw it. The server enforces every rule.
 import type { Selection } from "./mobile.js";
+import { linkMenuEntries, type ItemLink, type LinkMenuEntry } from "./links.js";
 import { canRemove, canRetry, type ActorLike, type EntryLike, type RoomLike } from "./panels.js";
 
 // ------------------------------------------------------------------ double-click on a song
@@ -150,19 +151,55 @@ export const SONG_ACTION_LABELS: Readonly<Record<SongAction, string>> = {
 export type SongList = "library" | "playlist" | "liked" | "othersPlaylist" | "search";
 
 /**
+ * Where a song menu opens: one of the lists, or `"item"`: the item page's own ⋯ menu, which has only
+ * the adds (the page is already open and has its own Copy link).
+ */
+export type SongMenuPlace = SongList | "item";
+
+/**
  * A song row's right-click menu (⋯ / long press): Add to Queue in a room (alone: Play now and Add
  * to Queue), Open, Copy link, removing it from the list it is in where the user may (their own
  * playlist, Liked Songs, their library), and Select.
  */
-export function songMenu(o: { room: boolean; alone: boolean; list: SongList }): SongAction[] {
+export function songMenu(o: { room: boolean; alone: boolean; list: SongMenuPlace }): SongAction[] {
   const out: SongAction[] = [];
   if (o.room) out.push(...(o.alone ? ["playNow", "queue"] as SongAction[] : ["request"] as SongAction[]));
+  if (o.list === "item") return out;
   out.push("open", "copyLink");
   if (o.list === "playlist") out.push("removeFromPlaylist");
   if (o.list === "liked") out.push("unlike");
   if (o.list === "library") out.push("removeFromLibrary");
   out.push("select");
   return out;
+}
+
+/** One entry of the full song menu: one of the song's own actions, or one from its linked media. */
+export type SongMenuEntry = { kind: "song"; action: SongAction; label: string } | LinkMenuEntry;
+
+/**
+ * The whole song menu (docs/library-and-ingest.md#linked-media): the song's own adds
+ * ({@link songMenu}), then its linked media (each music or lyric video added instead of the song
+ * with the same action: in a room a request, alone Play … now and Add … to Queue; numbered when
+ * there are several of a type; external links "Open <label or host>"), then **Find a music video…**
+ * when it has no linked music or lyric video (signed-in users who may import YouTube links), then
+ * the rest of the song's own entries. Without a room the video entries are left out (there is
+ * nothing to add them to); Open and Find a music video… stay.
+ */
+export function songMenuEntries(o: {
+  room: boolean;
+  alone: boolean;
+  list: SongMenuPlace;
+  signedIn: boolean;
+  youtube: boolean;
+  links: readonly ItemLink[];
+}): SongMenuEntry[] {
+  const own = songMenu(o).map((action): SongMenuEntry => ({ kind: "song", action, label: SONG_ACTION_LABELS[action] }));
+  const adds = own.filter((e) => e.kind === "song" && (e.action === "request" || e.action === "playNow"
+    || e.action === "queue"));
+  const rest = own.slice(adds.length);
+  const linked = linkMenuEntries(o.links, { alone: o.alone, signedIn: o.signedIn, youtube: o.youtube })
+    .filter((e) => o.room || e.kind === "open" || e.kind === "findVideo");
+  return adds.concat(linked, rest);
 }
 
 // ------------------------------------------------------------------ queue entry menus

@@ -136,6 +136,7 @@ public final class ItemsApi {
     private volatile RoomSearch roomSearch;
     private volatile MetadataLookupApi lookup;
     private volatile CoverUpload coverUpload;
+    private volatile VideoSearchApi videoSearch;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -173,6 +174,15 @@ public final class ItemsApi {
         if (l != null || coverUpload != null) {
             router.put("/api/items/{id}/cover", this::setCover);
         }
+        VideoSearchApi v = videoSearch;
+        if (v != null) {
+            v.register(router);
+        }
+    }
+
+    /** "Find a music video" ({@code POST /api/items/{id}/video-search[/pick]}). Set before {@link #register}. */
+    public void videoSearch(VideoSearchApi videoSearch) {
+        this.videoSearch = videoSearch;
     }
 
     /**

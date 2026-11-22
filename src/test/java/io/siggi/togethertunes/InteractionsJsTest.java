@@ -37,9 +37,19 @@ class InteractionsJsTest {
     @Test
     void theListsAndTheFrameUseThem() throws Exception {
         String list = read("web/js/libview.js");
-        for (String s : List.of("\"dblclick\"", "doubleClickAction(", "playNowBefore(", "prefs.load()",
-                "clickSelect(", "songMenu(", "\"queue.move\"", "copyText(")) {
+        for (String s : List.of("\"dblclick\"", "doubleClickAction(", "prefs.load()",
+                "clickSelect(", "songMenuEntries(", "copyText(", "findVideo(", "itemLinks(", "queueItem(",
+                "pickedText(")) {
             assertTrue(list.contains(s), s);
+        }
+        String songMenu = read("web/js/songmenu.js");
+        for (String s : List.of("\"queue.move\"", "\"queue.add\"", "playNowBefore(", "/video-search", "\"/pick\"",
+                "candidateDetail(", "NO_VIDEO_FOUND", "searchErrorText(")) {
+            assertTrue(songMenu.contains(s), s);
+        }
+        String item = read("web/js/item.js");
+        for (String s : List.of("songMenuEntries(", "list: \"item\"", "findVideo(item)", "queueItem(", "openMenu(")) {
+            assertTrue(item.contains(s), s);
         }
         String frame = read("web/js/frame.js");
         for (String s : List.of("\"dblclick\"", "playlistClick(", "playlistMenu(", "entryMenu(", "entryMessage(",

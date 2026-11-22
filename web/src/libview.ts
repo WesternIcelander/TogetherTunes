@@ -28,15 +28,18 @@ import { draggedKeys, moveIsNoop, playlistDrop, type DragPayload } from "./dragd
 import { dropFiles } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
-import { clickSelect, doubleClickAction, playNowBefore, selectionText, SONG_ACTION_LABELS, songMenu, toggleKey,
-  type DoubleClickAction, type SongList } from "./interactions.js";
+import { clickSelect, doubleClickAction, selectionText, songMenuEntries, toggleKey, type DoubleClickAction,
+  type SongList } from "./interactions.js";
+import { findVideo, itemLinks, queueItem } from "./songmenu.js";
+import { pickedText } from "./videosearch.js";
 import { MOBILE_QUERY, Selection, selectedText } from "./mobile.js";
 import { currentRoom, navigate, refreshLibrary, viewScope, type ShellRoom } from "./nav.js";
 import { copyText } from "./outputspanel.js";
 import { formatTotal, songCount, totalDuration } from "./panels.js";
+import type { ItemLink } from "./links.js";
 import { routeOf, type ListName } from "./router.js";
 import { seasonLabel } from "./shows.js";
-import { message, onReady, renderNav, requireUser } from "./session.js";
+import { message, onReady, renderNav, requireUser, type MeUser } from "./session.js";
 import { onLongPress, openMenu, type MenuItem } from "./touch.js";
 
 /** A row of the table: the item, and when it was added here (absent for search results). */
@@ -77,6 +80,8 @@ let dropPlaylist: PlaylistDetail | undefined;
 let dropZoneSignal: AbortSignal | undefined;
 /** The title link waiting to be followed (a double-click on the row cancels it). */
 let linkTimer: number | undefined;
+/** The signed-in user (the lists are for users only). */
+let me: MeUser | undefined;
 
 function mobile(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
@@ -115,8 +120,11 @@ function coverCell(item: ItemSummary, className = "cover row-cover", id?: string
 
 // ------------------------------------------------------------------ queueing, the row menu, Select mode
 
+/** A song to add: its id and title (a row's item, or one of its linked media). */
+type Song = Pick<ItemSummary, "id" | "title">;
+
 /** Adds items to the current room's queue, in order; says how it went. */
-async function addToQueue(items: readonly ItemSummary[]): Promise<boolean> {
+async function addToQueue(items: readonly Song[]): Promise<boolean> {
   const room = currentRoom();
   if (room === undefined) {
     showError("Open a room first: Add to Queue adds the songs to the room's queue.");
@@ -152,7 +160,7 @@ function isAlone(room: ShellRoom | undefined): boolean {
  * Double-click on a song: request it in the room open here; alone, play it now or queue it (the
  * user setting), unless `how` says which.
  */
-async function doubleClick(item: ItemSummary, how?: DoubleClickAction): Promise<void> {
+async function doubleClick(item: Song, how?: DoubleClickAction): Promise<void> {
   const room = currentRoom();
   if (room === undefined) {
     showError("Open a room first: double-click adds the song to the room's queue.");
@@ -166,17 +174,8 @@ async function doubleClick(item: ItemSummary, how?: DoubleClickAction): Promise<
   }
   // Play immediately (alone): add it, move it to the front of the queue and skip to it.
   showError("");
-  const s = room.state();
-  const before = s !== undefined ? playNowBefore(s.queue) : undefined;
-  const hadCurrent = s?.current !== undefined;
   try {
-    const ack = await room.request({ type: "queue.add", itemId: item.id });
-    const entryId = typeof ack["entryId"] === "string" ? ack["entryId"] : undefined;
-    if (hadCurrent && entryId !== undefined) {
-      if (before !== undefined) await room.request({ type: "queue.move", entryIds: [entryId], beforeEntryId: before });
-      await room.request({ type: "next" });
-      await room.request({ type: "play" });
-    }
+    await queueItem(room, item.id, "playNow");
     notice("Playing " + item.title + ".");
   } catch (e) {
     showError(item.title + ": " + message(e));
@@ -209,14 +208,58 @@ async function removeRow(key: string, item: ItemSummary, what: "removeFromPlayli
   }
 }
 
-/** The row's ⋯ menu (also on right-click and long press). */
-function openRowMenu(key: string, anchorEl: HTMLElement): void {
+/**
+ * Find a music video… for `item`: the dialog, then (the server linked the pick to the song) the
+ * video is added instead of the song, as double-click would add it; without a room only linked.
+ */
+async function findAndAdd(item: ItemSummary): Promise<void> {
+  showError("");
+  const found = await findVideo(item);
+  if (found === null || VIEW.signal.aborted) return;
+  linkCache.delete(item.id);
+  notice(pickedText(found, item.title));
+  if (currentRoom() === undefined) return;
+  await doubleClick({ id: found.itemId, title: found.title });
+  const n = VIEW.find("list-notice");
+  if (n !== null && !VIEW.signal.aborted) {
+    n.textContent = (pickedText(found, item.title) + " " + (n.hidden ? "" : n.textContent ?? "")).trim();
+    n.hidden = false;
+  }
+}
+
+/** Songs' links, fetched for their menus while this view is shown. */
+const linkCache = new Map<string, Promise<ItemLink[]>>();
+
+/** The row's ⋯ menu (also on right-click and long press), with the song's linked media. */
+async function openRowMenu(key: string, anchorEl: HTMLElement): Promise<void> {
   const item = rowItems[key];
   if (item === undefined) return;
+  let links = linkCache.get(item.id);
+  if (links === undefined) {
+    links = itemLinks(item.id);
+    linkCache.set(item.id, links);
+  }
+  const linked = await links;
+  if (VIEW.signal.aborted || rowItems[key] !== item) return;
   const room = currentRoom();
-  const items: MenuItem[] = songMenu({ room: room !== undefined, alone: isAlone(room), list: songList })
-    .filter((a) => a !== "removeFromPlaylist" || rowEntries[key] !== undefined)
-    .map((a) => ({ label: SONG_ACTION_LABELS[a], action: () => {
+  const signedIn = me !== undefined;
+  const items: MenuItem[] = songMenuEntries({ room: room !== undefined, alone: isAlone(room), list: songList,
+    signedIn, youtube: signedIn && me !== undefined && me.permissions.indexOf("library.youtube") >= 0, links: linked })
+    .filter((e) => e.kind !== "song" || e.action !== "removeFromPlaylist" || rowEntries[key] !== undefined)
+    .map((e) => ({ label: e.label, action: () => {
+      const target = (id: string): Song => {
+        const t = linked.find((l) => l.item?.id === id)?.item;
+        return { id, title: t?.title ?? "" };
+      };
+      switch (e.kind) {
+        case "request": void addToQueue([target(e.itemId)]); return;
+        case "playNow":
+        case "queue": void doubleClick(target(e.itemId), e.kind); return;
+        case "open": window.open(e.url, "_blank", "noopener,noreferrer"); return;
+        case "findVideo": void findAndAdd(item).catch(showError); return;
+        case "song": break;
+      }
+      const a = e.action;
       switch (a) {
         case "request": void addToQueue([item]); return;
         case "playNow": void doubleClick(item, "playNow"); return;
@@ -294,7 +337,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
   const check = h("input", { type: "checkbox", class: "row-check", "aria-label": "Select " + item.title, tabindex: "-1" });
   const more = h("button", { type: "button", class: "icon row-more", text: "⋯", title: "More",
     "aria-label": "More for " + item.title, "aria-haspopup": "true" });
-  more.addEventListener("click", () => openRowMenu(key, more));
+  more.addEventListener("click", () => { void openRowMenu(key, more); });
   const tr = h("tr", { "data-item": item.id, "data-key": key, "data-entry": r.entryId },
     h("td", { class: "num muted" }, h("span", { class: "row-num", text: key }), check),
     h("td", {}, coverCell(item)),
@@ -345,7 +388,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
     void doubleClick(item);
   });
   onLongPress(tr, () => {
-    if (!selecting) openRowMenu(key, more);
+    if (!selecting) void openRowMenu(key, more);
   }, VIEW.signal);
   if (!mobile()) draggable(tr, () => rowDrag(key), () => rowDragLinks(key), VIEW.signal);
   return tr;
@@ -686,9 +729,10 @@ function restart(retrying = false): void {
 }
 
 async function start(): Promise<void> {
-  const me = await requireUser(VIEW);
-  if (me === null || VIEW.signal.aborted) return;
-  renderNav(me);
+  const user = await requireUser(VIEW);
+  if (user === null || VIEW.signal.aborted) return;
+  me = user;
+  renderNav(user);
   element("list-select-cancel").addEventListener("click", () => setSelecting(false));
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && selection.size > 0 && document.querySelector(".popup-menu") === null) setSelecting(false);

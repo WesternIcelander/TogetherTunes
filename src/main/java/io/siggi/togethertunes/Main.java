@@ -119,6 +119,8 @@ import io.siggi.togethertunes.library.UserLibrariesApi;
 import io.siggi.togethertunes.library.UploadsApi;
 import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
+import io.siggi.togethertunes.library.VideoSearch;
+import io.siggi.togethertunes.library.VideoSearchApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.storage.DiskSpace;
 import io.siggi.togethertunes.rooms.DiagnosticsApi;
@@ -424,7 +426,8 @@ public final class Main {
                 config.ingestMaxDurationSeconds()));
         youtubeImports.libraryAddListener(qualityOnLibraryAdd);
         youtubeImports.diskSpace(diskSpace);
-        youtubeImports.linkResolver(new MusicLinkResolver(linkResolverOptions(settings), Clock.systemUTC()));
+        MusicLinkResolver linkResolver = new MusicLinkResolver(linkResolverOptions(settings), Clock.systemUTC());
+        youtubeImports.linkResolver(linkResolver);
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
         library.libraryAddListener(qualityOnLibraryAdd);
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
@@ -444,6 +447,10 @@ public final class Main {
                 Tools.from(config), dataDir, ingest.jobs(), Clock.systemUTC());
         itemsApi.lookup(metadataLookupApi);
         itemsApi.coverUpload(new CoverUpload(items, Tools.from(config), dataDir, ingest.jobs()));
+        // "Find a music video": MVFinder by ISRC, the kept matches, else a yt-dlp search
+        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, Tools.from(config), cookiesFile,
+                youtubeImports, linkResolver, () -> setting(() -> settings.get(Settings.MVFINDER_MAX_PER_HOUR),
+                15), Clock.systemUTC()), permissions));
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);

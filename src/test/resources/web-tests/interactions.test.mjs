@@ -102,6 +102,64 @@ test("song menu by list and room", () => {
   assert.equal(I.SONG_ACTION_LABELS.request, "Add to Queue");
 });
 
+const mvLink = (id, title = "Video " + id) => ({ type: "music_video", item: { id, title, status: "ready", mediaType: "music_video" } });
+const lvLink = (id) => ({ type: "lyric_video", item: { id, title: "Lyrics " + id, status: "ready", mediaType: "music_video" } });
+const extLink = (url, label) => (label === undefined ? { type: "external", url } : { type: "external", url, label });
+const labels = (entries) => entries.map((e) => e.label);
+
+test("song menu with linked media in a room: the video entries after the song's own add", () => {
+  const user = { signedIn: true, youtube: true };
+  const links = [mvLink("a"), extLink("https://www.shop.example/x"), mvLink("b"), lvLink("c")];
+  const entries = I.songMenuEntries({ room: true, alone: false, list: "library", ...user, links });
+  assert.deepEqual(labels(entries), ["Add to Queue", "Add Music Video to Queue", "Open shop.example",
+    "Add Music Video 2 to Queue", "Add Lyric Video to Queue", "Open", "Copy link", "Remove from library…", "Select"]);
+  assert.deepEqual(entries[0], { kind: "song", action: "request", label: "Add to Queue" });
+  assert.deepEqual(entries[1], { kind: "request", itemId: "a", label: "Add Music Video to Queue" });
+  assert.deepEqual(entries[3], { kind: "request", itemId: "b", label: "Add Music Video 2 to Queue" });
+  assert.deepEqual(entries[5], { kind: "song", action: "open", label: "Open" });
+});
+
+test("song menu with linked media alone: Play … now and Add … to Queue, numbered", () => {
+  const entries = I.songMenuEntries({ room: true, alone: true, list: "search", signedIn: true, youtube: true,
+    links: [lvLink("c"), lvLink("d")] });
+  assert.deepEqual(labels(entries), ["Play now", "Add to Queue", "Play Lyric Video now", "Add Lyric Video to Queue",
+    "Play Lyric Video 2 now", "Add Lyric Video 2 to Queue", "Open", "Copy link", "Select"]);
+  assert.deepEqual(entries.slice(2, 4).map((e) => [e.kind, e.itemId]), [["playNow", "c"], ["queue", "c"]]);
+});
+
+test("song menu: Find a music video… without a linked video, signed-in users with YouTube imports only", () => {
+  const find = "Find a music video…";
+  const base = { room: true, alone: false, list: "playlist", links: [] };
+  assert.deepEqual(labels(I.songMenuEntries({ ...base, signedIn: true, youtube: true })),
+    ["Add to Queue", find, "Open", "Copy link", "Remove from playlist", "Select"]);
+  // an external link isn't a video: the search is still offered
+  assert.deepEqual(labels(I.songMenuEntries({ ...base, links: [extLink("https://a.example/", "Story")], signedIn: true,
+    youtube: true })), ["Add to Queue", "Open Story", find, "Open", "Copy link", "Remove from playlist", "Select"]);
+  // a guest (or anonymous visitor) and a user without library.youtube: no search
+  assert.ok(!labels(I.songMenuEntries({ ...base, signedIn: false, youtube: false })).includes(find));
+  assert.ok(!labels(I.songMenuEntries({ ...base, signedIn: true, youtube: false })).includes(find));
+  // a linked video: no search; guests still get the linked video
+  assert.deepEqual(labels(I.songMenuEntries({ ...base, links: [mvLink("a")], signedIn: false, youtube: false })),
+    ["Add to Queue", "Add Music Video to Queue", "Open", "Copy link", "Remove from playlist", "Select"]);
+});
+
+test("song menu without a room: no video entries, external links and the search stay", () => {
+  const links = [mvLink("a"), extLink("https://a.example/")];
+  assert.deepEqual(labels(I.songMenuEntries({ room: false, alone: false, list: "liked", signedIn: true, youtube: true,
+    links })), ["Open a.example", "Open", "Copy link", "Remove from Liked Songs", "Select"]);
+  assert.deepEqual(labels(I.songMenuEntries({ room: false, alone: false, list: "liked", signedIn: true, youtube: true,
+    links: [] })), ["Find a music video…", "Open", "Copy link", "Remove from Liked Songs", "Select"]);
+});
+
+test("the item page's menu: only the adds and the linked media", () => {
+  assert.deepEqual(I.songMenu({ room: true, alone: false, list: "item" }), ["request"]);
+  assert.deepEqual(I.songMenu({ room: false, alone: false, list: "item" }), []);
+  assert.deepEqual(labels(I.songMenuEntries({ room: true, alone: true, list: "item", signedIn: false, youtube: false,
+    links: [mvLink("a")] })), ["Play now", "Add to Queue", "Play Music Video now", "Add Music Video to Queue"]);
+  assert.deepEqual(I.songMenuEntries({ room: false, alone: false, list: "item", signedIn: false, youtube: false,
+    links: [] }), [], "a guest without a room: nothing");
+});
+
 const you = (over = {}) => ({ identified: true, canVote: true, canRequest: true, canYoutube: false, canSkip: false,
   canModerate: false, canRequestLibrary: true, ...over });
 const room = (controlMode, y) => ({ room: { controlMode, you: y, settings: {} }, queue: [], suggestions: [] });

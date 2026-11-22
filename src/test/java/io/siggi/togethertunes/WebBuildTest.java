@@ -146,7 +146,7 @@ class WebBuildTest {
         // guest uploads, the Request Link box and the guest identity flow.
         String room = read("web/js/room.js");
         String actions = room + read("web/js/frame.js") + read("web/js/libview.js") + read("web/js/interactions.js")
-                + read("web/js/dragdrop.js");
+                + read("web/js/dragdrop.js") + read("web/js/songmenu.js");
         for (String type : List.of("queue.add", "queue.addPlaylist", "queue.remove", "queue.move", "queue.pin",
                 "vote", "suggest.accept", "suggest.reject", "play", "seek", "next", "previous", "voteSkip")) {
             assertTrue(actions.contains("type: \"" + type + "\""), type);

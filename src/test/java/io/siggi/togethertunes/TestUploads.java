@@ -127,11 +127,26 @@ public final class TestUploads {
             // Replace artwork: an image body on the same cover route
             api.coverUpload(new io.siggi.togethertunes.library.CoverUpload(items,
                     new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs));
+            // "Find a music video": a fake yt-dlp whose search finds one video (no MVFinder)
+            io.siggi.togethertunes.library.FakeYtdlpSearch ytdlp =
+                    new io.siggi.togethertunes.library.FakeYtdlpSearch(dir.resolve("yt-dlp-search"));
+            ytdlp.searchJson(io.siggi.togethertunes.library.FakeYtdlpSearch.entries(
+                    new String[] {FOUND_VIDEO_ID, "Found Video", "Channel", "200"}));
+            io.siggi.togethertunes.ingest.Tools ytTools = new io.siggi.togethertunes.ingest.Tools(null, null,
+                    ytdlp.script.toString());
+            YoutubeImports youtube = new YoutubeImports(db, ytTools, jobs, () -> {
+            }, io.siggi.togethertunes.config.OutputEncoding.DEFAULT, 3600, () -> null, clock);
+            api.videoSearch(new io.siggi.togethertunes.library.VideoSearchApi(
+                    new io.siggi.togethertunes.library.VideoSearch(db, ytTools, () -> null, youtube, null, () -> 1000,
+                            clock), permissions));
             return api;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
+
+    /** The video the test items API's "Find a music video" search finds. */
+    public static final String FOUND_VIDEO_ID = "fOuNdViDe01";
 
     /** A tool's path when it is on PATH (setting a found cover scales it with ffmpeg), else null. */
     static String onPath(String name) {

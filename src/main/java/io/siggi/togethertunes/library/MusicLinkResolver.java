@@ -188,8 +188,33 @@ public final class MusicLinkResolver {
             throw new HttpError(401, "not_authenticated", "Log in to request links like this");
         }
         take(actorKey, o.maxPerHour());
-        JsonObject answer = fetch(o, link);
+        JsonObject answer = fetch(o, link.path() + "?single=1&type=all", link.path());
         return pick(answer, link, o.prefer());
+    }
+
+    /**
+     * MVFinder's video matches for a recording ({@code GET <url>/isrc/<isrc>?type=all}, the same
+     * header and timeout as {@link #resolve}): its {@code music_video}, {@code lyric_video},
+     * {@code official_video} and {@code visualizer} matches ({@link #videos}), never user uploads.
+     * Empty when the feature is off or the ISRC isn't a valid one. Counts nothing: the caller
+     * ("Find a music video", {@link VideoSearch}) has its own per-person limit.
+     *
+     * @throws HttpError {@code 422 link_not_resolved} (MVFinder doesn't know it, 4xx),
+     *                   {@code 503 resolver_unavailable}
+     */
+    public List<VideoMatch> isrcVideos(String isrc) throws InterruptedException {
+        Options o = options();
+        String code = SongDetails.isrc(isrc);
+        if (o == null || o.url() == null || o.url().isBlank() || code == null) {
+            return List.of();
+        }
+        String path = "isrc/" + code;
+        JsonObject answer = fetch(o, path + "?type=all", path);
+        JsonElement matches = answer.get("matches");
+        if (matches == null || !matches.isJsonArray()) {
+            return List.of();
+        }
+        return videos(matches.getAsJsonArray(), null);
     }
 
     /** Counts one resolution for {@code actorKey}, or throws {@code 429 too_many_lookups}. */
@@ -210,10 +235,11 @@ public final class MusicLinkResolver {
         }
     }
 
-    private JsonObject fetch(Options o, MusicLinks.Link link) throws InterruptedException {
+    /** {@code GET <url>/<pathAndQuery>}; {@code what} names it in the logs (never the header). */
+    private JsonObject fetch(Options o, String pathAndQuery, String what) throws InterruptedException {
         URI uri;
         try {
-            uri = URI.create(o.url().replaceAll("/+$", "") + "/" + link.path() + "?single=1&type=all");
+            uri = URI.create(o.url().replaceAll("/+$", "") + "/" + pathAndQuery);
         } catch (IllegalArgumentException e) {
             throw unavailable();
         }
@@ -227,10 +253,10 @@ public final class MusicLinkResolver {
         try {
             response = http.send(req.build(), HttpResponse.BodyHandlers.ofByteArray());
         } catch (HttpTimeoutException e) {
-            LOG.log(System.Logger.Level.INFO, "Link resolver didn't answer in time for " + link.path());
+            LOG.log(System.Logger.Level.INFO, "Link resolver didn't answer in time for " + what);
             throw unavailable();
         } catch (IOException | IllegalArgumentException e) {
-            LOG.log(System.Logger.Level.INFO, "Link resolver unreachable for " + link.path() + ": "
+            LOG.log(System.Logger.Level.INFO, "Link resolver unreachable for " + what + ": "
                     + e.getClass().getSimpleName());
             throw unavailable();
         }
@@ -239,11 +265,11 @@ public final class MusicLinkResolver {
             throw new HttpError(422, "not_a_track", "Only links to a single song work here");
         }
         if (status >= 400 && status < 500) {
-            LOG.log(System.Logger.Level.INFO, "Link resolver answered " + status + " for " + link.path());
+            LOG.log(System.Logger.Level.INFO, "Link resolver answered " + status + " for " + what);
             throw notResolved();
         }
         if (status != 200) {
-            LOG.log(System.Logger.Level.INFO, "Link resolver answered " + status + " for " + link.path());
+            LOG.log(System.Logger.Level.INFO, "Link resolver answered " + status + " for " + what);
             throw unavailable();
         }
         byte[] body = response.body();
@@ -257,7 +283,7 @@ public final class MusicLinkResolver {
             }
             return e.getAsJsonObject();
         } catch (RuntimeException e) {
-            LOG.log(System.Logger.Level.INFO, "Link resolver gave an unreadable answer for " + link.path());
+            LOG.log(System.Logger.Level.INFO, "Link resolver gave an unreadable answer for " + what);
             throw unavailable();
         }
     }
