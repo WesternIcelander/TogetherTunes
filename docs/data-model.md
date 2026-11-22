@@ -66,7 +66,7 @@ items(id PK, kind TEXT,                     -- 'audio' | 'video'
       content_id TEXT NULL,                 -- 'sha256c8m:<size>:<hex>', chunked SHA-256 of the upload; the pre-check (0012)
       added_by_user_id NULL, added_by_guest_id NULL, added_at,
       status TEXT,                          -- 'pending'|'processing'|'ready'|'failed'|'purged'
-      error NULL, loudness_lufs NULL, metadata_json,  -- JSON: {"youtube": {id, uploader?, durationSec?, series?, seasonNumber?, episodeNumber?, track?, artist?}} (yt-dlp's own fields; series..artist since M8, for the classify suggestion) or {"upload": {filename}} (since M8)
+      error NULL, loudness_lufs NULL, metadata_json,  -- JSON: {"youtube": {id, uploader?, durationSec?, series?, seasonNumber?, episodeNumber?, track?, artist?}} (yt-dlp's own fields; series..artist since M8, for the classify suggestion) or {"upload": {filename}} (since M8); plus "lookup": {source, id, url, artist, title, matchedBy, namesOnly} once details were looked up online (TrackSplitter's album object, never shown; library-and-ingest.md#looking-details-up-online)
       output_profile TEXT,                  -- encoding its files were made for: profile + video bitrate, e.g. '720p30-3000k-v2'
       original_file TEXT NULL,              -- e.g. 'original.flac', 'original.mkv'; the kept source (every item since 2026-11-10); 'original.audio.mka' = only the audio of a still image
       original_codec TEXT NULL,             -- ffprobe audio codec/container of the original
