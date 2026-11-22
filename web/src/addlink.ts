@@ -28,7 +28,9 @@ export function openAddLink(o: AddLinkOptions): void {
   const add = h("button", { type: "submit", text: "Add" });
   const cancel = h("button", { type: "button", text: "Cancel" });
   const form = h("form", { class: "form", role: "dialog", "aria-modal": "true", "aria-label": "Add from link" },
-    h("label", {}, "Enter a link:", input), status, error, h("div", { class: "row" }, add, cancel));
+    h("label", {}, "Enter a link:", input),
+    h("p", { class: "muted small", text: "A link to a song or video from YouTube or other music services." }),
+    status, error, h("div", { class: "row" }, add, cancel));
   const overlay = h("div", { class: "classify-prompt add-link" }, form);
   const close = (): void => overlay.remove();
   cancel.addEventListener("click", close);

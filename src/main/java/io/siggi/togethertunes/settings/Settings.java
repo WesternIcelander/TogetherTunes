@@ -86,6 +86,24 @@ public final class Settings {
     /** Look up the details of a signed-in user's new upload automatically (fills empty fields only). */
     public static final SettingKey<Boolean> METADATA_LOOKUP_AUTO_ON_UPLOAD = SettingKey.bool(
             "metadataLookup.autoOnUpload", true);
+    /**
+     * Base URL of MVFinder, which resolves links from other music services to YouTube
+     * ({@code docs/library-and-ingest.md#links-from-other-music-services}); unset = off.
+     */
+    public static final SettingKey<String> MVFINDER_URL = SettingKey.optionalUrl("mvfinder.url");
+    /** The header sent with every MVFinder request (for a reverse proxy in front of it to check). */
+    public static final SettingKey<String> MVFINDER_HEADER_NAME = SettingKey.headerName("mvfinder.headerName",
+            "X-Api-Key");
+    /** The value of {@link #MVFINDER_HEADER_NAME}; empty = no header. A secret: never returned or logged. */
+    public static final SettingKey<String> MVFINDER_HEADER_VALUE = SettingKey.secret("mvfinder.headerValue", 1000);
+    /** Which match a resolved link imports. */
+    public static final SettingKey<LinkPreference> MVFINDER_PREFER = SettingKey.enumeration("mvfinder.prefer",
+            LinkPreference.class, LinkPreference.MUSIC_VIDEO, LinkPreference::wireName);
+    /** Whether guests may request such links (each new one can spend the music services' quotas). */
+    public static final SettingKey<Boolean> MVFINDER_ALLOW_GUESTS = SettingKey.bool("mvfinder.allowGuests", false);
+    /** Link resolutions per actor (user or guest) per hour. */
+    public static final SettingKey<Integer> MVFINDER_MAX_PER_HOUR = SettingKey.integer("mvfinder.maxPerHour",
+            15, 1, 1000);
     public static final SettingKey<Integer> RETENTION_UNREFERENCED_DAYS = SettingKey.integer(
             "retention.unreferencedDays", 14, 0, 36_500);
     /** Days a never-viewed movie or show is kept after it was added; 0 = off ({@code docs/media-types.md}). */
@@ -251,6 +269,8 @@ public final class Settings {
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
+                MVFINDER_URL, MVFINDER_HEADER_NAME, MVFINDER_HEADER_VALUE, MVFINDER_PREFER, MVFINDER_ALLOW_GUESTS,
+                MVFINDER_MAX_PER_HOUR,
                 RETENTION_UNREFERENCED_DAYS,
                 RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, RETENTION_PURGED_ENTRY_DAYS,
                 INGEST_MAX_DURATION_SECONDS,

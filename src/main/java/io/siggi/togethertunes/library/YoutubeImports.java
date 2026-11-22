@@ -98,6 +98,7 @@ public final class YoutubeImports {
     private final Clock clock;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
+    private volatile MusicLinkResolver linkResolver;
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
     /** When each item was last {@linkplain #retry retried} (epoch ms); in memory only. */
     private final java.util.concurrent.ConcurrentHashMap<String, Long> lastRetry =
@@ -167,7 +168,8 @@ public final class YoutubeImports {
      *
      * @param presentAsAudio the item's {@code presentAsAudio} if this import creates it (null = false)
      * @param addToLibrary   whether a user's library gets the item ({@code null} = yes)
-     * @throws HttpError {@code 400 invalid_youtube_url}, {@code 422 youtube_live},
+     * @throws HttpError {@code 400 invalid_youtube_url}, for a link from another music service the
+     *                   {@link MusicLinkResolver} errors, {@code 422 youtube_live},
      *                   {@code 422 too_long}, {@code 422 youtube_unavailable},
      *                   {@code 422 youtube_failed}, {@code 503 ytdlp_unavailable},
      *                   {@code 504 youtube_timeout}, {@code 502 youtube_bad_metadata},
@@ -209,8 +211,24 @@ public final class YoutubeImports {
         if (userId == null && guestId == null) {
             throw new IllegalArgumentException("YouTube imports are made by a user or a guest");
         }
-        String videoId = YoutubeIds.parse(url).orElseThrow(() -> new HttpError(400, "invalid_youtube_url",
-                "That isn't a link to a YouTube video"));
+        String videoId;
+        MusicLinkResolver.Track fromLink = null;
+        Optional<String> youtubeId = YoutubeIds.parse(url);
+        if (youtubeId.isPresent()) {
+            videoId = youtubeId.get();
+        } else {
+            // A link from another music service, resolved to a YouTube video
+            // (docs/library-and-ingest.md#links-from-other-music-services).
+            MusicLinks.Link link = MusicLinks.parse(url).orElse(null);
+            MusicLinkResolver resolver = linkResolver;
+            if (link == null || resolver == null || !resolver.enabled()) {
+                throw new HttpError(400, "invalid_youtube_url", "That isn't a link to a YouTube video");
+            }
+            MusicLinkResolver.Resolved resolved = resolver.resolve(actor, link);
+            videoId = resolved.videoId();
+            fromLink = resolved.track();
+        }
+        MusicLinkResolver.Track track = fromLink;
         boolean library = userId != null && !Boolean.FALSE.equals(addToLibrary);
         ReentrantLock lock = locks[Math.floorMod(videoId.hashCode(), locks.length)];
         lock.lockInterruptibly();
@@ -224,7 +242,7 @@ public final class YoutubeImports {
             String itemId = UuidV7.newId();
             long now = EpochMs.now(clock);
             boolean added = db.write(c -> {
-                insertItem(c, itemId, videoId, meta, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
+                insertItem(c, itemId, videoId, meta, track, userId, guestId, Boolean.TRUE.equals(presentAsAudio), now);
                 boolean add = library && Classify.prepareAdd(c, userId, itemId, classification, userId, now);
                 jobs.enqueue(itemId, IngestJob.Kind.YOUTUBE, add ? IngestJob.Tier.QUALITY : IngestJob.Tier.QUICK);
                 if (add) {
@@ -577,16 +595,46 @@ public final class YoutubeImports {
         }
     }
 
-    private void insertItem(Connection c, String itemId, String videoId, YoutubeMetadata meta, String userId,
-                            String guestId, boolean presentAsAudio, long now) throws SQLException {
+    /**
+     * The new item's row. With {@code track} (the import came from a link to another music service),
+     * that track's title, artists, album and ISRC are the item's details instead of what yt-dlp
+     * reports (each only where the track has it), and {@code metadata_json} records
+     * {@code link: {service, id}}.
+     */
+    private void insertItem(Connection c, String itemId, String videoId, YoutubeMetadata meta,
+                            MusicLinkResolver.Track track, String userId, String guestId, boolean presentAsAudio,
+                            long now) throws SQLException {
+        String title = meta.title();
+        String artist = meta.artist();
+        String album = meta.album();
+        SongDetails details = SongDetails.EMPTY;
+        com.google.gson.JsonObject metadata = meta.toItemMetadata();
+        if (track != null) {
+            if (track.title() != null) {
+                title = track.title();
+            }
+            if (!track.artists().isEmpty()) {
+                artist = SongDetails.joinNames(track.artists());
+            }
+            if (track.album() != null) {
+                album = track.album();
+            }
+            details = new SongDetails(track.artists(), null, null, null, null, null, track.isrc(), null, null, null,
+                    null, null);
+            com.google.gson.JsonObject link = new com.google.gson.JsonObject();
+            link.addProperty("service", track.service().wire());
+            link.addProperty("id", track.id());
+            metadata.add("link", link);
+        }
         try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, artist, album, duration_ms,"
                 + " source, youtube_id, added_by_user_id, added_by_guest_id, added_at, status, output_profile,"
-                + " metadata_json, media_type, last_referenced_at)"
-                + " VALUES (?, 'video', ?, ?, ?, ?, 'youtube', ?, ?, ?, ?, 'pending', ?, ?, ?, ?)")) {
+                + " metadata_json, media_type, last_referenced_at, " + SongDetails.columns(null) + ")"
+                + " VALUES (?, 'video', ?, ?, ?, ?, 'youtube', ?, ?, ?, ?, 'pending', ?, ?, ?, ?,"
+                + " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")) {
             ps.setString(1, itemId);
-            ps.setString(2, meta.title());
-            ps.setString(3, meta.artist());
-            ps.setString(4, meta.album());
+            ps.setString(2, title);
+            ps.setString(3, artist);
+            ps.setString(4, album);
             if (meta.durationMs() == null) {
                 ps.setNull(5, Types.BIGINT);
             } else {
@@ -597,9 +645,10 @@ public final class YoutubeImports {
             ps.setString(8, guestId);
             ps.setLong(9, now);
             ps.setString(10, profile.get().id());
-            ps.setString(11, meta.toItemMetadata().toString());
+            ps.setString(11, metadata.toString());
             ps.setString(12, MediaType.initial("video", presentAsAudio).wire());
             ps.setLong(13, now);
+            details.bind(ps, 14);
             ps.executeUpdate();
         }
     }
@@ -632,6 +681,14 @@ public final class YoutubeImports {
             ps.executeUpdate();
         }
         libraryAddListener.addedToLibrary(itemId);
+    }
+
+    /**
+     * Sets the resolver for links from other music services ({@link MusicLinkResolver}); without
+     * one (or while it is off) such links are {@code 400 invalid_youtube_url} like any other.
+     */
+    public void linkResolver(MusicLinkResolver resolver) {
+        this.linkResolver = resolver;
     }
 
     /** Sets who is told when this class adds an item to a library ({@link LibraryAddListener}). */

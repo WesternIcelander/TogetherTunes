@@ -679,6 +679,54 @@ class AdminApiTest {
     }
 
     @Test
+    void linkResolverSettingsNeverReturnTheHeaderValue() throws Exception {
+        String secret = "very-secret-value-42";
+        JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");
+        JsonObject value = find(items, "mvfinder.headerValue");
+        assertEquals("secret", value.get("type").getAsString());
+        assertEquals("library", value.get("group").getAsString());
+        assertFalse(value.has("value"));
+        assertFalse(value.has("default"));
+        assertFalse(value.get("isSet").getAsBoolean());
+        assertEquals("X-Api-Key", find(items, "mvfinder.headerName").get("value").getAsString());
+        assertFalse(find(items, "mvfinder.url").has("value"), "off by default");
+        assertEquals("music_video", find(items, "mvfinder.prefer").get("value").getAsString());
+        assertEquals(List.of("music_video", "song"), strings(find(items, "mvfinder.prefer").getAsJsonArray("options")));
+        assertFalse(find(items, "mvfinder.allowGuests").get("value").getAsBoolean());
+        assertEquals(15, find(items, "mvfinder.maxPerHour").get("value").getAsInt());
+
+        JsonObject patched = call(200, "PATCH", "/api/admin/settings", "{\"mvfinder.url\":\"https://mv.example/\","
+                + "\"mvfinder.headerValue\":\"" + secret + "\",\"mvfinder.maxPerHour\":40}", admin);
+        assertFalse(patched.toString().contains(secret), patched.toString());
+        assertTrue(find(patched.getAsJsonArray("items"), "mvfinder.headerValue").get("isSet").getAsBoolean());
+        assertEquals("https://mv.example", settings.get(Settings.MVFINDER_URL));
+        assertEquals(secret, settings.get(Settings.MVFINDER_HEADER_VALUE));
+        JsonObject again = call(200, "GET", "/api/admin/settings", null, admin);
+        assertFalse(again.toString().contains(secret));
+        assertEquals(0, count("SELECT COUNT(*) FROM audit_log WHERE details_json LIKE '%" + secret + "%'"),
+                "never in the audit log");
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"
+                + " AND details_json LIKE '%mvfinder.headerValue%'"));
+
+        // an invalid value's error doesn't echo it
+        JsonObject bad = call(400, "PATCH", "/api/admin/settings",
+                "{\"mvfinder.headerValue\":\"" + secret + "\\u0001\"}", admin);
+        assertError("invalid_setting", bad);
+        assertFalse(bad.toString().contains(secret), bad.toString());
+        bad = call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.headerValue\":[\"" + secret + "\"]}", admin);
+        assertFalse(bad.toString().contains(secret), bad.toString());
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.url\":\"ftp://x\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.headerName\":\"a b\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":0}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":1001}", admin));
+
+        // null clears it
+        JsonObject cleared = call(200, "PATCH", "/api/admin/settings", "{\"mvfinder.headerValue\":null}", admin);
+        assertFalse(find(cleared.getAsJsonArray("items"), "mvfinder.headerValue").get("isSet").getAsBoolean());
+        assertEquals("", settings.get(Settings.MVFINDER_HEADER_VALUE));
+    }
+
+    @Test
     void loginAndRegisterMessages() throws Exception {
         JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");
         for (String key : List.of("auth.loginMessage", "auth.registerMessage")) {

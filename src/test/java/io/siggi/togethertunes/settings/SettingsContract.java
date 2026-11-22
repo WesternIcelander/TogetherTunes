@@ -111,10 +111,44 @@ abstract class SettingsContract {
     }
 
     @Test
+    void linkResolverSettings() throws SQLException {
+        assertEquals(null, settings.get(Settings.MVFINDER_URL));
+        assertEquals("X-Api-Key", settings.get(Settings.MVFINDER_HEADER_NAME));
+        assertEquals("", settings.get(Settings.MVFINDER_HEADER_VALUE));
+        assertEquals(LinkPreference.MUSIC_VIDEO, settings.get(Settings.MVFINDER_PREFER));
+        assertFalse(settings.get(Settings.MVFINDER_ALLOW_GUESTS));
+        assertEquals(15, settings.get(Settings.MVFINDER_MAX_PER_HOUR));
+        assertTrue(Settings.MVFINDER_HEADER_VALUE.secret());
+        assertFalse(Settings.MVFINDER_HEADER_NAME.secret());
+
+        settings.setJson("mvfinder.url", "\" http://127.0.0.1:8081/ \"");
+        assertEquals("http://127.0.0.1:8081", settings.get(Settings.MVFINDER_URL));
+        settings.setJson("mvfinder.url", "\"\"");
+        assertEquals(null, settings.get(Settings.MVFINDER_URL), "empty = off");
+        for (String bad : List.of("\"ftp://x\"", "\"not a url\"", "\"https://x/?a=1\"", "\"https://u:p@x\"", "1")) {
+            assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.url", bad), bad);
+        }
+        settings.setJson("mvfinder.headerValue", "\" abc \"");
+        assertEquals("abc", settings.get(Settings.MVFINDER_HEADER_VALUE));
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> settings.setJson("mvfinder.headerValue", "\"hidden\\nvalue\""));
+        assertFalse(e.getMessage().contains("hidden"), e.getMessage());
+        assertEquals(null, e.getCause());
+        e = assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.headerValue", "{\"hidden\":1}"));
+        assertFalse(e.getMessage().contains("hidden"), e.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.headerName", "\"X Key\""));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.headerName", "\"\""));
+        settings.setJson("mvfinder.prefer", "\"song\"");
+        assertEquals(LinkPreference.SONG, settings.get(Settings.MVFINDER_PREFER));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.maxPerHour", "0"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("mvfinder.maxPerHour", "1001"));
+    }
+
+    @Test
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(47, all.size());
+        assertEquals(53, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -296,7 +330,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(47, settings.all().size());
+        assertEquals(53, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

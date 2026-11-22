@@ -107,6 +107,7 @@ import io.siggi.togethertunes.library.LibraryAddListener;
 import io.siggi.togethertunes.library.Items;
 import io.siggi.togethertunes.library.ItemsApi;
 import io.siggi.togethertunes.library.MetadataLookup;
+import io.siggi.togethertunes.library.MusicLinkResolver;
 import io.siggi.togethertunes.library.MetadataLookupApi;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.MediaApi;
@@ -133,6 +134,8 @@ import io.siggi.togethertunes.rooms.RoomsApi;
 import io.siggi.togethertunes.secrets.SecretCipher;
 import io.siggi.togethertunes.secrets.SecretKeyException;
 import io.siggi.togethertunes.secrets.ServerSecret;
+import io.siggi.togethertunes.settings.LinkPreference;
+import io.siggi.togethertunes.settings.SettingKey;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
 import java.io.PrintStream;
@@ -420,6 +423,7 @@ public final class Main {
                 config.ingestMaxDurationSeconds()));
         youtubeImports.libraryAddListener(qualityOnLibraryAdd);
         youtubeImports.diskSpace(diskSpace);
+        youtubeImports.linkResolver(new MusicLinkResolver(linkResolverOptions(settings), Clock.systemUTC()));
         Library library = new Library(database, youtubeImports, Clock.systemUTC());
         library.libraryAddListener(qualityOnLibraryAdd);
         LibraryApi libraryApi = new LibraryApi(library, addMedia);
@@ -969,6 +973,17 @@ public final class Main {
             System.err.println("WARNING: could not read the room ids: " + e.getMessage());
             return null;
         }
+    }
+
+    /** The {@code mvfinder.*} settings for {@link MusicLinkResolver}, read for every link. */
+    static MusicLinkResolver.OptionsSource linkResolverOptions(Settings settings) {
+        return () -> {
+            Map<SettingKey<?>, Object> all = settings.all();
+            return new MusicLinkResolver.Options((String) all.get(Settings.MVFINDER_URL),
+                    (String) all.get(Settings.MVFINDER_HEADER_NAME), (String) all.get(Settings.MVFINDER_HEADER_VALUE),
+                    (LinkPreference) all.get(Settings.MVFINDER_PREFER), (Boolean) all.get(Settings.MVFINDER_ALLOW_GUESTS),
+                    (Integer) all.get(Settings.MVFINDER_MAX_PER_HOUR));
+        };
     }
 
     static <T> T setting(Callable<T> read, T fallback) {

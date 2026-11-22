@@ -58,6 +58,7 @@ class YoutubeImportsApiTest {
     private String aliceId;
     private Playlists playlists;
     private Path failFile;
+    private YoutubeImports youtube;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -80,7 +81,7 @@ class YoutubeImportsApiTest {
         BuiltinRoles.ensure(db);
         io.siggi.togethertunes.settings.Settings settings = new io.siggi.togethertunes.settings.Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
+        youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
         playlists = new Playlists(db, youtube, clock);
         new YoutubeImportsApi(youtube, TestUploads.policy(new Permissions(db, settings), settings), playlists)
                 .register(router);
@@ -332,5 +333,51 @@ class YoutubeImportsApiTest {
         assertFalse(YoutubeImportsApi.wantsStages(null));
         assertFalse(YoutubeImportsApi.wantsStages("application/json"));
         assertFalse(YoutubeImportsApi.wantsStages("*/*"));
+    }
+
+    /** Add from link with a link from another music service: resolved, then imported; the resolver's errors as JSON. */
+    @Test
+    void aMusicServiceLinkIsResolvedThenImported() throws Exception {
+        try (FakeMvfinder fake = new FakeMvfinder()) {
+            youtube.linkResolver(new MusicLinkResolver(() -> new MusicLinkResolver.Options(fake.url(), "X-Api-Key", "k",
+                    io.siggi.togethertunes.settings.LinkPreference.SONG, false, 2), clock));
+            java.util.function.Function<String, HttpRequest> req = url -> HttpRequest.newBuilder(
+                            URI.create("http://127.0.0.1:" + server.port() + "/api/imports/youtube"))
+                    .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString("{\"url\":\"" + url + "\",\"mediaType\":\"music_video\"}"))
+                    .build();
+            HttpResponse<String> ok = http.send(req.apply("https://open.spotify.com/track/6khnYqsyOTFq1SgpCi3Ucx"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(200, ok.statusCode(), ok.body());
+            assertEquals("k", fake.seen.get(0).header("X-Api-Key"));
+            String itemId = JsonParser.parseString(ok.body()).getAsJsonObject().get("itemId").getAsString();
+            assertEquals(FakeMvfinder.SONG_ID, db.read(c -> {
+                try (java.sql.PreparedStatement ps = c.prepareStatement("SELECT youtube_id FROM items WHERE id = ?")) {
+                    ps.setString(1, itemId);
+                    try (java.sql.ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        return rs.getString(1);
+                    }
+                }
+            }));
+
+            HttpResponse<String> album = http.send(req.apply("https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(422, album.statusCode());
+            assertTrue(album.body().contains("not_a_track"), album.body());
+
+            fake.status = 500;
+            HttpResponse<String> down = http.send(req.apply("https://tidal.com/track/251380837"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(503, down.statusCode());
+            assertTrue(down.body().contains("resolver_unavailable"), down.body());
+
+            HttpResponse<String> limited = http.send(req.apply("https://tidal.com/track/251380838"),
+                    HttpResponse.BodyHandlers.ofString());
+            assertEquals(429, limited.statusCode(), limited.body());
+            assertTrue(limited.body().contains("too_many_lookups"), limited.body());
+            assertTrue(limited.headers().firstValue("Retry-After").isPresent());
+            assertFalse(limited.body().contains("\"k\""));
+        }
     }
 }

@@ -83,8 +83,9 @@ import java.util.Set;
  *       {@code boolean}, {@code integer}, {@code bytes} (a whole number of bytes; the admin page
  *       shows it in GiB), {@code string}, {@code text} (a string of several lines, {@code ""} =
  *       none), {@code enum} (with {@code options}),
- *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}) or {@code stringList} (an array
- *       of strings); a {@code null} value (e.g. no
+ *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}), {@code stringList} (an array
+ *       of strings) or {@code secret} (a string never sent back: no {@code value} or {@code default},
+ *       only {@code "isSet"}; never in the audit log either); a {@code null} value (e.g. no
  *       yt-dlp cookies file) is left out. {@code purchaseDataRemoval}: whether personal data can be
  *       removed from audio uploads (TrackSplitter is installed, {@link #purchaseDataRemoval}).</li>
  *   <li>{@code PATCH /api/admin/settings} {@code {"key": value, ...}} → the same as {@code GET}.
@@ -519,7 +520,8 @@ public final class AdminApi {
                         reset.add(key.name());
                     } else {
                         settings.setJson(key.name(), e.getValue().toString());
-                        set.put(key.name(), e.getValue());
+                        // a secret never goes into the audit log: only that it was changed
+                        set.put(key.name(), key.secret() ? new JsonPrimitive("(changed)") : e.getValue());
                     }
                 }
                 return null;
@@ -638,6 +640,12 @@ public final class AdminApi {
             m.put("key", key.name());
             m.put("group", group(key.name()));
             m.put("type", type(key));
+            if (key.secret()) {
+                // never the value itself (docs/auth.md#server-settings): only whether one is set
+                m.put("isSet", e.getValue() instanceof String v && !v.isEmpty());
+                items.add(m);
+                continue;
+            }
             m.put("value", encode(key, e.getValue()));
             m.put("default", encode(key, settings.defaultValue(key)));
             if (key.type().isEnum()) {
@@ -660,6 +668,9 @@ public final class AdminApi {
     }
 
     private static String type(SettingKey<?> key) {
+        if (key.secret()) {
+            return "secret";
+        }
         Class<?> t = key.type();
         if (t == Boolean.class) {
             return "boolean";
@@ -714,7 +725,7 @@ public final class AdminApi {
         if (name.startsWith("cards.") || name.startsWith("fonts.")) {
             return "fonts";
         }
-        return "library";
+        return "library"; // also mvfinder.*
     }
 
     // ------------------------------------------------------------- escalation checks

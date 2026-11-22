@@ -35,8 +35,25 @@ class ProductNamesTest {
             "(?i:vrchat|vrcdn|euro\\s*truck|american\\s*truck"
                     // the online music catalogues TrackSplitter looks details up in (they are "online
                     // music catalogues" in the UI; docs/library-and-ingest.md#looking-details-up-online)
-                    + "|spotify|apple\\s*music|itunes|deezer|musicbrainz)"
+                    + "|spotify|apple\\s*music|itunes|deezer|musicbrainz"
+                    // the music services whose links MVFinder resolves ("other music services" in the UI;
+                    // docs/library-and-ingest.md#links-from-other-music-services)
+                    + "|\\btidal\\b)"
                     + "|\\bETS2\\b|\\bATS2?\\b");
+
+    /**
+     * Files that may contain {@link #NAMES} in code, never in user-visible text: the link parser
+     * needs the services' host names (and stores the service in {@code metadata_json}, never shown).
+     */
+    static final java.util.Set<String> EXEMPT = java.util.Set.of("java/io/siggi/togethertunes/library/MusicLinks.java");
+
+    /**
+     * The link resolver's name (a tool, like yt-dlp) may only appear in the admin settings: the
+     * {@code mvfinder.*} setting keys (Settings) and their wiring (Main). Nowhere a user sees it.
+     */
+    static final Pattern RESOLVER_NAME = Pattern.compile("(?i)mvfinder");
+    static final java.util.Set<String> RESOLVER_NAME_ALLOWED = java.util.Set.of(
+            "java/io/siggi/togethertunes/settings/Settings.java", "java/io/siggi/togethertunes/Main.java");
 
     /** Removes {@code //} and block comments from JS/TS/Java/CSS source, keeping strings and newlines. */
     static String stripCodeComments(String src) {
@@ -101,7 +118,19 @@ class ProductNamesTest {
         String text = Files.readString(p, StandardCharsets.UTF_8);
         // HTML text keeps "//" (URLs) and apostrophes, so only HTML comments are removed there.
         String stripped = name.endsWith(".html") ? stripHtmlComments(text) : stripCodeComments(text);
-        return productNames(root.getFileName() + "/" + name, stripped);
+        String file = root.getFileName() + "/" + name;
+        List<String> found = new ArrayList<>();
+        if (!EXEMPT.contains(file)) {
+            found.addAll(productNames(file, stripped));
+        }
+        if (!RESOLVER_NAME_ALLOWED.contains(file)) {
+            String[] lines = stripped.split("\n", -1);
+            for (int i = 0; i < lines.length; i++) {
+                Matcher m = RESOLVER_NAME.matcher(lines[i]);
+                while (m.find()) found.add(file + ":" + (i + 1) + ": " + m.group());
+            }
+        }
+        return found;
     }
 
     private static List<String> scan(Path root, String... extensions) throws IOException {

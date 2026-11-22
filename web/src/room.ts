@@ -612,6 +612,9 @@ function renderRequestLink(s: RoomState): void {
   el.replaceChildren(...(show ? [linkPanel(s)] : []));
 }
 
+/** Which links work (never naming the other services; docs/library-and-ingest.md#links-from-other-music-services). */
+const LINK_HINT = "A link to a song or video from YouTube or other music services.";
+
 function linkPanel(s: RoomState): HTMLElement {
   const url = h("input", { name: "url", type: "url", required: true, placeholder: "https://",
     "aria-label": "Link to request", class: "grow" });
@@ -646,7 +649,8 @@ function linkPanel(s: RoomState): HTMLElement {
       submit.disabled = false;
     });
   });
-  return h("div", {}, h("h2", { text: "Request Link" }), form, status);
+  return h("div", {}, h("h2", { text: "Request Link" }), form,
+    h("p", { class: "muted small", text: LINK_HINT }), status);
 }
 
 // ------------------------------------------------------------------ wiring

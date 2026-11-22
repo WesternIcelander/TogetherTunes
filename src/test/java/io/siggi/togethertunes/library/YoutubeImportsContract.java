@@ -763,4 +763,108 @@ abstract class YoutubeImportsContract {
         assertEquals("youtube_unavailable", e.code());
         assertEquals("YouTube didn't return this video: Video unavailable", e.getMessage());
     }
+
+    // ------------------------------------------------------------------ links from other music services
+
+    private static final String SPOTIFY_LINK = "https://open.spotify.com/track/6khnYqsyOTFq1SgpCi3Ucx?si=abc";
+
+    private MusicLinkResolver resolver(FakeMvfinder fake, boolean allowGuests) {
+        return new MusicLinkResolver(() -> new MusicLinkResolver.Options(fake.url(), "X-Api-Key", "",
+                io.siggi.togethertunes.settings.LinkPreference.MUSIC_VIDEO, allowGuests, 15), clock);
+    }
+
+    private Map<String, Object> details(String id) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT artists_json, isrc, album_artist FROM items WHERE id = ?")) {
+                ps.setString(1, id);
+                try (ResultSet rs = ps.executeQuery()) {
+                    rs.next();
+                    java.util.HashMap<String, Object> m = new java.util.HashMap<>();
+                    m.put("artists_json", rs.getString(1));
+                    m.put("isrc", rs.getString(2));
+                    m.put("album_artist", rs.getString(3));
+                    return m;
+                }
+            }
+        });
+    }
+
+    @Test
+    void aMusicServiceLinkImportsTheResolvedVideoWithTheLinksDetails() throws Exception {
+        try (FakeMvfinder fake = new FakeMvfinder()) {
+            imports.linkResolver(resolver(fake, false));
+            YoutubeImports.Imported r = imports.importUrl(alice, SPOTIFY_LINK, null, null, MV);
+            assertEquals("pending", r.status());
+            assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--",
+                    "https://www.youtube.com/watch?v=" + FakeMvfinder.VIDEO_ID), calls().get(0));
+            Map<String, Object> item = item(r.itemId());
+            assertEquals(FakeMvfinder.VIDEO_ID, item.get("youtube_id"));
+            assertEquals("リモコン-NT ver.- (feat. 鏡音リン&鏡音レン)", item.get("title"));
+            assertEquals("Wonderful★opportunity!, Kagamine Rin, Kagamine Len", item.get("artist"));
+            assertEquals("リモコン-NT ver.-", item.get("album"));
+            assertEquals(212_000L, ((Number) item.get("duration_ms")).longValue(), "the duration is the video's");
+            var meta = JsonParser.parseString((String) item.get("metadata_json")).getAsJsonObject();
+            assertEquals("{\"service\":\"spotify\",\"id\":\"6khnYqsyOTFq1SgpCi3Ucx\"}", meta.get("link").toString());
+            assertFalse(meta.toString().contains("si=abc"), "never the pasted URL");
+            Map<String, Object> d = details(r.itemId());
+            assertEquals("[\"Wonderful★opportunity!\",\"Kagamine Rin\",\"Kagamine Len\"]", d.get("artists_json"));
+            assertEquals("JP92Q2503558", d.get("isrc"));
+            assertNull(d.get("album_artist"));
+            assertEquals("youtube", libraryVia(alice, r.itemId()));
+
+            // the same song again (also from the other user): the existing item, its details kept
+            db.write(c -> {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET title = 'Edited' WHERE id = ?")) {
+                    ps.setString(1, r.itemId());
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+            YoutubeImports.Imported again = imports.importUrl(bob, SPOTIFY_LINK, null, null, MV);
+            assertEquals(r.itemId(), again.itemId());
+            assertEquals("Edited", item(r.itemId()).get("title"));
+            assertEquals(1, calls().size(), "no second lookup");
+        }
+    }
+
+    @Test
+    void aLinkToAnItemThatAlreadyExistsKeepsItsDetails() throws Exception {
+        YoutubeImports.Imported first = imports.importUrl(alice, "https://youtu.be/" + FakeMvfinder.VIDEO_ID, null, null, MV);
+        try (FakeMvfinder fake = new FakeMvfinder()) {
+            imports.linkResolver(resolver(fake, false));
+            YoutubeImports.Imported r = imports.importUrl(bob, SPOTIFY_LINK, null, null, MV);
+            assertEquals(first.itemId(), r.itemId());
+            assertEquals("Never Gonna Give You Up", item(r.itemId()).get("title"));
+            assertNull(details(r.itemId()).get("isrc"));
+            assertFalse(((String) item(r.itemId()).get("metadata_json")).contains("\"link\""));
+        }
+    }
+
+    @Test
+    void musicServiceLinksWithoutTheResolverOrFromGuests() throws Exception {
+        // feature off: refused like any other non-YouTube link
+        HttpError e = error(() -> imports.importUrl(alice, SPOTIFY_LINK, null, null, MV));
+        assertEquals(400, e.status());
+        assertEquals("invalid_youtube_url", e.code());
+        try (FakeMvfinder fake = new FakeMvfinder()) {
+            imports.linkResolver(resolver(fake, false));
+            e = error(() -> imports.importUrl(guest, SPOTIFY_LINK, null, null, (Classify.Classification) null));
+            assertEquals(401, e.status());
+            assertEquals("not_authenticated", e.code());
+            e = error(() -> imports.importUrl(alice, "https://open.spotify.com/album/4m2880jivSbbyEGAKfITCa", null, null, MV));
+            assertEquals("not_a_track", e.code());
+            assertTrue(fake.seen.isEmpty());
+            assertEquals(List.of(), calls());
+
+            imports.linkResolver(resolver(fake, true));
+            YoutubeImports.Imported g = imports.importUrl(guest, SPOTIFY_LINK, null, null, (Classify.Classification) null);
+            assertEquals(guest.guestId(), item(g.itemId()).get("added_by_guest_id"));
+            assertEquals("リモコン-NT ver.-", item(g.itemId()).get("album"));
+
+            // other hosts never reach the resolver
+            e = error(() -> imports.importUrl(alice, "https://example.com/track/6khnYqsyOTFq1SgpCi3Ucx", null, null, MV));
+            assertEquals("invalid_youtube_url", e.code());
+            assertEquals(1, fake.seen.size());
+        }
+    }
 }

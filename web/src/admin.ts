@@ -49,8 +49,10 @@ type SettingValue = boolean | number | string | string[] | { perHour: number; ma
 interface Setting {
   key: string;
   group: string;
-  type: "boolean" | "integer" | "bytes" | "string" | "text" | "enum" | "uploadQuota" | "stringList";
+  type: "boolean" | "integer" | "bytes" | "string" | "text" | "enum" | "uploadQuota" | "stringList" | "secret";
   value?: SettingValue;
+  /** `secret` settings: whether one is set (the value itself is never sent). */
+  isSet?: boolean;
   default?: SettingValue;
   options?: string[];
 }
@@ -662,10 +664,16 @@ function settingRow(s: Setting): HTMLElement {
       input = h("textarea", { name, rows: "5", cols: "40", placeholder: "One entry per line",
         text: Array.isArray(s.value) ? s.value.join("\n") : "" });
       break;
+    case "secret":
+      // Never sent back by the server: blank keeps the stored value, Default clears it.
+      input = h("input", { type: "password", name, value: "", size: "40", autocomplete: "new-password",
+        placeholder: s.isSet === true ? "(set; leave blank to keep)" : "(not set)" });
+      break;
     default:
       input = h("input", { type: "text", name, value: typeof s.value === "string" ? s.value : "", size: "40" });
   }
-  const reset = h("button", { type: "button", text: "Default", title: "Reset to " + describe(s.default, s.type, s.key) });
+  const reset = h("button", { type: "button", text: s.type === "secret" ? "Clear" : "Default",
+    title: s.type === "secret" ? "Remove the stored value" : "Reset to " + describe(s.default, s.type, s.key) });
   reset.addEventListener("click", () => {
     const error = element("settings-form").querySelector<HTMLElement>(".error");
     void run(error, reset, async () => {
@@ -678,7 +686,8 @@ function settingRow(s: Setting): HTMLElement {
     });
   });
   return h("div", { class: "setting" }, h("span", { text: s.key }), input, reset,
-    h("span", { class: "muted", text: "default: " + describe(s.default, s.type, s.key) }));
+    h("span", { class: "muted", text: s.type === "secret" ? (s.isSet === true ? "set" : "not set")
+      : "default: " + describe(s.default, s.type, s.key) }));
 }
 
 /** `PATCH /api/admin/settings`: the settings, and those changed on top of the patch (uploads need library requests). */
@@ -742,6 +751,12 @@ function changedSettings(form: HTMLFormElement): Record<string, unknown> {
         const text = String(data.get(name) ?? "");
         value = text === "" ? null : text;
         break;
+      }
+      case "secret": {
+        // Blank keeps the stored value (the form never has it).
+        const text = String(data.get(name) ?? "").trim();
+        if (text !== "") out[s.key] = text;
+        continue;
       }
       default:
         value = String(data.get(name) ?? "");

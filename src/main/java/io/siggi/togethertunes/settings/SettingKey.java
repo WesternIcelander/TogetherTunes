@@ -32,6 +32,11 @@ public final class SettingKey<T> {
     private final boolean nullable;
     /** Whether a string setting is text of several lines (the admin page shows a text area). */
     private boolean multiline;
+    /**
+     * Whether the value is a secret ({@link #secret}): the admin API never returns it, and no
+     * message (validation errors, the audit log) ever contains it.
+     */
+    private boolean secret;
 
     private SettingKey(String name, Class<T> type, T defaultValue, boolean nullable, Codec<T> codec) {
         this.name = Objects.requireNonNull(name);
@@ -70,6 +75,11 @@ public final class SettingKey<T> {
         return multiline;
     }
 
+    /** Whether this setting's value is a secret ({@link #secret}). */
+    public boolean secret() {
+        return secret;
+    }
+
     /** Parses and validates a JSON value; {@link IllegalArgumentException} if it is invalid. */
     public T decode(JsonElement json) {
         if (json == null || json.isJsonNull()) {
@@ -81,11 +91,12 @@ public final class SettingKey<T> {
         try {
             return codec.decode(json);
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException(name + ": " + e.getMessage(), e);
+            throw new IllegalArgumentException(name + ": " + e.getMessage(), secret ? null : e);
         } catch (RuntimeException e) {
             // Gson accessors throw UnsupportedOperationException / IllegalStateException /
             // NumberFormatException for the wrong JSON type.
-            throw new IllegalArgumentException(name + ": invalid value " + json, e);
+            throw new IllegalArgumentException(name + ": invalid value" + (secret ? "" : " " + json),
+                    secret ? null : e);
         }
     }
 
@@ -236,6 +247,106 @@ public final class SettingKey<T> {
         });
         key.multiline = true;
         return key;
+    }
+
+    /**
+     * A single-line secret string (e.g. a header value an API checks), empty by default (= none).
+     * Leading and trailing whitespace is dropped; control characters and more than
+     * {@code maxLength} characters are refused. Validation messages never contain the value.
+     */
+    static SettingKey<String> secret(String name, int maxLength) {
+        SettingKey<String> key = new SettingKey<>(name, String.class, "", false, new Codec<>() {
+            @Override
+            public String decode(JsonElement json) {
+                if (!json.isJsonPrimitive() || !json.getAsJsonPrimitive().isString()) {
+                    throw new IllegalArgumentException("expected a string");
+                }
+                String s = json.getAsString().strip();
+                for (int i = 0; i < s.length(); i++) {
+                    char c = s.charAt(i);
+                    if (c < 0x20 || c == 0x7f) {
+                        throw new IllegalArgumentException("must not contain control characters");
+                    }
+                }
+                if (s.length() > maxLength) {
+                    throw new IllegalArgumentException("at most " + maxLength + " characters");
+                }
+                return s;
+            }
+
+            @Override
+            public JsonElement encode(String value) {
+                return new JsonPrimitive(value.strip());
+            }
+        });
+        key.secret = true;
+        return key;
+    }
+
+    /**
+     * An HTTP header name (an RFC 9110 token of at most 100 characters), e.g. {@code X-Api-Key}.
+     */
+    static SettingKey<String> headerName(String name, String defaultValue) {
+        return new SettingKey<>(name, String.class, defaultValue, false, new Codec<>() {
+            @Override
+            public String decode(JsonElement json) {
+                JsonPrimitive p = primitive(json);
+                if (!p.isString()) {
+                    throw new IllegalArgumentException("expected a string, got " + json);
+                }
+                String s = p.getAsString().strip();
+                if (s.isEmpty() || s.length() > 100 || !s.matches("[!#$%&'*+.^_`|~0-9A-Za-z-]+")) {
+                    throw new IllegalArgumentException("expected an HTTP header name such as X-Api-Key");
+                }
+                return s;
+            }
+
+            @Override
+            public JsonElement encode(String value) {
+                return new JsonPrimitive(value.strip());
+            }
+        });
+    }
+
+    /**
+     * An optional {@code http://} or {@code https://} base URL (host required; no query, fragment
+     * or user info). {@code null} (and the empty string, stored as null) means unset. A trailing
+     * slash is dropped.
+     */
+    static SettingKey<String> optionalUrl(String name) {
+        return new SettingKey<>(name, String.class, null, true, new Codec<>() {
+            @Override
+            public String decode(JsonElement json) {
+                JsonPrimitive p = primitive(json);
+                if (!p.isString()) {
+                    throw new IllegalArgumentException("expected a string, got " + json);
+                }
+                String s = p.getAsString().strip();
+                if (s.isEmpty()) {
+                    return null;
+                }
+                java.net.URI uri;
+                try {
+                    uri = new java.net.URI(s);
+                } catch (java.net.URISyntaxException e) {
+                    throw new IllegalArgumentException("not a valid URL");
+                }
+                String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+                if (!(scheme.equals("http") || scheme.equals("https")) || uri.getHost() == null
+                        || uri.getRawQuery() != null || uri.getRawFragment() != null || uri.getRawUserInfo() != null) {
+                    throw new IllegalArgumentException("expected an http:// or https:// URL without query or user info");
+                }
+                while (s.endsWith("/")) {
+                    s = s.substring(0, s.length() - 1);
+                }
+                return s;
+            }
+
+            @Override
+            public JsonElement encode(String value) {
+                return value.isBlank() ? JsonNull.INSTANCE : new JsonPrimitive(value);
+            }
+        });
     }
 
     /** An enum stored by its {@code wireName}. */
