@@ -584,7 +584,7 @@ public final class ItemsApi {
             mediaType = e instanceof JsonPrimitive p && p.isString() ? MediaType.of(p.getAsString()) : null;
             if (mediaType == null) {
                 throw new HttpError(400, "invalid_media_type",
-                        "mediaType must be audio, uncategorized, music_video, movie or show");
+                        "mediaType must be audio, uncategorized, music_video, movie, show or video");
             }
         }
         MediaType.Show show = body.has("show") ? show(body.get("show")) : null;

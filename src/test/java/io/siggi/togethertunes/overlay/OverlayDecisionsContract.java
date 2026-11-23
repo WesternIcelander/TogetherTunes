@@ -150,6 +150,7 @@ abstract class OverlayDecisionsContract {
                 assertEquals(Decision.OFF, decisions.evaluate(aliceId, off, "music_video"), server + "/" + holds);
                 Decision expected = !server ? Decision.OFF : holds ? Decision.VIDEO : Decision.CARDS;
                 assertEquals(expected, decisions.evaluate(aliceId, on, "music_video"), server + "/" + holds);
+                assertEquals(expected, decisions.evaluate(aliceId, on, "video"), "video " + server + "/" + holds);
             }
         }
         // A disabled owner holds nothing: cards only.
@@ -169,7 +170,7 @@ abstract class OverlayDecisionsContract {
         serverOverlay(true);
         ownerHoldsOverlayVideo(true);
         for (RoomSettings.OverlayMode m : RoomSettings.OverlayMode.values()) {
-            for (String type : List.of("audio", "uncategorized", "music_video", "movie", "show")) {
+            for (String type : List.of("audio", "uncategorized", "music_video", "movie", "show", "video")) {
                 Decision expected;
                 if (m != RoomSettings.OverlayMode.ALWAYS || type.equals("movie") || type.equals("show")) {
                     expected = Decision.OFF;
@@ -187,6 +188,7 @@ abstract class OverlayDecisionsContract {
         assertTrue(OverlayDecisions.neverOverlaid("movie"));
         assertTrue(OverlayDecisions.neverOverlaid("show"));
         assertFalse(OverlayDecisions.neverOverlaid("music_video"));
+        assertFalse(OverlayDecisions.neverOverlaid("video"), "a video plays like a music video");
         assertFalse(OverlayDecisions.neverOverlaid("uncategorized"));
         assertFalse(OverlayDecisions.neverOverlaid("audio"));
         // An audio item's effective type is audio, whatever is stored.

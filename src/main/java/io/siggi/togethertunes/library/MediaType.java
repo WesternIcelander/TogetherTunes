@@ -14,7 +14,9 @@ public enum MediaType {
     UNCATEGORIZED("uncategorized"),
     MUSIC_VIDEO("music_video"),
     MOVIE("movie"),
-    SHOW("show");
+    SHOW("show"),
+    /** A video that is neither a music video nor a movie/show (a clip): plays like a music video. */
+    VIDEO("video");
 
     private final String wire;
 
@@ -55,7 +57,7 @@ public enum MediaType {
             MediaType t = of(part.trim());
             if (t == null) {
                 throw new io.siggi.togethertunes.http.HttpError(400, "invalid_type",
-                        "type must be audio, uncategorized, music_video, movie or show (comma separated)");
+                        "type must be audio, uncategorized, music_video, movie, show or video (comma separated)");
             }
             out.add(t.wire);
         }

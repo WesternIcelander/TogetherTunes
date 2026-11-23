@@ -22,7 +22,7 @@ import java.util.Objects;
  *       {@code idleOnly} puts it on the queue-empty card only, which is no entry's
  *       ({@link OverlayCards}), so its entries get {@link Decision#OFF};</li>
  *   <li>and also the room owner holds {@link Permission#OUTPUT_OVERLAY_VIDEO} through one of their
- *       roles: music and uncategorized videos are re-encoded with it too ({@link Decision#VIDEO}).</li>
+ *       roles: music videos, videos ({@code video}) and uncategorized videos are re-encoded with it too ({@link Decision#VIDEO}).</li>
  * </ul>
  *
  * <p>Movies and shows never get the overlay, in any mode: their entries are {@link Decision#OFF}
@@ -45,7 +45,7 @@ public final class OverlayDecisions {
         OFF("off"),
         /** On cards only; music videos play from the plain mezzanine. */
         CARDS("cards"),
-        /** On cards and on music and uncategorized videos (re-encoded). */
+        /** On cards and on music videos, videos and uncategorized videos (re-encoded). */
         VIDEO("video");
 
         private final String wire;

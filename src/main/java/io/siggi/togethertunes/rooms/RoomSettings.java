@@ -102,7 +102,7 @@ public final class RoomSettings {
     public enum OverlayMode {
         /** No overlay anywhere. */
         OFF("off"),
-        /** Every card (items, paused, queue empty, loading, transition) and music/uncategorized videos. */
+        /** Every card (items, paused, queue empty, loading, transition) and music, plain and uncategorized videos. */
         ALWAYS("always"),
         /** Only the queue-empty card. */
         IDLE_ONLY("idleOnly");

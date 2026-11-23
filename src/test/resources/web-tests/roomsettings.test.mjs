@@ -271,7 +271,7 @@ test("overlay notes: none while the server has it off; videos per the owner's pe
   const v = S.overlayNotes(video);
   assert.equal(v.length, 3);
   assert.match(v[0], /only in the stream outputs/);
-  assert.match(v[1], /music videos and uncategorized videos show it too/);
+  assert.match(v[1], /music videos, videos and uncategorized items show it too/);
   assert.match(v[2], /Movies and shows never show it/);
   const cards = clone(ALL_ON);
   cards.overlay.videoOverlay = false;

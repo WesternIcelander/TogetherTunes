@@ -363,6 +363,42 @@ abstract class MigrationContract {
     }
 
     /**
+     * 0039 adds the media type {@code video}: existing items keep their types, {@code video} is
+     * accepted, unknown types still aren't, new rows still default to {@code uncategorized}.
+     */
+    @Test
+    void videoMediaTypeMigrationKeepsTypes() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration video = files.stream().filter(m -> m.name().contains("video_media_type")).findFirst().orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < video.version()).toList()).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u', 'U', 1)");
+        String insert = "INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at, media_type, show_name, episode_number) VALUES ";
+        exec(insert + "('a', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 'audio', NULL, NULL)");
+        exec(insert + "('m', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 'music_video', NULL, NULL)");
+        exec(insert + "('s', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 'show', 'S', 2)");
+        exec(insert + "('u', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1, 'uncategorized', NULL, NULL)");
+        assertThrows(SQLException.class, () -> exec("UPDATE items SET media_type = 'video' WHERE id = 'u'"));
+        new MigrationRunner(db, files).migrate();
+        exec("UPDATE items SET media_type = 'video' WHERE id = 'u'");
+        assertThrows(SQLException.class, () -> exec("UPDATE items SET media_type = 'clip' WHERE id = 'u'"));
+        exec("INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ('n', 'video', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        Map<String, String> types = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT id, media_type, show_name FROM items")) {
+                while (rs.next()) {
+                    types.put(rs.getString(1), rs.getString(2) + (rs.getString(3) == null ? "" : ":" + rs.getString(3)));
+                }
+            }
+            return null;
+        });
+        assertEquals(Map.of("a", "audio", "m", "music_video", "s", "show:S", "u", "video", "n", "uncategorized"), types);
+    }
+
+    /**
      * 0024 records whether an item's files (and each media version's) were encoded with the loudness
      * normalisation (docs/media-types.md#loudness): every existing encode was.
      */

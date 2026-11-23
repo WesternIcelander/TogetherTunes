@@ -39,7 +39,7 @@ export interface RoomItem {
   kind?: "audio" | "video";
   /** Derived from the media type: a video item of type `audio`. */
   presentAsAudio?: boolean;
-  /** docs/media-types.md: audio, uncategorized, music_video, movie or show. */
+  /** docs/media-types.md: audio, uncategorized, music_video, movie, show or video. */
   mediaType?: string;
   /** Type `show` only. */
   show?: { name: string; season?: number; episode: number };

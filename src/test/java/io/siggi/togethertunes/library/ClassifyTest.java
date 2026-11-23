@@ -51,6 +51,8 @@ class ClassifyTest {
         assertEquals(new Classify.Classification(MediaType.SHOW, new MediaType.Show("X", null, 0)),
                 Classify.of(JsonParser.parseString("{\"mediaType\":\"show\",\"show\":{\"name\":\"X\",\"episode\":0}}")
                         .getAsJsonObject()));
+        assertEquals(new Classify.Classification(MediaType.VIDEO, null),
+                Classify.of(JsonParser.parseString("{\"mediaType\":\"video\"}").getAsJsonObject()));
         // "uncategorized": the adder leaves it so on purpose
         assertEquals(Classify.Classification.LEAVE,
                 Classify.of(JsonParser.parseString("{\"mediaType\":\"uncategorized\"}").getAsJsonObject()));
@@ -61,6 +63,7 @@ class ClassifyTest {
                 {"{\"mediaType\":\"show\"}", "show_required"},
                 {"{\"show\":{\"name\":\"X\",\"episode\":1}}", "not_a_show"},
                 {"{\"mediaType\":\"audio\",\"show\":{\"name\":\"X\",\"episode\":1}}", "not_a_show"},
+                {"{\"mediaType\":\"video\",\"show\":{\"name\":\"X\",\"episode\":1}}", "not_a_show"},
                 {"{\"mediaType\":\"show\",\"show\":{\"name\":\"X\",\"episode\":-1}}", "invalid_show"},
         }) {
             assertEquals(bad[1], assertThrows(HttpError.class,

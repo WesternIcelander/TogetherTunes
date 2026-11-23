@@ -162,7 +162,7 @@ function settingLabel(key: string): string {
 export interface ServerSwitches {
   guests: { enabled: boolean; canVote: boolean; canRequestLibrary: boolean; canUpload: boolean; canYoutube: boolean };
   /**
-   * `videoOverlay`: the overlay is on and the room's owner may re-encode music and uncategorized
+   * `videoOverlay`: the overlay is on and the room's owner may re-encode music, plain and uncategorized
    * videos with it (in the `always` mode; never movies or shows).
    */
   overlay: { enabled: boolean; videoOverlay?: boolean };
@@ -241,7 +241,7 @@ export function overlayNotes(sw: ServerSwitches | undefined): string[] {
   const notes = ["The QR code leads to this room's request page. It is shown only in the stream outputs"
     + " (RTMP, .ts and HLS); people listening on the room page don't see it."];
   if (sw.overlay.videoOverlay === true) {
-    notes.push("With \"always\", music videos and uncategorized videos show it too (they are re-encoded with"
+    notes.push("With \"always\", music videos, videos and uncategorized items show it too (they are re-encoded with"
       + " the overlay while the room plays them).");
   } else if (sw.overlay.videoOverlay === false) {
     notes.push("Videos play without the overlay: the room owner's account may not re-encode videos."

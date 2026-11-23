@@ -419,6 +419,9 @@ class ItemsApiTest {
         JsonObject noSeason = json(call("PATCH", "/api/items/" + id, alice,
                 "{\"show\":{\"name\":\"The Show\",\"season\":null,\"episode\":3}}"));
         assertEquals(JsonParser.parseString("{\"name\":\"The Show\",\"episode\":3}"), noSeason.get("show"));
+        JsonObject clip = json(call("PATCH", "/api/items/" + id, alice, "{\"mediaType\":\"video\"}"));
+        assertEquals("video", clip.get("mediaType").getAsString());
+        assertFalse(clip.has("show"), "cleared with the type");
         JsonObject movie = json(call("PATCH", "/api/items/" + id, alice, "{\"mediaType\":\"movie\"}"));
         assertEquals("movie", movie.get("mediaType").getAsString());
         assertFalse(movie.has("show"), "cleared with the type");
@@ -459,6 +462,7 @@ class ItemsApiTest {
         HttpResponse<String> notVideo = call("PATCH", "/api/items/" + audio, alice, "{\"mediaType\":\"movie\"}");
         assertEquals(400, notVideo.statusCode());
         assertEquals("not_a_video", code(notVideo));
+        assertEquals("not_a_video", code(call("PATCH", "/api/items/" + audio, alice, "{\"mediaType\":\"video\"}")));
 
         HttpResponse<String> anonymous = call("PATCH", "/api/items/" + id, null, "{\"title\":\"x\"}");
         assertEquals(401, anonymous.statusCode());

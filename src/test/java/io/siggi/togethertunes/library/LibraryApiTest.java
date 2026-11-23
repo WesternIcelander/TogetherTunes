@@ -366,6 +366,24 @@ class LibraryApiTest {
         HttpResponse<String> leave = put("/api/library/" + left, "{\"mediaType\":\"uncategorized\"}");
         assertEquals(201, leave.statusCode(), leave.body());
         assertEquals("uncategorized", json(leave).getAsJsonObject("item").get("mediaType").getAsString());
+        // "video": a clip, listed by the type filter
+        String clip = item("A Clip", "ready", null);
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video',"
+                    + " media_type = 'uncategorized' WHERE id = ?")) {
+                ps.setString(1, clip);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        HttpResponse<String> asVideo = put("/api/library/" + clip, "{\"mediaType\":\"video\"}");
+        assertEquals(201, asVideo.statusCode(), asVideo.body());
+        assertEquals("video", json(asVideo).getAsJsonObject("item").get("mediaType").getAsString());
+        JsonArray videos = json(call("GET", "/api/library?type=video", true)).getAsJsonArray("items");
+        assertEquals(1, videos.size());
+        assertEquals(clip, videos.get(0).getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
+        assertEquals(2, json(call("GET", "/api/library?type=video,show", true)).getAsJsonArray("items").size());
+        assertEquals("invalid_type", code(call("GET", "/api/library?type=clip", true)));
     }
 
     @Test

@@ -77,7 +77,7 @@ public final class Classify {
                 ? MediaType.of(mediaType.getAsString()) : null;
         if (type == null) {
             throw new HttpError(400, "invalid_media_type",
-                    "mediaType must be audio, music_video, movie, show or uncategorized");
+                    "mediaType must be audio, music_video, movie, show, video or uncategorized");
         }
         MediaType.Show details = hasShow ? ItemsApi.show(show) : null;
         if (type == MediaType.SHOW && details == null) {

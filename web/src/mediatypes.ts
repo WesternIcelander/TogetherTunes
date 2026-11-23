@@ -1,20 +1,21 @@
 // Media types (docs/media-types.md): the names, labels and the rules of an edit, without the DOM,
 // so a new UI can reuse them. The server enforces the same rules (PATCH /api/items/{id}).
 
-export type MediaType = "audio" | "uncategorized" | "music_video" | "movie" | "show";
+export type MediaType = "audio" | "uncategorized" | "music_video" | "movie" | "show" | "video";
 
 /** A show episode's details (type `show` only). */
 export interface ShowInfo { name: string; season?: number; episode: number }
 
 /** Every media type, in the order a picker lists them. */
-export const MEDIA_TYPES: readonly MediaType[] = ["uncategorized", "music_video", "movie", "show", "audio"];
+export const MEDIA_TYPES: readonly MediaType[] = ["uncategorized", "music_video", "movie", "show", "video", "audio"];
 
 const LABELS: Record<MediaType, string> = {
   audio: "Audio",
-  uncategorized: "Video (uncategorized)",
+  uncategorized: "Uncategorized Item",
   music_video: "Music video",
   movie: "Movie",
   show: "Show episode",
+  video: "Video",
 };
 
 export function mediaTypeLabel(type: string | undefined): string {

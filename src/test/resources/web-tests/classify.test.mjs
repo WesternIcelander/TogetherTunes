@@ -31,7 +31,7 @@ test("the classify question in an API error", () => {
 });
 
 test("the choices and the prefill", () => {
-  assert.deepEqual([...C.CLASSIFY_TYPES].sort(), ["audio", "movie", "music_video", "show"]);
+  assert.deepEqual([...C.CLASSIFY_TYPES].sort(), ["audio", "movie", "music_video", "show", "video"]);
   assert.deepEqual(C.classifyDefaults(undefined), { mediaType: "", showName: "", season: "", episode: "" });
   assert.deepEqual(C.classifyDefaults({ mediaType: "music_video" }),
     { mediaType: "music_video", showName: "", season: "", episode: "" });
