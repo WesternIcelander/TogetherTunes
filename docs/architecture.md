@@ -94,6 +94,7 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 | `overlay.cacheMaxBytes` | 20 GiB | *admin*. Least-recently-used eviction of `rooms/*/ov/` and `rooms/*/cards/` |
 | `http.trustedProxies` | none | CIDRs whose `X-Forwarded-For` is trusted. Required for correct guest IPs behind a reverse proxy |
 | `libraryImport.allowedPaths` | none | Absolute directories a library import may read from on the server's disk ([library-and-ingest.md](library-and-ingest.md#library-import)); empty turns the path option off. Env `TOGETHERTUNES_LIBRARY_IMPORT_ALLOWED_PATHS`, comma-separated (2026-11-23) |
+| `libraryImport.maxZipBytes` | `100 GiB` | Size limit of an uploaded library export zip ([library-and-ingest.md](library-and-ingest.md#library-import)); env `TOGETHERTUNES_LIBRARY_IMPORT_MAX_ZIP_BYTES` (2026-11-23) |
 
 Runtime settings live in the DB and are edited in the admin UI: registration mode, OIDC providers, roles, guest policy, the outputs and overlay features, retention days, whether guests may download media, and the *admin* config keys above. They are listed in [auth.md](auth.md#server-settings).
 
