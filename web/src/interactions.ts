@@ -7,7 +7,7 @@
 // frame.ts and libview.ts draw it. The server enforces every rule.
 import type { Selection } from "./mobile.js";
 import { linkMenuEntries, type ItemLink, type LinkMenuEntry } from "./links.js";
-import { canRemove, canRetry, type ActorLike, type EntryLike, type RoomLike } from "./panels.js";
+import { canRemove, canRetry, songCount, type ActorLike, type EntryLike, type RoomLike } from "./panels.js";
 
 // ------------------------------------------------------------------ double-click on a song
 
@@ -24,6 +24,25 @@ export type DoubleClickAction = "request" | "playNow" | "queue";
 export function doubleClickAction(alone: boolean, setting: string | undefined): DoubleClickAction {
   if (!alone) return "request";
   return setting === "queue" ? "queue" : "playNow";
+}
+
+/**
+ * How long a click on a song's title (in the lists, and on a row of the header search's dropdown)
+ * waits before it opens the item page: a second click in that time is a double-click, which adds the
+ * song instead.
+ */
+export const OPEN_CLICK_DELAY_MS = 300;
+
+/**
+ * The notice after a double-click added one song, as the lists word it: "1 song added to <room>.",
+ * "1 song suggested to <room>." (owner mode), alone with Play immediately "Playing <title>.".
+ */
+export function doubleClickText(outcome: "added" | "suggested" | "playing", title: string, roomName: string): string {
+  switch (outcome) {
+    case "playing": return "Playing " + title + ".";
+    case "suggested": return songCount(1) + " suggested to " + roomName + ".";
+    default: return songCount(1) + " added to " + roomName + ".";
+  }
 }
 
 /**

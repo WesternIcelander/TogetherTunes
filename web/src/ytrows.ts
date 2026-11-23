@@ -9,6 +9,7 @@ import { openAddLink } from "./addlink.js";
 import { h } from "./dom.js";
 import { doubleClickAction } from "./interactions.js";
 import { currentRoom } from "./nav.js";
+import { rowDoubleClickAdds } from "./searchdrop.js";
 import { prefs } from "./prefsclient.js";
 import { message } from "./session.js";
 import { queueItem } from "./songmenu.js";
@@ -21,6 +22,11 @@ export interface YoutubeRowOptions {
   draggable?: boolean;
   /** Called before an action starts (the dropdown closes for Add to library…). */
   acting?(action: "addToQueue" | "addToLibrary"): void;
+  /**
+   * Double-clicking a row (not its buttons or link) does its Add to Queue, where that is shown (the
+   * header search's dropdown, as double-click in the lists).
+   */
+  doubleClickAdds?: boolean;
   /**
    * In place of the actions above, one button (the room view's request search: Request / Suggest
    * through the room's own connection); disabled while `run` is going.
@@ -88,6 +94,15 @@ export function youtubeRows(results: readonly YoutubeResult[], o: YoutubeRowOpti
         h("strong", { text: row.title }),
         row.detail !== "" ? h("div", { class: "muted small", text: row.detail }) : null,
         h("div", { class: "row" }, preview, ...buttons)));
+    if (o.doubleClickAdds === true && custom === undefined && rowDoubleClickAdds("youtube", room)) {
+      li.addEventListener("dblclick", (ev) => {
+        if ((ev.target as Element).closest("a, button, input") !== null) return;
+        ev.preventDefault();
+        window.getSelection()?.removeAllRanges();
+        o.acting?.("addToQueue");
+        void addToQueue(r, o);
+      });
+    }
     if (o.draggable === true) {
       li.draggable = true;
       li.addEventListener("dragstart", (ev) => {

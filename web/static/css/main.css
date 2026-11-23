@@ -12,6 +12,15 @@
   --link-visited: #6b3fa0;
   --link-hover: #0842a0;
   --link-current: #1f1f1f;
+  /*
+   * The stacking order of what opens over the page, in one place: the header search's dropdown,
+   * then popup menus (the ⋯ / right-click menus, also those opened from a dropdown row, and the
+   * small account / player bar menus), then dialogs (the classify prompt and the other boxes over
+   * the page).
+   */
+  --z-search-drop: 50;
+  --z-menu: 80;
+  --z-dialog: 100;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -757,7 +766,7 @@ body {
 /* Small menus (account, player bar): a box under / above their button. */
 .menu {
   position: absolute;
-  z-index: 40;
+  z-index: var(--z-menu);
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
@@ -1441,7 +1450,7 @@ table.rooms td {
   align-items: center;
   justify-content: center;
   padding: 1rem;
-  z-index: 100;
+  z-index: var(--z-dialog);
 }
 
 .classify-prompt .form {
@@ -2113,7 +2122,7 @@ table.songs tbody tr {
     left: 0 !important;
     right: 0;
     bottom: 0;
-    z-index: 80;
+    z-index: var(--z-menu);
     border-radius: 0.75rem 0.75rem 0 0;
     padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom));
   }
@@ -2524,7 +2533,7 @@ body.now-view-open.pb-idle .app-video * {
   min-width: 18rem;
   max-height: min(70vh, 36rem);
   overflow-y: auto;
-  z-index: 50;
+  z-index: var(--z-search-drop);
   background: Canvas;
   color: CanvasText;
   border: 1px solid rgba(128, 128, 128, 0.5);

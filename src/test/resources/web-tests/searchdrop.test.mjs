@@ -104,3 +104,52 @@ test("status texts", () => {
   assert.equal(S.SEARCH_YOUTUBE_LABEL, "Search YouTube");
   assert.equal(S.LIBRARY_RESULTS_LABEL, "← Library results");
 });
+
+test("a row's double-click adds it where the lists' double-click would", () => {
+  const room = (you) => ({ you: { canRequest: true, canYoutube: true, canRequestLibrary: true, ...you } });
+  // library rows: a request in the room open here (alone too), not without a room or the right
+  assert.equal(S.rowDoubleClickAdds("library", room({})), true);
+  assert.equal(S.rowDoubleClickAdds("library", room({ canRequestLibrary: undefined })), true);
+  assert.equal(S.rowDoubleClickAdds("library", undefined), false);
+  assert.equal(S.rowDoubleClickAdds("library", room({ canRequest: false })), false);
+  assert.equal(S.rowDoubleClickAdds("library", room({ canRequestLibrary: false })), false);
+  assert.equal(S.rowDoubleClickAdds("library", room({ restriction: { kind: "timeout", until: 5 } })), false);
+  // YouTube rows: only where Add to Queue is shown
+  assert.equal(S.rowDoubleClickAdds("youtube", room({})), true);
+  assert.equal(S.rowDoubleClickAdds("youtube", room({ canRequestLibrary: false })), true);
+  assert.equal(S.rowDoubleClickAdds("youtube", room({ canYoutube: false })), false);
+  assert.equal(S.rowDoubleClickAdds("youtube", room({ restriction: { kind: "ban" } })), false);
+  assert.equal(S.rowDoubleClickAdds("youtube", undefined), false);
+});
+
+test("a click opens the row after the lists' 300 ms wait, a double-click cancels it", () => {
+  const clock = fakeTimers();
+  const o = new S.ClickOpener(clock.timers);
+  let opened = 0;
+  const open = () => { opened++; };
+  // a double-click would add the row: the click waits
+  o.click(1, true, open);
+  assert.equal(o.pending(), true);
+  clock.advance(299);
+  assert.equal(opened, 0);
+  clock.advance(1);
+  assert.equal(opened, 1);
+  assert.equal(o.pending(), false);
+  // the second click of a double-click cancels it, and so does the dblclick (cancel)
+  o.click(1, true, open);
+  clock.advance(150);
+  o.click(2, true, open);
+  assert.equal(o.pending(), false);
+  clock.advance(1000);
+  assert.equal(opened, 1);
+  o.click(1, true, open);
+  o.cancel();
+  clock.advance(1000);
+  assert.equal(opened, 1);
+  // nothing to add (no room): opens at once, a double-click opens it too
+  o.click(1, false, open);
+  assert.equal(opened, 2);
+  o.click(2, false, open);
+  assert.equal(opened, 3);
+  assert.equal(clock.count(), 0);
+});

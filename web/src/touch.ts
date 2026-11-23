@@ -83,6 +83,11 @@ let openMenuEl: HTMLElement | undefined;
 /** Set while the event that opened the menu is still being dispatched (its click must not close it). */
 let justOpened = false;
 
+/** Whether a popup menu opened by {@link openMenu} is open. */
+export function menuIsOpen(): boolean {
+  return openMenuEl !== undefined;
+}
+
 /** Closes the popup menu opened by {@link openMenu}, if any. */
 export function closeMenu(): void {
   openMenuEl?.remove();

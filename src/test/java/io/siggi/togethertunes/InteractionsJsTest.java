@@ -55,14 +55,20 @@ class InteractionsJsTest {
         String box = read("web/js/searchbox.js");
         for (String s : List.of("new SearchTimer(", "this.#latest.current(", "moveActive(", "enterAction(",
                 "libraryDropdownPath(", "youtubeSearchPath(", "canSearchYoutube(", "songMenuEntries(", "youtubeRows(",
-                "searchPagePath(")) {
+                "searchPagePath(", "new ClickOpener(", "rowDoubleClickAdds(\"library\"", "\"dblclick\"",
+                "doubleClickText(", "menuIsOpen()")) {
             assertTrue(box.contains(s), s);
         }
         String rows = read("web/js/ytrows.js");
         for (String s : List.of("youtubeActions(", "youtubeRow(", "queueItem(", "youtubeUrl",
-                "openAddLink(", "doubleClickAction(", "\"noopener noreferrer\"", "\"text/uri-list\"")) {
+                "openAddLink(", "doubleClickAction(", "\"noopener noreferrer\"", "\"text/uri-list\"",
+                "rowDoubleClickAdds(\"youtube\"", "\"dblclick\"")) {
             assertTrue(rows.contains(s), s);
         }
+        assertTrue(list.contains("OPEN_CLICK_DELAY_MS"), "the lists' click wait");
+        assertTrue(box.contains("doubleClickAdds: true"), "the dropdown's YouTube rows add on double-click");
+        assertTrue(read("web/css/main.css").contains("z-index: var(--z-menu)")
+                && read("web/css/main.css").contains("z-index: var(--z-search-drop)"), "one stacking order");
         assertTrue(list.contains("youtubeRows(") && list.contains("canSearchYoutube(me)"), "the search page's YouTube section");
         assertTrue(read("web/js/frame.js").contains("new HeaderSearch("), "the frame sets up the dropdown");
         String frame = read("web/js/frame.js");

@@ -207,3 +207,10 @@ test("entry actions map to room socket messages", () => {
   assert.deepEqual(I.entryMessage("skip", "e"), { type: "next" });
   assert.equal(I.entryMessage("open", "e"), undefined);
 });
+
+test("the click wait and the double-click notice are the lists'", () => {
+  assert.equal(I.OPEN_CLICK_DELAY_MS, 300);
+  assert.equal(I.doubleClickText("added", "Firework", "Party"), "1 song added to Party.");
+  assert.equal(I.doubleClickText("suggested", "Firework", "Party"), "1 song suggested to Party.");
+  assert.equal(I.doubleClickText("playing", "Firework", "Party"), "Playing Firework.");
+});

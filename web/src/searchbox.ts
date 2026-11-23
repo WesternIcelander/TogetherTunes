@@ -4,25 +4,28 @@
 // menu as in the lists; "Searching…" while it loads, "Nothing found." when empty, and See all
 // results at the bottom (= Enter). At the top, **Search YouTube** (people who may import YouTube
 // links) replaces the results with YouTube's (ytrows.ts), and "← Library results" goes back. Escape
-// or a click outside closes it; ↑/↓ move through the rows and Enter on a row opens it (a YouTube
+// or a click outside closes it (while a row's menu is open, a click outside closes only the menu);
+// a double-click on a row adds it to the room open here as in the lists (a library row: a request,
+// alone the double-click setting; a YouTube row: its Add to Queue), so where it would, a single
+// click opens the row only after the lists' 300 ms wait. ↑/↓ move through the rows and Enter on a row opens it (a YouTube
 // row: its watch page in a new tab); Enter with no row chosen opens the full search page (the form's
 // own submit, which the shell turns into a view change). Typing again closes it and waits again.
 // The rules (timer, stale answers, keyboard, texts) are in the DOM-free searchdrop.ts and
 // ytsearch.ts; the server enforces every rule.
 import { api, ApiError } from "./api.js";
 import { h } from "./dom.js";
-import { doubleClickAction, songMenuEntries } from "./interactions.js";
+import { doubleClickAction, doubleClickText, songMenuEntries } from "./interactions.js";
 import { itemPath, mediaPath, type ItemSummary, type Page } from "./media.js";
 import { currentRoom, navigate } from "./nav.js";
 import { copyText } from "./outputspanel.js";
 import { prefs } from "./prefsclient.js";
 import {
-  dropStatus, enterAction, Latest, libraryDropdownPath, LIBRARY_RESULTS_LABEL, moveActive, SEARCH_YOUTUBE_LABEL,
+  ClickOpener, dropStatus, enterAction, Latest, rowDoubleClickAdds, libraryDropdownPath, LIBRARY_RESULTS_LABEL, moveActive, SEARCH_YOUTUBE_LABEL,
   searchPagePath, SearchTimer, SEE_ALL_LABEL, type DropMode,
 } from "./searchdrop.js";
 import { message, type Me } from "./session.js";
 import { findVideo, itemLinks, queueItem } from "./songmenu.js";
-import { openMenu, type MenuItem } from "./touch.js";
+import { menuIsOpen, openMenu, type MenuItem } from "./touch.js";
 import { pickedText } from "./videosearch.js";
 import { youtubeRows } from "./ytrows.js";
 import { canSearchYoutube, DROPDOWN_YOUTUBE_LIMIT, queuedText, youtubeErrorText, youtubeSearchPath,
@@ -49,6 +52,7 @@ export class HeaderSearch {
   readonly #all: HTMLButtonElement;
   readonly #timer: SearchTimer;
   readonly #latest = new Latest();
+  readonly #opener = new ClickOpener({ set: (fn, ms) => window.setTimeout(fn, ms), clear: (id) => window.clearTimeout(id) });
   #open = false;
   #mode: DropMode = "library";
   /** The text the shown results are for. */
@@ -93,17 +97,21 @@ export class HeaderSearch {
       this.close();
     });
     this.#all.addEventListener("click", () => this.#seeAll());
+    // In the capture phase, before touch.ts closes an open menu on the same click: a click outside
+    // while a row's menu is open closes only the menu; the next one outside closes the dropdown.
     document.addEventListener("click", (ev) => {
       const t = ev.target;
       if (!this.#open || !(t instanceof Element) || !t.isConnected) return;
       if (this.#form.contains(t) || t.closest(".popup-menu, .classify-prompt") !== null) return;
+      if (menuIsOpen()) return;
       this.close();
-    });
+    }, true);
   }
 
   /** Closes the dropdown (an answer still on its way is dropped). */
   close(): void {
     this.#latest.drop();
+    this.#opener.cancel();
     this.#open = false;
     this.#mode = "library";
     this.#active = -1;
@@ -219,6 +227,7 @@ export class HeaderSearch {
       const rows = youtubeRows(this.#youtube, {
         notice: (text, error) => this.#say(text, error === true),
         acting: (a) => { if (a === "addToLibrary") this.close(); },
+        doubleClickAdds: true,
       });
       rows.forEach((li, i) => {
         li.id = "app-search-row-" + i;
@@ -245,7 +254,15 @@ export class HeaderSearch {
     li.addEventListener("click", (ev) => {
       if ((ev.target as Element).closest(".row-more") !== null) return;
       ev.preventDefault();
-      this.#openRow(i);
+      this.#opener.click(ev.detail, rowDoubleClickAdds("library", currentRoom()?.state()?.room), () => this.#openRow(i));
+    });
+    li.addEventListener("dblclick", (ev) => {
+      if ((ev.target as Element).closest(".row-more") !== null) return;
+      ev.preventDefault();
+      this.#opener.cancel();
+      if (!rowDoubleClickAdds("library", currentRoom()?.state()?.room)) return;
+      window.getSelection()?.removeAllRanges();
+      void this.#doubleClick(item);
     });
     li.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -356,6 +373,20 @@ export class HeaderSearch {
       this.#say(queuedText(outcome, title, room.name(), false));
     } catch (e) {
       this.#say(title + ": " + message(e), true);
+    }
+  }
+
+  /** Double-click on a library row: as in the lists (a request; alone the double-click setting), with their notice. */
+  async #doubleClick(item: ItemSummary): Promise<void> {
+    const room = currentRoom();
+    if (room === undefined) return;
+    const alone = room.state()?.room.alone === true;
+    const setting = alone ? await prefs.load().then((p) => p.doubleClickAlone, () => undefined) : undefined;
+    try {
+      const outcome = await queueItem(room, item.id, doubleClickAction(alone, setting));
+      this.#say(doubleClickText(outcome, item.title, room.name()));
+    } catch (e) {
+      this.#say(item.title + ": " + message(e), true);
     }
   }
 

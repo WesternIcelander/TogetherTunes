@@ -41,8 +41,8 @@ import { formatDuration, h } from "./dom.js";
 import { ariaSort, canReorder, COLUMN_LABELS, DEFAULT_SORT, nextSort, parseSort, serializeSort, sortableColumns,
   sortArrow, sortParams, sortRows, sortStorageKey, type SortColumn, type SortState } from "./listsort.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
-import { clickSelect, doubleClickAction, selectionText, songMenuEntries, toggleKey, type DoubleClickAction,
-  type SongList } from "./interactions.js";
+import { clickSelect, doubleClickAction, OPEN_CLICK_DELAY_MS, selectionText, songMenuEntries, toggleKey,
+  type DoubleClickAction, type SongList } from "./interactions.js";
 import { findVideo, itemLinks, queueItem } from "./songmenu.js";
 import { pickedText } from "./videosearch.js";
 import { MOBILE_QUERY, Selection, selectedText } from "./mobile.js";
@@ -450,7 +450,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
       window.clearTimeout(linkTimer);
       if (ev.detail > 1) return;
       const href = link.getAttribute("href") ?? "";
-      linkTimer = window.setTimeout(() => navigate(href), 300);
+      linkTimer = window.setTimeout(() => navigate(href), OPEN_CLICK_DELAY_MS);
       return;
     }
     // A plain click on the desktop selects just this row.
