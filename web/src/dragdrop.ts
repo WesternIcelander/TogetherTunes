@@ -288,3 +288,96 @@ export function uploadLine(state: string, sent: number, size: number, checked?: 
     default: return state;
   }
 }
+
+// ------------------------------------------------------------------ the library views as drop targets
+
+/**
+ * The library views that take files and links dragged in from outside (docs/ui.md#library-rules,
+ * "Drag and drop"): All My Songs, Movies, Shows, Videos and Uncategorized Items, both their sidebar
+ * entries and their lists. They have no order of their own, so a drop has no position (the whole
+ * target is highlighted) and songs dragged within the page aren't taken.
+ */
+export type LibraryTarget = "songs" | "movies" | "shows" | "videos" | "uncategorized";
+
+const LIBRARY_TARGETS: Record<string, LibraryTarget> = {
+  "/songs": "songs",
+  "/movies": "movies",
+  "/shows": "shows",
+  "/videos": "videos",
+  "/uncategorized": "uncategorized",
+};
+
+const TARGET_NAMES: Record<LibraryTarget, string> = {
+  songs: "All My Songs",
+  movies: "Movies",
+  shows: "Shows",
+  videos: "Videos",
+  uncategorized: "Uncategorized Items",
+};
+
+/** The library target of a sidebar path (`/songs`, `/movies`, …; a trailing slash is fine); undefined for others. */
+export function libraryTargetOf(path: string): LibraryTarget | undefined {
+  const p = path.length > 1 && path.endsWith("/") ? path.substring(0, path.length - 1) : path;
+  return Object.prototype.hasOwnProperty.call(LIBRARY_TARGETS, p) ? LIBRARY_TARGETS[p] : undefined;
+}
+
+/** The target's name as the sidebar shows it. */
+export function libraryTargetName(t: LibraryTarget): string {
+  return TARGET_NAMES[t];
+}
+
+/** Whether a library target takes a drag: files and links from outside the page, nothing from inside it. */
+export function libraryAccepts(content: DropContent): boolean {
+  return content === "files" || content === "link";
+}
+
+/** The media types a dropped file gets (the server applies it only where the item needs one). */
+export type LibraryFileType = "audio" | "music_video" | "movie" | "show" | "video" | "uncategorized";
+
+/**
+ * The media type a file dropped on `t` is uploaded with, or the reason it is skipped:
+ * All My Songs: audio → `audio`, video → `music_video`; Movies → `movie`, Shows → `show`, Videos →
+ * `video` (video files only); Uncategorized Items → `uncategorized` (left uncategorized on purpose).
+ * Files that aren't audio or video are skipped everywhere.
+ */
+export function libraryFileType(t: LibraryTarget, f: { name: string; type: string }):
+    { mediaType: LibraryFileType } | { skip: string } {
+  if (!isMediaFile(f)) return { skip: "not an audio or video file" };
+  const video = isVideoFile(f);
+  switch (t) {
+    case "songs": return { mediaType: video ? "music_video" : "audio" };
+    case "uncategorized": return { mediaType: "uncategorized" };
+    case "movies": return video ? { mediaType: "movie" } : { skip: "Only video files can go in Movies" };
+    case "shows": return video ? { mediaType: "show" } : { skip: "Only video files can go in Shows" };
+    case "videos": return video ? { mediaType: "video" } : { skip: "Only video files can go in Videos" };
+  }
+}
+
+/** Files dropped on `t`: what is uploaded (with its type, in drop order) and what is skipped ("name: reason"). */
+export function libraryDropPlan<F extends { name: string; type: string }>(t: LibraryTarget, files: readonly F[]):
+    { uploads: { file: F; mediaType: LibraryFileType }[]; skipped: string[] } {
+  const uploads: { file: F; mediaType: LibraryFileType }[] = [];
+  const skipped: string[] = [];
+  for (const file of files) {
+    const r = libraryFileType(t, file);
+    if ("skip" in r) skipped.push(file.name + ": " + r.skip);
+    else uploads.push({ file, mediaType: r.mediaType });
+  }
+  return { uploads, skipped };
+}
+
+/**
+ * What Add from link (opened by a link dropped on `t`) presets: All My Songs nothing (the server
+ * asks for an uncategorized video's type as usual); Movies and Videos their type; Uncategorized
+ * Items "leave uncategorized"; Shows the show fields (name and episode asked in the dialog).
+ */
+export function libraryLinkPreset(t: LibraryTarget): { kind: "none" } | { kind: "type"; mediaType: LibraryFileType }
+    | { kind: "show" } {
+  switch (t) {
+    case "songs": return { kind: "none" };
+    case "movies": return { kind: "type", mediaType: "movie" };
+    case "videos": return { kind: "type", mediaType: "video" };
+    case "uncategorized": return { kind: "type", mediaType: "uncategorized" };
+    case "shows": return { kind: "show" };
+  }
+}

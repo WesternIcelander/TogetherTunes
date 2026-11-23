@@ -2202,6 +2202,39 @@ li.entry.selected {
   font-size: 1.05rem;
 }
 
+/* Video files dropped on Shows (filedrop.ts askEpisodes): one row per file. */
+.classify-prompt .episodes-form {
+  max-width: 44rem;
+}
+
+.episode-rows {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0;
+}
+
+.episode-rows th {
+  text-align: left;
+  font-weight: normal;
+  font-size: 0.85rem;
+}
+
+.episode-rows td {
+  padding: 0.15rem 0.25rem 0.15rem 0;
+  vertical-align: middle;
+}
+
+.episode-rows .episode-file {
+  overflow-wrap: break-word;
+  word-break: break-word;
+  max-width: 14rem;
+}
+
+.episode-rows input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 /* Dialog headings (classify prompt). */
 .classify-prompt .form h2 {
   margin-top: 0;

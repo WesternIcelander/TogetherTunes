@@ -20,14 +20,17 @@
 // dragdrop.ts): rows drag out (the selected rows together when the dragged one is selected) to a
 // playlist, the queue, …; an own playlist's (or Liked Songs') rows take drops at a position: its
 // own entries move, songs from elsewhere are added, files are uploaded into it (filedrop.ts) and a
-// link opens Add from link (addlink.ts). The server enforces every rule.
+// link opens Add from link (addlink.ts). All My Songs, Movies, Shows, Videos and Uncategorized Items
+// take files and links without a position (the whole list highlighted, never reordered): files are
+// uploaded into the library with the view's type (filedrop.ts dropFilesInLibrary), a link opens Add
+// from link with that type preset. The server enforces every rule.
 import { prefs } from "./prefsclient.js";
-import { openAddLink } from "./addlink.js";
+import { openAddLink, openAddLinkTo } from "./addlink.js";
 import { api } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
 import { draggable, dropZone } from "./dnd.js";
-import { draggedKeys, moveIsNoop, playlistDrop, type DragPayload } from "./dragdrop.js";
-import { dropFiles } from "./filedrop.js";
+import { draggedKeys, libraryAccepts, moveIsNoop, playlistDrop, type DragPayload, type LibraryTarget } from "./dragdrop.js";
+import { dropFiles, dropFilesInLibrary } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
 import { clickSelect, doubleClickAction, selectionText, songMenuEntries, toggleKey, type DoubleClickAction,
@@ -489,6 +492,31 @@ function playlistDropZone(shown: PlaylistDetail): void {
   }, signal);
 }
 
+/**
+ * A library view (All My Songs, Movies, Shows, Videos, Uncategorized Items) takes files and links
+ * dragged in from outside, without a position: the whole list is highlighted, the dropped items show
+ * once added. `showName`: the show open in Shows (prefills the episodes dialog).
+ */
+function libraryDropZone(target: LibraryTarget, showName?: string): void {
+  const signal = VIEW.signal;
+  if (dropZoneSignal === signal || mobile()) return;
+  dropZoneSignal = signal;
+  const app = document.getElementById("app");
+  if (app === null || signal.aborted) return;
+  dropZone(app, {
+    accepts: (content) => libraryAccepts(content),
+    onDrop: (d) => {
+      showError("");
+      if (d.content === "files") {
+        dropFilesInLibrary(d.files, showName !== undefined ? { target, showName } : { target },
+          (text, error) => (error === true ? showError(text) : notice(text)), () => restart());
+      } else if (d.content === "link") {
+        openAddLinkTo(target, d.link, (text) => { notice(text); restart(); });
+      }
+    },
+  }, signal);
+}
+
 function appendRows(rows: Row[]): void {
   const tbody = element("list-rows");
   for (const r of rows) tbody.append(rowElement(r, ++shownRows));
@@ -573,24 +601,30 @@ async function showLibrary(path: string, query: Record<string, string>, empty: s
 async function showSongs(): Promise<void> {
   setHead("All My Songs", "");
   element("list-actions").replaceChildren(addFromLinkButton(undefined, () => restart()));
+  libraryDropZone("songs");
   await showLibrary("/api/library", { type: "audio,music_video" },
-    "No songs or music videos in your library yet. Add songs from a link, or drop files on a playlist.");
+    "No songs or music videos in your library yet. Add songs from a link, or drop audio and video files here.");
 }
 
 async function showMovies(): Promise<void> {
   setHead("Movies", "");
-  await showLibrary("/api/library", { type: "movie" }, "No movies in your library yet.");
+  libraryDropZone("movies");
+  await showLibrary("/api/library", { type: "movie" }, "No movies in your library yet. Drop video files here to add them.");
 }
 
 async function showVideos(): Promise<void> {
   setHead("Videos", "");
+  libraryDropZone("videos");
   await showLibrary("/api/library", { type: "video" },
-    "No videos in your library yet. Videos are clips and other videos that aren't music videos, movies or shows.");
+    "No videos in your library yet. Videos are clips and other videos that aren't music videos, movies or shows:"
+    + " drop video files here to add them.");
 }
 
 async function showUncategorized(): Promise<void> {
   setHead("Uncategorized Items", "Items in your library that have no type yet: open one to give it one.");
-  await showLibrary("/api/library/uncategorized", {}, "No uncategorized items in your library.");
+  libraryDropZone("uncategorized");
+  await showLibrary("/api/library/uncategorized", {},
+    "No uncategorized items in your library. Files dropped here are added without a type.");
 }
 
 async function showSearch(): Promise<void> {
@@ -623,10 +657,12 @@ interface ShowsResponse {
 async function showShows(): Promise<void> {
   const name = new URLSearchParams(VIEW.search).get("show");
   if (name !== null && name.trim() !== "") {
+    libraryDropZone("shows", name.trim());
     await showOneShow(name);
     return;
   }
   setHead("Shows", "");
+  libraryDropZone("shows");
   const shows = await api<ShowsResponse>("GET", "/api/library/shows");
   const groups = element("list-groups");
   const parts: HTMLElement[] = [];
@@ -643,7 +679,8 @@ async function showShows(): Promise<void> {
   groups.replaceChildren(...parts);
   groups.hidden = parts.length === 0;
   element("list-summary").textContent = shows.shows.length + (shows.shows.length === 1 ? " show" : " shows");
-  setEmpty(shows.shows.length === 0 ? "No shows in your library yet. Episodes of a show are grouped here by show and season." : "");
+  setEmpty(shows.shows.length === 0 ? "No shows in your library yet. Episodes of a show are grouped here by show and"
+    + " season: drop video files here to add them." : "");
 }
 
 /** One show: its seasons in order, each with its episodes as list rows (play, queue, ⋯ like songs). */

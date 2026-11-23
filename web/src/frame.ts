@@ -21,15 +21,15 @@
 // files and links dropped on it; queue and Recents rows drag out (the selected ones together:
 // Shift / Ctrl / Cmd-click) and the queue's two sections take moves (queue.move, by rights, never
 // in vote mode) and songs from elsewhere (queue.add).
-import { openAddLink } from "./addlink.js";
+import { openAddLink, openAddLinkTo } from "./addlink.js";
 import { historyPlace, historyRoomPath, leaveKind, recentsFromHistory, type PlayHistoryRow } from "./alone.js";
 import { api } from "./api.js";
 import { actorLabel } from "./actor.js";
 import { withClassification } from "./classifyprompt.js";
 import { draggable, dropZone } from "./dnd.js";
-import { draggedKeys, moveIsNoop, playlistDrop, playlistOrderBody, queueDrop, queueExternalDrop, queueShowsPosition,
-  type DragPayload, type QueueSection } from "./dragdrop.js";
-import { dropFiles, dropFilesOnQueue } from "./filedrop.js";
+import { draggedKeys, libraryAccepts, libraryTargetOf, moveIsNoop, playlistDrop, playlistOrderBody, queueDrop,
+  queueExternalDrop, queueShowsPosition, type DragPayload, type LibraryTarget, type QueueSection } from "./dragdrop.js";
+import { dropFiles, dropFilesInLibrary, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
@@ -600,12 +600,16 @@ export class Frame {
     const selected = mySelectedPlaylists(this.#selections, me.id);
     const likes = this.#playlists.find((p) => p.builtin === "likes");
     // Uncategorized Items is always shown (a drop target), with its count while there are any.
-    const links: HTMLElement[] = LIBRARY_LINKS.map((l) => l.path === "/liked" && likes !== undefined
-      ? this.#playlistRow(likes, selected.has(likes.id), "/liked", "div")
-      : l.path === "/uncategorized" && this.#uncategorized > 0
+    const links: HTMLElement[] = LIBRARY_LINKS.map((l) => {
+      if (l.path === "/liked" && likes !== undefined) return this.#playlistRow(likes, selected.has(likes.id), "/liked", "div");
+      const a = l.path === "/uncategorized" && this.#uncategorized > 0
         ? h("a", { class: "side-link", href: l.path }, l.label + " ",
           h("span", { class: "muted small num", text: String(this.#uncategorized) }))
-        : h("a", { class: "side-link", href: l.path, text: l.label }));
+        : h("a", { class: "side-link", href: l.path, text: l.label });
+      const target = libraryTargetOf(l.path);
+      if (target !== undefined) this.#libraryDropTarget(a, target, l.path);
+      return a;
+    });
     const newPlaylist = h("button", { type: "button", class: "side-link side-new", id: "app-new-playlist" },
       "+ New Playlist");
     newPlaylist.addEventListener("click", () => { void this.#newPlaylist(); });
@@ -628,8 +632,10 @@ export class Frame {
           .then(() => this.#loadLibrary(), (e: unknown) => this.#libraryError(e));
       },
     });
-    const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list,
-      h("p", { id: "app-library-error", class: "error small", role: "alert" })];
+    // A notice shown there (what a drop did) stays when the sidebar is drawn again (refreshLibrary).
+    const notice = document.getElementById("app-library-error") ?? h("p", { id: "app-library-error", class: "error small",
+      role: "alert" });
+    const parts: HTMLElement[] = [h("nav", { class: "side-links" }, ...links), list, notice];
     const room = this.#host.room();
     const others = othersAutoplay(this.#selections, me.id);
     if (room !== undefined && others.length > 0) {
@@ -732,6 +738,28 @@ export class Frame {
         const what = playlistDrop({ playlistId: p.id, inView: false }, d.payload);
         if (what.kind !== "add") return;
         void this.#addToPlaylist(p.id, name, what.itemIds).then(changed);
+      },
+    });
+  }
+
+  /**
+   * All My Songs, Movies, Shows, Videos and Uncategorized Items in the sidebar take files (uploaded
+   * into the library with the view's type, filedrop.ts `dropFilesInLibrary`) and links (Add from link
+   * with the view's type preset); no position, nothing from inside the page.
+   */
+  #libraryDropTarget(el: HTMLElement, target: LibraryTarget, href: string): void {
+    const changed = (): void => {
+      if (location.pathname === href) reloadPage();
+    };
+    dropZone(el, {
+      accepts: (content) => libraryAccepts(content),
+      onDrop: (d) => {
+        this.#libraryError("");
+        if (d.content === "files") {
+          dropFilesInLibrary(d.files, { target }, (text, error) => this.#libraryNotice(text, error === true), changed);
+        } else if (d.content === "link") {
+          openAddLinkTo(target, d.link, (text) => { this.#libraryNotice(text, false); changed(); });
+        }
       },
     });
   }

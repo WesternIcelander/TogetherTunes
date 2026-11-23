@@ -184,3 +184,62 @@ test("upload lines", () => {
   assert.equal(D.uploadLine("processing", 100, 100), "Finishing…");
   assert.equal(D.uploadLine("done", 100, 100), "Uploaded");
 });
+
+test("the library views as drop targets: which paths, names, and only files and links", () => {
+  assert.equal(D.libraryTargetOf("/songs"), "songs");
+  assert.equal(D.libraryTargetOf("/movies/"), "movies");
+  assert.equal(D.libraryTargetOf("/shows"), "shows");
+  assert.equal(D.libraryTargetOf("/videos"), "videos");
+  assert.equal(D.libraryTargetOf("/uncategorized"), "uncategorized");
+  for (const p of ["/liked", "/search", "/playlists/x", "/", "", "/constructor", "/toString"]) {
+    assert.equal(D.libraryTargetOf(p), undefined, p);
+  }
+  assert.equal(D.libraryTargetName("songs"), "All My Songs");
+  assert.equal(D.libraryTargetName("uncategorized"), "Uncategorized Items");
+  assert.equal(D.libraryAccepts("files"), true);
+  assert.equal(D.libraryAccepts("link"), true);
+  assert.equal(D.libraryAccepts("internal"), false, "never reordered, nothing from inside the page");
+  assert.equal(D.libraryAccepts("none"), false);
+});
+
+test("the media type per library target and file", () => {
+  const audio = { name: "song.mp3", type: "audio/mpeg" };
+  const video = { name: "clip.mp4", type: "video/mp4" };
+  const bareVideo = { name: "ep.mkv", type: "" };
+  const bareAudio = { name: "x.flac", type: "" };
+  const text = { name: "notes.txt", type: "text/plain" };
+  assert.deepEqual(D.libraryFileType("songs", audio), { mediaType: "audio" });
+  assert.deepEqual(D.libraryFileType("songs", bareAudio), { mediaType: "audio" });
+  assert.deepEqual(D.libraryFileType("songs", video), { mediaType: "music_video" });
+  assert.deepEqual(D.libraryFileType("movies", video), { mediaType: "movie" });
+  assert.deepEqual(D.libraryFileType("shows", bareVideo), { mediaType: "show" });
+  assert.deepEqual(D.libraryFileType("videos", video), { mediaType: "video" });
+  assert.deepEqual(D.libraryFileType("uncategorized", video), { mediaType: "uncategorized" });
+  assert.deepEqual(D.libraryFileType("uncategorized", audio), { mediaType: "uncategorized" });
+  assert.deepEqual(D.libraryFileType("movies", audio), { skip: "Only video files can go in Movies" });
+  assert.deepEqual(D.libraryFileType("shows", audio), { skip: "Only video files can go in Shows" });
+  assert.deepEqual(D.libraryFileType("videos", bareAudio), { skip: "Only video files can go in Videos" });
+  for (const t of ["songs", "movies", "shows", "videos", "uncategorized"]) {
+    assert.deepEqual(D.libraryFileType(t, text), { skip: "not an audio or video file" }, t);
+  }
+});
+
+test("a library drop's plan keeps the drop order and names what is skipped", () => {
+  const files = [{ name: "a.mp4", type: "video/mp4" }, { name: "b.mp3", type: "audio/mpeg" },
+    { name: "c.pdf", type: "application/pdf" }, { name: "d.webm", type: "" }];
+  const p = D.libraryDropPlan("movies", files);
+  assert.deepEqual(p.uploads.map((u) => [u.file.name, u.mediaType]), [["a.mp4", "movie"], ["d.webm", "movie"]]);
+  assert.deepEqual(p.skipped, ["b.mp3: Only video files can go in Movies", "c.pdf: not an audio or video file"]);
+  const s = D.libraryDropPlan("songs", files);
+  assert.deepEqual(s.uploads.map((u) => u.mediaType), ["music_video", "audio", "music_video"]);
+  assert.deepEqual(s.skipped, ["c.pdf: not an audio or video file"]);
+  assert.deepEqual(D.libraryDropPlan("videos", []), { uploads: [], skipped: [] });
+});
+
+test("a link dropped on a library view presets its type", () => {
+  assert.deepEqual(D.libraryLinkPreset("songs"), { kind: "none" });
+  assert.deepEqual(D.libraryLinkPreset("movies"), { kind: "type", mediaType: "movie" });
+  assert.deepEqual(D.libraryLinkPreset("videos"), { kind: "type", mediaType: "video" });
+  assert.deepEqual(D.libraryLinkPreset("uncategorized"), { kind: "type", mediaType: "uncategorized" });
+  assert.deepEqual(D.libraryLinkPreset("shows"), { kind: "show" });
+});
