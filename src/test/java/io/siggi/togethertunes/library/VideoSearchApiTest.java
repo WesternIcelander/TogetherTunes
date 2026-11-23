@@ -369,6 +369,89 @@ class VideoSearchApiTest {
         assertEquals("not_a_candidate", code(call("POST", path, bob, "{\"videoId\":\"" + OFFICIAL + "\"}")));
     }
 
+    /** An existing YouTube video item (ready) with this media type. */
+    private String video(String youtubeId, String mediaType) throws Exception {
+        String id = UuidV7.newId();
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO items (id, kind, title, source, youtube_id,"
+                    + " added_by_user_id, added_at, status, output_profile, last_referenced_at, media_type)"
+                    + " VALUES (?, 'video', 'Some video', 'youtube', ?, ?, 3, 'ready', '720p30', 1, ?)")) {
+                ps.setString(1, id);
+                ps.setString(2, youtubeId);
+                ps.setString(3, aliceId);
+                ps.setString(4, mediaType);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        return id;
+    }
+
+    private String mediaType(String itemId) throws Exception {
+        return db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement("SELECT media_type FROM items WHERE id = ?")) {
+                ps.setString(1, itemId);
+                try (var rs = ps.executeQuery()) {
+                    rs.next();
+                    return rs.getString(1);
+                }
+            }
+        });
+    }
+
+    @Test
+    void thePickedVideoBecomesAMusicVideoUnlessItHasAType() throws Exception {
+        String song = song("USUM71000000", KEPT);
+        String path = "/api/items/" + song + "/video-search/pick";
+        String movie = video(OFFICIAL, "movie");
+        String uncategorized = video(VISUAL, "uncategorized");
+        assertEquals(200, search(song, bob).statusCode());
+
+        // a new video (bob isn't an editor of anything): music_video, audited by bob
+        HttpResponse<String> r = call("POST", path, bob, "{\"videoId\":\"" + MV + "\"}");
+        assertEquals(200, r.statusCode(), r.body());
+        String mv = json(r).get("itemId").getAsString();
+        assertEquals("music_video", mediaType(mv));
+        assertEquals("music_video", json(call("GET", "/api/items/" + mv, null, null)).get("mediaType").getAsString());
+        String details = db.read(c -> {
+            try (PreparedStatement ps = c.prepareStatement(
+                    "SELECT details_json, actor_user_id FROM audit_log WHERE action = 'item.updated' AND target = ?")) {
+                ps.setString(1, mv);
+                try (var rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                    String d = rs.getString(1) + " " + rs.getString(2);
+                    assertFalse(rs.next());
+                    return d;
+                }
+            }
+        });
+        assertTrue(details.contains("\"mediaType\":\"music_video\"") && details.contains("\"via\":\"search\"")
+                && details.contains(song) && details.contains(bobId), details);
+
+        // a lyric video match: music_video too, linked as a Lyric Video
+        r = call("POST", path, bob, "{\"videoId\":\"" + LYRIC + "\"}");
+        assertEquals("lyric_video", json(r).get("linkType").getAsString());
+        assertEquals("music_video", mediaType(json(r).get("itemId").getAsString()));
+
+        // someone classified it before: it keeps its type, nothing audited
+        r = call("POST", path, bob, "{\"videoId\":\"" + OFFICIAL + "\"}");
+        assertEquals(movie, json(r).get("itemId").getAsString());
+        assertTrue(json(r).get("linked").getAsBoolean());
+        assertEquals("movie", mediaType(movie));
+        assertEquals(0, count("SELECT COUNT(*) FROM audit_log WHERE action = 'item.updated' AND target = ?", movie));
+
+        // an existing video still uncategorized: music_video
+        r = call("POST", path, bob, "{\"videoId\":\"" + VISUAL + "\"}");
+        assertEquals(uncategorized, json(r).get("itemId").getAsString());
+        assertEquals("music_video", mediaType(uncategorized));
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'item.updated' AND target = ?",
+                uncategorized));
+        // picking it again changes nothing more
+        call("POST", path, bob, "{\"videoId\":\"" + VISUAL + "\"}");
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'item.updated' AND target = ?",
+                uncategorized));
+    }
+
     @Test
     void atTheCapThePickIsOnlyImported() throws Exception {
         String song = song("USUM71000000", null);

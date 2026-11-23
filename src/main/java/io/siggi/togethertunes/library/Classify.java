@@ -192,6 +192,25 @@ public final class Classify {
         if (classification.type() == MediaType.UNCATEGORIZED) {
             return true; // left uncategorized on purpose
         }
+        classifyUncategorized(c, itemId, classification, actorUserId, null, now, Map.of("classifiedOnLibraryAdd", true));
+        return true;
+    }
+
+    /**
+     * Gives the video {@code itemId} {@code classification} if (and only if) it is still
+     * {@code uncategorized}: the item's type and show details, the current media version's type
+     * (as a PATCH does), audited as {@code item.updated} by {@code actorUserId} with {@code extra}
+     * added to the changes. The one path every classification of an uncategorized video takes
+     * (library adds through {@link #prepareAdd}, a pick from "Find a music video").
+     *
+     * @return whether the item was classified (false: not a video, gone, or already has a type)
+     */
+    public static boolean classifyUncategorized(Connection c, String itemId, Classification classification,
+                                                String actorUserId, String clientIp, long now,
+                                                Map<String, Object> extra) throws SQLException {
+        if (classification.type() == MediaType.UNCATEGORIZED) {
+            return false;
+        }
         MediaType.Show show = classification.show();
         int updated;
         try (PreparedStatement ps = c.prepareStatement("UPDATE items SET media_type = ?, show_name = ?,"
@@ -213,7 +232,7 @@ public final class Classify {
             updated = ps.executeUpdate();
         }
         if (updated == 0) {
-            return true;
+            return false;
         }
         Integer version = null;
         try (PreparedStatement ps = c.prepareStatement("SELECT media_version FROM items WHERE id = ?")) {
@@ -233,8 +252,8 @@ public final class Classify {
         if (show != null) {
             changed.put("show", show);
         }
-        changed.put("classifiedOnLibraryAdd", true);
-        AuditLog.write(c, now, actorUserId, null, null, Items.AUDIT_UPDATED, itemId, changed);
+        changed.putAll(extra);
+        AuditLog.write(c, now, actorUserId, null, clientIp, Items.AUDIT_UPDATED, itemId, changed);
         return true;
     }
 

@@ -47,8 +47,11 @@ import java.util.function.Supplier;
  * {@code mvfinder.maxPerHour} ({@code 429 too_many_searches}).
  *
  * <p><b>Picking</b> takes only a video this person was offered for this item in the past
- * {@link #REMEMBER} ({@code 400 not_a_candidate}): the normal YouTube import (not into a library),
- * then the link is saved on the song (Lyric Video for MVFinder's {@code lyric_video}, else Music
+ * {@link #REMEMBER} ({@code 400 not_a_candidate}): the normal YouTube import (not into a library);
+ * the video gets the media type {@code music_video} when it is still {@code uncategorized} (also
+ * for a {@code lyric_video} match; through {@link Classify#classifyUncategorized}, audited
+ * {@code item.updated} with {@code via: "search"}; a video someone already classified keeps its
+ * type); then the link is saved on the song (Lyric Video for MVFinder's {@code lyric_video}, else Music
  * Video; at the end of the list; audited {@code item.link_added} with {@code via: "search"}) unless
  * the song already links that item or has {@link ItemLinks#MAX_LINKS} links. Anyone who may search
  * may link this way, not only the song's editors.
@@ -65,6 +68,8 @@ public final class VideoSearch {
     private static final long HOUR_MS = 3_600_000L;
     private static final int MAX_REMEMBERED = 10_000;
     private static final System.Logger LOG = System.getLogger(VideoSearch.class.getName());
+    private static final Classify.Classification MUSIC_VIDEO =
+            new Classify.Classification(MediaType.MUSIC_VIDEO, null);
 
     /**
      * One candidate as sent to the client.
@@ -194,7 +199,15 @@ public final class VideoSearch {
                 null, Boolean.FALSE);
         String linkType = matchType.equals("lyric_video") ? "lyric_video" : "music_video";
         long now = EpochMs.now(clock);
-        boolean linked = db.write(c -> link(c, user, itemId, imported.itemId(), linkType, clientIp, now));
+        boolean linked = db.write(c -> {
+            if (!imported.itemId().equals(itemId)) {
+                // the picked video is a music video (also a lyric video: there's no lyric-video
+                // type), unless someone gave it another type before
+                Classify.classifyUncategorized(c, imported.itemId(), MUSIC_VIDEO, user.userId(), clientIp, now,
+                        Map.of("via", "search", "linkedTo", itemId));
+            }
+            return link(c, user, itemId, imported.itemId(), linkType, clientIp, now);
+        });
         return new Picked(imported.itemId(), imported.status(), linked, linkType);
     }
 
