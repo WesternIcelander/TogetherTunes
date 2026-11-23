@@ -136,6 +136,22 @@ playlists(id PK, owner_id FK, name, description NULL, created_at, updated_at,
       position BIGINT)                      -- the user's own order of their playlists (smallest first;
                                             -- the built-in one is always listed first)
 playlist_entries(id PK, playlist_id FK, item_id FK, position REAL, added_at)
+-- playlists.import_persistent_id NULL (0041): the Playlist Persistent ID of the library export an imported
+-- playlist came from; a re-import of that export refills it (library-and-ingest.md#library-import)
+library_imports(id PK, user_id FK users ON DELETE CASCADE, -- library imports (0041): whose library
+      started_by_user_id NULL FK users ON DELETE SET NULL,
+      source_json,                          -- {"type": "path", "path"} | {"type": "upload", "uploadId"}
+      smart_playlists INTEGER,              -- 0/1
+      state,                                -- checking | ready | importing | paused | done | failed | cancelled
+      counts_json, problems_json,           -- counts; problems (at most 1000)
+      playlists_json,                       -- the playlists to make: [{persistentId, name, smart, trackIds}]
+      error NULL, created_at, updated_at, started_at NULL, finished_at NULL)
+library_import_tracks(import_id FK ON DELETE CASCADE, position, -- PK (import_id, position), the XML's order
+      track_id, path NULL, size NULL,       -- the file inside the source (null: missing)
+      content_id NULL,                      -- hashed by the check when the size matched a library item
+      details_json,                         -- the XML's details, dateAdded, loved, video
+      state,                                -- pending | imported | already | skipped | missing
+      reason NULL, item_id NULL)            -- no FK: a delete record needn't know about imports
 
 item_links(id PK, item_id FK items,         -- linked media (migration 0038, library-and-ingest.md#linked-media)
       position INTEGER,                     -- the editor's order (0, 1, …)
