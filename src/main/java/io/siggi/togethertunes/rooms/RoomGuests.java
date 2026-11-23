@@ -196,6 +196,38 @@ public final class RoomGuests implements RoomGuestRules {
     }
 
     /**
+     * The room's rules for YouTube link requests, as the room's YouTube search
+     * ({@code GET /api/rooms/{room}/youtube-search}) checks them: the room must be visible
+     * ({@code 404 room_not_found}), {@code ytdlp.enabled} on ({@code 403 feature_disabled}), the
+     * caller not banned or timed out there ({@code 403 banned_from_room} / {@code timed_out}), and
+     * allowed to request links there (a user: {@code library.youtube}, else {@code 403 forbidden};
+     * a guest: the effective {@code guests.canYoutube}, else {@code 403 guest_youtube_disabled}).
+     * An anonymous visitor gets {@code 401 identity_required} where a guest could (it becomes a
+     * guest first), else {@code 403 guest_youtube_disabled}.
+     *
+     * @return the room actor (a user or a guest) that may request links in the room
+     */
+    public RoomActor requireYoutubeRequests(Actor actor, String idOrSlug) throws SQLException {
+        Rooms.Access access = rooms.access(actor, idOrSlug);
+        permissions.requireFeature(Feature.YOUTUBE);
+        RoomActor a = roomActor(actor, access);
+        a.requireNotReadOnly();
+        if (actor instanceof Actor.Anonymous) {
+            if (capabilities(actor, access.room().settings()).canYoutube()) {
+                throw new HttpError(401, "identity_required", "Join as a guest first");
+            }
+            throw new HttpError(403, "guest_youtube_disabled", "Guests can't add YouTube links in this room");
+        }
+        if (!a.canYoutube()) {
+            if (a.isGuest()) {
+                throw new HttpError(403, "guest_youtube_disabled", "Guests can't add YouTube links in this room");
+            }
+            throw HttpError.forbidden("You can't add YouTube links");
+        }
+        return a;
+    }
+
+    /**
      * {@link #roomActor(Actor, Rooms.Access)} for the room with this id or slug, seen from
      * {@code clientIp}: a ban or timeout of that address counts too.
      *

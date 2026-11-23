@@ -621,7 +621,7 @@ class DtoIpLeakTest {
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
-                TestUploads.itemsApi(database, dir, permissions, clock),
+                TestUploads.itemsApi(database, dir, permissions, clock, roomsWiring.guests()),
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),
@@ -1074,7 +1074,7 @@ class DtoIpLeakTest {
                 "/api/rooms/" + f.roomSlug + "/guest-bans/" + f.cookieGuestId,
                 "/api/rooms/" + f.roomSlug + "/bans", "/api/rooms/" + f.roomSlug + "/bans/users/" + f.aliceId,
                 "/api/rooms/" + f.roomSlug + "/bans/guests/" + f.cookieGuestId,
-                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
+                "/api/rooms/" + f.roomSlug + "/search?q=video", "/api/rooms/" + f.roomSlug + "/youtube-search?q=found", "/api/rooms/" + f.roomSlug + "/search?all=1", "/api/rooms/" + f.roomSlug + "/history",
                 "/api/rooms/" + f.roomSlug + "/server-switches", "/api/rooms/" + f.roomSlug + "/overlay/layout", "/api/rooms/" + f.roomSlug + "/autoplay",
                 "/api/rooms/" + f.roomSlug + "/autoplay/playlists/" + f.playlistId, "/auth/oidc/nope/start",
                 "/auth/oidc/nope/callback?state=x&code=y", "/auth/popup-done?error=login_expired");

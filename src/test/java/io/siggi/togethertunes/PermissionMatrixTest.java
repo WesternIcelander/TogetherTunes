@@ -419,6 +419,11 @@ class PermissionMatrixTest {
             // covers the scopes and refusals.
             row("GET /api/rooms/{room}/search", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/search?q=x"),
                     200, 200, 200, 200),
+            // The room's YouTube search (the room view's request search): anyone who may request YouTube links
+            // in the room (guests by guests.canYoutube, off by default; RoomYoutubeSearchApiTest covers the
+            // guest rules, bans, the limit and MVFinder for guests).
+            row("GET /api/rooms/{room}/youtube-search", c -> Call.get("/api/rooms/" + c.rootRoomSlug()
+                    + "/youtube-search?q=found"), 403, 403, 200, 200),
             // The room's history: anyone who may open the room (RoomHistoryContract covers the rows
             // and the per-viewer flags).
             row("GET /api/rooms/{room}/history", c -> Call.get("/api/rooms/" + c.rootRoomSlug() + "/history"),
@@ -516,7 +521,7 @@ class PermissionMatrixTest {
                 TestUploads.api(database, dir, config, permissions, clock),
                 TestUploads.youtubeApi(database, config, permissions, clock),
                 TestUploads.libraryApi(database, config, permissions, clock),
-                TestUploads.itemsApi(database, dir, permissions, clock),
+                TestUploads.itemsApi(database, dir, permissions, clock, roomsWiring.guests()),
                 TestUploads.playlistsApi(database, config, permissions, clock),
                 TestUploads.userLibrariesApi(database, config, permissions, clock),
                 TestUploads.mediaApi(database, dir, io.siggi.togethertunes.rooms.GuestMediaAccess.USERS_ONLY),

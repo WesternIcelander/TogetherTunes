@@ -55,6 +55,16 @@ public final class YoutubeSearch {
         this.resolver = resolver;
     }
 
+    /** Whether MVFinder may be asked for guests ({@code mvfinder.allowGuests}; false while it is off). */
+    public boolean resolverAllowsGuests() {
+        MusicLinkResolver r = resolver;
+        if (r == null) {
+            return false;
+        }
+        MusicLinkResolver.Options o = r.options();
+        return o != null && o.allowGuests();
+    }
+
     /**
      * Searches YouTube for {@code query} (already checked: 1..{@link #MAX_QUERY} characters) for
      * {@code who} (a user ID, or a guest's identity).

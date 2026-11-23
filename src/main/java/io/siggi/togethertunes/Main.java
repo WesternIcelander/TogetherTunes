@@ -456,7 +456,7 @@ public final class Main {
         // The header search's Search YouTube and the search page's YouTube section: MVFinder, else yt-dlp
         itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(Tools.from(config), cookiesFile, linkResolver,
                 () -> setting(() -> settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR), 60), Clock.systemUTC()),
-                permissions));
+                permissions).roomRules(roomGuests::requireYoutubeRequests)); // the room view's request search
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);

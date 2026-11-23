@@ -23,10 +23,32 @@ import java.util.Objects;
  * ({@code 403 forbidden}); {@code q} 1..200 characters after trimming ({@code 400 invalid_query}),
  * {@code limit} 1..20, default 10 ({@code 400 invalid_limit}); {@code 429 too_many_searches}
  * over {@code youtubeSearch.maxPerHour}.
+ *
+ * <p>The room form, {@code GET /api/rooms/{room}/youtube-search?q=&limit=} (the room view's
+ * request search), answers the same for anyone who may request YouTube links in that room
+ * ({@link RoomRules}: {@code 404 room_not_found}, {@code 403 feature_disabled},
+ * {@code banned_from_room} / {@code timed_out}, {@code forbidden} / {@code guest_youtube_disabled},
+ * {@code 401 identity_required} for an anonymous visitor who could as a guest), guests included.
+ * The same per-person limit (a guest counted by its guest identity); MVFinder is asked for a
+ * guest only while {@code mvfinder.allowGuests} is on (else yt-dlp).
  */
 public final class YoutubeSearchApi {
     private final YoutubeSearch search;
     private final Permissions permissions;
+    private volatile RoomRules roomRules;
+
+    /** The room's rules for YouTube link requests ({@code RoomGuests#requireYoutubeRequests}). */
+    @FunctionalInterface
+    public interface RoomRules {
+        /** Returns if {@code actor} (a user or a guest) may request YouTube links in the room, else throws. */
+        void check(Actor actor, String roomIdOrSlug) throws Exception;
+    }
+
+    /** Turns on the room form ({@code GET /api/rooms/{room}/youtube-search}). Set before {@link #register}. */
+    public YoutubeSearchApi roomRules(RoomRules rules) {
+        this.roomRules = rules;
+        return this;
+    }
 
     public YoutubeSearchApi(YoutubeSearch search, Permissions permissions) {
         this.search = Objects.requireNonNull(search);
@@ -35,6 +57,30 @@ public final class YoutubeSearchApi {
 
     void register(Router router) {
         router.get("/api/youtube/search", this::search);
+        if (roomRules != null) {
+            router.get("/api/rooms/{room}/youtube-search", this::roomSearch);
+        }
+    }
+
+    private void roomSearch(Request request, Response response) throws Exception {
+        Actor actor = ActorResolver.actor(request);
+        roomRules.check(actor, request.pathParam("room"));
+        String who;
+        boolean useResolver;
+        if (actor instanceof Actor.User u) {
+            who = u.userId(); // the same count as the header search
+            useResolver = true;
+        } else if (actor instanceof Actor.Guest g) {
+            who = "guest:" + g.guestId();
+            useResolver = search.resolverAllowsGuests();
+        } else {
+            throw new HttpError(401, "identity_required", "Join as a guest first");
+        }
+        String q = query(request.query("q"));
+        int limit = limit(request.query("limit"));
+        List<VideoSearch.Candidate> found = search.search(who, q, limit, useResolver);
+        response.header("Cache-Control", "no-store");
+        response.json(Map.of("items", items(found)));
     }
 
     private void search(Request request, Response response) throws Exception {

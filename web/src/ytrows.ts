@@ -21,6 +21,11 @@ export interface YoutubeRowOptions {
   draggable?: boolean;
   /** Called before an action starts (the dropdown closes for Add to library…). */
   acting?(action: "addToQueue" | "addToLibrary"): void;
+  /**
+   * In place of the actions above, one button (the room view's request search: Request / Suggest
+   * through the room's own connection); disabled while `run` is going.
+   */
+  request?: { label: string; run(r: YoutubeResult): Promise<void> };
 }
 
 /** Add to Queue: the room's request path; alone the double-click setting's action (play now or queue). */
@@ -54,7 +59,16 @@ export function youtubeRows(results: readonly YoutubeResult[], o: YoutubeRowOpti
     img.addEventListener("error", () => { img.remove(); }, { once: true });
     const preview = h("a", { class: "button-link", href: row.url, target: "_blank", rel: "noopener noreferrer",
       text: row.preview, draggable: "false" });
-    const buttons = actions.map((a) => {
+    const custom = o.request;
+    const buttons = custom !== undefined ? [(() => {
+      const b = h("button", { type: "button", class: "small", text: custom.label, "data-action": "request" });
+      b.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        b.disabled = true;
+        void custom.run(r).finally(() => { b.disabled = false; });
+      });
+      return b;
+    })()] : actions.map((a) => {
       const b = h("button", { type: "button", class: "small", text: YOUTUBE_ACTION_LABELS[a], "data-action": a });
       b.addEventListener("click", (ev) => {
         ev.stopPropagation();

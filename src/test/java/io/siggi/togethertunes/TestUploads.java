@@ -103,6 +103,15 @@ public final class TestUploads {
 
     /** The items API with data in {@code <dir>/data}. */
     public static ItemsApi itemsApi(Database db, Path dir, Permissions permissions, Clock clock) {
+        return itemsApi(db, dir, permissions, clock, null);
+    }
+
+    /**
+     * The items API with data in {@code <dir>/data}; with {@code roomGuests}, the room form of the
+     * YouTube search ({@code GET /api/rooms/{room}/youtube-search}) by those rooms' rules.
+     */
+    public static ItemsApi itemsApi(Database db, Path dir, Permissions permissions, Clock clock,
+                                    io.siggi.togethertunes.rooms.RoomGuests roomGuests) {
         try {
             DataDir data = DataDir.create(dir.resolve("data"));
             Items items = new Items(db, data, clock);
@@ -140,9 +149,13 @@ public final class TestUploads {
                     new io.siggi.togethertunes.library.VideoSearch(db, ytTools, () -> null, youtube, null, () -> 1000,
                             clock), permissions));
             // The YouTube search: the same fake yt-dlp (no MVFinder)
-            api.youtubeSearch(new io.siggi.togethertunes.library.YoutubeSearchApi(
-                    new io.siggi.togethertunes.library.YoutubeSearch(ytTools, () -> null, null, () -> 1000, clock),
-                    permissions));
+            io.siggi.togethertunes.library.YoutubeSearchApi youtubeSearch =
+                    new io.siggi.togethertunes.library.YoutubeSearchApi(new io.siggi.togethertunes.library.YoutubeSearch(
+                            ytTools, () -> null, null, () -> 1000, clock), permissions);
+            if (roomGuests != null) {
+                youtubeSearch.roomRules(roomGuests::requireYoutubeRequests);
+            }
+            api.youtubeSearch(youtubeSearch);
             return api;
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -184,7 +197,8 @@ public final class TestUploads {
 
     /** The rooms API and the room WebSocket on one room registry, as {@code Main} builds them. */
     public record RoomsWiring(io.siggi.togethertunes.rooms.RoomsApi api, io.siggi.togethertunes.rooms.RoomSocket socket,
-                              io.siggi.togethertunes.rooms.RoomRegistry registry) {
+                              io.siggi.togethertunes.rooms.RoomRegistry registry,
+                              io.siggi.togethertunes.rooms.RoomGuests guests) {
     }
 
     /** {@link RoomsWiring}: data in {@code <dir>/data}, {@code tickets} shared with the {@code MeApi}. */
@@ -218,7 +232,7 @@ public final class TestUploads {
                 new Guests(db, settings, clock, config.secureCookies(), GuestNames.bundled()), settings, rooms, guests,
                 registry, queue, db, clock);
         socket.autoplay(selections); // autoplay.resume
-        return new RoomsWiring(api, socket, registry);
+        return new RoomsWiring(api, socket, registry, guests);
     }
 
     /** The rooms API as {@code Main} builds it. */

@@ -54,6 +54,10 @@ import { attachRoom, pageSignal, rememberPlaying, viewStart, type RoomHandle } f
 import { shouldJoin } from "./alone.js";
 import { OutputsPanel } from "./outputspanel.js";
 import { previewDuck } from "./volume.js";
+import { roomSearchButtons, roomSearchHeading, RoomSearchResults, roomYoutubeErrorText, roomYoutubeSearchPath,
+  SEARCH_LIBRARY_LABEL, SEARCH_YOUTUBE_LABEL, youtubeRequestedText } from "./roomsearch.js";
+import { NO_YOUTUBE_RESULTS, watchUrl, type YoutubeResult } from "./ytsearch.js";
+import { youtubeRows } from "./ytrows.js";
 
 // Page errors from now on go into the diagnostics ring (sent with "Send diagnostics").
 captureErrors(window as unknown as ErrorTarget);
@@ -450,32 +454,43 @@ let requestKey = "";
 function renderRequests(s: RoomState): void {
   const you = s.room.you;
   const show = me.kind !== "user" && you.identified && you.restriction === undefined;
-  const canSearch = show && you.canRequestLibrary === true;
+  const buttons = roomSearchButtons(me.kind, you);
   const canUpload = show && you.canUpload;
-  const key = [s.room.controlMode, canSearch, canUpload, you.canModerate].join(",");
+  const key = [s.room.controlMode, buttons.library, buttons.youtube, canUpload, you.canModerate].join(",");
   if (key === requestKey) return;
   requestKey = key;
   const el = element("room-request");
   const parts: Node[] = [];
-  if (canSearch) parts.push(searchPanel());
+  if (buttons.library || buttons.youtube) parts.push(searchPanel(buttons));
   if (canUpload) parts.push(uploadPanel());
   el.hidden = parts.length === 0;
   el.replaceChildren(...parts);
 }
 
-function searchPanel(): HTMLElement {
+/**
+ * Request / Suggest from the library: the library search, and **Search YouTube** for those who may
+ * request YouTube links here (its rows' Request / Suggest sends `queue.add {youtubeUrl}`). Any change
+ * to the text box clears the results until the next search (roomsearch.ts).
+ */
+function searchPanel(buttons: { library: boolean; youtube: boolean }): HTMLElement {
   const results = h("ul", { class: "entries search-results" });
   const status = h("p", { class: "muted small", role: "status" });
   const more = h("button", { type: "button", text: "More" });
   more.hidden = true;
-  const input = h("input", { name: "q", type: "search", placeholder: "Search title, artist or album",
+  const input = h("input", { name: "q", type: "search",
+    placeholder: buttons.library ? "Search title, artist or album" : "Search YouTube",
     "aria-label": "Search", class: "grow", maxlength: "200" });
   const kind = h("select", { name: "kind", "aria-label": "Kind" },
     h("option", { value: "", text: "All" }), h("option", { value: "audio", text: "Audio" }),
     h("option", { value: "video", text: "Video" }));
-  const form = h("form", { class: "row" }, input, kind, h("button", { type: "submit", text: "Search" }));
+  const youtube = h("button", { type: "button", text: SEARCH_YOUTUBE_LABEL, class: "room-search-youtube" });
+  const form = h("form", { class: "row" }, input,
+    buttons.library ? kind : null,
+    buttons.library ? h("button", { type: "submit", text: SEARCH_LIBRARY_LABEL }) : null,
+    buttons.youtube ? youtube : null);
+  const state = new RoomSearchResults();
   let cursor: string | undefined;
-  let generation = 0;
+  const suggest = shown !== undefined && requestVerb(shown) === "Suggest";
 
   const row = (item: ItemSummary): HTMLLIElement => {
     const li = h("li", { class: "entry" });
@@ -492,7 +507,7 @@ function searchPanel(): HTMLElement {
   };
 
   const load = async (reset: boolean): Promise<void> => {
-    const mine = ++generation;
+    const mine = state.start("library");
     if (reset) {
       cursor = undefined;
       results.replaceChildren();
@@ -502,27 +517,87 @@ function searchPanel(): HTMLElement {
     if (kind.value !== "") params.set("kind", kind.value);
     params.set("limit", "25");
     if (cursor !== undefined) params.set("cursor", cursor);
+    status.className = "muted small";
     status.textContent = "Searching…";
     try {
       const page = await api<Page<ItemSummary>>("GET", "/api/rooms/" + encodeURIComponent(roomId) + "/search?" + params);
-      if (mine !== generation) return;
+      if (!state.accepts(mine)) return;
       for (const item of page.items) results.append(row(item));
       cursor = page.nextCursor;
       more.hidden = cursor === undefined;
       status.textContent = results.childElementCount === 0 ? "Nothing found." : "";
     } catch (e) {
-      if (mine !== generation) return;
+      if (!state.accepts(mine)) return;
       more.hidden = true;
       status.textContent = e instanceof ApiError && e.code === "library_requests_off"
         ? "This room doesn't take requests from the library." : message(e);
     }
   };
+
+  /** One YouTube result's Request / Suggest: the room's request path for a pasted link. */
+  const requestVideo = async (r: YoutubeResult): Promise<void> => {
+    status.className = "muted small";
+    status.textContent = "Requesting " + r.title + "…";
+    try {
+      const ack = await conn.request({ type: "queue.add", youtubeUrl: watchUrl(r) });
+      status.textContent = youtubeRequestedText(r.title, ack["state"]);
+    } catch (e) {
+      if (e === CANCELLED) return;
+      status.className = "error small";
+      status.textContent = r.title + ": " + message(e);
+    }
+  };
+
+  const searchYoutube = async (): Promise<void> => {
+    const q = input.value.trim();
+    if (q === "") {
+      input.focus();
+      return;
+    }
+    const mine = state.start("youtube");
+    cursor = undefined;
+    results.replaceChildren();
+    more.hidden = true;
+    status.className = "muted small";
+    status.textContent = "Searching YouTube…";
+    try {
+      await conn.ensureIdentity();
+      const page = await api<{ items: YoutubeResult[] }>("GET", roomYoutubeSearchPath(roomId, q));
+      if (!state.accepts(mine)) return;
+      const label = shown !== undefined && requestVerb(shown) === "Suggest" ? "Suggest" : "Request";
+      results.replaceChildren(...youtubeRows(page.items, {
+        notice: (text, error) => {
+          status.className = error === true ? "error small" : "muted small";
+          status.textContent = text;
+        },
+        request: { label, run: requestVideo },
+      }));
+      status.textContent = page.items.length === 0 ? NO_YOUTUBE_RESULTS : "";
+    } catch (e) {
+      if (!state.accepts(mine) || e === CANCELLED) return;
+      status.className = "error small";
+      status.textContent = roomYoutubeErrorText(e instanceof ApiError ? e.code : undefined, message(e));
+    }
+  };
+
+  // Any change to the text box clears the shown results (and More and the status) until the next search.
+  input.addEventListener("input", () => {
+    state.input();
+    cursor = undefined;
+    results.replaceChildren();
+    more.hidden = true;
+    status.className = "muted small";
+    status.textContent = "";
+  });
   form.addEventListener("submit", (ev) => {
     ev.preventDefault();
-    void load(true);
+    if (buttons.library) void load(true);
+    else void searchYoutube();
   });
-  more.addEventListener("click", () => void load(false));
-  return h("div", { class: "request-search" }, h("h3", { text: shown !== undefined && requestVerb(shown) === "Suggest" ? "Suggest from the library" : "Request from the library" }), form, status, results, more);
+  youtube.addEventListener("click", () => void searchYoutube());
+  more.addEventListener("click", () => { if (state.moreAllowed()) void load(false); });
+  return h("div", { class: "request-search" }, h("h3", { text: roomSearchHeading(buttons, suggest) }), form, status,
+    results, more);
 }
 
 function uploadPanel(): HTMLElement {
