@@ -22,7 +22,6 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -70,8 +69,7 @@ public final class VideoSearch {
     static final Duration REMEMBER = Duration.ofHours(1);
     /** {@code audit_log} action of a link saved from a pick. */
     public static final String AUDIT_LINK_ADDED = "item.link_added";
-    private static final long HOUR_MS = 3_600_000L;
-    private static final int MAX_REMEMBERED = 10_000;
+    private static final int MAX_REMEMBERED = PerHourLimit.MAX_REMEMBERED;
     private static final System.Logger LOG = System.getLogger(VideoSearch.class.getName());
     private static final Classify.Classification MUSIC_VIDEO =
             new Classify.Classification(MediaType.MUSIC_VIDEO, null);
@@ -111,15 +109,9 @@ public final class VideoSearch {
     private final Tools tools;
     private final Supplier<String> cookiesFile;
     private final YoutubeImports imports;
-    private final IntSupplier maxPerHour;
+    private final PerHourLimit limit;
     private final Clock clock;
     private volatile MusicLinkResolver resolver;
-    private final Map<String, ArrayDeque<Long>> recent = new LinkedHashMap<>(16, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<String, ArrayDeque<Long>> eldest) {
-            return size() > MAX_REMEMBERED;
-        }
-    };
     private final Map<String, Offered> offered = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Offered> eldest) {
@@ -139,8 +131,8 @@ public final class VideoSearch {
         this.cookiesFile = Objects.requireNonNull(cookiesFile);
         this.imports = Objects.requireNonNull(imports);
         this.resolver = resolver;
-        this.maxPerHour = Objects.requireNonNull(maxPerHour);
         this.clock = Objects.requireNonNull(clock);
+        this.limit = new PerHourLimit(maxPerHour, clock);
     }
 
     /** The candidates for {@code itemId}; see the class comment. */
@@ -149,7 +141,7 @@ public final class VideoSearch {
         if (song == null) {
             throw new HttpError(404, "item_not_found", "No such item");
         }
-        take(user.userId());
+        limit.take(user.userId());
         List<Candidate> out = new ArrayList<>();
         Set<String> seen = new HashSet<>();
         MusicLinkResolver r = resolver;
@@ -171,7 +163,7 @@ public final class VideoSearch {
                 add(out, seen, c);
             }
             if (out.isEmpty()) {
-                for (Candidate c : ytdlpSearch(q)) {
+                for (Candidate c : ytdlpSearch(tools, cookiesFile, q, SEARCH_RESULTS)) {
                     add(out, seen, c);
                 }
             }
@@ -272,24 +264,6 @@ public final class VideoSearch {
             try (ResultSet rs = ps.executeQuery()) {
                 return rs.next() ? new Song(rs.getString(1), rs.getString(2), rs.getString(3), rs.getString(4)) : null;
             }
-        }
-    }
-
-    /** Counts one search for the person, or throws {@code 429 too_many_searches}. */
-    private void take(String userId) {
-        int max = Math.max(1, maxPerHour.getAsInt());
-        long now = clock.millis();
-        synchronized (recent) {
-            ArrayDeque<Long> times = recent.computeIfAbsent(userId, k -> new ArrayDeque<>());
-            while (!times.isEmpty() && times.peekFirst() <= now - HOUR_MS) {
-                times.pollFirst();
-            }
-            if (times.size() >= max) {
-                long waitSec = Math.max(1, (times.peekFirst() + HOUR_MS - now + 999) / 1000);
-                throw new HttpError(429, "too_many_searches", "Too many searches in the past hour; try again in "
-                        + Math.max(1, (waitSec + 59) / 60) + " min", waitSec);
-            }
-            times.addLast(now);
         }
     }
 
@@ -426,8 +400,15 @@ public final class VideoSearch {
         return (artist.isEmpty() ? title : artist + " " + title).replaceAll("\\s+", " ");
     }
 
-    /** {@code yt-dlp --flat-playlist -J "ytsearch8:<query>"}'s videos. */
-    List<Candidate> ytdlpSearch(String query) throws InterruptedException {
+    /**
+     * {@code yt-dlp --flat-playlist -J "ytsearch<count>:<query>"}'s videos (nothing downloaded,
+     * {@link #SEARCH_TIMEOUT}; live and upcoming streams left out).
+     *
+     * @throws HttpError {@code 503 youtube_unavailable} (no yt-dlp), {@code 504 youtube_timeout},
+     *                   {@code 502 search_failed}
+     */
+    static List<Candidate> ytdlpSearch(Tools tools, Supplier<String> cookiesFile, String query, int count)
+            throws InterruptedException {
         if (query.isBlank()) {
             return List.of();
         }
@@ -441,7 +422,7 @@ public final class VideoSearch {
             args.add(cookies.toString());
         }
         args.add("--");
-        args.add("ytsearch" + SEARCH_RESULTS + ":" + query);
+        args.add("ytsearch" + count + ":" + query);
         JobLog log = new JobLog();
         ToolResult result;
         try {

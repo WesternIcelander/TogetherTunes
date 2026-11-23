@@ -32,7 +32,7 @@
 // localStorage.
 import { prefs } from "./prefsclient.js";
 import { openAddLink, openAddLinkTo } from "./addlink.js";
-import { api } from "./api.js";
+import { api, ApiError } from "./api.js";
 import { withClassification } from "./classifyprompt.js";
 import { draggable, dropZone } from "./dnd.js";
 import { draggedKeys, libraryAccepts, moveIsNoop, playlistDrop, type DragPayload, type LibraryTarget } from "./dragdrop.js";
@@ -54,6 +54,9 @@ import { routeOf, type ListName } from "./router.js";
 import { seasonLabel } from "./shows.js";
 import { message, onReady, renderNav, requireUser, type MeUser } from "./session.js";
 import { onLongPress, openMenu, type MenuItem } from "./touch.js";
+import { youtubeRows } from "./ytrows.js";
+import { canSearchYoutube, NO_YOUTUBE_RESULTS, PAGE_LIMIT, youtubeErrorText, youtubeSearchPath,
+  type YoutubeResult } from "./ytsearch.js";
 
 /** A row of the table: the item, and when it was added here (absent for search results). */
 interface Row {
@@ -712,6 +715,7 @@ async function showSearch(): Promise<void> {
     setEmpty("Type in the search box at the top.");
     return;
   }
+  if (canSearchYoutube(me)) void showYoutube(q);
   const more = async (): Promise<void> => {
     const params = new URLSearchParams({ q, ...sortParams(listSort), limit: String(PAGE_SIZE) });
     if (cursor !== undefined) params.set("cursor", cursor);
@@ -721,6 +725,36 @@ async function showSearch(): Promise<void> {
     setMore(page.nextCursor, more);
   };
   await more();
+}
+
+/** The search page's YouTube section: searched once per page (not again when the list is sorted). */
+let youtubeFor: string | undefined;
+
+async function showYoutube(q: string): Promise<void> {
+  if (youtubeFor === q) return;
+  youtubeFor = q;
+  const status = element("list-youtube-status");
+  const rows = element("list-youtube-rows");
+  element("list-youtube").hidden = false;
+  status.className = "muted";
+  status.textContent = "Searching YouTube…";
+  rows.replaceChildren();
+  try {
+    const r = await api<{ items: YoutubeResult[] }>("GET", youtubeSearchPath(q, PAGE_LIMIT));
+    if (VIEW.signal.aborted) return;
+    status.textContent = r.items.length === 0 ? NO_YOUTUBE_RESULTS : "";
+    rows.replaceChildren(...youtubeRows(r.items, {
+      notice: (text, error) => {
+        showError(error === true ? text : "");
+        if (error !== true) notice(text);
+      },
+      draggable: !mobile(),
+    }));
+  } catch (e) {
+    if (VIEW.signal.aborted) return;
+    status.className = "error";
+    status.textContent = e instanceof ApiError ? youtubeErrorText(e.code, e.message) : message(e);
+  }
 }
 
 interface ShowsResponse {

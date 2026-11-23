@@ -28,19 +28,22 @@ export async function itemLinks(itemId: string): Promise<ItemLink[]> {
 export type QueueOutcome = "added" | "suggested" | "playing";
 
 /**
- * Adds `itemId` to `room` through the room's normal request path (`queue.add`): a request (or Add
- * to Queue alone), or alone Play now (added, moved before the first manually added entry, skipped to).
+ * Adds an item (`itemId`) or a YouTube link (`{youtubeUrl}`) to `room` through the room's normal
+ * request path (`queue.add`): a request (or Add to Queue alone), or alone Play now (added, moved
+ * before the first manually added entry, skipped to).
  */
-export async function queueItem(room: ShellRoom, itemId: string, how: "request" | "queue" | "playNow"):
-    Promise<QueueOutcome> {
+export async function queueItem(room: ShellRoom, what: string | { youtubeUrl: string },
+    how: "request" | "queue" | "playNow"): Promise<QueueOutcome> {
+  const add = typeof what === "string" ? { type: "queue.add", itemId: what }
+    : { type: "queue.add", youtubeUrl: what.youtubeUrl };
   if (how !== "playNow") {
-    const ack = await room.request({ type: "queue.add", itemId });
+    const ack = await room.request(add);
     return ack["state"] === "suggested" ? "suggested" : "added";
   }
   const s = room.state();
   const before = s !== undefined ? playNowBefore(s.queue) : undefined;
   const hadCurrent = s?.current !== undefined;
-  const ack = await room.request({ type: "queue.add", itemId });
+  const ack = await room.request(add);
   const entryId = typeof ack["entryId"] === "string" ? ack["entryId"] : undefined;
   if (hadCurrent && entryId !== undefined) {
     if (before !== undefined) await room.request({ type: "queue.move", entryIds: [entryId], beforeEntryId: before });

@@ -121,6 +121,8 @@ import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.library.VideoSearch;
 import io.siggi.togethertunes.library.VideoSearchApi;
+import io.siggi.togethertunes.library.YoutubeSearch;
+import io.siggi.togethertunes.library.YoutubeSearchApi;
 import io.siggi.togethertunes.retention.RetentionSweeper;
 import io.siggi.togethertunes.storage.DiskSpace;
 import io.siggi.togethertunes.rooms.DiagnosticsApi;
@@ -451,6 +453,10 @@ public final class Main {
         itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, Tools.from(config), cookiesFile,
                 youtubeImports, linkResolver, () -> setting(() -> settings.get(Settings.MVFINDER_MAX_PER_HOUR),
                 15), Clock.systemUTC()), permissions));
+        // The header search's Search YouTube and the search page's YouTube section: MVFinder, else yt-dlp
+        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(Tools.from(config), cookiesFile, linkResolver,
+                () -> setting(() -> settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR), 60), Clock.systemUTC()),
+                permissions));
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
         Playlists playlists = new Playlists(database, library, youtubeImports, Clock.systemUTC());
         PlaylistsApi playlistsApi = new PlaylistsApi(playlists, addMedia);

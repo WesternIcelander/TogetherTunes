@@ -104,6 +104,12 @@ public final class Settings {
     /** Link resolutions per actor (user or guest) per hour. */
     public static final SettingKey<Integer> MVFINDER_MAX_PER_HOUR = SettingKey.integer("mvfinder.maxPerHour",
             15, 1, 1000);
+    /**
+     * YouTube searches ({@code GET /api/youtube/search}: the header search's Search YouTube and the
+     * search page's YouTube section) per person per hour; separate from {@link #MVFINDER_MAX_PER_HOUR}.
+     */
+    public static final SettingKey<Integer> YOUTUBE_SEARCH_MAX_PER_HOUR = SettingKey.integer(
+            "youtubeSearch.maxPerHour", 60, 1, 1000);
     public static final SettingKey<Integer> RETENTION_UNREFERENCED_DAYS = SettingKey.integer(
             "retention.unreferencedDays", 14, 0, 36_500);
     /** Days a never-viewed movie or show is kept after it was added; 0 = off ({@code docs/media-types.md}). */
@@ -270,7 +276,7 @@ public final class Settings {
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
                 YTDLP_ENABLED, YTDLP_COOKIES_FILE, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
                 MVFINDER_URL, MVFINDER_HEADER_NAME, MVFINDER_HEADER_VALUE, MVFINDER_PREFER, MVFINDER_ALLOW_GUESTS,
-                MVFINDER_MAX_PER_HOUR,
+                MVFINDER_MAX_PER_HOUR, YOUTUBE_SEARCH_MAX_PER_HOUR,
                 RETENTION_UNREFERENCED_DAYS,
                 RETENTION_VIDEO_UNVIEWED_DAYS, RETENTION_VIDEO_AFTER_VIEW_HOURS, RETENTION_PURGED_ENTRY_DAYS,
                 INGEST_MAX_DURATION_SECONDS,

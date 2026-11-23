@@ -2513,3 +2513,49 @@ body.now-view-open.pb-idle .app-video * {
 .link-add { display: flex; flex-direction: column; gap: 0.4rem; }
 .link-add .row input { min-width: 0; }
 .form .linked-media-editor button { margin-top: 0; }
+
+/* The header search's dropdown (searchbox.ts, docs/ui.md#header-search): under the box, over the page. */
+.app-search { position: relative; }
+.search-drop {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  right: 0;
+  min-width: 18rem;
+  max-height: min(70vh, 36rem);
+  overflow-y: auto;
+  z-index: 50;
+  background: Canvas;
+  color: CanvasText;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  border-radius: 0.5rem;
+  box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.25);
+  padding: 0.4rem;
+  box-sizing: border-box;
+}
+.search-drop[hidden] { display: none; }
+.search-drop-top { display: flex; justify-content: flex-start; padding: 0.1rem 0.2rem 0.35rem; }
+.search-drop-top[hidden] { display: none; }
+.search-drop-status, .search-drop-notice { margin: 0.3rem 0.4rem; }
+.search-drop-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.15rem; }
+.search-drop-list.video-results { max-height: none; overflow: visible; gap: 0.5rem; }
+.search-drop-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.3rem 0.4rem;
+  border-radius: 0.35rem;
+  cursor: pointer;
+}
+.search-drop-list > li.active, .search-drop-row:hover { background: rgba(127, 127, 127, 0.18); }
+.search-drop-list > li.yt-result { padding: 0.3rem 0.4rem; border-radius: 0.35rem; }
+.search-drop-cover { flex: 0 0 2.5rem; width: 2.5rem; height: 2.5rem; border-radius: 0.25rem; object-fit: cover; }
+.search-drop-text { flex: 1 1 auto; min-width: 0; }
+.search-drop-text > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-drop-title { color: inherit; text-decoration: none; font-weight: 600; }
+.search-drop-foot { border-top: 1px solid rgba(128, 128, 128, 0.3); margin-top: 0.3rem; padding: 0.35rem 0.4rem 0.1rem; }
+/* The search page's YouTube section. */
+.list-youtube { margin-top: 1.5rem; }
+.list-youtube[hidden] { display: none; }
+.yt-page-results { gap: 0.6rem; }
+.yt-page-results > li[draggable="true"] { cursor: grab; }

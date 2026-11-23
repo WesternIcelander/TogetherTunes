@@ -145,10 +145,20 @@ abstract class SettingsContract {
     }
 
     @Test
+    void youtubeSearchLimitSetting() throws SQLException {
+        assertEquals(60, settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR));
+        settings.setJson("youtubeSearch.maxPerHour", "5");
+        assertEquals(5, settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR));
+        assertEquals(15, settings.get(Settings.MVFINDER_MAX_PER_HOUR), "separate from the music-video finder's");
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("youtubeSearch.maxPerHour", "0"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("youtubeSearch.maxPerHour", "1001"));
+    }
+
+    @Test
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(53, all.size());
+        assertEquals(54, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -330,7 +340,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(53, settings.all().size());
+        assertEquals(54, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

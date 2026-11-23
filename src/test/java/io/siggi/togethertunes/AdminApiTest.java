@@ -719,6 +719,14 @@ class AdminApiTest {
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.headerName\":\"a b\"}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":0}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":1001}", admin));
+        // the YouTube search's own limit, in the Library group
+        JsonObject yt = find(items, "youtubeSearch.maxPerHour");
+        assertEquals(60, yt.get("value").getAsInt());
+        assertEquals("library", yt.get("group").getAsString());
+        assertEquals("integer", yt.get("type").getAsString());
+        call(200, "PATCH", "/api/admin/settings", "{\"youtubeSearch.maxPerHour\":120}", admin);
+        assertEquals(120, settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR));
+        assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"youtubeSearch.maxPerHour\":0}", admin));
 
         // null clears it
         JsonObject cleared = call(200, "PATCH", "/api/admin/settings", "{\"mvfinder.headerValue\":null}", admin);

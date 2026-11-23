@@ -314,6 +314,9 @@ class PermissionMatrixTest {
                     401, 401, 200, 200),
             row("POST /api/items/{id}/video-search/pick", c -> Call.post("/api/items/" + c.itemId()
                     + "/video-search/pick", "{\"videoId\":\"zzzzzzzzzzz\"}"), 401, 401, 400, 400),
+            // The YouTube search (header dropdown, search page): signed-in users with library.youtube (the same
+            // fake yt-dlp search; YoutubeSearchApiTest covers MVFinder, limits and the setting).
+            row("GET /api/youtube/search", c -> Call.get("/api/youtube/search?q=found"), 401, 401, 200, 200),
             row("PUT /api/items/{id}/pin", c -> Call.put("/api/items/" + c.itemId() + "/pin", null), 401, 401, 403, 200),
             row("DELETE /api/items/{id}/pin", c -> Call.delete("/api/items/" + c.itemId() + "/pin"), 401, 401, 403, 200),
             // A view (playback outside a room): whoever may play the item, as for its media files.

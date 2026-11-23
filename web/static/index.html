@@ -774,6 +774,12 @@
     <div id="list-groups" hidden></div>
     <p id="list-empty" class="muted" hidden></p>
     <button id="list-more" type="button" hidden>Load more</button>
+    <!-- The search page's YouTube results (people who may import YouTube links; ytrows.ts). -->
+    <section id="list-youtube" class="list-youtube" aria-labelledby="list-youtube-title" hidden>
+      <h2 id="list-youtube-title">YouTube</h2>
+      <p id="list-youtube-status" class="muted" role="status"></p>
+      <ul id="list-youtube-rows" class="link-results yt-page-results"></ul>
+    </section>
     <!-- Select mode (touch multi-select): checkboxes on the rows and this bar above the mini player. -->
     <div id="list-select-bar" class="select-bar" role="toolbar" aria-label="Selection" hidden>
       <span id="list-select-count" class="grow" role="status"></span>

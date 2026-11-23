@@ -139,6 +139,7 @@ public final class ItemsApi {
     private volatile MetadataLookupApi lookup;
     private volatile CoverUpload coverUpload;
     private volatile VideoSearchApi videoSearch;
+    private volatile YoutubeSearchApi youtubeSearch;
 
     /** Without retries ({@code POST …/retry} answers {@code 404}). */
     public ItemsApi(Items items, Permissions permissions) {
@@ -180,6 +181,15 @@ public final class ItemsApi {
         if (v != null) {
             v.register(router);
         }
+        YoutubeSearchApi y = youtubeSearch;
+        if (y != null) {
+            y.register(router);
+        }
+    }
+
+    /** The YouTube search ({@code GET /api/youtube/search}). Set before {@link #register}. */
+    public void youtubeSearch(YoutubeSearchApi youtubeSearch) {
+        this.youtubeSearch = youtubeSearch;
     }
 
     /** "Find a music video" ({@code POST /api/items/{id}/video-search[/pick]}). Set before {@link #register}. */

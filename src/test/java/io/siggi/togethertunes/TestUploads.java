@@ -139,6 +139,10 @@ public final class TestUploads {
             api.videoSearch(new io.siggi.togethertunes.library.VideoSearchApi(
                     new io.siggi.togethertunes.library.VideoSearch(db, ytTools, () -> null, youtube, null, () -> 1000,
                             clock), permissions));
+            // The YouTube search: the same fake yt-dlp (no MVFinder)
+            api.youtubeSearch(new io.siggi.togethertunes.library.YoutubeSearchApi(
+                    new io.siggi.togethertunes.library.YoutubeSearch(ytTools, () -> null, null, () -> 1000, clock),
+                    permissions));
             return api;
         } catch (IOException e) {
             throw new UncheckedIOException(e);

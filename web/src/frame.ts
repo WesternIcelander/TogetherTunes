@@ -56,6 +56,7 @@ import { exitNowPlaying, historyDepth, isNowPlaying, nowPlayingPath, playlistPat
 import { ACCOUNT_PAGE, ADMIN_PAGE, canInvite, ENCODES_PAGE, INVITES_PAGE, isAdmin, loadMe, logout, message, ROOMS_PAGE,
   type Me } from "./session.js";
 import { lastPressWasTouch, onLongPress, openMenu, placeMenu } from "./touch.js";
+import { HeaderSearch } from "./searchbox.js";
 
 /** Where the player bar's volume is remembered (this browser only). */
 const VOLUME_KEY = "togethertunes.volume";
@@ -115,6 +116,7 @@ interface LikesCache {
 export class Frame {
   readonly #host: FrameHost;
   #me: Me | undefined;
+  #search: HeaderSearch | undefined;
   #playlists: Playlist[] = [];
   #uncategorized = 0;
   #selections: AutoplaySelectionLike[] = [];
@@ -182,6 +184,8 @@ export class Frame {
     this.#tabs("app-panel");
     this.#wirePlayerBar();
     listenerVolume.set(volumeGain(this.#volume), this.#mute.muted);
+    // The header search's dropdown (searchbox.ts): results 1 s after typing, Search YouTube, See all results.
+    this.#search = new HeaderSearch(byId<HTMLFormElement>("app-search"), () => this.#me);
     byId<HTMLInputElement>("app-room-search").addEventListener("input", () => {
       window.clearTimeout(this.#roomsTimer);
       this.#roomsTimer = window.setTimeout(() => { void this.#loadRooms(); }, 250);
@@ -482,6 +486,7 @@ export class Frame {
       this.update();
     }
     this.#markCurrent(path);
+    this.#search?.close();
     const q = path.indexOf("?");
     this.#nowWanted = isNowPlaying(routeOf(q >= 0 ? path.slice(0, q) : path));
     this.#applyNowView();

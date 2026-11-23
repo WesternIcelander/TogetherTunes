@@ -44,13 +44,27 @@ class InteractionsJsTest {
         }
         String songMenu = read("web/js/songmenu.js");
         for (String s : List.of("\"queue.move\"", "\"queue.add\"", "playNowBefore(", "/video-search", "\"/pick\"",
-                "candidateDetail(", "NO_VIDEO_FOUND", "searchErrorText(")) {
+                "candidateRow(", "NO_VIDEO_FOUND", "searchErrorText(")) {
             assertTrue(songMenu.contains(s), s);
         }
         String item = read("web/js/item.js");
         for (String s : List.of("songMenuEntries(", "list: \"item\"", "findVideo(item)", "queueItem(", "openMenu(")) {
             assertTrue(item.contains(s), s);
         }
+        // the header search's dropdown and the YouTube rows (searchdrop.ts, ytsearch.ts)
+        String box = read("web/js/searchbox.js");
+        for (String s : List.of("new SearchTimer(", "this.#latest.current(", "moveActive(", "enterAction(",
+                "libraryDropdownPath(", "youtubeSearchPath(", "canSearchYoutube(", "songMenuEntries(", "youtubeRows(",
+                "searchPagePath(")) {
+            assertTrue(box.contains(s), s);
+        }
+        String rows = read("web/js/ytrows.js");
+        for (String s : List.of("youtubeActions(", "youtubeRow(", "queueItem(", "youtubeUrl",
+                "openAddLink(", "doubleClickAction(", "\"noopener noreferrer\"", "\"text/uri-list\"")) {
+            assertTrue(rows.contains(s), s);
+        }
+        assertTrue(list.contains("youtubeRows(") && list.contains("canSearchYoutube(me)"), "the search page's YouTube section");
+        assertTrue(read("web/js/frame.js").contains("new HeaderSearch("), "the frame sets up the dropdown");
         String frame = read("web/js/frame.js");
         for (String s : List.of("\"dblclick\"", "playlistClick(", "playlistMenu(", "entryMenu(", "entryMessage(",
                 "\"PATCH\"", "lastPressWasTouch(", "entry-more", "#openPersonMenu(room, p, more)")) {
