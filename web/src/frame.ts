@@ -599,17 +599,17 @@ export class Frame {
     }
     const selected = mySelectedPlaylists(this.#selections, me.id);
     const likes = this.#playlists.find((p) => p.builtin === "likes");
+    // Uncategorized Items is always shown (a drop target), with its count while there are any.
     const links: HTMLElement[] = LIBRARY_LINKS.map((l) => l.path === "/liked" && likes !== undefined
       ? this.#playlistRow(likes, selected.has(likes.id), "/liked", "div")
-      : h("a", { class: "side-link", href: l.path, text: l.label }));
+      : l.path === "/uncategorized" && this.#uncategorized > 0
+        ? h("a", { class: "side-link", href: l.path }, l.label + " ",
+          h("span", { class: "muted small num", text: String(this.#uncategorized) }))
+        : h("a", { class: "side-link", href: l.path, text: l.label }));
     const newPlaylist = h("button", { type: "button", class: "side-link side-new", id: "app-new-playlist" },
       "+ New Playlist");
     newPlaylist.addEventListener("click", () => { void this.#newPlaylist(); });
     links.push(newPlaylist);
-    if (this.#uncategorized > 0) {
-      links.push(h("a", { class: "side-link", href: "/uncategorized" }, "Uncategorized Videos ",
-        h("span", { class: "muted small num", text: String(this.#uncategorized) })));
-    }
     const list = h("ul", { class: "side-list playlists-list" });
     for (const p of this.#playlists) {
       if (p.builtin === "likes") continue;

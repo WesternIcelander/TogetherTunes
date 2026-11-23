@@ -250,7 +250,7 @@ abstract class LibraryContract {
             }
         };
         assertEquals(List.of(e), typed.apply("uncategorized"));
-        assertEquals(1, library.countUncategorized(alice.userId()), "the Uncategorized Videos view");
+        assertEquals(1, library.countUncategorized(alice.userId()), "the Uncategorized Items view");
         assertEquals(0, library.countUncategorized(bob.userId()));
         assertEquals(List.of(d, c, b, a), typed.apply("audio"));
         assertEquals(List.of(), typed.apply("movie,show"));

@@ -128,7 +128,8 @@ class WebBuildTest {
         assertTrue(read("web/js/libview.js").contains("requireUser"));
         assertTrue(read("web/js/encodes.js").contains("requireUser"));
         assertFalse(read("web/js/item.js").contains("requireUser"));
-        assertTrue(read("web/js/libview.js").contains("\"/api/library?"));
+        // All My Songs lists only audio and music videos (movies, shows, videos and uncategorized items have their own views).
+        assertTrue(read("web/js/libview.js").contains("\"/api/library\", { type: \"audio,music_video\" }"));
         // The provisional UI's library and playlist pages are gone (old links show All My Songs).
         assertFalse(index.contains("<template id=\"view-library\""));
         assertFalse(index.contains("<template id=\"view-playlists\""));

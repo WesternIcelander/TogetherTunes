@@ -17,9 +17,9 @@ export type ViewName = "home" | "login" | "register" | "password" | "setup" | "r
 
 /**
  * The desktop layout's middle lists (docs/ui.md#layout-desktop), all shown by the `list` view:
- * All My Songs, Movies/Shows, Liked Songs, Uncategorized Videos, search results and one playlist.
+ * All My Songs, Movies, Shows, Videos, Uncategorized Items, Liked Songs, search results and one playlist.
  */
-export type ListName = "songs" | "shows" | "liked" | "uncategorized" | "search" | "playlist";
+export type ListName = "songs" | "movies" | "shows" | "videos" | "uncategorized" | "liked" | "search" | "playlist";
 
 /** A URL that shows a view: which one, its path parameters, and the path to show for it. */
 export interface ViewRoute {
@@ -98,8 +98,12 @@ const LISTS: Record<string, [ListName, string]> = {
   "/playlists/": ["songs", "/songs"],
   "/songs": ["songs", "/songs"],
   "/songs/": ["songs", "/songs"],
+  "/movies": ["movies", "/movies"],
+  "/movies/": ["movies", "/movies"],
   "/shows": ["shows", "/shows"],
   "/shows/": ["shows", "/shows"],
+  "/videos": ["videos", "/videos"],
+  "/videos/": ["videos", "/videos"],
   "/liked": ["liked", "/liked"],
   "/liked/": ["liked", "/liked"],
   "/uncategorized": ["uncategorized", "/uncategorized"],

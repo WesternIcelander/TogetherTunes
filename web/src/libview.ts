@@ -1,10 +1,12 @@
 // The desktop layout's middle lists (docs/ui.md#layout-desktop), the `list` view of the router:
-// - All My Songs (/songs): the caller's library, newest first, with "+ Add from link" (library only);
-// - Movies/Shows (/shows): movies, then shows grouped by show and season;
+// - All My Songs (/songs): the caller's audio and music videos, newest first, with "+ Add from link"
+//   (library only);
+// - Movies (/movies) and Videos (/videos): the caller's items of that media type, newest first;
+// - Shows (/shows): the shows, each opening its seasons and episodes (/shows?show=<name>);
 // - Liked Songs (/liked) and a playlist (/playlists/{id}; another person's playlist selected for
 //   autoplay in the room with ?room=): cover, name, song count and total time, "+ Add from link"
 //   (own playlists) and "Add All: In Order / Shuffled" into the current room's queue;
-// - Uncategorized Videos (/uncategorized) and the search results (/search?q=, the whole server,
+// - Uncategorized Items (/uncategorized) and the search results (/search?q=, the whole server,
 //   the caller's own library first).
 // Rows: #, cover, title and artist, album, date added, time and a ⋯ menu (also on right-click and
 // long press). On narrow windows (docs/ui.md#mobile-narrow-windows) only #, cover, title and artist
@@ -560,7 +562,7 @@ async function loadEntries(path: string, query: Record<string, string>): Promise
   return api<Page<LibraryEntry>>("GET", path + "?" + params.toString());
 }
 
-/** A library list (All My Songs, Uncategorized Videos), paged. */
+/** A library list (All My Songs, Movies, Videos, Uncategorized Items), paged. */
 async function showLibrary(path: string, query: Record<string, string>, empty: string): Promise<void> {
   const page = await loadEntries(path, query);
   appendRows(page.items.map((e) => ({ item: e.item, addedAt: e.addedAt })));
@@ -571,12 +573,24 @@ async function showLibrary(path: string, query: Record<string, string>, empty: s
 async function showSongs(): Promise<void> {
   setHead("All My Songs", "");
   element("list-actions").replaceChildren(addFromLinkButton(undefined, () => restart()));
-  await showLibrary("/api/library", {}, "Your library is empty. Add songs from a link, or drop files on a playlist.");
+  await showLibrary("/api/library", { type: "audio,music_video" },
+    "No songs or music videos in your library yet. Add songs from a link, or drop files on a playlist.");
+}
+
+async function showMovies(): Promise<void> {
+  setHead("Movies", "");
+  await showLibrary("/api/library", { type: "movie" }, "No movies in your library yet.");
+}
+
+async function showVideos(): Promise<void> {
+  setHead("Videos", "");
+  await showLibrary("/api/library", { type: "video" },
+    "No videos in your library yet. Videos are clips and other videos that aren't music videos, movies or shows.");
 }
 
 async function showUncategorized(): Promise<void> {
-  setHead("Uncategorized Videos", "Videos in your library that have no type yet: open one to give it one.");
-  await showLibrary("/api/library/uncategorized", {}, "No uncategorized videos.");
+  setHead("Uncategorized Items", "Items in your library that have no type yet: open one to give it one.");
+  await showLibrary("/api/library/uncategorized", {}, "No uncategorized items in your library.");
 }
 
 async function showSearch(): Promise<void> {
@@ -605,24 +619,19 @@ interface ShowsResponse {
   shows: { name: string; seasons: { season?: number; episodes: LibraryEntry[] }[] }[];
 }
 
-/** Movies/Shows: movies, then the shows (each opens its seasons and episodes: `/shows?show=<name>`). */
+/** Shows: the shows (each opens its seasons and episodes: `/shows?show=<name>`). */
 async function showShows(): Promise<void> {
   const name = new URLSearchParams(VIEW.search).get("show");
   if (name !== null && name.trim() !== "") {
     await showOneShow(name);
     return;
   }
-  setHead("Movies/Shows", "");
-  const [movies, shows] = await Promise.all([
-    api<Page<LibraryEntry>>("GET", "/api/library?type=movie&limit=200"),
-    api<ShowsResponse>("GET", "/api/library/shows"),
-  ]);
-  appendRows(movies.items.map((e) => ({ item: e.item, addedAt: e.addedAt })));
+  setHead("Shows", "");
+  const shows = await api<ShowsResponse>("GET", "/api/library/shows");
   const groups = element("list-groups");
   const parts: HTMLElement[] = [];
-  if (movies.items.length > 0) element("list-table").before(h("h2", { text: "Movies" }));
   if (shows.shows.length > 0) {
-    parts.push(h("h2", { text: "Shows" }), h("ul", { class: "show-list" }, ...shows.shows.map((show) => {
+    parts.push(h("ul", { class: "show-list" }, ...shows.shows.map((show) => {
       const episodes = show.seasons.reduce((n, season) => n + season.episodes.length, 0);
       const seasons = show.seasons.filter((season) => season.season !== undefined).length;
       return h("li", {},
@@ -633,16 +642,15 @@ async function showShows(): Promise<void> {
   }
   groups.replaceChildren(...parts);
   groups.hidden = parts.length === 0;
-  element("list-summary").textContent = songCount(movies.items.length).replace("song", "movie") + " · "
-    + shows.shows.length + (shows.shows.length === 1 ? " show" : " shows");
-  setEmpty(movies.items.length === 0 && shows.shows.length === 0 ? "No movies or shows in your library yet." : "");
+  element("list-summary").textContent = shows.shows.length + (shows.shows.length === 1 ? " show" : " shows");
+  setEmpty(shows.shows.length === 0 ? "No shows in your library yet. Episodes of a show are grouped here by show and season." : "");
 }
 
 /** One show: its seasons in order, each with its episodes as list rows (play, queue, ⋯ like songs). */
 async function showOneShow(name: string): Promise<void> {
   const r = await api<ShowsResponse>("GET", "/api/library/shows?name=" + encodeURIComponent(name));
   const show = r.shows[0];
-  element("list-actions").replaceChildren(h("a", { class: "small", href: "/shows", text: "← Movies/Shows" }));
+  element("list-actions").replaceChildren(h("a", { class: "small", href: "/shows", text: "← Shows" }));
   if (show === undefined) {
     setHead(name, "");
     setEmpty("No episodes of this show in your library.");
@@ -709,7 +717,9 @@ async function show(): Promise<void> {
   const { list, id } = listName();
   switch (list) {
     case "songs": return showSongs();
+    case "movies": return showMovies();
     case "shows": return showShows();
+    case "videos": return showVideos();
     case "liked": return showLiked();
     case "uncategorized": return showUncategorized();
     case "search": return showSearch();

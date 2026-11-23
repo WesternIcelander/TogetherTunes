@@ -308,10 +308,16 @@ export function mySelectedPlaylists(selections: readonly AutoplaySelectionLike[]
   return out;
 }
 
-/** The middle views the sidebar links to, by path (docs/ui.md#layout-desktop; router.ts `list` view). */
+/**
+ * The middle views the sidebar links to, in the sidebar's order (docs/ui.md#layout-desktop; router.ts
+ * `list` view; the mobile Library pane is the same list). + New Playlist and the playlists follow.
+ */
 export const LIBRARY_LINKS: readonly { path: string; label: string }[] = [
   { path: "/songs", label: "All My Songs" },
-  { path: "/shows", label: "Movies/Shows" },
+  { path: "/movies", label: "Movies" },
+  { path: "/shows", label: "Shows" },
+  { path: "/videos", label: "Videos" },
+  { path: "/uncategorized", label: "Uncategorized Items" },
   { path: "/liked", label: "Liked Songs" },
 ];
 

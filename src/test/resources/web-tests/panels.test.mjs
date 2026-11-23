@@ -141,7 +141,10 @@ test("autoplay selections: my dots and others' playlists", () => {
 });
 
 test("links, search path, shuffle, people", () => {
-  assert.deepEqual(P.LIBRARY_LINKS.map((l) => l.label), ["All My Songs", "Movies/Shows", "Liked Songs"]);
+  assert.deepEqual(P.LIBRARY_LINKS.map((l) => l.label),
+    ["All My Songs", "Movies", "Shows", "Videos", "Uncategorized Items", "Liked Songs"]);
+  assert.deepEqual(P.LIBRARY_LINKS.map((l) => l.path),
+    ["/songs", "/movies", "/shows", "/videos", "/uncategorized", "/liked"]);
   assert.equal(P.searchPath("  a b "), "/search?q=a%20b");
   const seq = [0.9, 0.1, 0.5];
   let i = 0;

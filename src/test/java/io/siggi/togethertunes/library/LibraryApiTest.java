@@ -243,7 +243,7 @@ class LibraryApiTest {
         assertEquals("invalid_query", code(call("GET", "/api/library?q=" + "x".repeat(201), true)));
     }
 
-    /** The Uncategorized Videos view: the caller's uncategorized entries and their total. */
+    /** The Uncategorized Items view: the caller's uncategorized entries and their total. */
     @Test
     void uncategorizedView() throws Exception {
         JsonObject empty = json(call("GET", "/api/library/uncategorized?limit=1", true));
@@ -384,6 +384,54 @@ class LibraryApiTest {
         assertEquals(clip, videos.get(0).getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
         assertEquals(2, json(call("GET", "/api/library?type=video,show", true)).getAsJsonArray("items").size());
         assertEquals("invalid_type", code(call("GET", "/api/library?type=clip", true)));
+    }
+
+    /** The sidebar's views by type: All My Songs (audio and music videos), Movies, Videos, Uncategorized Items. */
+    @Test
+    void sidebarViewsByType() throws Exception {
+        String song = item("Song", "ready", null);
+        assertEquals(201, call("PUT", "/api/library/" + song, true).statusCode());
+        java.util.Map<String, String> ids = new java.util.LinkedHashMap<>();
+        for (String type : List.of("music_video", "movie", "show", "video", "uncategorized")) {
+            String id = item("Item " + type, "ready", null);
+            db.write(c -> {
+                try (PreparedStatement ps = c.prepareStatement("UPDATE items SET kind = 'video',"
+                        + " media_type = 'uncategorized' WHERE id = ?")) {
+                    ps.setString(1, id);
+                    ps.executeUpdate();
+                }
+                return null;
+            });
+            String body = type.equals("show")
+                    ? "{\"mediaType\":\"show\",\"show\":{\"name\":\"A Show\",\"season\":1,\"episode\":1}}"
+                    : "{\"mediaType\":\"" + type + "\"}";
+            HttpResponse<String> r = put("/api/library/" + id, body);
+            assertEquals(201, r.statusCode(), r.body());
+            ids.put(type, id);
+        }
+        java.util.function.Function<String, List<String>> list = q -> {
+            try {
+                List<String> out = new ArrayList<>();
+                for (var e : json(call("GET", q, true)).getAsJsonArray("items")) {
+                    out.add(e.getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
+                }
+                java.util.Collections.sort(out);
+                return out;
+            } catch (Exception e) {
+                throw new RuntimeException(e);
+            }
+        };
+        java.util.function.Function<List<String>, List<String>> sorted = l -> {
+            List<String> out = new ArrayList<>(l);
+            java.util.Collections.sort(out);
+            return out;
+        };
+        assertEquals(sorted.apply(List.of(song, ids.get("music_video"))), list.apply("/api/library?type=audio,music_video"));
+        assertEquals(List.of(ids.get("movie")), list.apply("/api/library?type=movie"));
+        assertEquals(List.of(ids.get("show")), list.apply("/api/library?type=show"));
+        assertEquals(List.of(ids.get("video")), list.apply("/api/library?type=video"));
+        assertEquals(List.of(ids.get("uncategorized")), list.apply("/api/library/uncategorized"));
+        assertEquals(6, list.apply("/api/library").size());
     }
 
     @Test

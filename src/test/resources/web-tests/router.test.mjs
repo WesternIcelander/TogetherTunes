@@ -34,7 +34,10 @@ test("fixed views, with and without the trailing slash and under the old page na
     "/admin/": view("admin", {}, "/admin/"),
     // the desktop layout's middle lists (one view, the list named in its params)
     "/songs": view("list", { list: "songs" }, "/songs"), "/songs/": view("list", { list: "songs" }, "/songs"),
-    "/shows": view("list", { list: "shows" }, "/shows"), "/liked": view("list", { list: "liked" }, "/liked"),
+    "/movies": view("list", { list: "movies" }, "/movies"), "/movies/": view("list", { list: "movies" }, "/movies"),
+    "/shows": view("list", { list: "shows" }, "/shows"), "/shows/": view("list", { list: "shows" }, "/shows"),
+    "/videos": view("list", { list: "videos" }, "/videos"), "/videos/": view("list", { list: "videos" }, "/videos"),
+    "/liked": view("list", { list: "liked" }, "/liked"),
     "/uncategorized": view("list", { list: "uncategorized" }, "/uncategorized"),
     "/search": view("list", { list: "search" }, "/search"), "/search/": view("list", { list: "search" }, "/search"),
   };
