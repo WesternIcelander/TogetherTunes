@@ -15,6 +15,7 @@ import io.siggi.togethertunes.ingest.JobLog;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
+import io.siggi.togethertunes.ytdlp.CookieJarFile;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -415,17 +416,14 @@ public final class VideoSearch {
         if (!tools.hasYtdlp()) {
             throw new HttpError(503, "youtube_unavailable", "Searching YouTube isn't available right now");
         }
-        Path cookies = IngestPipeline.cookiesFile(cookiesFile.get(), w -> LOG.log(System.Logger.Level.WARNING, w));
-        List<String> args = new ArrayList<>(List.of("--flat-playlist", "-J", "--no-warnings"));
-        if (cookies != null) {
-            args.add("--cookies");
-            args.add(cookies.toString());
-        }
-        args.add("--");
-        args.add("ytsearch" + count + ":" + query);
         JobLog log = new JobLog();
         ToolResult result;
-        try {
+        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), null,
+                w -> LOG.log(System.Logger.Level.WARNING, w))) {
+            List<String> args = new ArrayList<>(List.of("--flat-playlist", "-J", "--no-warnings"));
+            args.addAll(cookies.args());
+            args.add("--");
+            args.add("ytsearch" + count + ":" + query);
             result = tools.ytdlp(args).timeout(SEARCH_TIMEOUT).idleTimeout(SEARCH_TIMEOUT).log(log)
                     .stdoutToString(SEARCH_MAX_BYTES).run();
         } catch (ToolException e) {

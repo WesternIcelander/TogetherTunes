@@ -251,6 +251,13 @@ public final class Main {
         // Repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
         Supplier<String> cookiesFile = cookiesFile(settings);
+        // yt-dlp calls without a job directory copy the cookies file here (leftovers deleted)
+        try {
+            io.siggi.togethertunes.ytdlp.CookieJarFile.serverTempDir(dataDir.tmp().resolve("cookies"));
+        } catch (IOException e) {
+            System.err.println("Could not set up " + dataDir.tmp().resolve("cookies") + " (" + e.getMessage()
+                    + "); private copies of the yt-dlp cookies file go to the system temp dir");
+        }
         // The quick and quality x264 presets, each checked against the reference avcC before use.
         EncodePresets presets = encodePresets(config, dataDir, outputAssets, settings, System.err);
         // TrackSplitter (docs/library-and-ingest.md#looking-details-up-online): the item page's Look up

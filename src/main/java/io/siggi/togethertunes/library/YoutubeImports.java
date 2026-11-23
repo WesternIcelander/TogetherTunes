@@ -16,6 +16,7 @@ import io.siggi.togethertunes.ingest.ToolResult;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.retention.References;
 import io.siggi.togethertunes.storage.DiskSpace;
+import io.siggi.togethertunes.ytdlp.CookieJarFile;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -512,13 +513,13 @@ public final class YoutubeImports {
             throw unavailable();
         }
         JobLog log = new JobLog();
-        Path cookies = IngestPipeline.cookiesFile(cookiesFile.get(), w -> LOG.log(System.Logger.Level.WARNING, w));
         YoutubeLookupStage.Tracker stages = new YoutubeLookupStage.Tracker(progress);
         // --verbose prints a traceback after an ERROR line, which can push it out of the stderr tail
         java.util.concurrent.atomic.AtomicReference<String> lastError = new java.util.concurrent.atomic.AtomicReference<>();
         ToolResult result;
-        try {
-            result = tools.ytdlp(IngestPipeline.metadataArgs(videoId, cookies)).timeout(METADATA_TIMEOUT)
+        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), null,
+                w -> LOG.log(System.Logger.Level.WARNING, w))) {
+            result = tools.ytdlp(IngestPipeline.metadataArgs(videoId, cookies.file())).timeout(METADATA_TIMEOUT)
                     .idleTimeout(METADATA_IDLE_TIMEOUT).log(log).stdoutToString(METADATA_MAX_BYTES)
                     .stderrLines(line -> {
                         if (line.strip().startsWith("ERROR:")) {

@@ -3,6 +3,7 @@ package io.siggi.togethertunes.ingest;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -240,6 +241,9 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         Files.writeString(script, "#!/bin/sh\n"
                 + "printf '%s\\n' \"$@\" > '" + argsFile + "'\n"
                 + "out=''\nthumb=''\n"
+                // yt-dlp writes a refreshed cookie to the file it was given
+                + "for a; do if [ \"$prev\" = --cookies ]; then"
+                + " printf '.youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tFRESH\\tyes\\n' >> \"$a\"; fi; prev=\"$a\"; done\n"
                 + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then case \"$2\" in thumbnail:*) thumb=\"${2#thumbnail:}\";;"
                 + " *) out=\"$2\";; esac; shift; fi; shift; done\n"
                 + "echo '[youtube] dQw4w9WgXcQ: Downloading webpage'\n"
@@ -254,7 +258,12 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertEquals(State.DONE, job.state(), job.log());
         List<String> args = Files.readAllLines(argsFile);
         assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ", args.get(args.size() - 1));
-        assertEquals(cookies.toString(), args.get(args.indexOf("--cookies") + 1));
+        // a private copy (in the job's directory, deleted afterwards), its change merged into the shared file
+        Path privateCopy = Path.of(args.get(args.indexOf("--cookies") + 1));
+        assertNotEquals(cookies, privateCopy);
+        assertFalse(Files.exists(privateCopy));
+        assertTrue(Files.readString(cookies).contains(".youtube.com\tTRUE\t/\tTRUE\t0\tFRESH\tyes\n"),
+                "merged back into the shared file");
         assertTrue(job.log().contains("thumbnail cover." + thumbExt), job.log());
         assertTrue(job.log().contains("step: download"));
         assertTrue(job.log().contains("[youtube] dQw4w9WgXcQ: Downloading webpage"), job.log());

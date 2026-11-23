@@ -9,6 +9,7 @@ import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.SampleIndex;
+import io.siggi.togethertunes.ytdlp.CookieJarFile;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -2006,27 +2007,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
 
     /**
      * The cookies file named by the {@code ytdlp.cookiesFile} setting, if it is a readable regular
-     * file; null if the setting is empty. A file that is missing or unreadable is reported to
-     * {@code warn} and ignored (yt-dlp then runs without cookies), so a mistyped path doesn't stop
-     * every import. yt-dlp writes refreshed cookies back to the file, so the server should be able
-     * to write it too.
+     * file; null if the setting is empty ({@link CookieJarFile#sharedFile}). Callers pass yt-dlp a
+     * private copy of it ({@link CookieJarFile#open}), never the shared file itself.
      */
     public static Path cookiesFile(String setting, Consumer<String> warn) {
-        if (setting == null || setting.isBlank()) {
-            return null;
-        }
-        Path file;
-        try {
-            file = Path.of(setting.strip());
-        } catch (RuntimeException e) {
-            warn.accept("the cookies file setting (ytdlp.cookiesFile) isn't a valid path; continuing without cookies");
-            return null;
-        }
-        if (!Files.isRegularFile(file) || !Files.isReadable(file)) {
-            warn.accept("the cookies file " + file + " (ytdlp.cookiesFile) can't be read; continuing without cookies");
-            return null;
-        }
-        return file;
+        return CookieJarFile.sharedFile(setting, warn);
     }
 
     // ------------------------------------------------------------------ steps
@@ -2048,8 +2033,11 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 log.append(line);
             }
         };
-        Path cookies = cookiesFile(cookiesFile.get(), w -> log.append("[ingest] " + w));
-        tools.ytdlp(downloadArgs(id, scratch, tools.ffmpegExecutable(), cookies)).log(log).stdoutLines(lines).run();
+        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), scratch,
+                w -> log.append("[ingest] " + w))) {
+            tools.ytdlp(downloadArgs(id, scratch, tools.ffmpegExecutable(), cookies.file())).log(log)
+                    .stdoutLines(lines).run();
+        }
         Path file = null;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(scratch, "src.*")) {
             for (Path f : files) {

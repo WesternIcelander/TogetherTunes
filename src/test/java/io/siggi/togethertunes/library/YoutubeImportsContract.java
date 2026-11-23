@@ -87,6 +87,9 @@ abstract class YoutubeImportsContract {
         Files.writeString(script, "#!/bin/sh\n"
                 + "printf '%s\\n' \"$@\" >> '" + callsFile + "'\n"
                 + "echo '----' >> '" + callsFile + "'\n"
+                // yt-dlp writes a refreshed cookie to the cookies file it was given
+                + "for a; do if [ \"$prev\" = --cookies ]; then"
+                + " printf '.youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tFRESH\\tyes\\n' >> \"$a\"; fi; prev=\"$a\"; done\n"
                 + "if [ -f '" + stagesFile + "' ]; then sh '" + stagesFile + "' >&2; fi\n"
                 + "if [ -f '" + errorFile + "' ]; then cat '" + errorFile + "' >&2; exit 1; fi\n"
                 + "cat '" + metaFile + "'\n", StandardCharsets.UTF_8);
@@ -678,7 +681,12 @@ abstract class YoutubeImportsContract {
         cookies = file.toString();
         imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV);
         List<String> args = calls().get(0);
-        assertEquals(file.toString(), args.get(args.indexOf("--cookies") + 1));
+        // a private copy, deleted afterwards; the cookie yt-dlp added is merged into the shared file
+        Path privateCopy = Path.of(args.get(args.indexOf("--cookies") + 1));
+        assertNotEquals(file, privateCopy);
+        assertFalse(Files.exists(privateCopy));
+        assertEquals("# Netscape HTTP Cookie File\n\n.youtube.com\tTRUE\t/\tTRUE\t0\tFRESH\tyes\n",
+                Files.readString(file));
         assertEquals("https://www.youtube.com/watch?v=" + ID, args.get(args.size() - 1));
 
         cookies = dir.resolve("missing.txt").toString();
