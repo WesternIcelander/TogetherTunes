@@ -80,16 +80,19 @@ Where the user is lives in `alone_sessions` ([data-model.md](data-model.md#rooms
 
 | `controlMode` | Who adds to the queue | Order | Who can skip |
 |---|---|---|---|
-| `owner` | Owner and moderators. Others **suggest**, and the owner accepts or rejects | Manual | Owner and moderators |
-| `vote` | Members with request rights | By votes (descending), ties broken by time added. Owner and moderators can pin an entry to the top | Owner and moderators, or the vote-skip threshold |
-| `open` | Members with request rights | Manual; anyone with request rights can reorder or remove | Anyone with request rights |
+| `owner` ("Request and approve") | Owner and moderators. Others **suggest**, and the owner accepts or rejects | Manual | Owner and moderators |
+| `request` ("Request without approval") | Members with request rights, **straight into the queue** (no suggestions) | Manual; only the owner and moderators reorder | Owner and moderators |
+| `vote` ("Vote") | Members with request rights | By votes (descending), ties broken by time added. Owner and moderators can pin an entry to the top | Owner and moderators, or the vote-skip threshold |
+| `open` ("Open (anyone can edit the queue)") | Members with request rights | Manual; anyone with request rights can reorder or remove | Anyone with request rights |
 
 Details (as implemented):
 
 - "Who can skip" also covers `play`, `pause`, `seek` and `previous`.
+- The UI names the modes in this order, with the labels in quotes (Manage Room, New Room, the room view's "Control:" line); the labels were changed and `request` added on 2026-11-23 (Siggi: "Rename 'Owner picks (others suggest)' to 'Request and approve'. Add one more that's like this, but auto accepts the suggestion to the queue. Call it 'Request without approval'. Make the Open one say 'Open (anyone can edit the queue)'").
+- **`request` mode** is `owner` mode without the approval step: a request (library, link, upload, a playlist's "Add All", ↑ on an autoplay entry) by someone with request rights is queued at once at the end of the manual section, as if a suggestion had been accepted, with the usual request rules (`requestsPerActor`, `noRepeatWindow`, `libraryRequests`, the guest capabilities); the request button says "Add to queue" / "Request", not "Suggest". As in `owner` mode the owner and moderators alone reorder (`queue.move`) and control playback; there are no votes, pins or vote-skip; the owner and moderators remove anything, the requester their own waiting entries. The owner's and moderators' own adds aren't requests (no `request.new`), as in `owner` mode.
 - Votes and vote-skip exist only in `vote` mode. Pinned entries play first, in the order they were pinned; owner and moderators can unpin.
 - Vote-skip needs `ceil(voteSkipThreshold × present identified members)` skip votes (at least 1). Each voter counts once per entry; skip votes reset when the entry changes, and a drop in presence can reach the threshold.
-- Changing the control mode keeps the current play order: queue positions are rewritten to it and pins are cleared. Suggestions left from `owner` mode stay, and the owner and moderators can still accept or reject them in any mode. An accepted suggestion joins the end of the queue.
+- Changing the control mode keeps the current play order: queue positions are rewritten to it and pins are cleared. Suggestions left from `owner` mode stay (also after switching to `request`), and the owner and moderators can still accept or reject them in any mode. An accepted suggestion joins the end of the queue.
 
 ## Room settings (`settings_json`)
 
@@ -191,7 +194,7 @@ As implemented (`RoomGuests`, `RoomPresence`, `PresenceOps`):
 
 ## Requests
 
-A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in owner mode. Requests come from four sources:
+A **request** is any attempt to add an item to a room's queue (or to suggest one) by someone other than the owner or a moderator acting in `owner` or `request` mode. Requests come from four sources:
 
 - **Library:** search the room owner's library and playlists and the requester's own library, or with "Search the whole server" every item on the server ([libraries.md](libraries.md#visibility)); any item on the server may be requested by id. Room setting **`libraryRequests`** (default on; Siggi, 2026-11-10: "We should allow disabling library requests, in which case you cannot add anything from any library, unless it's a YouTube item you already know the link for which you paste in the YouTube link section.") off: for everyone but the owner and moderators the room page hides the search and the history's Add to Queue, and the server refuses the search, `queue.add` by item id and by history entry (`403 library_requests_off`). Pasting a YouTube link still works even when the video is already on the server. Uploads are **not** unaffected any more (2026-11-10): they need library requests ([below](#uploads-need-library-requests)). `room.you.canRequestLibrary` tells the client (false while off, except for the owner and moderators).
 
@@ -364,7 +367,7 @@ These are performed by the executor; each one checks the actor's permissions and
 - `addPlaylist(playlistId, shuffle)`: by the request rules ([Queue editing](#queue-editing)).
 - `remove(entryId)`: owner and moderators; the requester while the entry is still queued; or anyone with request rights in `open` mode.
 - `retry(entryId)`: a failed YouTube entry (queued or suggested) is fetched again; owner and moderators, and the requester while they may add YouTube links here ([Retrying](#room-state)).
-- `move(entryIds, beforeEntryId, section)`: `owner` and `open` modes only. `pin(entryId)`: in `vote` mode.
+- `move(entryIds, beforeEntryId, section)`: `owner`, `request` and `open` modes only. `pin(entryId)`: in `vote` mode.
 - `vote(entryId, ±1 | 0)`, `voteSkip()`.
 - `play()`, `pause()`, `seek(ms)`, `next()`, `previous()`.
 
@@ -379,7 +382,7 @@ Details (as implemented):
 
 (M9, [ui.md](ui.md#library-rules) "Reordering by dragging", [api.md](api.md#websocket) `queue.move`, `queue.addPlaylist`.)
 
-- **Moving** (`queue.move`): one or more queued entries (multi-select drags them together) go, in the given order, before `beforeEntryId`, or to the end of `section`. When `beforeEntryId` is one of the moved entries, they go before the next entry after it that stays. The target section is `beforeEntryId`'s, so entries move **between the sections**: an autoplay entry moved into the manually added section becomes a manual entry (still added by the person who selected it, so it now counts towards their `requestsPerActor`, like any manual entry); a manual entry moved into "From Playlist" becomes part of the autoplay section (its votes go; autoplay never removes it, [above](#the-autoplay-engine)). Only in `owner` mode (owner and moderators) and `open` mode (anyone with request rights); never in `vote` mode (`409 wrong_control_mode`: votes order the requests, the owner and moderators pin instead). Suggestions and the current entry don't move. Alone, the user is the owner of the alone room, so they always may.
+- **Moving** (`queue.move`): one or more queued entries (multi-select drags them together) go, in the given order, before `beforeEntryId`, or to the end of `section`. When `beforeEntryId` is one of the moved entries, they go before the next entry after it that stays. The target section is `beforeEntryId`'s, so entries move **between the sections**: an autoplay entry moved into the manually added section becomes a manual entry (still added by the person who selected it, so it now counts towards their `requestsPerActor`, like any manual entry); a manual entry moved into "From Playlist" becomes part of the autoplay section (its votes go; autoplay never removes it, [above](#the-autoplay-engine)). Only in `owner` and `request` modes (owner and moderators) and `open` mode (anyone with request rights); never in `vote` mode (`409 wrong_control_mode`: votes order the requests, the owner and moderators pin instead). Suggestions and the current entry don't move. Alone, the user is the owner of the alone room, so they always may.
 - **×** (`queue.remove`): the owner, a moderator or whoever added the entry (for an autoplay entry the person whose playlist it came from); in `open` mode also anyone with request rights (as before). The current entry isn't removed: × on Now Playing is a skip (`next`, by its rules).
 - **"Add All"** (`queue.addPlaylist`, In Order or Shuffled): a signed-in user adds one of their own playlists by the **request rules**, as if each song was requested by id: request rights and the library request right, `libraryRequests`; in `owner` mode others than the owner and moderators get suggestions. For them `noRepeatWindow` leaves out recently played songs and `requestsPerActor` caps how many are added (the rest is left out and counted, `overLimit`; with no place left at all `409 request_limit`); each added song raises `request.new` (`via: playlist`). The owner and moderators add everything. Songs that can't be played any more are left out (`skipped`).
 - **Pin to top** (`queue.pin`, `vote` mode, owner and moderators) is unchanged.
