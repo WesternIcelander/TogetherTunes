@@ -29,5 +29,8 @@
   "overlay": {
     "workers": 1,
     "cacheMaxBytes": "20 GiB"
+  },
+  "libraryImport": {
+    "allowedPaths": []
   }
 }

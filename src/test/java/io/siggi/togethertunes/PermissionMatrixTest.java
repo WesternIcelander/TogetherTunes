@@ -218,6 +218,17 @@ class PermissionMatrixTest {
             admin("GET /api/admin/users/{id}/roles", c -> Call.get("/api/admin/users/" + c.targetUserId() + "/roles"), 200),
             admin("PUT /api/admin/users/{id}/roles", c -> Call.put("/api/admin/users/" + c.targetUserId() + "/roles",
                     "{\"roleIds\":[\"" + c.targetRoleId() + "\"]}"), 200),
+            // Library import (admin.users): a check of an empty export works; the target has no import to start.
+            admin("GET /api/admin/users/{id}/library-import",
+                    c -> Call.get("/api/admin/users/" + c.targetUserId() + "/library-import"), 200),
+            admin("POST /api/admin/users/{id}/library-import", c -> Call.post("/api/admin/users/" + c.targetUserId()
+                    + "/library-import", c.importSourceJson()), 201),
+            admin("POST /api/admin/users/{id}/library-import/start",
+                    c -> Call.post("/api/admin/users/" + c.targetUserId() + "/library-import/start", null), 404),
+            admin("POST /api/admin/users/{id}/library-import/cancel",
+                    c -> Call.post("/api/admin/users/" + c.targetUserId() + "/library-import/cancel", null), 404),
+            admin("GET /api/admin/users/{id}/library-import/problems",
+                    c -> Call.get("/api/admin/users/" + c.targetUserId() + "/library-import/problems"), 404),
             admin("GET /api/admin/roles", c -> Call.get("/api/admin/roles"), 200),
             admin("POST /api/admin/roles", c -> Call.post("/api/admin/roles",
                     "{\"name\":\"role " + c.n + "\",\"permissions\":[\"rooms.create\"]}"), 201),
@@ -515,7 +526,8 @@ class PermissionMatrixTest {
                         permissions, config),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 withUserSettings(new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets())),
-                new AdminApi(database, accounts, users, new Roles(database), permissions, settings),
+                TestUploads.withLibraryImport(new AdminApi(database, accounts, users, new Roles(database), permissions,
+                        settings), database, dir, config, permissions, List.of(importSource()), clock),
                 TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
@@ -539,6 +551,21 @@ class PermissionMatrixTest {
             }
         }
         assertTrue(adminRoleId != null, "the admin role exists");
+    }
+
+    /** A library export with no tracks, under the allowed import path. */
+    private Path importSource() {
+        Path export = dir.resolve("import-source");
+        try {
+            if (!java.nio.file.Files.exists(export.resolve("Library.xml"))) {
+                java.nio.file.Files.createDirectories(export);
+                java.nio.file.Files.writeString(export.resolve("Library.xml"),
+                        "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict><key>Tracks</key><dict/></dict></plist>");
+            }
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+        return export;
     }
 
     private MeApi withUserSettings(MeApi me) {
@@ -643,6 +670,11 @@ class PermissionMatrixTest {
     private String sharedRoomSlug;
 
     final class Cell {
+        /** A check request for the empty export in {@link #importSource()}. */
+        String importSourceJson() {
+            return "{\"source\":{\"path\":\"" + importSource().toString().replace("\\", "\\\\") + "\"}}";
+        }
+
         final Who who;
         final int n;
         final String ip;

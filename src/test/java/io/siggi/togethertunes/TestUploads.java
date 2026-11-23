@@ -55,6 +55,21 @@ public final class TestUploads {
         return api;
     }
 
+    /**
+     * {@code admin} with the library import routes ({@code /api/admin/users/{id}/library-import...}),
+     * importing from {@code allowedPaths}; returns it.
+     */
+    public static io.siggi.togethertunes.auth.AdminApi withLibraryImport(io.siggi.togethertunes.auth.AdminApi admin,
+            Database db, Path dir, Config config, Permissions permissions, java.util.List<Path> allowedPaths,
+            Clock clock) {
+        Tools tools = Tools.from(config);
+        var imports = new io.siggi.togethertunes.library.LibraryImports(db, uploads(db, dir, config, tools, clock),
+                new Playlists(db, youtube(db, config, tools, clock), clock), dir.resolve("data/tmp/imports"),
+                allowedPaths, clock);
+        admin.libraryImportRoutes(new io.siggi.togethertunes.library.LibraryImportApi(imports, permissions)::register);
+        return admin;
+    }
+
     public static Uploads uploads(Database db, Path dir, Config config, Tools tools, Clock clock) {
         try {
             return new Uploads(db, DataDir.create(dir.resolve("data")), tools, new IngestJobs(db, clock), () -> {

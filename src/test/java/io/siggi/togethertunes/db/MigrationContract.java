@@ -429,6 +429,34 @@ abstract class MigrationContract {
     }
 
     /**
+     * 0041 adds library imports (docs/library-and-ingest.md#library-import): the import and its tracks
+     * (states checked), going with the user, and the persistent ID an imported playlist remembers.
+     */
+    @Test
+    void libraryImports() throws SQLException {
+        new MigrationRunner(db, MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect())).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u', 'U', 1)");
+        exec("INSERT INTO library_imports (id, user_id, started_by_user_id, source_json, smart_playlists, state,"
+                + " counts_json, problems_json, playlists_json, created_at, updated_at)"
+                + " VALUES ('i1', 'u1', 'u1', '{}', 0, 'checking', '{}', '[]', '[]', 1, 1)");
+        assertThrows(SQLException.class, () -> exec("UPDATE library_imports SET state = 'bogus' WHERE id = 'i1'"));
+        exec("INSERT INTO library_import_tracks (import_id, position, track_id, path, size, details_json, state)"
+                + " VALUES ('i1', 0, '101', 'Media.localized/a.m4a', 3, '{}', 'pending')");
+        assertThrows(SQLException.class, () -> exec("UPDATE library_import_tracks SET state = 'bogus'"));
+        exec("INSERT INTO playlists (id, owner_id, name, created_at, updated_at, import_persistent_id)"
+                + " VALUES ('p1', 'u1', 'Mix', 1, 1, 'ABC')");
+        db.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT import_persistent_id FROM playlists WHERE id = 'p1'")) {
+                assertTrue(rs.next());
+                assertEquals("ABC", rs.getString(1));
+            }
+            return null;
+        });
+    }
+
+    /**
      * 0024 records whether an item's files (and each media version's) were encoded with the loudness
      * normalisation (docs/media-types.md#loudness): every existing encode was.
      */

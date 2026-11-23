@@ -87,6 +87,7 @@ public final class ConfigLoader {
     public static final String INGEST_QUALITY_PRESET = "ingest.qualityPreset";
     public static final String OVERLAY_WORKERS = "overlay.workers";
     public static final String OVERLAY_CACHE_MAX_BYTES = "overlay.cacheMaxBytes";
+    public static final String LIBRARY_IMPORT_ALLOWED_PATHS = "libraryImport.allowedPaths";
 
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
@@ -94,7 +95,7 @@ public final class ConfigLoader {
             TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, TOOLS_TRACKSPLITTER, TRACKSPLITTER_CACHE_DIR, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             OUTPUT_AUDIO_ONLY_BITRATE_KBPS, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
-            OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES);
+            OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES, LIBRARY_IMPORT_ALLOWED_PATHS);
 
     private static final long KIB = 1024L;
     private static final long GIB = KIB * KIB * KIB;
@@ -229,7 +230,7 @@ public final class ConfigLoader {
                 continue;
             }
             String source = "environment variable " + name;
-            if (key.equals(HTTP_TRUSTED_PROXIES)) {
+            if (key.equals(HTTP_TRUSTED_PROXIES) || key.equals(LIBRARY_IMPORT_ALLOWED_PATHS)) {
                 List<String> items = new ArrayList<>();
                 for (String part : value.split(",")) {
                     if (!part.isBlank()) {
@@ -343,6 +344,10 @@ public final class ConfigLoader {
         X264Preset qualityPreset = preset(v, INGEST_QUALITY_PRESET, X264Preset.DEFAULT_QUALITY);
         int overlayWorkers = v.integer(OVERLAY_WORKERS, 1, 1, MAX_WORKERS);
         long overlayCache = v.size(OVERLAY_CACHE_MAX_BYTES, DEFAULT_OVERLAY_CACHE_MAX_BYTES, 0);
+        List<Path> importPaths = new ArrayList<>();
+        for (String s : v.list(LIBRARY_IMPORT_ALLOWED_PATHS, ConfigLoader::parseAbsolutePath)) {
+            importPaths.add(Path.of(s));
+        }
 
         if (!problems.isEmpty()) {
             throw new ConfigException(problems);
@@ -350,7 +355,7 @@ public final class ConfigLoader {
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
                 ffmpeg, ffprobe, ytdlp, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
                 quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl, tracksplitter,
-                tracksplitterCache);
+                tracksplitterCache, importPaths);
         return new Loaded(config, json == null ? null : file, warnings);
     }
 
@@ -516,6 +521,20 @@ public final class ConfigLoader {
     @FunctionalInterface
     private interface Parser<T> {
         T parse(String s);
+    }
+
+    /** An absolute path, normalised ({@code libraryImport.allowedPaths}). */
+    static String parseAbsolutePath(String s) {
+        Path p;
+        try {
+            p = Path.of(s);
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException("invalid path: " + e.getMessage());
+        }
+        if (s.isEmpty() || !p.isAbsolute()) {
+            throw new IllegalArgumentException("must be an absolute path");
+        }
+        return p.normalize().toString();
     }
 
     private static long parseLong(String s) {

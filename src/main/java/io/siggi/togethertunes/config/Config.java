@@ -46,6 +46,10 @@ import java.util.List;
  * @param tracksplitterCacheDir    TrackSplitter's cache directory for this server
  *                                 ({@code tracksplitter.cacheDir}, default {@code <data.dir>/tracksplitter}),
  *                                 absolute; null only where there is no data directory (tests)
+ * @param libraryImportAllowedPaths the directories a library import may read from on the server's
+ *                                 disk ({@code libraryImport.allowedPaths}, absolute and normalised);
+ *                                 empty = importing from a path is off
+ *                                 ({@code docs/library-and-ingest.md#library-import})
  */
 public record Config(
         String httpBind,
@@ -69,10 +73,25 @@ public record Config(
         long overlayCacheMaxBytes,
         String insecureBaseUrl,
         String tracksplitter,
-        Path tracksplitterCacheDir) {
+        Path tracksplitterCacheDir,
+        List<Path> libraryImportAllowedPaths) {
 
     public Config {
         trustedProxies = List.copyOf(trustedProxies);
+        libraryImportAllowedPaths = libraryImportAllowedPaths == null ? List.of() : List.copyOf(libraryImportAllowedPaths);
+    }
+
+    /** Without library import paths. */
+    public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
+                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
+                  long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
+                  X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
+                  String insecureBaseUrl, String tracksplitter, Path tracksplitterCacheDir) {
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+                outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
+                ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
+                insecureBaseUrl, tracksplitter, tracksplitterCacheDir, List.of());
     }
 
     /** Without TrackSplitter (tests). */

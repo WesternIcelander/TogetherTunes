@@ -44,6 +44,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import java.util.function.IntSupplier;
 import java.util.function.LongSupplier;
 import java.util.concurrent.ConcurrentHashMap;
@@ -701,6 +702,18 @@ public final class Uploads {
     public Completed complete(Actor owner, String id, String title, String artist, Boolean addToLibrary,
                               Classify.Classification classification)
             throws SQLException, IOException, InterruptedException {
+        return complete(owner, id, title, artist, addToLibrary, classification, null);
+    }
+
+    /**
+     * {@link #complete(Actor, String, String, String, Boolean, Classify.Classification)} with the
+     * details a library import has ({@link LibraryImports}): {@code override} gets the metadata a new
+     * item would have (from the tags) and returns what it is created with. Not used for an existing
+     * item (a dedupe or a re-ingest keeps its details).
+     */
+    Completed complete(Actor owner, String id, String title, String artist, Boolean addToLibrary,
+                       Classify.Classification classification, UnaryOperator<UploadMetadata> override)
+            throws SQLException, IOException, InterruptedException {
         Upload upload = get(owner, id);
         if (upload.completed()) {
             return new Completed(upload.itemId(), upload.deduplicated());
@@ -742,7 +755,7 @@ public final class Uploads {
                         done = reuse(upload, existing.id(), contentId, library, classification);
                     } else {
                         done = ingest(upload, part, probe, sha256, contentId, existing == null ? null : existing.id(),
-                                title, artist, library, classification);
+                                title, artist, library, classification, override);
                     }
                 } finally {
                     completeLock.unlock();
@@ -860,7 +873,8 @@ public final class Uploads {
      */
     private Completed ingest(Upload upload, Path part, MediaProbe probe, String sha256, String contentId,
                              String reuseItemId, String title, String artist, boolean library,
-                             Classify.Classification classification) throws SQLException, IOException {
+                             Classify.Classification classification, UnaryOperator<UploadMetadata> override)
+            throws SQLException, IOException {
         String itemId = reuseItemId != null ? reuseItemId : UuidV7.newId();
         Path staging = IngestPipeline.stagingDir(dataDir, itemId);
         deleteTree(staging); // leftovers of a failed job
@@ -868,7 +882,8 @@ public final class Uploads {
         String ext = UploadMetadata.extension(upload.filename());
         Path source = staging.resolve(ext == null ? IngestPipeline.SOURCE_NAME : IngestPipeline.SOURCE_NAME + "." + ext);
         move(part, source);
-        UploadMetadata meta = UploadMetadata.of(probe, upload.filename(), title, artist);
+        UploadMetadata tagged = UploadMetadata.of(probe, upload.filename(), title, artist);
+        UploadMetadata meta = override == null || reuseItemId != null ? tagged : override.apply(tagged);
         long now = EpochMs.now(clock);
         boolean added;
         try {

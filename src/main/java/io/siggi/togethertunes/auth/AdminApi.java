@@ -131,6 +131,7 @@ public final class AdminApi {
     private volatile DiskSpace diskSpace = DiskSpace.unlimited();
     private volatile java.util.function.BooleanSupplier purchaseDataRemoval = () -> true;
     private volatile EncodingInfo encodingInfo;
+    private volatile java.util.function.Consumer<Router> libraryImportRoutes = router -> { };
 
     /** What {@code GET /api/admin/encoding} reports on. */
     public interface EncodingInfo {
@@ -192,6 +193,14 @@ public final class AdminApi {
         this.purchaseDataRemoval = Objects.requireNonNull(installed);
     }
 
+    /**
+     * The library import routes under {@code /api/admin/users/{id}/library-import}
+     * ({@code library.LibraryImportApi}), registered with the others; none until set.
+     */
+    public void libraryImportRoutes(java.util.function.Consumer<Router> register) {
+        this.libraryImportRoutes = Objects.requireNonNull(register);
+    }
+
     public void register(Router router) {
         var usersPerm = permissions.hook(Permission.ADMIN_USERS);
         var rolesPerm = permissions.hook(Permission.ADMIN_ROLES);
@@ -203,6 +212,7 @@ public final class AdminApi {
         router.post("/api/admin/users/{id}/password", this::setPassword, usersPerm);
         router.get("/api/admin/users/{id}/roles", this::getUserRoles, usersPerm);
         router.put("/api/admin/users/{id}/roles", this::setUserRoles, usersPerm);
+        libraryImportRoutes.accept(router);
 
         router.get("/api/admin/roles", this::listRoles, (request, response, next) -> {
             Actor actor = ActorResolver.actor(request);

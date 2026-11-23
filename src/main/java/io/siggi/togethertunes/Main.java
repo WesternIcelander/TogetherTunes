@@ -112,6 +112,8 @@ import io.siggi.togethertunes.library.MusicLinkResolver;
 import io.siggi.togethertunes.library.CoverUpload;
 import io.siggi.togethertunes.library.MetadataLookupApi;
 import io.siggi.togethertunes.library.LibraryApi;
+import io.siggi.togethertunes.library.LibraryImportApi;
+import io.siggi.togethertunes.library.LibraryImports;
 import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Playlists;
 import io.siggi.togethertunes.library.PlaylistsApi;
@@ -468,6 +470,25 @@ public final class Main {
         YoutubeImportsApi youtubeApi = new YoutubeImportsApi(youtubeImports, addMedia, playlists);
         UserLibrariesApi userLibrariesApi = new UserLibrariesApi(new UserLibraries(database, library, playlists),
                 permissions);
+        // Library imports (docs/library-and-ingest.md#library-import): an admin imports a music library
+        // export into a user's library, one file at a time after people's uploads; resumed after a restart.
+        LibraryImports libraryImports = new LibraryImports(database, uploads, playlists,
+                dataDir.tmp().resolve("imports"), config.libraryImportAllowedPaths(), Clock.systemUTC());
+        libraryImports.diskSpace(diskSpace);
+        libraryImports.ingestBusy(() -> {
+            try {
+                return ingest.jobs().hasQueuedNewItemJob();
+            } catch (SQLException e) {
+                return true;
+            }
+        });
+        LibraryImportApi libraryImportApi = new LibraryImportApi(libraryImports, permissions);
+        admin.libraryImportRoutes(libraryImportApi::register);
+        try {
+            libraryImports.resume();
+        } catch (SQLException e) {
+            System.err.println("WARNING: could not resume the library import: " + e.getMessage());
+        }
         // Guests and anonymous visitors may fetch the current and next items of the rooms they are in.
         MediaApi mediaApi = new MediaApi(database, dataDir, roomRegistry.mediaAccess());
         // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).

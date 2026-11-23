@@ -223,7 +223,23 @@ class ConfigLoaderTest {
                 "output.profile", "output.videoBitrateKbps", "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
                 "overlay.workers",
-                "overlay.cacheMaxBytes", "http.trustedProxies"), ConfigLoader.KEYS);
+                "overlay.cacheMaxBytes", "http.trustedProxies", "libraryImport.allowedPaths"), ConfigLoader.KEYS);
+    }
+
+    @Test
+    void libraryImportAllowedPaths() throws Exception {
+        assertEquals(List.of(), load(URL_ONLY).libraryImportAllowedPaths(), "off by default");
+        Config c = load("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\"},"
+                + " \"libraryImport\": {\"allowedPaths\": [\"/srv/imports/\", \"/mnt/a/../b\"]}}");
+        assertEquals(List.of(Path.of("/srv/imports"), Path.of("/mnt/b")), c.libraryImportAllowedPaths());
+        ConfigException e = fails("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\"},"
+                + " \"libraryImport\": {\"allowedPaths\": [\"relative/dir\"]}}");
+        assertTrue(e.getMessage().contains("libraryImport.allowedPaths"), e.getMessage());
+        assertTrue(e.getMessage().contains("absolute"), e.getMessage());
+        assertTrue(fails("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\"},"
+                + " \"libraryImport\": {\"allowedPaths\": \"/srv\"}}").getMessage().contains("must be a list"));
+        env.put("TOGETHERTUNES_LIBRARY_IMPORT_ALLOWED_PATHS", "/srv/one, /srv/My Music");
+        assertEquals(List.of(Path.of("/srv/one"), Path.of("/srv/My Music")), load(URL_ONLY).libraryImportAllowedPaths());
     }
 
     @Test

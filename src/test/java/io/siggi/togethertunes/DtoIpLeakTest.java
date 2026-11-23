@@ -395,6 +395,17 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.ListSort", "a list's sort, parsed from query parameters"),
             Map.entry("io.siggi.togethertunes.library.ListSort$Key", "an ORDER BY key (SQL)"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
+            Map.entry("io.siggi.togethertunes.library.Playlists$Imported", "a library import's playlist result; counted, not sent"),
+            Map.entry("io.siggi.togethertunes.library.LibraryXml", "a parsed Library.xml (tracks and playlists of an export); never sent"),
+            Map.entry("io.siggi.togethertunes.library.LibraryXml$Track", "a Library.xml track; never sent (no IPs in an export)"),
+            Map.entry("io.siggi.togethertunes.library.LibraryXml$Playlist", "a Library.xml playlist; never sent"),
+            Map.entry("io.siggi.togethertunes.library.ImportMatcher$Match", "a track's file inside an import source; internal"),
+            Map.entry("io.siggi.togethertunes.library.ImportMatcher$Result", "the matcher's result; internal"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImports$Plan", "a check's parsed plan; internal"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImports$Uploaded", "one imported file's upload result; internal"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImports$Import", "an import row; LibraryImportApi builds its JSON field by field (no IPs)"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImports$Running", "who another import is for; LibraryImportApi sends userId, username, displayName, state"),
+            Map.entry("io.siggi.togethertunes.ingest.CoverBars$Result", "a cover image during the letterbox trim; never sent"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Before", "item and playlist lookup before an add"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Added", "an add's result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Uploads$Upload", "uploads row; the API builds its own maps"),
@@ -615,7 +626,8 @@ class DtoIpLeakTest {
                         permissions, config),
                 new SessionsApi(sessions, accounts, config.secureCookies()),
                 withUserSettings(new MeApi(accounts, users, permissions, guests, settings, new IdentityTickets())),
-                new AdminApi(database, accounts, users, roles, permissions, settings),
+                TestUploads.withLibraryImport(new AdminApi(database, accounts, users, roles, permissions, settings),
+                        database, dir, config, permissions, List.of(dir.resolve("import-source")), clock),
                 TestUploads.providersApi(database, config, settings, accounts),
                 AdminActivityApi.create(database, guests, permissions, clock),
                 TestUploads.api(database, dir, config, permissions, clock),
@@ -1061,7 +1073,8 @@ class DtoIpLeakTest {
                 "/api/admin/roles/" + f.roleId + "/permissions", "/api/admin/settings", "/api/admin/storage", "/api/auth/providers",
                 "/api/admin/providers", "/api/admin/providers/" + f.providerId(), "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
-                "/api/admin/ip/sessions/" + f.adminId, "/api/uploads/" + f.uploadId, "/api/library",
+                "/api/admin/ip/sessions/" + f.adminId, "/api/admin/users/" + f.aliceId + "/library-import",
+                "/api/admin/users/" + f.aliceId + "/library-import/problems", "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/library/uncategorized", "/api/items/search", "/api/items/search?q=video", "/api/search", "/api/search?q=video", "/api/youtube/search?q=found", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
                 "/api/items/" + f.itemId + "/lookup/expired/cover",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/me/likes", "/api/me/likes/" + f.itemId,
@@ -1172,6 +1185,22 @@ class DtoIpLeakTest {
         expect(200, help, "GET", "/api/admin/guests", null);
         expect(200, help, "GET", "/api/admin/audit", null);
         expect(200, admin, "GET", "/api/admin/ip/sessions/" + aliceId, null);
+        // A library import for the help desk account (admin.users, no ip.view): check, then its views.
+        java.nio.file.Files.createDirectories(dir.resolve("import-source"));
+        java.nio.file.Files.writeString(dir.resolve("import-source/Library.xml"), "<?xml version=\"1.0\"?><plist><dict>"
+                + "<key>Tracks</key><dict><key>1</key><dict><key>Track ID</key><integer>1</integer><key>Name</key>"
+                + "<string>Gone</string><key>Location</key><string>file:///x/Gone.m4a</string></dict></dict></dict></plist>");
+        expect(201, help, "POST", "/api/admin/users/" + aliceId + "/library-import",
+                "{\"source\":{\"path\":\"" + dir.resolve("import-source").toString().replace("\\", "\\\\") + "\"}}");
+        expect(200, help, "GET", "/api/admin/users/" + aliceId + "/library-import", null);
+        expect(200, help, "GET", "/api/admin/users/" + aliceId + "/library-import/problems", null);
+        awaitImportState(help, aliceId, "ready");
+        expect(200, help, "POST", "/api/admin/users/" + aliceId + "/library-import/start", null);
+        awaitImportState(help, aliceId, "done");
+        expect(201, help, "POST", "/api/admin/users/" + aliceId + "/library-import",
+                "{\"source\":{\"path\":\"" + dir.resolve("import-source").toString().replace("\\", "\\\\") + "\"}}");
+        awaitImportState(help, aliceId, "ready");
+        expect(200, help, "POST", "/api/admin/users/" + aliceId + "/library-import/cancel", null);
 
         // login providers, administered by the admin
         String providerId = json(expect(201, admin, "POST", "/api/admin/providers",
@@ -1578,6 +1607,19 @@ class DtoIpLeakTest {
         HttpResponse<String> r = send(who, method, path, body, headers);
         assertEquals(status, r.statusCode(), who.label() + " " + method + " " + path + ": " + r.body());
         return r;
+    }
+
+    private void awaitImportState(Who who, String userId, String state) throws Exception {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (true) {
+            JsonObject i = json(expect(200, who, "GET", "/api/admin/users/" + userId + "/library-import", null))
+                    .getAsJsonObject("import");
+            if (i.get("state").getAsString().equals(state)) {
+                return;
+            }
+            assertTrue(System.currentTimeMillis() < deadline, "import " + state);
+            Thread.sleep(20);
+        }
     }
 
     private HttpResponse<String> expectOk(Who who, String method, String path, String body) throws Exception {

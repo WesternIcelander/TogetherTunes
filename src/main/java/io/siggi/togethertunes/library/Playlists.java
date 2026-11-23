@@ -528,6 +528,124 @@ public final class Playlists {
         return out;
     }
 
+    // ------------------------------------------------------------------ library import
+
+    /**
+     * What {@link #importPlaylist} did.
+     *
+     * @param created   whether a new playlist was made (false: an earlier import's was refilled)
+     * @param entries   the entries it holds now
+     * @param truncated whether entries were left out over {@link #MAX_ENTRIES}
+     */
+    public record Imported(String id, boolean created, int entries, boolean truncated) {
+    }
+
+    /**
+     * A playlist of a library import ({@code docs/library-and-ingest.md#library-import}): the
+     * owner's playlist that an earlier import made from {@code persistentId}
+     * ({@code playlists.import_persistent_id}) gets this name and exactly these entries; without one
+     * a new playlist is made (at the top). Items not in the owner's library are left out; over
+     * {@link #MAX_ENTRIES} the first ones are kept.
+     *
+     * @param name raw; cut to {@link #NAME_MAX} characters
+     * @throws HttpError {@code 409 too_many_playlists}, {@code 400 invalid_name} (nothing left)
+     */
+    public Imported importPlaylist(String ownerId, String persistentId, String name, List<String> itemIds)
+            throws SQLException {
+        String cleaned = UploadMetadata.clean(name);
+        if (cleaned != null && cleaned.codePointCount(0, cleaned.length()) > NAME_MAX) {
+            cleaned = cleaned.substring(0, cleaned.offsetByCodePoints(0, NAME_MAX)).strip();
+        }
+        String cleanName = name(cleaned == null ? "" : cleaned);
+        long now = EpochMs.now(clock);
+        Imported done = db.write(c -> {
+            String id = null;
+            try (PreparedStatement ps = c.prepareStatement("SELECT id FROM playlists WHERE owner_id = ?"
+                    + " AND import_persistent_id = ? AND builtin IS NULL ORDER BY created_at, id")) {
+                ps.setString(1, ownerId);
+                ps.setString(2, persistentId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        id = rs.getString(1);
+                    }
+                }
+            }
+            boolean created = id == null;
+            if (created) {
+                long top;
+                try (PreparedStatement ps = c.prepareStatement("SELECT COUNT(*), MIN(position) FROM playlists"
+                        + " WHERE owner_id = ? AND builtin IS NULL")) {
+                    ps.setString(1, ownerId);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        rs.next();
+                        if (rs.getInt(1) >= MAX_PLAYLISTS) {
+                            throw new HttpError(409, "too_many_playlists",
+                                    "You can have at most " + MAX_PLAYLISTS + " playlists");
+                        }
+                        long min = rs.getLong(2);
+                        top = rs.wasNull() ? 1 : min - 1;
+                    }
+                }
+                id = UuidV7.newId();
+                insert(c, id, ownerId, cleanName, null, null, top, now);
+                try (PreparedStatement ps = c.prepareStatement(
+                        "UPDATE playlists SET import_persistent_id = ? WHERE id = ?")) {
+                    ps.setString(1, persistentId);
+                    ps.setString(2, id);
+                    ps.executeUpdate();
+                }
+            } else {
+                lock(c, ownerId, id);
+                References.touchPlaylist(c, id, now);
+                try (PreparedStatement ps = c.prepareStatement("DELETE FROM playlist_entries WHERE playlist_id = ?")) {
+                    ps.setString(1, id);
+                    ps.executeUpdate();
+                }
+                try (PreparedStatement ps = c.prepareStatement("UPDATE playlists SET name = ? WHERE id = ?")) {
+                    ps.setString(1, cleanName);
+                    ps.setString(2, id);
+                    ps.executeUpdate();
+                }
+            }
+            Set<String> inLibrary = new HashSet<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT item_id FROM library_entries WHERE user_id = ?")) {
+                ps.setString(1, ownerId);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        inLibrary.add(rs.getString(1));
+                    }
+                }
+            }
+            int n = 0;
+            boolean truncated = false;
+            try (PreparedStatement ps = c.prepareStatement("INSERT INTO playlist_entries (id, playlist_id, item_id,"
+                    + " position, added_at) VALUES (?, ?, ?, ?, ?)")) {
+                for (String itemId : itemIds) {
+                    if (!inLibrary.contains(itemId)) {
+                        continue;
+                    }
+                    if (n >= MAX_ENTRIES) {
+                        truncated = true;
+                        break;
+                    }
+                    n++;
+                    ps.setString(1, UuidV7.newId());
+                    ps.setString(2, id);
+                    ps.setString(3, itemId);
+                    ps.setDouble(4, n);
+                    ps.setLong(5, now);
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+            }
+            References.touchPlaylist(c, id, now);
+            touchPlaylist(c, id, now);
+            return new Imported(id, created, n, truncated);
+        });
+        changed(ownerId, true);
+        return done;
+    }
+
     // ------------------------------------------------------------------ Liked Songs
 
     /** The id of the owner's Liked Songs, made now if it doesn't exist yet. */
