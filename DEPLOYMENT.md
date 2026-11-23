@@ -37,8 +37,9 @@ What the proxy must do:
   progress stream sends `X-Accel-Buffering: no` by itself.)
 - **Pass WebSocket upgrades** on `/ws` (rooms are live over it).
 - **Long timeouts** for `/live/` and `/ws`, which stay open for hours.
-- **Allow 8 MiB request bodies at least**: uploads are sent in 8 MiB chunks (nginx's default
-  `client_max_body_size` is only 1 MiB).
+- **Allow 21 MiB request bodies at least**: uploads are sent in 8 MiB chunks, but a replaced
+  artwork image is sent whole and may be up to 20 MB (nginx's default `client_max_body_size` is
+  only 1 MiB).
 - **Send `X-Forwarded-For` and `X-Forwarded-Proto`** (`https`, or `http` for requests that came
   in on port 80).
 - **Access logs:** a private room's stream URL contains its secret token
@@ -65,7 +66,7 @@ server {
     server_name music.example.com;
     # ssl_certificate / ssl_certificate_key ...
 
-    client_max_body_size 16m;
+    client_max_body_size 21m;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
