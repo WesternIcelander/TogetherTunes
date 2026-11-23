@@ -13,11 +13,14 @@ Every item has exactly one media type, stored **on the item** (items are shared,
 | `music_video` | A music video | By the room's overlay mode (re-encode needs `output.overlayVideo`, as before) | No |
 | `movie` | A movie | **Never** | Yes |
 | `show` | A show episode, with **show name, season number and episode number** | **Never** | Yes |
+| `video` | A video that is neither a music video nor a movie or show (short YouTube videos, clips; Siggi, 2026-11-23). Plays **like a music video**: no loudness change, a still image becomes `audio` | By the room's overlay mode (re-encode needs `output.overlayVideo`, as for music videos) | No |
+
+UI labels (`web/src/mediatypes.ts`): Audio, **Uncategorized Item** (`uncategorized`; was "Video (uncategorized)" until 2026-11-23), Music video, Movie, Show episode, **Video** (`video`). Only video items can have a video type (`music_video`, `movie`, `show`, `video`; an audio item's PATCH to one is `400 not_a_video`). Migration 0039 widens the `items.media_type` CHECK for `video` (SQLite rebuilds the column; PostgreSQL replaces `items_media_type_check`).
 
 - `items.kind` (`audio` | `video`) stays: it says what files the item has. The media type says what the item is. An `audio`-type item may have video files (a still-image video kept for undo, or one an editor set to audio); it plays like an audio item, with its card. This takes over the job of `present_as_audio` (the M8 schema step folds that flag into the media type, and the API keeps `presentAsAudio` as a derived field until the UI stops using it).
 - **Migration:** every existing audio item becomes `audio`; every existing video item becomes `uncategorized` (no production data exists yet; Siggi, 2026-11-11). Video items with `present_as_audio = 1` become `audio`.
-- **Who sets it:** whoever adds an `uncategorized` video **to their library** must classify it first (the add asks for a type; the API refuses the add without one), or choose to **leave it uncategorized** (`mediaType: "uncategorized"`, offered as "Leave uncategorized" by the drop and Add from link dialogs; it then shows in Uncategorized Videos). After that, it is edited like other item metadata: by the item's adder while it is in their library, or with `library.editAny`.
-- **Suggestion:** the classify prompt preselects a type from what is known: yt-dlp's `series` / `season_number` / `episode_number` → `show` (prefilled); yt-dlp's `track` / `artist` (YouTube's music metadata) → `music_video`; an upload's file name like `S01E02` → `show` (show name from what comes before it). It's only a preselection; the person confirms. (The yt-dlp fields and the upload's file name are kept in `items.metadata_json` for this.)
+- **Who sets it:** whoever adds an `uncategorized` video **to their library** must classify it first (the add asks for a type, any of `audio`, `music_video`, `movie`, `show` or `video`; the API refuses the add without one), or choose to **leave it uncategorized** (`mediaType: "uncategorized"`, offered as "Leave uncategorized" by the drop and Add from link dialogs; it then shows in Uncategorized Videos). After that, it is edited like other item metadata: by the item's adder while it is in their library, or with `library.editAny`.
+- **Suggestion:** the classify prompt preselects a type from what is known: yt-dlp's `series` / `season_number` / `episode_number` → `show` (prefilled); yt-dlp's `track` / `artist` (YouTube's music metadata) → `music_video`; an upload's file name like `S01E02` → `show` (show name from what comes before it). It's only a preselection; the person confirms. Nothing suggests `video`: the adder picks it. (The yt-dlp fields and the upload's file name are kept in `items.metadata_json` for this.)
 - **How the API asks** ([api.md](api.md), `409 needs_classification`): every add to a library (`PUT /api/library/{itemId}`, YouTube imports and uploads with `addToLibrary`) takes `mediaType` / `show`. Without them, an `uncategorized` video not yet in that library gets `409 needs_classification` with the item id and the suggestion. Library adds change nothing and are sent again with the type; imports and uploads have happened already (as without `addToLibrary`, so a quick-tier encode), and the client finishes with `PUT /api/library/{itemId}`. The web client's prompt is `classifyprompt.ts`, its rules and suggestion handling the DOM-free `classify.ts`.
 - **Requests from a pasted link** (not through anyone's library) just play as `uncategorized` and follow the room's overlay mode.
 - **Shows:** show name (required for `show`), season number (optional, ≥ 0) and episode number (required, ≥ 0). Libraries group show items by show name, then season, then episode. Cleared when the type changes away from `show`.
@@ -39,7 +42,7 @@ At ingest, every video source (upload, YouTube download or refetch, whatever typ
 
 ## Loudness
 
-`movie` and `show` items skip the music loudness normalisation (it would flatten quiet dialogue against loud scenes). Music, `uncategorized` and `audio` keep it. The normalisation is part of the encode, so a type change into or out of `movie`/`show` re-encodes the item's audio (a system re-encode: the video is kept, no Undo); see [library-and-ingest.md](library-and-ingest.md#loudness-and-media-types).
+`movie` and `show` items skip the music loudness normalisation (it would flatten quiet dialogue against loud scenes). Music, `video`, `uncategorized` and `audio` keep it. The normalisation is part of the encode, so a type change into or out of `movie`/`show` re-encodes the item's audio (a system re-encode: the video is kept, no Undo); see [library-and-ingest.md](library-and-ingest.md#loudness-and-media-types).
 
 ## QR overlay modes
 
@@ -48,7 +51,7 @@ The room setting `overlay.enabled` becomes `overlay.mode`:
 | Mode | What gets the overlay |
 |---|---|
 | `off` | Nothing |
-| `always` | Every card (item cards, paused, queue empty, loading, transition) and music/uncategorized videos (re-encoded only when the owner holds `output.overlayVideo`) |
+| `always` | Every card (item cards, paused, queue empty, loading, transition) and music videos, `video` items and uncategorized videos (re-encoded only when the owner holds `output.overlayVideo`) |
 | `idleOnly` | Only the **queue is empty** card. For rooms used for short videos, where the QR code shouldn't cover the content |
 
 `movie` and `show` items **never** get the overlay, in any mode. Existing rooms migrate `overlay.enabled: true` → `always`, false → `off`. The server switch `overlay.enabled` stays as it is.
