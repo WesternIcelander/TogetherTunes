@@ -11,6 +11,7 @@ import { busy, CJK_VARIANTS, cardFontChoices, cardFontSetting, downloadAllText, 
 import { serverCardsPath } from "./customcards.js";
 import { mountCustomCards } from "./customcardsui.js";
 import { mountJobs, type JobsView } from "./jobs.js";
+import { mountLibraryImport } from "./libimportui.js";
 import { viewScope } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
@@ -318,7 +319,8 @@ async function showUser(user: User): Promise<void> {
     h("p", { class: "muted", text: `Created ${new Date(user.createdAt).toLocaleString()} · ${userStatus(user)}`
         + (user.email !== undefined ? ` · ${user.email}` : "") }),
     nameForm, roleForm, passwordForm,
-    h("div", { class: "row" }, disableButton, disableError));
+    h("div", { class: "row" }, disableButton, disableError),
+    mountLibraryImport(user.id, VIEW.signal));
   panel.hidden = false;
 }
 

@@ -213,6 +213,40 @@ table.list tbody tr.selected {
   margin: 0.5rem 0;
 }
 
+/* Admin → Users → a user: Import a music library (docs/ui.md, admin pages). */
+.lib-import {
+  border-top: 1px solid rgba(128, 128, 128, 0.4);
+  margin-top: 1rem;
+  padding-top: 0.5rem;
+}
+
+.lib-import-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.lib-import-form[hidden] {
+  display: none;
+}
+
+.lib-import-form input[type="text"] {
+  max-width: 100%;
+}
+
+.lib-import-counts,
+.lib-import-problems {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+}
+
+.lib-import-problems {
+  max-height: 20rem;
+  overflow-y: auto;
+  word-break: break-word;
+}
+
 .checks {
   display: flex;
   flex-direction: column;
