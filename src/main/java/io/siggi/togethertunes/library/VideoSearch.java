@@ -44,7 +44,9 @@ import java.util.function.Supplier;
  * was imported from ({@code metadata_json.link.videos}); only when those found nothing, a YouTube
  * search through yt-dlp ({@code --flat-playlist -J "ytsearch8:<artist> <title>"}, nothing
  * downloaded, {@link #SEARCH_TIMEOUT}). Each search counts against the person's
- * {@code mvfinder.maxPerHour} ({@code 429 too_many_searches}).
+ * {@code mvfinder.maxPerHour} ({@code 429 too_many_searches}). Every candidate has a thumbnail
+ * URL ({@link #thumbnail}): MVFinder's {@code thumbnails[0].url} (also kept with the stored
+ * matches), yt-dlp's largest thumbnail not wider than 480, else YouTube's {@code hqdefault.jpg}.
  *
  * <p><b>Picking</b> takes only a video this person was offered for this item in the past
  * {@link #REMEMBER} ({@code 400 not_a_candidate}): the normal YouTube import (not into a library);
@@ -78,8 +80,10 @@ public final class VideoSearch {
      * @param durationMs null when unknown
      * @param type       MVFinder's match type ({@code music_video}, {@code lyric_video},
      *                   {@code official_video}, {@code visualizer}), null for a search result
+     * @param thumbnailUrl an allowed thumbnail ({@link #thumbnail}), never null
      */
-    public record Candidate(String videoId, String title, String channel, Long durationMs, String type) {
+    public record Candidate(String videoId, String title, String channel, Long durationMs, String type,
+                            String thumbnailUrl) {
     }
 
     /**
@@ -290,7 +294,67 @@ public final class VideoSearch {
             return null;
         }
         String channel = m.artists().isEmpty() ? null : String.join(", ", m.artists());
-        return new Candidate(m.videoId(), m.title() != null ? m.title() : m.videoId(), channel, m.durationMs(), m.type());
+        return new Candidate(m.videoId(), m.title() != null ? m.title() : m.videoId(), channel, m.durationMs(), m.type(),
+                thumbnail(m.thumbnailUrl(), m.videoId()));
+    }
+
+    /** YouTube's own thumbnail of {@code videoId}, for a candidate without an allowed one. */
+    static String fallbackThumbnail(String videoId) {
+        return "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+    }
+
+    /**
+     * {@code url} when it is an {@code https} URL on {@code *.ytimg.com} or
+     * {@code *.googleusercontent.com} (no user info, no other port), else
+     * {@link #fallbackThumbnail}: the page loads it directly.
+     */
+    static String thumbnail(String url, String videoId) {
+        if (url != null && url.length() <= 2048) {
+            try {
+                java.net.URI u = new java.net.URI(url);
+                String host = u.getHost() == null ? null : u.getHost().toLowerCase(java.util.Locale.ROOT);
+                if ("https".equalsIgnoreCase(u.getScheme()) && host != null && u.getRawUserInfo() == null
+                        && (u.getPort() == -1 || u.getPort() == 443)
+                        && (host.equals("ytimg.com") || host.endsWith(".ytimg.com")
+                        || host.endsWith(".googleusercontent.com"))) {
+                    return u.toASCIIString();
+                }
+            } catch (java.net.URISyntaxException e) {
+                // falls back
+            }
+        }
+        return fallbackThumbnail(videoId);
+    }
+
+    /** The largest of yt-dlp's {@code thumbnails} not wider than 480, else the first one; or null. */
+    static String ytdlpThumbnail(JsonObject entry) {
+        if (!(entry.get("thumbnails") instanceof JsonArray ts)) {
+            return null;
+        }
+        String first = null;
+        String best = null;
+        double bestWidth = -1;
+        for (JsonElement t : ts) {
+            if (!t.isJsonObject()) {
+                continue;
+            }
+            String url = string(t.getAsJsonObject(), "url");
+            if (url == null) {
+                continue;
+            }
+            if (first == null) {
+                first = url;
+            }
+            JsonElement w = t.getAsJsonObject().get("width");
+            if (w != null && w.isJsonPrimitive() && w.getAsJsonPrimitive().isNumber()) {
+                double width = w.getAsDouble();
+                if (width <= 480 && width > bestWidth) {
+                    bestWidth = width;
+                    best = url;
+                }
+            }
+        }
+        return best != null ? best : first;
     }
 
     /** The video matches kept in {@code metadata_json.link.videos}. */
@@ -390,7 +454,8 @@ public final class VideoSearch {
                     durationMs = Math.round(v * 1000);
                 }
             }
-            out.add(new Candidate(id, title != null ? title : id, channel, durationMs, null));
+            out.add(new Candidate(id, title != null ? title : id, channel, durationMs, null,
+                    thumbnail(ytdlpThumbnail(o), id)));
         }
         return out;
     }

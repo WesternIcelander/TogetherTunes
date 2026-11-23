@@ -43,3 +43,22 @@ test("errors", () => {
   assert.equal(V.searchErrorText("search_failed", "Searching YouTube failed"), "Searching YouTube failed");
   assert.equal(V.searchErrorText(undefined, "fallback"), "fallback");
 });
+
+test("a candidate row: title, uploader · length, the two buttons", () => {
+  assert.deepEqual(V.candidateRow({ videoId: "AAAAAAAAAAA", title: "Firework", channel: "KatyPerryVEVO", durationMs: 234000 }),
+    { title: "Firework", detail: "KatyPerryVEVO · 3:54", preview: "Preview on YT", use: "Use this video" });
+  assert.deepEqual(V.candidateRow({ videoId: "AAAAAAAAAAA", title: "Firework" }),
+    { title: "Firework", detail: "", preview: "Preview on YT", use: "Use this video" });
+});
+
+test("the preview opens the watch page", () => {
+  assert.equal(V.previewUrl("AAAAAAAAAAA"), "https://www.youtube.com/watch?v=AAAAAAAAAAA");
+  assert.equal(V.previewUrl("a-b_c"), "https://www.youtube.com/watch?v=a-b_c");
+});
+
+test("thumbnails: the server's, else YouTube's own", () => {
+  assert.equal(V.thumbnailSrc({ videoId: "AAAAAAAAAAA", thumbnailUrl: "https://i.ytimg.com/vi/AAAAAAAAAAA/mqdefault.jpg" }),
+    "https://i.ytimg.com/vi/AAAAAAAAAAA/mqdefault.jpg");
+  assert.equal(V.thumbnailSrc({ videoId: "AAAAAAAAAAA" }), "https://i.ytimg.com/vi/AAAAAAAAAAA/hqdefault.jpg");
+  assert.equal(V.thumbnailSrc({ videoId: "AAAAAAAAAAA", thumbnailUrl: "" }), "https://i.ytimg.com/vi/AAAAAAAAAAA/hqdefault.jpg");
+});

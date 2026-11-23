@@ -278,6 +278,66 @@ class VideoSearchApiTest {
     }
 
     @Test
+    void everyCandidateHasAnAllowedThumbnail() throws Exception {
+        mvfinder.body = "{\"source\":{\"service\":\"deezer\",\"title\":\"T\",\"artists\":[\"A\"]},\"matches\":["
+                + "{\"type\":\"music_video\",\"videoId\":\"" + MV + "\",\"title\":\"V\",\"artists\":[\"A\"],"
+                + "\"thumbnails\":[{\"url\":\"https://i.ytimg.com/vi/" + MV + "/maxresdefault.jpg\",\"width\":1280},"
+                + "{\"url\":\"https://i.ytimg.com/vi/" + MV + "/default.jpg\"}]},"
+                + "{\"type\":\"lyric_video\",\"videoId\":\"" + LYRIC + "\",\"title\":\"L\",\"artists\":[]},"
+                + "{\"type\":\"official_video\",\"videoId\":\"" + OFFICIAL + "\",\"title\":\"O\",\"artists\":[],"
+                + "\"thumbnails\":[{\"url\":\"https://evil.example/x.jpg\"}]},"
+                + "{\"type\":\"visualizer\",\"videoId\":\"" + VISUAL + "\",\"title\":\"Vis\",\"artists\":[],"
+                + "\"thumbnails\":[{\"url\":\"http://i.ytimg.com/vi/" + VISUAL + "/hqdefault.jpg\"}]}]}";
+        String kept = "{\"link\":{\"service\":\"spotify\",\"id\":\"x\",\"videos\":["
+                + "{\"videoId\":\"" + SONG + "\",\"title\":\"Kept\",\"artists\":[],\"type\":\"music_video\","
+                + "\"thumbnails\":[{\"url\":\"https://lh3.googleusercontent.com/abc=w480\"}]},"
+                + "{\"videoId\":\"" + USER + "\",\"title\":\"Kept 2\",\"artists\":[],\"type\":\"music_video\","
+                + "\"thumbnails\":[{\"url\":\"https://i.ytimg.com.evil.example/a.jpg\"}]}]}}";
+        HttpResponse<String> r = search(song("USUM71000000", kept), bob);
+        assertEquals(200, r.statusCode(), r.body());
+        assertEquals(List.of(MV, LYRIC, OFFICIAL, VISUAL, SONG, USER), ids(r));
+        // MVFinder's first thumbnail
+        assertEquals("https://i.ytimg.com/vi/" + MV + "/maxresdefault.jpg", candidate(r, MV).get("thumbnailUrl").getAsString());
+        // none, a foreign host, plain http, a look-alike host: YouTube's own
+        for (String id : List.of(LYRIC, OFFICIAL, VISUAL, USER)) {
+            assertEquals("https://i.ytimg.com/vi/" + id + "/hqdefault.jpg", candidate(r, id).get("thumbnailUrl").getAsString(), id);
+        }
+        // a kept match's thumbnail
+        assertEquals("https://lh3.googleusercontent.com/abc=w480", candidate(r, SONG).get("thumbnailUrl").getAsString());
+
+        // yt-dlp: the largest not wider than 480, else the first; none or a foreign one: the fallback
+        ytdlp.searchJson(FakeYtdlpSearch.entries(
+                new String[] {FOUND1, "One", "C", "1", "", "[{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/a.jpg\",\"width\":168},"
+                        + "{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/b.jpg?sqp=x&rs=y\",\"width\":336},"
+                        + "{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/c.jpg\",\"width\":720}]"},
+                new String[] {FOUND2, "Two", "C", "1", "", "[{\"url\":\"https://i9.ytimg.com/vi/" + FOUND2 + "/big.jpg\",\"width\":1280},"
+                        + "{\"url\":\"https://i.ytimg.com/vi/" + FOUND2 + "/x.jpg\"}]"},
+                new String[] {LIVE, "Three", "C", "1", "", "[{\"url\":\"https://evil.example/" + LIVE + ".jpg\",\"width\":320}]"},
+                new String[] {OFFICIAL, "Four", "C", "1"}));
+        HttpResponse<String> y = search(song(null, null), bob);
+        assertEquals(List.of(FOUND1, FOUND2, LIVE, OFFICIAL), ids(y));
+        assertEquals("https://i.ytimg.com/vi/" + FOUND1 + "/b.jpg?sqp=x&rs=y", candidate(y, FOUND1).get("thumbnailUrl").getAsString());
+        assertEquals("https://i9.ytimg.com/vi/" + FOUND2 + "/big.jpg", candidate(y, FOUND2).get("thumbnailUrl").getAsString());
+        assertEquals("https://i.ytimg.com/vi/" + LIVE + "/hqdefault.jpg", candidate(y, LIVE).get("thumbnailUrl").getAsString());
+        assertEquals("https://i.ytimg.com/vi/" + OFFICIAL + "/hqdefault.jpg", candidate(y, OFFICIAL).get("thumbnailUrl").getAsString());
+    }
+
+    @Test
+    void keptMatchesKeepTheirThumbnail() {
+        MusicLinkResolver.VideoMatch with = new MusicLinkResolver.VideoMatch(MV, "V", List.of("A"), 1000L, "music_video",
+                "https://i.ytimg.com/vi/" + MV + "/hqdefault.jpg");
+        MusicLinkResolver.VideoMatch without = new MusicLinkResolver.VideoMatch(LYRIC, "L", List.of(), null, "lyric_video", null);
+        JsonObject link = new JsonObject();
+        JsonArray videos = new JsonArray();
+        videos.add(with.toJson());
+        videos.add(without.toJson());
+        link.add("videos", videos);
+        JsonObject root = new JsonObject();
+        root.add("link", link);
+        assertEquals(List.of(with, without), VideoSearch.kept(root.toString()));
+    }
+
+    @Test
     void searchesAreLimitedPerPerson() throws Exception {
         maxPerHour.set(2);
         String song = song("USUM71000000", null);

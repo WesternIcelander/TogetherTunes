@@ -162,7 +162,7 @@ class MusicLinkResolverTest {
         MusicLinkResolver.Resolved r = resolver.resolve(alice, TRACK);
         assertEquals(FakeMvfinder.SONG_ID, r.videoId());
         assertEquals(List.of(new MusicLinkResolver.VideoMatch(FakeMvfinder.VIDEO_ID, "リモコン -NT ver.-/ 鏡音リンレンNT - ワンオポ",
-                List.of("Wonderfulopportunity"), 314_000L, "music_video")), r.videos());
+                List.of("Wonderfulopportunity"), 314_000L, "music_video", null)), r.videos());
 
         // every video type is kept, in MVFinder's order; songs, user uploads, bad IDs and repeats aren't
         fake.body = "{\"source\":{},\"matches\":["

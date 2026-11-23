@@ -88,9 +88,13 @@ public final class MusicLinkResolver {
      * {@code metadata_json.link.videos} as a candidate for "Find a music video"
      * ({@code docs/library-and-ingest.md#linked-media}).
      *
-     * @param durationMs null when MVFinder didn't say
+     * @param durationMs   null when MVFinder didn't say
+     * @param thumbnailUrl MVFinder's first thumbnail ({@code thumbnails[0].url}), null when it had
+     *                     none (older cached matches); not checked here (see
+     *                     {@link VideoSearch#thumbnail})
      */
-    public record VideoMatch(String videoId, String title, List<String> artists, Long durationMs, String type) {
+    public record VideoMatch(String videoId, String title, List<String> artists, Long durationMs, String type,
+                             String thumbnailUrl) {
         /** The JSON stored in {@code metadata_json.link.videos}. */
         public JsonObject toJson() {
             JsonObject o = new JsonObject();
@@ -105,6 +109,14 @@ public final class MusicLinkResolver {
                 o.addProperty("durationMs", durationMs);
             }
             o.addProperty("type", type);
+            if (thumbnailUrl != null) {
+                // MVFinder's shape, so the kept matches parse like its answers
+                JsonObject t = new JsonObject();
+                t.addProperty("url", thumbnailUrl);
+                JsonArray ts = new JsonArray();
+                ts.add(t);
+                o.add("thumbnails", ts);
+            }
             return o;
         }
     }
@@ -362,9 +374,21 @@ public final class MusicLinkResolver {
                 }
             }
             out.add(new VideoMatch(videoId, UploadMetadata.clean(string(o, "title")), SongDetails.cleanNames(artists),
-                    durationMs, type));
+                    durationMs, type, firstThumbnail(o)));
         }
         return List.copyOf(out);
+    }
+
+    /** Longest thumbnail URL kept. */
+    private static final int MAX_THUMBNAIL_URL = 2048;
+
+    /** {@code thumbnails[0].url} of a match, or null. */
+    static String firstThumbnail(JsonObject match) {
+        if (!(match.get("thumbnails") instanceof JsonArray ts) || ts.isEmpty() || !ts.get(0).isJsonObject()) {
+            return null;
+        }
+        String url = string(ts.get(0).getAsJsonObject(), "url");
+        return url == null || url.isEmpty() || url.length() > MAX_THUMBNAIL_URL ? null : url;
     }
 
     private static Track track(JsonObject answer, MusicLinks.Link link) {

@@ -22,7 +22,8 @@ import java.util.Objects;
  * "Find a music video" over HTTP ({@code docs/library-and-ingest.md#linked-media}, {@link VideoSearch}):
  * <ul>
  *   <li>{@code POST /api/items/{id}/video-search} → {@code 200 {candidates: [{videoId, title,
- *       channel?, durationMs?, type?}]}};</li>
+ *       channel?, durationMs?, type?, thumbnailUrl}]}} ({@code thumbnailUrl} an https URL on
+ *       {@code *.ytimg.com} or {@code *.googleusercontent.com}, else YouTube's {@code hqdefault.jpg});</li>
  *   <li>{@code POST /api/items/{id}/video-search/pick {videoId}} → {@code 200 {itemId, status,
  *       linked, linkType}}: the picked video imported (not into a library) and linked to the song.</li>
  * </ul>
@@ -70,6 +71,7 @@ public final class VideoSearchApi {
             if (c.type() != null) {
                 m.put("type", c.type());
             }
+            m.put("thumbnailUrl", c.thumbnailUrl());
             out.add(m);
         }
         response.header("Cache-Control", "no-store");

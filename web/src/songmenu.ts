@@ -10,7 +10,8 @@ import type { ItemLink } from "./links.js";
 import type { ShellRoom } from "./nav.js";
 import { message } from "./session.js";
 import {
-  candidateDetail, NO_VIDEO_FOUND, pickBody, searchErrorText, type PickResult, type VideoCandidate,
+  candidateRow, NO_VIDEO_FOUND, pickBody, previewUrl, searchErrorText, thumbnailSrc, type PickResult,
+  type VideoCandidate,
 } from "./videosearch.js";
 
 /** A song's links, for its menu (`GET /api/items/{id}`); none when that fails. */
@@ -56,7 +57,8 @@ export interface FoundVideo extends PickResult {
 
 /**
  * **Find a music video…** for `song`: a modal dialog that searches (`POST …/video-search`), lists
- * the candidates (title; channel · length · type) and, on a pick, has the server import the video
+ * the candidates (a row each: thumbnail; title; uploader · length · type; Preview on YT, which opens
+ * the watch page in a new tab, and Use this video) and, on Use this video, has the server import the video
  * and link it to the song (`POST …/video-search/pick`). Resolves with the picked video, or null when
  * cancelled or nothing was picked.
  */
@@ -104,12 +106,21 @@ export function findVideo(song: { id: string; title: string }): Promise<FoundVid
         status.textContent = r.candidates.length === 0 ? NO_VIDEO_FOUND : "Pick one:";
         const buttons: HTMLButtonElement[] = [];
         list.replaceChildren(...r.candidates.map((c) => {
-          const detail = candidateDetail(c);
-          const b = h("button", { type: "button", class: "link-pick" }, h("strong", { text: c.title }),
-            detail !== "" ? h("div", { class: "muted small", text: detail }) : null);
-          b.addEventListener("click", () => { void pick(c, buttons); });
-          buttons.push(b);
-          return h("li", {}, b);
+          const row = candidateRow(c);
+          const img = h("img", { src: thumbnailSrc(c), loading: "lazy", referrerpolicy: "no-referrer", alt: "" });
+          const thumb = h("div", { class: "video-thumb" }, img);
+          // a failed thumbnail leaves the plain box
+          img.addEventListener("error", () => { img.remove(); }, { once: true });
+          const use = h("button", { type: "button", text: row.use });
+          use.addEventListener("click", () => { void pick(c, buttons); });
+          buttons.push(use);
+          const preview = h("a", { class: "button-link", href: previewUrl(c.videoId), target: "_blank",
+            rel: "noopener noreferrer", text: row.preview });
+          return h("li", { class: "video-candidate" }, thumb,
+            h("div", { class: "video-candidate-text" },
+              h("strong", { text: row.title }),
+              row.detail !== "" ? h("div", { class: "muted small", text: row.detail }) : null,
+              h("div", { class: "row" }, preview, use)));
         }));
         buttons[0]?.focus();
       })

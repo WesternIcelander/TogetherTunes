@@ -10,6 +10,28 @@ export interface VideoCandidate {
   durationMs?: number;
   /** The match type when it came from the music-service lookup (`music_video`, `lyric_video`, …). */
   type?: string;
+  /** An https thumbnail on YouTube's image hosts (the server checks it); the page loads it directly. */
+  thumbnailUrl?: string;
+}
+
+/** The candidate's buttons. */
+export const PREVIEW_LABEL = "Preview on YT";
+export const USE_LABEL = "Use this video";
+
+/** The watch page a candidate's **Preview on YT** opens (in a new tab). */
+export function previewUrl(videoId: string): string {
+  return "https://www.youtube.com/watch?v=" + encodeURIComponent(videoId);
+}
+
+/** The thumbnail to show: the server's, else YouTube's own for the video ID. */
+export function thumbnailSrc(c: Pick<VideoCandidate, "videoId" | "thumbnailUrl">): string {
+  return c.thumbnailUrl !== undefined && c.thumbnailUrl !== "" ? c.thumbnailUrl
+    : "https://i.ytimg.com/vi/" + encodeURIComponent(c.videoId) + "/hqdefault.jpg";
+}
+
+/** A candidate row's texts: the title, the line under it (uploader · length · type) and the buttons' labels. */
+export function candidateRow(c: VideoCandidate): { title: string; detail: string; preview: string; use: string } {
+  return { title: c.title, detail: candidateDetail(c), preview: PREVIEW_LABEL, use: USE_LABEL };
 }
 
 /** `POST /api/items/{id}/video-search/pick`'s answer. */
@@ -45,7 +67,7 @@ export function lengthText(ms: number | undefined): string {
   return hours > 0 ? hours + ":" + (m < 10 ? "0" : "") + m + ":" + ss : m + ":" + ss;
 }
 
-/** The line under a candidate's title: channel · length · type, the known parts only. */
+/** The line under a candidate's title: uploader (channel) · length · type, the known parts only. */
 export function candidateDetail(c: VideoCandidate): string {
   return [c.channel ?? "", lengthText(c.durationMs), candidateTypeLabel(c.type) ?? ""]
     .filter((p) => p !== "").join(" · ");

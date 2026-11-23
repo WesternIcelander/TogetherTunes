@@ -51,7 +51,10 @@ public final class FakeYtdlpSearch {
         return Files.exists(p) ? Files.readAllLines(p, StandardCharsets.UTF_8) : List.of();
     }
 
-    /** A search answer with these {@code [id, title, channel, durationSec]} entries. */
+    /**
+     * A search answer with these {@code [id, title, channel, durationSec, live_status?, thumbnails?]}
+     * entries ({@code thumbnails} as raw JSON; an empty live_status is left out).
+     */
     public static String entries(String[]... entries) {
         StringBuilder b = new StringBuilder("{\"_type\":\"playlist\",\"id\":\"q\",\"entries\":[");
         for (int i = 0; i < entries.length; i++) {
@@ -61,7 +64,8 @@ public final class FakeYtdlpSearch {
             }
             b.append("{\"_type\":\"url\",\"ie_key\":\"Youtube\",\"id\":\"").append(e[0]).append("\",\"title\":\"")
                     .append(e[1]).append("\",\"channel\":\"").append(e[2]).append("\",\"duration\":").append(e[3])
-                    .append(e.length > 4 ? ",\"live_status\":\"" + e[4] + "\"" : "").append('}');
+                    .append(e.length > 4 && !e[4].isEmpty() ? ",\"live_status\":\"" + e[4] + "\"" : "")
+                    .append(e.length > 5 ? ",\"thumbnails\":" + e[5] : "").append('}');
         }
         return b.append("]}").toString();
     }
