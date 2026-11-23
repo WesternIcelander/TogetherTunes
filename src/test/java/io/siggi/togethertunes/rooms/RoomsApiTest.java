@@ -292,6 +292,11 @@ class RoomsApiTest {
         expectError(400, "invalid_slug", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"slug\":true}"));
         expectError(400, "invalid_visibility", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"visibility\":\"secret\"}"));
         expectError(400, "invalid_control_mode", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"controlMode\":1}"));
+        expectError(400, "invalid_control_mode", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"controlMode\":\"chaos\"}"));
+        HttpResponse<String> requestMode = call(alice, "POST", "/api/rooms", "{\"name\":\"r\",\"slug\":\"room-r\",\"controlMode\":\"request\"}");
+        assertEquals(201, requestMode.statusCode());
+        assertEquals("request", json(requestMode).get("controlMode").getAsString());
+        assertEquals(204, call(alice, "DELETE", "/api/rooms/room-r", null).statusCode());
         expectError(400, "unknown_field", call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"ownerId\":\"x\"}"));
         assertEquals(201, call(alice, "POST", "/api/rooms", "{\"name\":\"a\",\"slug\":\"room-a\"}").statusCode());
         expectError(409, "slug_taken", call(bob, "POST", "/api/rooms", "{\"name\":\"b\",\"slug\":\"ROOM-A\"}"));

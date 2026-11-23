@@ -11,9 +11,10 @@ test("labels: known values get names, unknown ones are shown as they are", () =>
   assert.equal(R.visibilityLabel("unlisted"), "Unlisted");
   assert.equal(R.visibilityLabel("private"), "Private");
   assert.equal(R.visibilityLabel("secret"), "secret");
-  assert.equal(R.controlModeLabel("owner"), "Owner picks");
+  assert.equal(R.controlModeLabel("owner"), "Request and approve");
+  assert.equal(R.controlModeLabel("request"), "Request without approval");
   assert.equal(R.controlModeLabel("vote"), "Vote");
-  assert.equal(R.controlModeLabel("open"), "Open");
+  assert.equal(R.controlModeLabel("open"), "Open (anyone can edit the queue)");
   assert.equal(R.controlModeLabel("chaos"), "chaos");
   assert.equal(R.roleLabel("owner"), "Owner");
   assert.equal(R.roleLabel("moderator"), "Moderator");

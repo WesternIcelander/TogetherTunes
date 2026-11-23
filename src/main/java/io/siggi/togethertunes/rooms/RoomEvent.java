@@ -74,7 +74,7 @@ public interface RoomEvent {
     }
 
     /**
-     * Someone other than the owner (or a moderator in {@code owner} mode) requested an item:
+     * Someone other than the owner (or a moderator in {@code owner} or {@code request} mode) requested an item:
      * {@code via} is {@code library}, {@code upload}, {@code youtube} or {@code history}. The
      * WebSocket layer tells the owner and moderators ({@code request.new}).
      */

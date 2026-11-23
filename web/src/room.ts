@@ -31,6 +31,7 @@ import {
   type WebAudioSetting,
 } from "./audiohealth.js";
 import { ClockSync } from "./clocksync.js";
+import { controlModeLabel } from "./roomlist.js";
 import { captureErrors, recordEvent, setReportSource, snapshot, stripQuery, type ErrorTarget } from "./diagnostics.js";
 import { prefs } from "./prefsclient.js";
 import { ListenPlayer, type SoundInfo } from "./listen.js";
@@ -274,7 +275,7 @@ function renderHeader(s: RoomState): void {
   // While the shell shows another page, the title is that page's.
   if (shell?.away !== true) document.title = s.room.name + " · TogetherTunes";
   element("room-name").textContent = s.room.name;
-  const mode = { owner: "Owner picks", vote: "Vote", open: "Open" }[s.room.controlMode] ?? s.room.controlMode;
+  const mode = controlModeLabel(s.room.controlMode);
   const role = s.room.you.role;
   const r = s.room.you.restriction;
   const restricted = r === undefined ? ""
@@ -438,7 +439,7 @@ function tick(): void {
 
 // ------------------------------------------------------------------ requests
 
-/** "Add" for those whose requests go straight into the queue, "Suggest" in owner mode. */
+/** "Add" for those whose requests go straight into the queue (also `request` mode), "Suggest" in `owner` mode. */
 function requestVerb(s: RoomState): string {
   return s.room.controlMode === "owner" && !s.room.you.canModerate ? "Suggest" : "Add to queue";
 }

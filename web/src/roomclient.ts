@@ -134,7 +134,7 @@ export interface RoomInfo {
   slug: string;
   name: string;
   visibility: "public" | "unlisted" | "private" | string;
-  controlMode: "owner" | "vote" | "open" | string;
+  controlMode: "owner" | "request" | "vote" | "open" | string;
   ownerId: string;
   settings: RoomSettingsView;
   you: You;

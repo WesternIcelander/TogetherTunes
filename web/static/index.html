@@ -274,9 +274,10 @@
           <span id="create-visibility-error" class="error small" role="alert"></span>
           <label>Control
             <select id="create-controlMode" name="controlMode">
-              <option value="owner">Owner picks (others suggest)</option>
+              <option value="owner">Request and approve</option>
+              <option value="request">Request without approval</option>
               <option value="vote" selected>Vote</option>
-              <option value="open">Open (everyone with request rights controls)</option>
+              <option value="open">Open (anyone can edit the queue)</option>
             </select>
           </label>
           <span id="create-controlMode-error" class="error small" role="alert"></span>
@@ -398,9 +399,10 @@
               </select></div>
             <div class="setting"><label for="room-field-control">Control</label>
               <select id="room-field-control" name="controlMode">
-                <option value="owner">Owner picks (others suggest)</option>
+                <option value="owner">Request and approve</option>
+                <option value="request">Request without approval</option>
                 <option value="vote">Vote</option>
-                <option value="open">Open (everyone with request rights controls)</option>
+                <option value="open">Open (anyone can edit the queue)</option>
               </select></div>
           </fieldset>
           <div id="settings-groups"></div>

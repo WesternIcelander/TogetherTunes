@@ -9,18 +9,19 @@ import io.siggi.togethertunes.http.HttpError;
  *
  * <table>
  * <caption>Permissions per operation</caption>
- * <tr><th>Operation</th><th>{@code owner}</th><th>{@code vote}</th><th>{@code open}</th></tr>
- * <tr><td>add</td><td>mods add; others with request rights suggest</td><td>request rights</td>
- *     <td>request rights</td></tr>
- * <tr><td>addPlaylist</td><td colspan="3">as add (one request per playlist entry)</td></tr>
- * <tr><td>remove</td><td colspan="2">mods; the requester while the entry is queued or suggested</td>
+ * <tr><th>Operation</th><th>{@code owner}</th><th>{@code request}</th><th>{@code vote}</th><th>{@code open}</th></tr>
+ * <tr><td>add</td><td>mods add; others with request rights suggest</td><td>request rights (straight to
+ *     the queue)</td><td>request rights</td><td>request rights</td></tr>
+ * <tr><td>addPlaylist</td><td colspan="4">as add (one request per playlist entry)</td></tr>
+ * <tr><td>remove</td><td colspan="3">mods; the requester while the entry is queued or suggested</td>
  *     <td>mods; the requester; anyone with request rights</td></tr>
- * <tr><td>move (also between sections)</td><td>mods</td><td>(not in this mode)</td><td>request rights</td></tr>
- * <tr><td>pin</td><td>(not in this mode)</td><td>mods</td><td>(not in this mode)</td></tr>
- * <tr><td>vote</td><td>(not in this mode)</td><td>vote rights</td><td>(not in this mode)</td></tr>
- * <tr><td>accept/reject suggestion</td><td colspan="3">owner and moderators</td></tr>
- * <tr><td>play, pause, seek, next, previous</td><td>mods</td><td>mods</td><td>mods; request rights</td></tr>
- * <tr><td>voteSkip</td><td>(not in this mode)</td><td>vote rights, unless the threshold is off</td>
+ * <tr><td>move (also between sections)</td><td colspan="2">mods</td><td>(not in this mode)</td>
+ *     <td>request rights</td></tr>
+ * <tr><td>pin</td><td colspan="2">(not in this mode)</td><td>mods</td><td>(not in this mode)</td></tr>
+ * <tr><td>vote</td><td colspan="2">(not in this mode)</td><td>vote rights</td><td>(not in this mode)</td></tr>
+ * <tr><td>accept/reject suggestion</td><td colspan="4">owner and moderators</td></tr>
+ * <tr><td>play, pause, seek, next, previous</td><td colspan="3">mods</td><td>mods; request rights</td></tr>
+ * <tr><td>voteSkip</td><td colspan="2">(not in this mode)</td><td>vote rights, unless the threshold is off</td>
  *     <td>(not in this mode)</td></tr>
  * </table>
  *
@@ -99,7 +100,8 @@ public final class ControlPolicy {
 
     /**
      * {@code add}: owner and moderators always add to the queue. Others need request rights; in
-     * {@code owner} mode their request becomes a suggestion.
+     * {@code owner} mode their request becomes a suggestion; in {@code request} mode it is queued
+     * at once, as if a suggestion had been accepted.
      */
     public static AddAs add(RoomState s, RoomActor a) {
         a.requireIdentity();
@@ -109,7 +111,7 @@ public final class ControlPolicy {
         requireRequestRights(a);
         return switch (s.controlMode()) {
             case OWNER -> AddAs.SUGGESTION;
-            case VOTE, OPEN -> AddAs.QUEUE;
+            case REQUEST, VOTE, OPEN -> AddAs.QUEUE;
         };
     }
 
@@ -147,7 +149,7 @@ public final class ControlPolicy {
                     return;
                 }
             }
-            case OWNER, VOTE -> {
+            case OWNER, REQUEST, VOTE -> {
             }
         }
         throw HttpError.forbidden("You can't remove this entry");
@@ -166,11 +168,11 @@ public final class ControlPolicy {
         throw HttpError.forbidden("Only the room's owner and moderators, or whoever requested it, can retry this");
     }
 
-    /** {@code move}: {@code owner} mode: owner and moderators; {@code open}: request rights; not in {@code vote}. */
+    /** {@code move}: {@code owner} and {@code request} modes: owner and moderators; {@code open}: request rights; not in {@code vote}. */
     public static void requireMove(RoomState s, RoomActor a) {
         a.requireIdentity();
         switch (s.controlMode()) {
-            case OWNER -> requireModerator(a, "Only the owner and moderators can reorder the queue");
+            case OWNER, REQUEST -> requireModerator(a, "Only the owner and moderators can reorder the queue");
             case OPEN -> {
                 if (!a.moderates()) {
                     requireRequestRights(a);
@@ -185,7 +187,7 @@ public final class ControlPolicy {
         a.requireIdentity();
         switch (s.controlMode()) {
             case VOTE -> requireModerator(a, "Only the owner and moderators can pin entries");
-            case OWNER, OPEN -> throw wrongMode("Pinning is for vote mode; move the entry instead");
+            case OWNER, REQUEST, OPEN -> throw wrongMode("Pinning is for vote mode; move the entry instead");
         }
     }
 
@@ -195,7 +197,7 @@ public final class ControlPolicy {
         switch (s.controlMode()) {
             case VOTE -> {
             }
-            case OWNER, OPEN -> throw wrongMode("Votes are for vote mode");
+            case OWNER, REQUEST, OPEN -> throw wrongMode("Votes are for vote mode");
         }
         if (value < -1 || value > 1) {
             throw new HttpError(400, "invalid_vote", "A vote is 1, -1 or 0");
@@ -221,7 +223,7 @@ public final class ControlPolicy {
             return;
         }
         throw HttpError.forbidden(switch (s.controlMode()) {
-            case OWNER -> "Only the owner and moderators control playback";
+            case OWNER, REQUEST -> "Only the owner and moderators control playback";
             case VOTE -> "Only the owner and moderators control playback; vote to skip instead";
             case OPEN -> "You need request rights to control playback";
         });
@@ -233,7 +235,7 @@ public final class ControlPolicy {
         switch (s.controlMode()) {
             case VOTE -> {
             }
-            case OWNER, OPEN -> throw wrongMode("Vote-skip is for vote mode");
+            case OWNER, REQUEST, OPEN -> throw wrongMode("Vote-skip is for vote mode");
         }
         requireVoteRights(a);
         if (s.controlSettings().voteSkipThreshold() == null) {
@@ -249,7 +251,7 @@ public final class ControlPolicy {
             return true;
         }
         return switch (mode) {
-            case OWNER, VOTE -> false;
+            case OWNER, REQUEST, VOTE -> false;
             case OPEN -> a.canRequest();
         };
     }

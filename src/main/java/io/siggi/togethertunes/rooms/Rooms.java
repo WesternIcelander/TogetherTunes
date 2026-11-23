@@ -125,7 +125,7 @@ public final class Rooms {
 
     /** Who controls the queue ({@code rooms.control_mode}, {@code docs/rooms.md#control-modes}). */
     public enum ControlMode {
-        OWNER, VOTE, OPEN;
+        OWNER, REQUEST, VOTE, OPEN;
 
         public String wire() {
             return name().toLowerCase(Locale.ROOT);

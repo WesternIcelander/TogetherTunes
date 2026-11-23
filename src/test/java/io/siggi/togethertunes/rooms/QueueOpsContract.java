@@ -353,6 +353,54 @@ abstract class QueueOpsContract {
     }
 
     @Test
+    void requestModeQueuesRequestsDirectlyAndLeavesTheQueueToTheOwnerAndModerators() throws Exception {
+        // A suggestion left from owner mode stays pending in request mode and can still be accepted.
+        mode("owner");
+        String pending = add(bob, ready());
+        assertEquals("suggested", stateOf(pending));
+        mode("request");
+        assertEquals(List.of(pending), call(tx -> tx.state().suggestions().stream().map(QueueEntry::id).toList()));
+
+        String first = add(owner, ready());
+        assertEquals(first, current());
+        String byBob = add(bob, ready());
+        String byGuest = add(guest, ready());
+        assertEquals("queued", stateOf(byBob), "a member's request goes straight into the queue");
+        assertEquals("queued", stateOf(byGuest));
+        assertEquals(List.of(byBob, byGuest), order(), "at the end of the manual section");
+        settings("{\"requestsPerActor\":1}");
+        assertEquals("request_limit", refused(() -> add(bob, ready())), "the request limits still apply");
+        settings("{}");
+
+        // Members don't reorder, remove others' entries, skip or control playback.
+        assertEquals("forbidden", refused(() -> queue.move(roomId, bob, byGuest, byBob)));
+        assertEquals("forbidden", refused(() -> queue.remove(roomId, bob, byGuest)));
+        assertEquals("forbidden", refused(() -> queue.next(roomId, bob)));
+        assertEquals("forbidden", refused(() -> queue.pause(roomId, guest)));
+        assertEquals("wrong_control_mode", refused(() -> queue.vote(roomId, bob, byGuest, 1)));
+        assertEquals("wrong_control_mode", refused(() -> queue.voteSkip(roomId, bob)));
+        assertEquals("forbidden", refused(() -> queue.accept(roomId, bob, pending)));
+
+        // The owner and moderators do.
+        RoomActor mod = RoomActor.user(carolId, Rooms.Role.MODERATOR);
+        assertTrue(queue.move(roomId, owner, byGuest, byBob));
+        assertEquals(List.of(byGuest, byBob), order());
+        queue.accept(roomId, mod, pending);
+        assertEquals(List.of(byGuest, byBob, pending), order(), "an accepted suggestion joins the end");
+        assertEquals(List.of(), call(tx -> tx.state().suggestions()));
+        queue.next(roomId, owner);
+        assertEquals("skipped", stateOf(first));
+        assertEquals(byGuest, current());
+
+        // Requesters remove their own waiting entries; moderators remove anything.
+        queue.remove(roomId, bob, byBob);
+        assertEquals("removed", stateOf(byBob));
+        String again = add(guest, ready());
+        queue.remove(roomId, mod, again);
+        assertEquals(List.of(pending), order());
+    }
+
+    @Test
     void requestsPerActorLimitsWaitingEntries() throws Exception {
         String playing = add(bob, ready());
         assertEquals(playing, current());
@@ -558,7 +606,7 @@ abstract class QueueOpsContract {
         }
         add(owner, items.get(0)); // playing now: within noRepeatWindow
         assertEquals(items.get(0), call(tx -> tx.state().current().itemId()));
-        for (String m : List.of("owner", "vote", "open")) {
+        for (String m : List.of("owner", "request", "vote", "open")) {
             mode(m);
             settings("{\"requestsPerActor\":3,\"noRepeatWindow\":5}");
             QueueOps.PlaylistAdded added = queue.addPlaylist(roomId, bobActor, bob, bobsList, false);
@@ -675,6 +723,9 @@ abstract class QueueOpsContract {
         mode("owner");
         assertEquals("forbidden", refused(() -> queue.move(roomId, bob, a, null)));
         assertTrue(queue.move(roomId, owner, a, null));
+        mode("request");
+        assertEquals("forbidden", refused(() -> queue.move(roomId, bob, a, null)));
+        assertTrue(queue.move(roomId, owner, b, null));
         mode("vote");
         assertEquals("wrong_control_mode", refused(() -> queue.move(roomId, owner, a, null)));
     }

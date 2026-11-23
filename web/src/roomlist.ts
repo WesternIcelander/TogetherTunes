@@ -23,9 +23,10 @@ export const VISIBILITY_LABELS: Record<string, string> = {
 };
 
 export const CONTROL_MODE_LABELS: Record<string, string> = {
-  owner: "Owner picks",
+  owner: "Request and approve",
+  request: "Request without approval",
   vote: "Vote",
-  open: "Open",
+  open: "Open (anyone can edit the queue)",
 };
 
 export const ROLE_LABELS: Record<string, string> = {

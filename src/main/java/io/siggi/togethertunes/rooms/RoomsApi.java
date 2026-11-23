@@ -794,7 +794,7 @@ public final class RoomsApi {
         }
         Rooms.ControlMode m = Rooms.ControlMode.parse(e instanceof JsonPrimitive p && p.isString() ? p.getAsString() : null);
         if (m == null) {
-            throw new HttpError(400, "invalid_control_mode", "controlMode must be owner, vote or open");
+            throw new HttpError(400, "invalid_control_mode", "controlMode must be owner, request, vote or open");
         }
         return m;
     }

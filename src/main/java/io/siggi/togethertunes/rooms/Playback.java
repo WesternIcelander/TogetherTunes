@@ -58,7 +58,7 @@ public final class Playback {
     /** The order the room's control mode plays the queue in ({@code docs/rooms.md#control-modes}). */
     static Comparator<QueueEntry> order(RoomState state) {
         return switch (state.controlMode()) {
-            case OWNER, OPEN -> MANUAL_ORDER;
+            case OWNER, REQUEST, OPEN -> MANUAL_ORDER;
             case VOTE -> voteOrder(state);
         };
     }

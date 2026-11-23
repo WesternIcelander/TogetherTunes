@@ -37,13 +37,14 @@ public final class QueueOps {
 
     /**
      * Whether an add by {@code a} is a request: not by the owner, nor by a moderator in
-     * {@code owner} mode (who adds directly there).
+     * {@code owner} or {@code request} mode (who arranges the queue there and adds directly).
      */
     static boolean isRequest(RoomState s, RoomActor a) {
         if (!a.identified() || (a.userId() != null && a.userId().equals(s.ownerId()))) {
             return false;
         }
-        return !(a.moderates() && s.controlMode() == Rooms.ControlMode.OWNER);
+        return !(a.moderates() && (s.controlMode() == Rooms.ControlMode.OWNER
+                || s.controlMode() == Rooms.ControlMode.REQUEST));
     }
 
     /** What {@link #add} did: the new entry and where it landed ({@code queued} or {@code suggested}). */
@@ -98,7 +99,7 @@ public final class QueueOps {
     /**
      * {@link #add(RoomTx, RoomActor, String)}, recording how the item was added on the entry
      * ({@code queue_entries.via}, shown in the history). A request ({@link #isRequest}: not by the
-     * owner, nor by a moderator in {@code owner} mode) with a {@code via} also raises
+     * owner, nor by a moderator in {@code owner} or {@code request} mode) with a {@code via} also raises
      * {@link RoomEvent.RequestAdded} ({@code request.new} to the owner and moderators).
      *
      * @param via {@code library}, {@code upload}, {@code youtube} or {@code history}; {@code null}

@@ -181,6 +181,10 @@ test("queue entry menu: vote, pin for moderators in vote mode, request, remove, 
   assert.deepEqual(I.entryMenu(room("open", you({ canModerate: true })), entry(), me, false), ["remove", "open"]);
   assert.deepEqual(I.entryMenu(room("vote", you({ canModerate: true })), entry({ section: "autoplay" }), me, false),
     ["request", "remove", "open"]);
+  // request mode: like owner mode, no votes or pins; moderators and the adder remove
+  assert.deepEqual(I.entryMenu(room("request", you()), entry(), me, false), ["open"]);
+  assert.deepEqual(I.entryMenu(room("request", you()), entry({ addedBy: me }), me, false), ["remove", "open"]);
+  assert.deepEqual(I.entryMenu(room("request", you({ canModerate: true })), entry(), me, false), ["remove", "open"]);
   // the one who added it may remove it
   assert.deepEqual(I.entryMenu(room("open", you()), entry({ addedBy: me }), me, false), ["remove", "open"]);
   // read-only (banned or timed out): only Open

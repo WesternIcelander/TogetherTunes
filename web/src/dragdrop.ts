@@ -187,7 +187,8 @@ export function canMoveQueue(s: QueueRoomLike): boolean {
   if (you.restriction !== undefined) return false;
   if (s.room.alone === true) return true;
   switch (s.room.controlMode) {
-    case "owner": return you.canModerate;
+    case "owner":
+    case "request": return you.canModerate;
     case "open": return you.canModerate || (you.canRequest && you.identified);
     default: return false;
   }

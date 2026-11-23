@@ -45,6 +45,11 @@ test("entry buttons follow the rights", () => {
   assert.equal(P.entryButtons(state({}, { canModerate: true }), entry("a"), ME).remove, true);
   assert.equal(P.entryButtons({ ...s, room: { ...s.room, controlMode: "open" } }, entry("a"), ME).remove, true);
   assert.equal(P.entryButtons({ ...s, room: { ...s.room, controlMode: "owner" } }, entry("a"), ME).vote, false);
+  // request mode: no votes, and only moderators or the adder remove
+  const rq = { ...s, room: { ...s.room, controlMode: "request" } };
+  assert.equal(P.entryButtons(rq, entry("a"), ME).vote, false);
+  assert.equal(P.entryButtons(rq, entry("a"), ME).remove, false);
+  assert.equal(P.entryButtons(rq, entry("a", { addedBy: { kind: "user", id: "u1" } }), ME).remove, true);
   // no library request right: no ↑ on From Playlist
   assert.equal(P.entryButtons(state({}, { canRequestLibrary: false }), entry("p", { section: "autoplay" }), ME).request,
     false);

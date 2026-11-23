@@ -63,7 +63,8 @@ class ControlPolicyTest {
         assertEquals(ControlPolicy.AddAs.SUGGESTION, ControlPolicy.add(owner, MEMBER));
         assertEquals(ControlPolicy.AddAs.SUGGESTION, ControlPolicy.add(owner, USER));
         assertEquals(ControlPolicy.AddAs.SUGGESTION, ControlPolicy.add(owner, GUEST));
-        for (Rooms.ControlMode mode : List.of(Rooms.ControlMode.VOTE, Rooms.ControlMode.OPEN)) {
+        // request mode: everyone with request rights adds straight to the queue (no suggestions)
+        for (Rooms.ControlMode mode : List.of(Rooms.ControlMode.REQUEST, Rooms.ControlMode.VOTE, Rooms.ControlMode.OPEN)) {
             RoomState s = room(mode);
             for (RoomActor a : List.of(OWNER, MOD, MEMBER, USER, GUEST)) {
                 assertEquals(ControlPolicy.AddAs.QUEUE, ControlPolicy.add(s, a), mode + " " + a);
@@ -121,6 +122,8 @@ class ControlPolicyTest {
         }
         // Someone else's entry: only in open mode, with request rights.
         refused(403, "forbidden", () -> ControlPolicy.requireRemove(room(Rooms.ControlMode.OWNER), MEMBER, byOther));
+        refused(403, "forbidden", () -> ControlPolicy.requireRemove(room(Rooms.ControlMode.REQUEST), MEMBER, byOther));
+        refused(403, "forbidden", () -> ControlPolicy.requireRemove(room(Rooms.ControlMode.REQUEST), GUEST, byOther));
         refused(403, "forbidden", () -> ControlPolicy.requireRemove(room(Rooms.ControlMode.VOTE), GUEST, byOther));
         allowed(() -> ControlPolicy.requireRemove(room(Rooms.ControlMode.OPEN), MEMBER, byOther));
         allowed(() -> ControlPolicy.requireRemove(room(Rooms.ControlMode.OPEN), GUEST, byOther));
@@ -136,6 +139,15 @@ class ControlPolicyTest {
         allowed(() -> ControlPolicy.requireMove(owner, MOD));
         refused(403, "forbidden", () -> ControlPolicy.requireMove(owner, MEMBER));
         refused(403, "forbidden", () -> ControlPolicy.requireMove(owner, GUEST));
+        RoomState request = room(Rooms.ControlMode.REQUEST);
+        allowed(() -> ControlPolicy.requireMove(request, OWNER));
+        allowed(() -> ControlPolicy.requireMove(request, MOD));
+        for (RoomActor a : List.of(MEMBER, USER, GUEST)) {
+            refused(403, "forbidden", () -> ControlPolicy.requireMove(request, a));
+        }
+        for (RoomActor a : List.of(OWNER, MOD, MEMBER, USER, GUEST)) {
+            refused(409, "wrong_control_mode", () -> ControlPolicy.requirePin(request, a));
+        }
         for (RoomActor a : List.of(OWNER, MOD, MEMBER, USER, GUEST)) {
             allowed(() -> ControlPolicy.requireMove(open, a));
             refused(409, "wrong_control_mode", () -> ControlPolicy.requireMove(vote, a));
@@ -164,6 +176,7 @@ class ControlPolicyTest {
             refused(400, "invalid_vote", () -> ControlPolicy.requireVote(vote, a, 2));
             refused(409, "wrong_control_mode", () -> ControlPolicy.requireVote(room(Rooms.ControlMode.OWNER), a, 1));
             refused(409, "wrong_control_mode", () -> ControlPolicy.requireVote(room(Rooms.ControlMode.OPEN), a, 1));
+            refused(409, "wrong_control_mode", () -> ControlPolicy.requireVote(room(Rooms.ControlMode.REQUEST), a, 1));
         }
         refused(403, "cannot_vote", () -> ControlPolicy.requireVote(vote, GUEST_NO_RIGHTS, 1));
         refused(403, "cannot_vote", () -> ControlPolicy.requireVote(vote, BANNED, 1));
@@ -183,6 +196,7 @@ class ControlPolicyTest {
         for (RoomActor a : List.of(MEMBER, USER, GUEST)) {
             refused(403, "forbidden", () -> ControlPolicy.requireControlPlayback(room(Rooms.ControlMode.OWNER), a));
             refused(403, "forbidden", () -> ControlPolicy.requireControlPlayback(room(Rooms.ControlMode.VOTE), a));
+            refused(403, "forbidden", () -> ControlPolicy.requireControlPlayback(room(Rooms.ControlMode.REQUEST), a));
             allowed(() -> ControlPolicy.requireControlPlayback(room(Rooms.ControlMode.OPEN), a));
         }
     }
@@ -194,6 +208,7 @@ class ControlPolicyTest {
             allowed(() -> ControlPolicy.requireVoteSkip(vote, a));
             refused(409, "wrong_control_mode", () -> ControlPolicy.requireVoteSkip(room(Rooms.ControlMode.OWNER), a));
             refused(409, "wrong_control_mode", () -> ControlPolicy.requireVoteSkip(room(Rooms.ControlMode.OPEN), a));
+            refused(409, "wrong_control_mode", () -> ControlPolicy.requireVoteSkip(room(Rooms.ControlMode.REQUEST), a));
             refused(409, "vote_skip_off", () -> ControlPolicy.requireVoteSkip(
                     room(Rooms.ControlMode.VOTE, "{\"voteSkipThreshold\":\"off\"}"), a));
         }
@@ -211,6 +226,11 @@ class ControlPolicyTest {
         c = ControlPolicy.capabilities(room(Rooms.ControlMode.OPEN), MEMBER);
         assertEquals("member", c.role());
         assertFalse(c.canVote());
+        assertTrue(c.canSkip());
+        c = ControlPolicy.capabilities(room(Rooms.ControlMode.REQUEST), MEMBER);
+        assertTrue(c.canRequest());
+        assertFalse(c.canSkip() || c.canVote());
+        c = ControlPolicy.capabilities(room(Rooms.ControlMode.REQUEST), MOD);
         assertTrue(c.canSkip());
         c = ControlPolicy.capabilities(room(Rooms.ControlMode.OWNER), MOD);
         assertTrue(c.canSkip());
@@ -297,7 +317,7 @@ class ControlPolicyTest {
             List<String> order = Playback.playOrder(s).stream().map(QueueEntry::id).toList();
             switch (mode) {
                 // Manual: positions only, pins don't count.
-                case OWNER, OPEN -> assertEquals(List.of("d", "a", "b", "c"), order, mode.wire());
+                case OWNER, REQUEST, OPEN -> assertEquals(List.of("d", "a", "b", "c"), order, mode.wire());
                 // Pinned first, then votes (b 2, a 1, d -1).
                 case VOTE -> assertEquals(List.of("c", "b", "a", "d"), order, mode.wire());
             }

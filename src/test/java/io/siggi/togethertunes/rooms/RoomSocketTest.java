@@ -1103,6 +1103,21 @@ class RoomSocketTest {
                 + "\"}").get("state").getAsString());
         guest.error("wrong_control_mode", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
         guest.error("forbidden", "{\"type\":\"pause\"}");
+        // request mode: a guest's request goes straight into the queue; still no votes, skips or reordering
+        assertEquals(200, call(alice, "PATCH", "/api/rooms/policy", "{\"controlMode\":\"request\"}").statusCode());
+        JsonObject direct = guest.ok("{\"type\":\"queue.add\",\"itemId\":\"" + servedItem("Direct") + "\"}");
+        assertEquals("queued", direct.get("state").getAsString());
+        String directEntry = direct.get("entryId").getAsString();
+        JsonObject requestYou = guest.await(m -> m.get("type").getAsString().equals("state") && m.has("room")
+                && m.getAsJsonObject("room").get("controlMode").getAsString().equals("request"))
+                .getAsJsonObject("room").getAsJsonObject("you");
+        assertFalse(requestYou.get("canSkip").getAsBoolean());
+        assertFalse(requestYou.get("canVote").getAsBoolean());
+        guest.error("wrong_control_mode", "{\"type\":\"vote\",\"entryId\":\"" + entry2 + "\",\"value\":1}");
+        guest.error("forbidden", "{\"type\":\"pause\"}");
+        guest.error("forbidden", "{\"type\":\"next\"}");
+        guest.error("forbidden", "{\"type\":\"queue.move\",\"entryId\":\"" + directEntry + "\"}");
+        guest.ok("{\"type\":\"queue.remove\",\"entryId\":\"" + directEntry + "\"}");
         // open mode: request rights control playback too
         assertEquals(200, call(alice, "PATCH", "/api/rooms/policy", "{\"controlMode\":\"open\"}").statusCode());
         guest.ok("{\"type\":\"pause\"}");

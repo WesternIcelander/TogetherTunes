@@ -190,7 +190,7 @@ public final class QueueControl {
         ControlSettings settings = s.controlSettings();
         boolean voteMode = switch (s.controlMode()) {
             case VOTE -> true;
-            case OWNER, OPEN -> false;
+            case OWNER, REQUEST, OPEN -> false;
         };
         if (!voteMode || settings.voteSkipThreshold() == null || s.current() == null || s.skipVotes().isEmpty()) {
             return false;

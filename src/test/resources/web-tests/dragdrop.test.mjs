@@ -107,6 +107,9 @@ test("dropping on a playlist: its own entries move in its view, everything else 
 test("who may reorder the queue", () => {
   assert.equal(D.canMoveQueue(room("owner", { canModerate: true })), true);
   assert.equal(D.canMoveQueue(room("owner")), false);
+  // request mode: like owner mode (requests go straight in, but only the owner and moderators reorder)
+  assert.equal(D.canMoveQueue(room("request", { canModerate: true })), true);
+  assert.equal(D.canMoveQueue(room("request")), false);
   assert.equal(D.canMoveQueue(room("open")), true);
   assert.equal(D.canMoveQueue(room("open", { identified: false })), false);
   assert.equal(D.canMoveQueue(room("open", { canRequest: false })), false);
