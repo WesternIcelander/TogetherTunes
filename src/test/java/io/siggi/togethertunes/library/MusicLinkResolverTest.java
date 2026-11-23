@@ -284,4 +284,57 @@ class MusicLinkResolverTest {
         resolver.resolve(alice, TRACK);
         assertEquals("too_many_lookups", error(alice, TRACK).code());
     }
+
+    @Test
+    void searchAsksTheSearchEndpointAndLeavesOutLiveStreams() throws Exception {
+        fake.searchBody = """
+                {"query":"katy perry firework","matches":[
+                  {"type":"music_video","title":"Katy Perry - Firework (Official Music Video)","durationMs":234000,
+                   "videoId":"QGJuMBdaqIw","channel":"KatyPerryVEVO",
+                   "thumbnails":[{"url":"https://i.ytimg.com/vi/QGJuMBdaqIw/hq720.jpg","width":720}]},
+                  {"type":"song","title":"Firework","durationMs":228000,"videoId":"SSSSSSSSSSS",
+                   "artists":["Katy Perry"],"channel":null},
+                  {"type":"video","title":"Live now","durationMs":null,"videoId":"LLLLLLLLLLL","channel":"x","live":true},
+                  {"type":"video","title":"Bad","videoId":"nope"},
+                  {"type":"lyric_video","videoId":"BBBBBBBBBBB","live":false}
+                ]}""";
+        List<MusicLinkResolver.SearchMatch> found = resolver.search("  Katy   Perry\tFirework & co ", 8);
+        assertEquals(List.of(
+                new MusicLinkResolver.SearchMatch("QGJuMBdaqIw", "Katy Perry - Firework (Official Music Video)",
+                        "KatyPerryVEVO", 234000L, "music_video", "https://i.ytimg.com/vi/QGJuMBdaqIw/hq720.jpg"),
+                new MusicLinkResolver.SearchMatch("SSSSSSSSSSS", "Firework", "Katy Perry", 228000L, "song", null),
+                new MusicLinkResolver.SearchMatch("BBBBBBBBBBB", "BBBBBBBBBBB", null, null, "lyric_video", null)),
+                found);
+        assertEquals(1, fake.seen.size());
+        assertEquals("/search", fake.seen.get(0).path());
+        assertEquals("query=Katy%20Perry%20Firework%20%26%20co&limit=8", fake.seen.get(0).query());
+        assertEquals(SECRET, fake.seen.get(0).header("X-Api-Key"));
+
+        // the query is cut to 200 characters, the limit kept within 1..20
+        resolver.search("x".repeat(300), 50);
+        assertEquals("query=" + "x".repeat(200) + "&limit=20", fake.seen.get(1).query());
+        resolver.search("y", 0);
+        assertEquals("query=y&limit=1", fake.seen.get(2).query());
+
+        // off or blank: nothing asked
+        assertEquals(List.of(), resolver.search("   ", 8));
+        options = options(null, SECRET, LinkPreference.SONG, false, 15);
+        assertEquals(List.of(), resolver.search("Firework", 8));
+        assertEquals(3, fake.seen.size());
+
+        // failures as for the other calls
+        options = options(fake.url(), SECRET, LinkPreference.SONG, false, 15);
+        fake.searchStatus = 502;
+        assertEquals("resolver_unavailable",
+                assertThrows(HttpError.class, () -> resolver.search("Firework", 8)).code());
+        fake.searchStatus = 200;
+        fake.searchBody = "not json";
+        assertEquals("resolver_unavailable",
+                assertThrows(HttpError.class, () -> resolver.search("Firework", 8)).code());
+        fake.searchBody = "{\"query\":\"x\"}";
+        assertEquals(List.of(), resolver.search("Firework", 8));
+        for (String log : logs) {
+            assertFalse(log.contains(SECRET), log);
+        }
+    }
 }

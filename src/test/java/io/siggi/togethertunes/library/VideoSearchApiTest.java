@@ -255,18 +255,24 @@ class VideoSearchApiTest {
         assertEquals(231500, f.get("durationMs").getAsLong());
         assertFalse(f.has("type"));
         assertEquals(List.of("--flat-playlist -J --no-warnings -- ytsearch8:Katy Perry Firework"), ytdlp.searches());
-        assertEquals(0, mvfinder.seen.size());
+        // MVFinder's search was asked first and found nothing
+        assertEquals(1, mvfinder.seen.size());
+        assertEquals("/search", mvfinder.seen.get(0).path());
 
-        // MVFinder failing (or not knowing the ISRC) falls through to the search too
+        // MVFinder failing (or not knowing the ISRC) falls through to the search too (its own
+        // search failing the same way: yt-dlp)
         mvfinder.status = 503;
         String isrc = song("USUM71000001", null);
         assertEquals(List.of(FOUND1, FOUND2), ids(search(isrc, bob)));
         mvfinder.status = 404;
         assertEquals(List.of(FOUND1, FOUND2), ids(search(isrc, bob)));
+        assertEquals(List.of("/search", "/isrc/USUM71000001", "/search", "/isrc/USUM71000001", "/search"),
+                mvfinder.seen.stream().map(FakeMvfinder.Seen::path).toList());
         // MVFinder off: the search
         mvfinderUrl = null;
         assertEquals(List.of(FOUND1, FOUND2), ids(search(isrc, bob)));
-        assertEquals(2, mvfinder.seen.size());
+        assertEquals(5, mvfinder.seen.size());
+        assertEquals(4, ytdlp.searches().size());
 
         // nothing anywhere: an empty list; a failing yt-dlp: 502
         ytdlp.searchJson("{\"entries\":[]}");
@@ -275,6 +281,98 @@ class VideoSearchApiTest {
         HttpResponse<String> failed = search(plain, bob);
         assertEquals(502, failed.statusCode(), failed.body());
         assertEquals("search_failed", code(failed));
+    }
+
+    /** A {@code /search} answer: YouTube's order, with a song upload, a live stream and a bad ID. */
+    private static final String SEARCH_ANSWER = "{\"query\":\"Katy Perry Firework\",\"matches\":["
+            + "{\"type\":\"song\",\"title\":\"Firework\",\"durationMs\":228000,\"videoId\":\"" + SONG + "\","
+            + "\"artists\":[\"Katy Perry\"],\"channel\":null},"
+            + "{\"type\":\"music_video\",\"title\":\"Katy Perry - Firework (Official Music Video)\",\"durationMs\":234000,"
+            + "\"videoId\":\"" + MV + "\",\"channel\":\"KatyPerryVEVO\",\"url\":\"https://www.youtube.com/watch?v=" + MV + "\","
+            + "\"thumbnails\":[{\"url\":\"https://i.ytimg.com/vi/" + MV + "/hq720.jpg\",\"width\":720}]},"
+            + "{\"type\":\"video\",\"title\":\"Firework 24/7\",\"durationMs\":null,\"videoId\":\"" + LIVE + "\","
+            + "\"channel\":\"Radio\",\"live\":true},"
+            + "{\"type\":\"lyric_video\",\"title\":\"Firework (Lyrics)\",\"durationMs\":230000,\"videoId\":\"" + LYRIC + "\","
+            + "\"channel\":\"KatyPerryVEVO\",\"thumbnails\":[{\"url\":\"https://evil.example/x.jpg\"}]},"
+            + "{\"type\":\"video\",\"title\":\"Firework cover\",\"durationMs\":200000,\"videoId\":\"" + USER + "\","
+            + "\"artists\":[\"Some One\",\"Other\"]},"
+            + "{\"type\":\"video\",\"title\":\"Bad\",\"videoId\":\"bad\"},"
+            + "{\"type\":\"official_audio\",\"title\":\"Firework (Audio)\",\"videoId\":\"" + FOUND1 + "\",\"channel\":\"KatyPerryVEVO\"},"
+            + "{\"type\":\"music_video\",\"title\":\"Same again\",\"videoId\":\"" + MV + "\",\"channel\":\"x\"}]}";
+
+    @Test
+    void theYoutubeSearchGoesThroughMvfinderFirst() throws Exception {
+        mvfinder.searchBody = SEARCH_ANSWER;
+        ytdlp.searchJson(FakeYtdlpSearch.entries(new String[] {FOUND2, "From yt-dlp", "C", "1"}));
+        String plain = song(null, null);
+        HttpResponse<String> r = search(plain, bob);
+        assertEquals(200, r.statusCode(), r.body());
+        // YouTube's order; no song upload, no live stream, no bad ID, no duplicate; yt-dlp not run
+        assertEquals(List.of(MV, LYRIC, USER, FOUND1), ids(r));
+        assertEquals(List.of(), ytdlp.searches());
+        assertEquals(1, mvfinder.seen.size());
+        FakeMvfinder.Seen seen = mvfinder.seen.get(0);
+        assertEquals("/search", seen.path());
+        assertEquals("query=Katy%20Perry%20Firework&limit=8", seen.query(), "normal YouTube mode, artist and title");
+        assertEquals("sekret", seen.header("X-Api-Key"));
+        JsonObject mv = candidate(r, MV);
+        assertEquals("Katy Perry - Firework (Official Music Video)", mv.get("title").getAsString());
+        assertEquals("KatyPerryVEVO", mv.get("channel").getAsString());
+        assertEquals(234000, mv.get("durationMs").getAsLong());
+        assertEquals("music_video", mv.get("type").getAsString());
+        assertEquals("https://i.ytimg.com/vi/" + MV + "/hq720.jpg", mv.get("thumbnailUrl").getAsString());
+        assertEquals("lyric_video", candidate(r, LYRIC).get("type").getAsString());
+        assertEquals("https://i.ytimg.com/vi/" + LYRIC + "/hqdefault.jpg",
+                candidate(r, LYRIC).get("thumbnailUrl").getAsString(), "a foreign host falls back");
+        JsonObject user = candidate(r, USER);
+        assertEquals("Some One, Other", user.get("channel").getAsString(), "no channel: the artists");
+        assertEquals("video", user.get("type").getAsString());
+        assertEquals("official_audio", candidate(r, FOUND1).get("type").getAsString());
+
+        // picking: a lyric video is linked as one, anything else as a Music Video
+        String path = "/api/items/" + plain + "/video-search/pick";
+        assertEquals("lyric_video", json(call("POST", path, bob, "{\"videoId\":\"" + LYRIC + "\"}")).get("linkType")
+                .getAsString());
+        assertEquals("music_video", json(call("POST", path, bob, "{\"videoId\":\"" + USER + "\"}")).get("linkType")
+                .getAsString());
+        assertEquals("not_a_candidate", code(call("POST", path, bob, "{\"videoId\":\"" + SONG + "\"}")));
+        assertEquals("not_a_candidate", code(call("POST", path, bob, "{\"videoId\":\"" + LIVE + "\"}")));
+
+        // only songs and live streams: nothing usable, so yt-dlp
+        mvfinder.searchBody = "{\"query\":\"q\",\"matches\":[{\"type\":\"song\",\"videoId\":\"" + SONG + "\"},"
+                + "{\"type\":\"video\",\"videoId\":\"" + LIVE + "\",\"live\":true}]}";
+        assertEquals(List.of(FOUND2), ids(search(plain, bob)));
+        // MVFinder's search failing, timing out or unreadable: yt-dlp
+        mvfinder.searchBody = SEARCH_ANSWER;
+        mvfinder.searchStatus = 502;
+        assertEquals(List.of(FOUND2), ids(search(plain, bob)));
+        mvfinder.searchStatus = 400;
+        assertEquals(List.of(FOUND2), ids(search(plain, bob)));
+        mvfinder.searchStatus = 200;
+        mvfinder.searchBody = "<html>";
+        assertEquals(List.of(FOUND2), ids(search(plain, bob)));
+        // not configured: yt-dlp, nobody asked
+        int asked = mvfinder.seen.size();
+        mvfinderUrl = null;
+        assertEquals(List.of(FOUND2), ids(search(plain, bob)));
+        assertEquals(asked, mvfinder.seen.size());
+        assertEquals(5, ytdlp.searches().size());
+    }
+
+    @Test
+    void anMvfinderSearchCountsOnceAndAnIsrcHitNeedsNoSearch() throws Exception {
+        mvfinder.searchBody = SEARCH_ANSWER;
+        maxPerHour.set(2);
+        String plain = song(null, null);
+        assertEquals(200, search(plain, bob).statusCode());
+        assertEquals(200, search(plain, bob).statusCode());
+        assertEquals("too_many_searches", code(search(plain, bob)));
+        assertEquals(2, mvfinder.seen.size());
+        // ISRC matches found: no search at all
+        String isrc = song("USUM71000000", null);
+        assertEquals(List.of(MV, LYRIC, OFFICIAL), ids(search(isrc, alice)));
+        assertEquals("/isrc/USUM71000000", mvfinder.seen.get(2).path());
+        assertEquals(3, mvfinder.seen.size());
     }
 
     @Test

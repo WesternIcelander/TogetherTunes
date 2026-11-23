@@ -42,8 +42,11 @@ import java.util.function.Supplier;
  * item's ISRC ({@link MusicLinkResolver#isrcVideos}, when it is configured and the item has an
  * ISRC; a failure there is logged and skipped), then the video matches kept from the link the item
  * was imported from ({@code metadata_json.link.videos}); only when those found nothing, a YouTube
- * search through yt-dlp ({@code --flat-playlist -J "ytsearch8:<artist> <title>"}, nothing
- * downloaded, {@link #SEARCH_TIMEOUT}). Each search counts against the person's
+ * search for {@code <artist> <title>}: through MVFinder's {@code /search}
+ * ({@link MusicLinkResolver#search}, YouTube's order, without live streams and {@code song}
+ * uploads) when it is configured, else (or when it fails or finds nothing usable) through yt-dlp
+ * ({@code --flat-playlist -J "ytsearch8:<artist> <title>"}, nothing downloaded,
+ * {@link #SEARCH_TIMEOUT}). Each search counts against the person's
  * {@code mvfinder.maxPerHour} ({@code 429 too_many_searches}). Every candidate has a thumbnail
  * URL ({@link #thumbnail}): MVFinder's {@code thumbnails[0].url} (also kept with the stored
  * matches), yt-dlp's largest thumbnail not wider than 480, else YouTube's {@code hqdefault.jpg}.
@@ -79,7 +82,8 @@ public final class VideoSearch {
      * @param channel    the uploader (yt-dlp) or the artists joined (MVFinder), or null
      * @param durationMs null when unknown
      * @param type       MVFinder's match type ({@code music_video}, {@code lyric_video},
-     *                   {@code official_video}, {@code visualizer}), null for a search result
+     *                   {@code official_video}, {@code visualizer}; from its search also
+     *                   {@code official_audio} and {@code video}), null for a yt-dlp search result
      * @param thumbnailUrl an allowed thumbnail ({@link #thumbnail}), never null
      */
     public record Candidate(String videoId, String title, String channel, Long durationMs, String type,
@@ -162,8 +166,14 @@ public final class VideoSearch {
             add(out, seen, fromMatch(m));
         }
         if (out.isEmpty()) {
-            for (Candidate c : ytdlpSearch(query(song))) {
+            String q = query(song);
+            for (Candidate c : resolverSearch(r, q, itemId)) {
                 add(out, seen, c);
+            }
+            if (out.isEmpty()) {
+                for (Candidate c : ytdlpSearch(q)) {
+                    add(out, seen, c);
+                }
             }
         }
         Map<String, String> types = new LinkedHashMap<>();
@@ -296,6 +306,35 @@ public final class VideoSearch {
         String channel = m.artists().isEmpty() ? null : String.join(", ", m.artists());
         return new Candidate(m.videoId(), m.title() != null ? m.title() : m.videoId(), channel, m.durationMs(), m.type(),
                 thumbnail(m.thumbnailUrl(), m.videoId()));
+    }
+
+    /**
+     * MVFinder's YouTube search for {@code query} ({@link MusicLinkResolver#search}, at most
+     * {@link #SEARCH_RESULTS}) without {@code song} uploads (a still picture, not a video); empty
+     * when MVFinder is off or fails (logged), so the yt-dlp search runs instead.
+     */
+    private static List<Candidate> resolverSearch(MusicLinkResolver r, String query, String itemId)
+            throws InterruptedException {
+        if (r == null || query.isBlank()) {
+            return List.of();
+        }
+        List<MusicLinkResolver.SearchMatch> matches;
+        try {
+            matches = r.search(query, SEARCH_RESULTS);
+        } catch (HttpError e) {
+            LOG.log(System.Logger.Level.INFO, "No search results from the link resolver for item " + itemId + ": "
+                    + e.code());
+            return List.of();
+        }
+        List<Candidate> out = new ArrayList<>();
+        for (MusicLinkResolver.SearchMatch m : matches) {
+            if ("song".equals(m.type())) {
+                continue;
+            }
+            out.add(new Candidate(m.videoId(), m.title(), m.channel(), m.durationMs(), m.type(),
+                    thumbnail(m.thumbnailUrl(), m.videoId())));
+        }
+        return out;
     }
 
     /** YouTube's own thumbnail of {@code videoId}, for a candidate without an allowed one. */

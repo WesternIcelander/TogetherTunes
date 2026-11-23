@@ -45,13 +45,17 @@ export interface PickResult {
 /** Shown when the search found nothing. */
 export const NO_VIDEO_FOUND = "No music video found.";
 
-/** A match type's name, or undefined for a plain search result (or an unknown type). */
+/**
+ * A match type's name, or undefined for a plain search result (a yt-dlp result, the search's
+ * `video` for anything not from an artist's channel, or an unknown type).
+ */
 export function candidateTypeLabel(type: string | undefined): string | undefined {
   switch (type) {
     case "music_video": return "Music Video";
     case "lyric_video": return "Lyric Video";
     case "official_video": return "Official video";
     case "visualizer": return "Visualizer";
+    case "official_audio": return "Official audio";
     default: return undefined;
   }
 }

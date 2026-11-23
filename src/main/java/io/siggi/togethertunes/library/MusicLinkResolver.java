@@ -229,6 +229,109 @@ public final class MusicLinkResolver {
         return videos(matches.getAsJsonArray(), null);
     }
 
+    /** Longest search text sent ({@code query} is cut to it). */
+    static final int MAX_QUERY = 200;
+    /** Most search results asked for. */
+    static final int MAX_SEARCH_RESULTS = 20;
+
+    /**
+     * One result of MVFinder's YouTube search ({@link #search}).
+     *
+     * @param title        cleaned; the video ID when there was none
+     * @param channel      the uploading channel, else the artists joined, or null
+     * @param durationMs   null when MVFinder didn't say
+     * @param type         MVFinder's inferred type ({@code song}, {@code music_video},
+     *                     {@code lyric_video}, {@code visualizer}, {@code official_audio},
+     *                     {@code official_video}, {@code video}), or null
+     * @param thumbnailUrl {@code thumbnails[0].url}, not checked here (see {@link VideoSearch#thumbnail})
+     */
+    public record SearchMatch(String videoId, String title, String channel, Long durationMs, String type,
+                              String thumbnailUrl) {
+    }
+
+    /**
+     * MVFinder's YouTube search ({@code GET <url>/search?query=<query>&limit=<limit>}, normal
+     * YouTube mode, the same header and timeout as {@link #resolve}), in YouTube's order. Live
+     * streams ({@code live: true}) and matches without a valid video ID are left out; everything
+     * else (also {@code song} uploads) is returned, the caller decides. {@code query} is cut to
+     * {@link #MAX_QUERY} characters, {@code limit} kept within 1..{@link #MAX_SEARCH_RESULTS}.
+     * Empty when the feature is off or the query is blank. Counts nothing: the callers have their
+     * own per-person limits.
+     *
+     * @throws HttpError {@code 422} (MVFinder refused it, 4xx), {@code 503 resolver_unavailable}
+     */
+    public List<SearchMatch> search(String query, int limit) throws InterruptedException {
+        Options o = options();
+        String q = query == null ? "" : query.strip().replaceAll("\\s+", " ");
+        if (o == null || o.url() == null || o.url().isBlank() || q.isEmpty()) {
+            return List.of();
+        }
+        if (q.length() > MAX_QUERY) {
+            int end = MAX_QUERY;
+            if (Character.isHighSurrogate(q.charAt(end - 1))) {
+                end--;
+            }
+            q = q.substring(0, end).strip();
+        }
+        int n = Math.max(1, Math.min(MAX_SEARCH_RESULTS, limit));
+        String encoded = java.net.URLEncoder.encode(q, StandardCharsets.UTF_8).replace("+", "%20");
+        JsonObject answer = fetch(o, "search?query=" + encoded + "&limit=" + n, "a search");
+        return searchMatches(answer);
+    }
+
+    /** The usable matches of a {@code /search} answer; see {@link #search}. */
+    static List<SearchMatch> searchMatches(JsonObject answer) {
+        if (!(answer.get("matches") instanceof JsonArray matches)) {
+            return List.of();
+        }
+        List<SearchMatch> out = new ArrayList<>();
+        for (JsonElement m : matches) {
+            if (!m.isJsonObject()) {
+                continue;
+            }
+            JsonObject o = m.getAsJsonObject();
+            String videoId = string(o, "videoId");
+            JsonElement live = o.get("live");
+            if (!YoutubeIds.isValidId(videoId) || (live != null && live.isJsonPrimitive()
+                    && live.getAsJsonPrimitive().isBoolean() && live.getAsBoolean())) {
+                continue;
+            }
+            String channel = UploadMetadata.clean(string(o, "channel"));
+            if (channel == null) {
+                List<String> artists = SongDetails.cleanNames(stringList(o.get("artists")));
+                channel = artists.isEmpty() ? null : String.join(", ", artists);
+            }
+            String title = UploadMetadata.clean(string(o, "title"));
+            out.add(new SearchMatch(videoId, title != null ? title : videoId, channel, durationMs(o),
+                    string(o, "type"), firstThumbnail(o)));
+        }
+        return List.copyOf(out);
+    }
+
+    private static List<String> stringList(JsonElement a) {
+        List<String> out = new ArrayList<>();
+        if (a != null && a.isJsonArray()) {
+            for (JsonElement n : (JsonArray) a) {
+                if (n.isJsonPrimitive() && n.getAsJsonPrimitive().isString()) {
+                    out.add(n.getAsString());
+                }
+            }
+        }
+        return out;
+    }
+
+    /** A match's {@code durationMs} when it is a plausible positive number, else null. */
+    private static Long durationMs(JsonObject o) {
+        JsonElement d = o.get("durationMs");
+        if (d != null && d.isJsonPrimitive() && d.getAsJsonPrimitive().isNumber()) {
+            double v = d.getAsDouble();
+            if (v > 0 && v < 1e12) {
+                return (long) v;
+            }
+        }
+        return null;
+    }
+
     /** Counts one resolution for {@code actorKey}, or throws {@code 429 too_many_lookups}. */
     private void take(String actorKey, int maxPerHour) {
         long now = clock.millis();
@@ -356,25 +459,8 @@ public final class MusicLinkResolver {
             if (type == null || !VIDEO_TYPES.contains(type) || !YoutubeIds.isValidId(videoId) || !seen.add(videoId)) {
                 continue;
             }
-            List<String> artists = new ArrayList<>();
-            JsonElement a = o.get("artists");
-            if (a != null && a.isJsonArray()) {
-                for (JsonElement n : (JsonArray) a) {
-                    if (n.isJsonPrimitive() && n.getAsJsonPrimitive().isString()) {
-                        artists.add(n.getAsString());
-                    }
-                }
-            }
-            Long durationMs = null;
-            JsonElement d = o.get("durationMs");
-            if (d != null && d.isJsonPrimitive() && d.getAsJsonPrimitive().isNumber()) {
-                double v = d.getAsDouble();
-                if (v > 0 && v < 1e12) {
-                    durationMs = (long) v;
-                }
-            }
-            out.add(new VideoMatch(videoId, UploadMetadata.clean(string(o, "title")), SongDetails.cleanNames(artists),
-                    durationMs, type, firstThumbnail(o)));
+            out.add(new VideoMatch(videoId, UploadMetadata.clean(string(o, "title")),
+                    SongDetails.cleanNames(stringList(o.get("artists"))), durationMs(o), type, firstThumbnail(o)));
         }
         return List.copyOf(out);
     }

@@ -10,7 +10,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * A tiny local stand-in for MVFinder: answers every request with {@link #status} and {@link #body}
- * (after {@link #delayMs}) and records each request's path, query and headers.
+ * ({@code /search} with {@link #searchStatus} and {@link #searchBody}) (after {@link #delayMs}) and records each request's path, query and headers.
  */
 final class FakeMvfinder implements AutoCloseable {
     /** The track answer from MVFinder's README. */
@@ -69,6 +69,10 @@ final class FakeMvfinder implements AutoCloseable {
     volatile int status = 200;
     volatile String body = README_TRACK;
     volatile long delayMs;
+    /** The answer to {@code /search} (default: no matches). */
+    volatile String searchBody = "{\"query\":\"q\",\"matches\":[]}";
+    /** The status of {@code /search}; null = {@link #status}. */
+    volatile Integer searchStatus;
 
     FakeMvfinder() throws IOException {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -79,9 +83,11 @@ final class FakeMvfinder implements AutoCloseable {
                 if (delayMs > 0) {
                     Thread.sleep(delayMs);
                 }
-                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+                boolean search = "/search".equals(exchange.getRequestURI().getRawPath());
+                byte[] bytes = (search ? searchBody : body).getBytes(StandardCharsets.UTF_8);
+                int code = search && searchStatus != null ? searchStatus : status;
                 exchange.getResponseHeaders().add("Content-Type", "application/json");
-                exchange.sendResponseHeaders(status, bytes.length == 0 ? -1 : bytes.length);
+                exchange.sendResponseHeaders(code, bytes.length == 0 ? -1 : bytes.length);
                 if (bytes.length > 0) {
                     exchange.getResponseBody().write(bytes);
                 }

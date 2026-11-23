@@ -370,6 +370,7 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.Items$LookupSource", "what an online lookup of an item needs, server-side only"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Options", "the mvfinder.* settings a link resolution reads, server-side only (its toString leaves the header value out)"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$Resolved", "a resolved link's video ID and track, server-side only"),
+            Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$SearchMatch", "MVFinder's search results, turned into VideoSearch.Candidate before they're sent"),
             Map.entry("io.siggi.togethertunes.library.MusicLinkResolver$VideoMatch", "MVFinder's video matches, kept in the new item's metadata_json (never sent as such)"),
             Map.entry("io.siggi.togethertunes.library.VideoSearch$Candidate", "a Find a music video candidate; the API sends its own maps (video, title, channel, length, type)"),
             Map.entry("io.siggi.togethertunes.library.VideoSearch$Picked", "a pick's outcome; the API sends its own map"),

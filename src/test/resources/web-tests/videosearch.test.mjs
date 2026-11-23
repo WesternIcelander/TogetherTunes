@@ -13,6 +13,8 @@ test("candidate lines: channel, length and type, the known parts only", () => {
     "A, B · 3:34 · Lyric Video");
   assert.equal(V.candidateDetail({ videoId: "a", title: "T", type: "visualizer" }), "Visualizer");
   assert.equal(V.candidateDetail({ videoId: "a", title: "T", type: "official_video" }), "Official video");
+  assert.equal(V.candidateDetail({ videoId: "a", title: "T", type: "official_audio" }), "Official audio");
+  assert.equal(V.candidateDetail({ videoId: "a", title: "T", channel: "C", type: "video" }), "C");
   assert.equal(V.candidateDetail({ videoId: "a", title: "T", type: "music_video" }), "Music Video");
   assert.equal(V.candidateDetail({ videoId: "a", title: "T", type: "something_new" }), "");
   assert.equal(V.candidateDetail({ videoId: "a", title: "T" }), "");
