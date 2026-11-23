@@ -53,6 +53,7 @@ import { Upload, type UploadProgress } from "./uploads.js";
 import { attachRoom, pageSignal, rememberPlaying, viewStart, type RoomHandle } from "./nav.js";
 import { shouldJoin } from "./alone.js";
 import { OutputsPanel } from "./outputspanel.js";
+import { initialSoundHolder, soundHolderOnIdentity, soundHolderOnMessage, type SoundHolder } from "./soundwindow.js";
 import { previewDuck } from "./volume.js";
 import { roomSearchButtons, roomSearchHeading, RoomSearchResults, roomYoutubeErrorText, roomYoutubeSearchPath,
   SEARCH_LIBRARY_LABEL, SEARCH_YOUTUBE_LABEL, youtubeRequestedText } from "./roomsearch.js";
@@ -220,8 +221,11 @@ let player: ListenPlayer | undefined;
 // While a preview plays (the item page's player), the room is silent but keeps running in sync
 // (its own mute in the player, separate from the listener's; volume.ts).
 previewDuck.subscribe((ducked) => player?.setDucked(ducked), ROOM_SIGNAL);
-/** Another window of this person has the sound (the room socket's `sound` / `sound.released`). */
-let otherWindowHasSound = false;
+/**
+ * Which window of this person plays (the room socket's `identity`, `sound` and `sound.released`;
+ * soundwindow.ts): only "here" loads media. "unknown" until the socket says.
+ */
+let soundHolder: SoundHolder = "unknown";
 /** The timeline as it was a while ago, for remote mode's delayed view. */
 const delayed = new DelayedTimeline<CurrentEntry | undefined>();
 /** The user's nudge of the remote delay for this room (ms, whole 0.5 s steps). */
@@ -850,7 +854,7 @@ function createPlayer(): ListenPlayer {
   p.setVolume(listenerGain);
   p.setMuted(listenerMuted);
   p.setDucked(previewDuck.ducked);
-  p.setOtherWindowHasSound(otherWindowHasSound);
+  p.setSoundHolder(soundHolder);
   // The user's Web Audio preference (user settings): applied when it loads or changes. A change made in
   // the settings view reaches here inside its change event, a user gesture: the rebuilt elements are
   // unlocked in it.
@@ -1074,6 +1078,9 @@ async function start(): Promise<void> {
   nudge = parseNudge(storageGet(nudgeKey(room.id)));
   element("room-status").textContent = "Connecting…";
 
+  const windowId = soundWindowId();
+  soundHolder = initialSoundHolder(windowId);
+  player?.setSoundHolder(soundHolder);
   conn = new RoomConnection(room.id, mode, {
     state: (s) => {
       element("room-status").hidden = true;
@@ -1102,14 +1109,19 @@ async function start(): Promise<void> {
       shell?.gone(reason);
     },
     request: onRequest,
-    identity: () => renderIdentity(),
+    identity: (actor) => {
+      // An anonymous socket gets no `sound` messages: it always plays.
+      soundHolder = soundHolderOnIdentity(soundHolder, actor === undefined);
+      player?.setSoundHolder(soundHolder);
+      renderIdentity();
+    },
     chooseGuestName: (generated) => askGuestName(generated),
     time: (t0, ts, t1) => clock?.reply(t0, ts, t1),
     sound: (holder) => {
-      otherWindowHasSound = !holder;
-      player?.setOtherWindowHasSound(!holder);
+      soundHolder = soundHolderOnMessage(holder);
+      player?.setSoundHolder(soundHolder);
     },
-  }, soundWindowId());
+  }, windowId);
   const c = new ClockSync((t0) => conn.sendTime(t0));
   clock = c;
   // A better clock estimate moves the target: correct at once instead of at the next tick.

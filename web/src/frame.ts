@@ -1836,8 +1836,9 @@ export class Frame {
     const roomView = this.#roomViewShown() || this.#pane === "now";
     const blocked = !byId("room-listen-overlay").hidden;
     const video = room !== undefined && room.mode() === "listen" && !container.hidden;
-    // In the right panel: collapsed for audio items (and Audio Only), unless the "Click to enable
-    // sound" layer is up. The room view's video area always shows; the Now Playing View too. Where
+    // In the right panel: collapsed for audio items (and Audio Only), unless the player's overlay is
+    // up ("Click to enable sound", or "Move player here" while another window plays: then no video
+    // loads here and the card shows the item). The room view's video area always shows; the Now Playing View too. Where
     // no video shows, a card like the stream's item card.
     panel.hidden = !roomView && (room === undefined || (!video && !nowView && !blocked));
     card.hidden = video || !(nowView || roomView || blocked);

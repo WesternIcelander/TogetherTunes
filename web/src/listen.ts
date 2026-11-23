@@ -31,6 +31,13 @@
 // too (Firefox's "Block audio and video"), or a muted element doesn't advance (a suspended Web Audio
 // context holding it), the player stops trying muted and waits paused for the click, as for audio items.
 //
+// One window with sound per person (docs/ui.md; rules in soundwindow.ts): while another window of the
+// same person plays (or before the room socket has said which one does), this player loads no media:
+// every element is emptied (`src` removed and `load()`ed), nothing is preloaded, and with no element
+// playing there is no health or stall handling; the Web Audio graph stays as it is. The overlay
+// says "Move player here" (the frame shows the item's card behind it); its click claims the sound
+// and, in the same gesture, loads the current entry, seeks to the timeline and plays (the unlock).
+//
 // Sync loop (every 250 ms, on every state change and on the elements' playing/seeked events): the
 // target position comes from the timeline and the server clock; drift above 750 ms → hard seek.
 // Below that, in "rate" mode (Chromium, Gecko) a drift above 40 ms starts a rate nudge of ±3 %
@@ -86,6 +93,7 @@ import {
   SeekLanding, SeekLead, shouldPreload, STEADY_MS, SwitchGate, type Source, type SyncMode,
 } from "./listensync.js";
 import { positionAt, type CurrentEntry, type RoomState, type Timeline } from "./roomclient.js";
+import { loadsMedia, overlayClickPlan, overlayPlan, type SoundHolder } from "./soundwindow.js";
 import { roomGain } from "./volume.js";
 
 const HAVE_METADATA = 1;
@@ -125,7 +133,7 @@ export interface ListenHooks {
   remember?: (m: WebAudioMemory) => void;
   /** The sound path changed (Web Audio ↔ direct, or a new rate): update the note. */
   onSound?: () => void;
-  /** The overlay was clicked while another window had the sound: take it (`sound.claim`). */
+  /** "Move player here" was clicked (another window had the sound): take it (`sound.claim`). */
   claimSound?: () => void;
 }
 
@@ -341,11 +349,13 @@ export class ListenPlayer {
    */
   #ducked = false;
   /**
-   * Another window of the same person has the sound (docs/ui.md "One window with sound per person"):
-   * silent and in sync behind "Click to enable sound", separate from the listener's own mute and
-   * volume and from the blocked-sound mute; the overlay's click takes the sound back.
+   * Which window of the same person plays (docs/ui.md "One window with sound per person";
+   * soundwindow.ts): only "here" loads media. "elsewhere": no source on any element, no preload, no
+   * health or stall handling, the card with "Move player here", whose click takes the player over;
+   * "unknown": nothing loaded until the room socket says. Separate from the listener's own mute and
+   * volume and from the blocked-sound mute.
    */
-  #otherWindow = false;
+  #holder: SoundHolder = "here";
   /** With Web Audio: the gain every deck plays through (after its meter), set to the listener's volume. */
   #master: GainNode | undefined;
 
@@ -605,7 +615,7 @@ export class ListenPlayer {
 
   /** The listener's gain: 0 while muted or ducked by a preview, else the volume. */
   #listenerGain(): number {
-    return roomGain(this.#userVolume, this.#userMuted, this.#ducked || this.#otherWindow);
+    return roomGain(this.#userVolume, this.#userMuted, this.#ducked);
   }
 
   /** The listener's volume (0..1, a linear gain). */
@@ -650,20 +660,24 @@ export class ListenPlayer {
    * sound" pending. The listener's own mute and a preview's duck don't count: the window still holds the sound.
    */
   get heard(): boolean {
-    return !this.#otherWindow && !this.#needsRestore && this.#audible();
+    return loadsMedia(this.#holder) && !this.#needsRestore && this.#audible();
   }
 
-  /** Whether another window of the same person has the sound (this one plays silently). */
-  get otherWindowHasSound(): boolean {
-    return this.#otherWindow;
+  /** Which window of the same person plays (soundwindow.ts). */
+  get soundHolder(): SoundHolder {
+    return this.#holder;
   }
 
-  /** Another window took the sound (on) or this window has it (off). */
-  setOtherWindowHasSound(on: boolean): void {
-    if (on === this.#otherWindow) return;
-    this.#otherWindow = on;
-    recordEvent("sound-holder", { otherWindow: on });
-    this.#applyListenerGain();
+  /**
+   * The room socket said where the sound plays. Leaving "here" drops every source at once (the
+   * downloads stop; the Web Audio graph stays); coming "here" without a click (the socket's first
+   * answer, a reload of the holder) loads and plays as usual.
+   */
+  setSoundHolder(holder: SoundHolder): void {
+    if (holder === this.#holder) return;
+    this.#holder = holder;
+    recordEvent("sound-holder", { holder });
+    this.tick();
     this.#updateOverlay();
   }
 
@@ -707,7 +721,7 @@ export class ListenPlayer {
     return {
       mode: this.#mode,
       ducked: this.#ducked,
-      otherWindow: this.#otherWindow,
+      soundHolder: this.#holder,
       context: this.#ctx?.state ?? "none",
       webAudio: this.#ctx !== undefined,
       webAudioOff: this.#webAudioOff,
@@ -843,15 +857,22 @@ export class ListenPlayer {
     }
   }
 
-  #tick(): void {
+  /** The current entry and its source, when there is one ready to play. */
+  #playable(): { s: RoomState; cur: CurrentEntry; src: Source } | undefined {
     const s = this.#state;
     const cur = s?.current;
     const src = s !== undefined && cur !== undefined && cur.status === "ready" && s.timeline.entryId === cur.entryId
       ? this.#source(cur) : undefined;
-    if (s === undefined || cur === undefined || src === undefined) {
+    return s !== undefined && cur !== undefined && src !== undefined ? { s, cur, src } : undefined;
+  }
+
+  #tick(): void {
+    const p = loadsMedia(this.#holder) ? this.#playable() : undefined;
+    if (p === undefined) {
       this.#idle();
       return;
     }
+    const { s, cur, src } = p;
     // Decks of this entry that are still loaded (the one playing, and during a switch the other).
     const same = (d: Deck | undefined): d is Deck => d !== undefined && d.entryId === cur.entryId && d.src !== undefined;
     const prevActive = this.#active;
@@ -1381,32 +1402,38 @@ export class ListenPlayer {
   }
 
   #updateOverlay(): void {
-    const wants = this.#active !== undefined && this.#state?.timeline.state === "playing";
+    const playing = this.#active !== undefined && this.#state?.timeline.state === "playing";
     // A context just made for the rate fix may take a moment to run (Auto falls back if it doesn't).
     const fix = this.#rateFix;
     const fixStarting = fix !== undefined && !fix.started
       && (this.#plan.autoFallback || performance.now() - fix.at < RATE_FIX_START_MS);
     const locked = this.#blocked || (this.#ctx !== undefined && this.#ctx.state !== "running" && !fixStarting);
-    this.#overlay.hidden = !(wants && (locked || this.#needsRestore || this.#otherWindow));
+    const plan = overlayPlan({ holder: this.#holder, hasEntry: this.#playable() !== undefined, playing, locked,
+      needsRestore: this.#needsRestore });
+    this.#overlay.hidden = !plan.shown;
     const button = this.#overlay.querySelector("button");
-    const text = this.#needsRestore ? "Tap to restore sound" : "Click to enable sound";
-    if (button !== null && button.textContent !== text) button.textContent = text;
+    if (button !== null && button.textContent !== plan.text) button.textContent = plan.text;
   }
 
-  /** The overlay's button: "Click to enable sound", or after a mute "Tap to restore sound". */
+  /**
+   * The overlay's button: "Move player here" (another window plays), "Click to enable sound", or
+   * after a mute "Tap to restore sound".
+   */
   #overlayClick(): void {
-    if (this.#otherWindow) {
-      // Take the sound from the other window; the unlock below runs in the same gesture.
-      this.#otherWindow = false;
-      recordEvent("sound-holder", { otherWindow: false, claimed: true });
-      this.#applyListenerGain();
+    const plan = overlayClickPlan(this.#holder, this.#needsRestore);
+    if (plan.claim) {
+      // Take the player over: this window loads the current entry now, and the unlock below seeks
+      // and plays it inside the same gesture (mobile browsers allow sound only then).
+      this.#holder = "here";
+      recordEvent("sound-holder", { holder: "here", claimed: true });
       try {
         this.#hooks.claimSound?.();
       } catch (e) {
         recordError("claimSound", e);
       }
+      if (plan.then === "unlock") this.tick(); // sets the sources (video or audio only, as this window plays)
     }
-    if (this.#needsRestore) this.#restoreWithoutWebAudio();
+    if (plan.then === "restore") this.#restoreWithoutWebAudio();
     else this.unlock();
   }
 

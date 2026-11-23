@@ -47,24 +47,28 @@ class ListenJsTest {
     }
 
     /**
-     * One window with sound per person (docs/ui.md): the player's third silence is tested in
-     * {@code listenplayer.test.mjs}; here the wiring: the room socket joins with the window id kept
-     * in sessionStorage, hands {@code sound} / {@code sound.released} to the player, and the
-     * overlay's click sends {@code sound.claim}.
+     * One window with sound per person (docs/ui.md): the rules ({@code soundwindow.test.mjs}: which
+     * state the window is in, which button shows, what the click does). The player loading no media
+     * while another window plays and "Move player here" are tested in {@code listenplayer.test.mjs};
+     * here the wiring: the room socket joins with the window id kept in sessionStorage, hands
+     * {@code identity} / {@code sound} / {@code sound.released} to the player, and the overlay's click
+     * sends {@code sound.claim}.
      */
     @Test
     void anotherWindowsSoundIsWiredToTheRoomSocket() throws Exception {
+        NodeTests.run("soundwindow.test.mjs", Map.of("SOUNDWINDOW_JS", "web/js/soundwindow.js"));
         String client = read("web/js/roomclient.js");
         for (String s : List.of("sessionStorage", "\"tt.windowId\"", "windowId", "\"sound.claim\"", "\"sound.released\"",
                 "getRandomValues")) {
             assertTrue(client.contains(s), s);
         }
         String room = read("web/js/room.js");
-        for (String s : List.of("soundWindowId()", "claimSound: () => conn.claimSound()", "setOtherWindowHasSound(")) {
+        for (String s : List.of("soundWindowId()", "claimSound: () => conn.claimSound()", "setSoundHolder(", "initialSoundHolder(",
+                "soundHolderOnIdentity(", "soundHolderOnMessage(")) {
             assertTrue(room.contains(s), s);
         }
         String player = read("web/js/listen.js");
-        for (String s : List.of("\"sound-holder\"", "claimSound")) {
+        for (String s : List.of("\"sound-holder\"", "claimSound", "loadsMedia(", "overlayPlan(", "overlayClickPlan(")) {
             assertTrue(player.contains(s), s);
         }
     }
@@ -193,7 +197,9 @@ class ListenJsTest {
         int overlay = index.indexOf("id=\"room-listen-overlay\"");
         assertTrue(video > 0 && overlay > video && overlay < index.indexOf("</section>", video), index);
         assertTrue(index.contains("Click to enable sound"), index);
-        assertTrue(player.contains("\"Click to enable sound\""), "the overlay's text");
+        String sound = read("web/js/soundwindow.js");
+        assertTrue(sound.contains("\"Click to enable sound\""), "the overlay's text");
+        assertTrue(sound.contains("\"Move player here\""), "the overlay's text while another window plays");
         // The video / audio-only switch is in the player bar's menu (the room view's old checkbox is gone).
         assertTrue(index.contains("id=\"pb-audio-only\""), index);
         assertTrue(!html.contains("id=\"room-audio-only\""), html);

@@ -283,86 +283,130 @@ test("a preview ducks the room: silent and in sync, separate from the listener's
   assert.equal(v.muted, false, "the element's own muted flag (the blocked mute) isn't used");
 });
 
-test("another window has the sound: silent and in sync behind the overlay; the click claims it", async () => {
+test("another window has the sound: no media loaded; Move player here loads, seeks and plays in the gesture", async () => {
   let claims = 0;
-  const { player, overlay, click } = setup("all", { claimSound: () => { claims++; } });
-  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  const { player, overlay, container, click } = setup("all", { claimSound: () => { claims++; } });
+  const e1 = { entryId: "e1", item: item("v1", "video") };
+  const e2 = { entryId: "e2", item: item("v2", "video") };
+  player.update(stateWith(e1, e2, 10000));
   await flush();
   await flush();
   const v = playingVideo();
   assert.ok(v, "the video plays");
   player.setVolume(0.5);
   assert.equal(overlay.hidden, true);
-  player.setOtherWindowHasSound(true);
-  assert.equal(player.otherWindowHasSound, true);
-  assert.equal(v.volume, 0, "silent");
-  assert.equal(v.muted, false, "not through the element's muted flag (the blocked mute)");
+  // released: every source dropped, nothing plays, the card with Move player here
+  player.setSoundHolder("elsewhere");
+  assert.equal(player.soundHolder, "elsewhere");
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0, "no element has a source");
+  assert.equal(v.paused, true);
+  assert.equal(container.hidden, true, "no video shows");
+  assert.equal(overlay.hidden, false, "the overlay shows");
+  assert.equal(overlay.querySelector("button").textContent, "Move player here");
+  assert.equal(player.heard, false, "the system media controls belong to the other window");
   assert.equal(player.muted, false, "the listener's own mute isn't touched");
   assert.equal(player.volume, 0.5, "nor the volume");
-  assert.equal(overlay.hidden, false, "the overlay shows");
-  assert.equal(overlay.querySelector("button").textContent, "Click to enable sound");
-  assert.equal(player.debug().otherWindow, true);
+  // the room goes on: still nothing loaded, also near the end (no preload)
   for (let i = 0; i < 8; i++) advance(player, 250);
-  assert.equal(v.paused, false, "keeps playing");
-  assert.ok(Math.abs(player.debug().driftMs) < 50, "in sync");
-  // paused: no overlay; playing again: back
-  const paused = stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000);
+  serverMs = 10000 + 55000;
+  player.tick();
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0, "no preload either");
+  // paused: the button stays (something to move); nothing current: gone
+  const paused = stateWith(e1, e2, 10000);
   paused.timeline.state = "paused";
   player.update(paused);
-  assert.equal(overlay.hidden, true, "nothing to enable while paused");
-  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
-  await flush();
-  assert.equal(overlay.hidden, false);
-  // the click claims the sound and unmutes
+  assert.equal(overlay.hidden, false, "Move player here also while paused");
+  const empty = stateWith(e1, undefined, 10000);
+  delete empty.current;
+  empty.timeline.entryId = undefined;
+  player.update(empty);
+  assert.equal(overlay.hidden, true, "nothing to play");
+  // the click claims the sound, loads the current entry, seeks to the room's position and plays
+  serverMs = 10000 + 20000;
+  player.update(stateWith(e1, e2, 10000));
   click();
   await flush();
   assert.equal(claims, 1, "sound.claim sent once");
-  assert.equal(player.otherWindowHasSound, false);
-  assert.equal(v.volume, 0.5, "heard again at the listener's volume");
+  assert.equal(player.soundHolder, "here");
+  const now = playingVideo();
+  assert.ok(now, "plays again after the click");
+  assert.ok(now.src.includes("v1"));
+  assert.ok(Math.abs(now.currentTime - 20) < 0.5, "at the room's position: " + now.currentTime);
+  assert.equal(now.volume, 0.5, "heard at the listener's volume");
   assert.equal(overlay.hidden, true);
-  // released by another window: silent with the overlay again
-  player.setOtherWindowHasSound(true);
-  assert.equal(v.volume, 0);
-  assert.equal(overlay.hidden, false);
-  player.setOtherWindowHasSound(false);
-  assert.equal(v.volume, 0.5);
+  assert.equal(container.hidden, false);
+  assert.equal(player.heard, true);
+  // released again, then the socket says this window has it (a reload of the holder): plays without a click
+  player.setSoundHolder("elsewhere");
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0);
+  player.setSoundHolder("here");
+  await flush();
+  assert.ok(playingVideo(), "plays");
   assert.equal(overlay.hidden, true);
+  assert.equal(claims, 1, "no claim without a click");
+});
+
+test("audio only: Move player here loads the audio, never the video", async () => {
+  const { player, click } = setup("all", { claimSound: () => undefined });
+  player.setAudioOnly(true);
+  player.setSoundHolder("elsewhere");
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0);
+  click();
+  await flush();
+  const loaded = elements.filter((e) => e.getAttribute("src") !== null);
+  assert.equal(loaded.length, 1);
+  assert.ok(loaded[0].src.endsWith("audio.m4a"), loaded[0].src);
+  assert.equal(loaded[0].paused, false);
+});
+
+test("before the room socket says who has the sound, nothing loads and no button shows", async () => {
+  const { player, overlay } = setup("all");
+  player.setSoundHolder("unknown");
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
+  await flush();
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0);
+  assert.equal(overlay.hidden, true);
+  player.setSoundHolder("here");
+  await flush();
+  await flush();
+  assert.ok(playingVideo(), "the first window plays without a click");
 });
 
 test("another window's sound and the listener's own mute are independent", async () => {
   let claims = 0;
   const { player, overlay, click } = setup("all", { claimSound: () => { claims++; } });
-  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
-  await flush();
-  await flush();
-  const v = playingVideo();
   player.setMuted(true);
-  player.setOtherWindowHasSound(true);
+  player.setSoundHolder("elsewhere");
+  player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
   click();
   await flush();
+  const v = playingVideo();
   assert.equal(claims, 1);
   assert.equal(player.muted, true, "the click doesn't lift the listener's mute");
   assert.equal(v.volume, 0, "still muted by the listener");
   assert.equal(overlay.hidden, true);
-  player.setOtherWindowHasSound(true);
+  player.setSoundHolder("elsewhere");
   player.setMuted(false);
-  assert.equal(v.volume, 0, "unmuting doesn't take the sound from the other window");
-  assert.equal(player.otherWindowHasSound, true);
+  assert.equal(player.soundHolder, "elsewhere", "unmuting doesn't take the player from the other window");
+  assert.equal(elements.filter((e) => e.getAttribute("src") !== null).length, 0);
 });
 
-test("blocked by the browser and another window has the sound: one click does both", async () => {
+test("blocked by the browser and another window has the sound: Move player here does both", async () => {
   let claims = 0;
   const { player, overlay, click } = setup("muted", { claimSound: () => { claims++; } });
-  player.setOtherWindowHasSound(true);
   player.update(stateWith({ entryId: "e1", item: item("v1", "video") }, undefined, 10000));
   await flush();
   await flush();
-  const v = playingVideo();
-  assert.equal(v.muted, true, "blocked mute");
+  assert.equal(playingVideo().muted, true, "blocked mute");
+  assert.equal(overlay.querySelector("button").textContent, "Click to enable sound");
+  player.setSoundHolder("elsewhere");
   assert.equal(overlay.hidden, false);
+  assert.equal(overlay.querySelector("button").textContent, "Move player here", "Move player here wins");
   policy = "all";
   click();
   await flush();
+  const v = playingVideo();
   assert.equal(claims, 1);
   assert.equal(v.muted, false, "unlocked in the same gesture");
   assert.equal(v.volume, 1);
