@@ -29,6 +29,17 @@ import java.util.Objects;
  *   <li>{@code POST …/start}, {@code POST …/cancel} → {@code import}</li>
  *   <li>{@code GET …/problems?cursor=} → {@code {"items", "nextCursor"?}}</li>
  * </ul>
+ * and the zip upload ({@link LibraryImportUploads}), under {@code /api/admin/library-import/uploads}:
+ * <ul>
+ *   <li>{@code POST} {@code {size, filename}} → {@code 201 {uploadId, chunkSize, size,
+ *       receivedBytes, complete}}</li>
+ *   <li>{@code GET …/{uploadId}} → the same (to resume: send from chunk
+ *       {@code receivedBytes / chunkSize})</li>
+ *   <li>{@code PUT …/{uploadId}/chunks/{n}} with chunk {@code n} as the body → the same</li>
+ *   <li>{@code POST …/{uploadId}/complete} → the same, {@code complete: true}; the upload id then
+ *       works as the source {@code {"uploadId"}}</li>
+ *   <li>{@code DELETE …/{uploadId}} → {@code 204}</li>
+ * </ul>
  * {@code import} is {@code {"id", "userId", "state", "source", "smartPlaylists", "counts",
  * "problems" (the first 20), "error"?, "createdAt", "updatedAt", "startedAt"?, "finishedAt"?}};
  * never an IP address.
@@ -36,9 +47,11 @@ import java.util.Objects;
 public final class LibraryImportApi {
     private final LibraryImports imports;
     private final Permissions permissions;
+    private final LibraryImportUploads uploads;
 
-    public LibraryImportApi(LibraryImports imports, Permissions permissions) {
+    public LibraryImportApi(LibraryImports imports, LibraryImportUploads uploads, Permissions permissions) {
         this.imports = Objects.requireNonNull(imports);
+        this.uploads = Objects.requireNonNull(uploads);
         this.permissions = Objects.requireNonNull(permissions);
     }
 
@@ -50,6 +63,39 @@ public final class LibraryImportApi {
         router.post(base + "/start", this::start, perm);
         router.post(base + "/cancel", this::cancel, perm);
         router.get(base + "/problems", this::problems, perm);
+        String up = "/api/admin/library-import/uploads";
+        router.post(up, this::createUpload, perm);
+        router.get(up + "/{uploadId}", (rq, rs) -> sendUpload(rs, 200, uploads.status(rq.pathParam("uploadId"))), perm);
+        router.put(up + "/{uploadId}/chunks/{n}", (rq, rs) -> sendUpload(rs, 200,
+                uploads.writeChunk(rq.pathParam("uploadId"), rq.pathParam("n"), rq)), perm);
+        router.post(up + "/{uploadId}/complete",
+                (rq, rs) -> sendUpload(rs, 200, uploads.complete(rq.pathParam("uploadId"))), perm);
+        router.delete(up + "/{uploadId}", (rq, rs) -> {
+            uploads.delete(rq.pathParam("uploadId"));
+            rs.header("Cache-Control", "no-store");
+            rs.empty(204);
+        }, perm);
+    }
+
+    record CreateUpload(String filename, Long size) {
+    }
+
+    private void createUpload(Request request, Response response) throws Exception {
+        CreateUpload body = request.readJson(CreateUpload.class);
+        if (body == null) {
+            throw new HttpError(400, "invalid_size", "size is required");
+        }
+        sendUpload(response, 201, uploads.create(body.filename(), body.size()));
+    }
+
+    private static void sendUpload(Response response, int status, LibraryImportUploads.Status s) throws Exception {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("uploadId", s.uploadId());
+        out.put("chunkSize", LibraryImportUploads.CHUNK_SIZE);
+        out.put("size", s.size());
+        out.put("receivedBytes", s.receivedBytes());
+        out.put("complete", s.complete());
+        send(response, status, out);
     }
 
     private static Actor.User actor(Request request) throws Exception {

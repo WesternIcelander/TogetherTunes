@@ -31,6 +31,7 @@
     "cacheMaxBytes": "20 GiB"
   },
   "libraryImport": {
-    "allowedPaths": []
+    "allowedPaths": [],
+    "maxZipBytes": "100 GiB"
   }
 }

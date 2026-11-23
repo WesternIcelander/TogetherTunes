@@ -88,6 +88,7 @@ public final class ConfigLoader {
     public static final String OVERLAY_WORKERS = "overlay.workers";
     public static final String OVERLAY_CACHE_MAX_BYTES = "overlay.cacheMaxBytes";
     public static final String LIBRARY_IMPORT_ALLOWED_PATHS = "libraryImport.allowedPaths";
+    public static final String LIBRARY_IMPORT_MAX_ZIP_BYTES = "libraryImport.maxZipBytes";
 
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
@@ -95,7 +96,8 @@ public final class ConfigLoader {
             TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, TOOLS_TRACKSPLITTER, TRACKSPLITTER_CACHE_DIR, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             OUTPUT_AUDIO_ONLY_BITRATE_KBPS, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
-            OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES, LIBRARY_IMPORT_ALLOWED_PATHS);
+            OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES, LIBRARY_IMPORT_ALLOWED_PATHS,
+            LIBRARY_IMPORT_MAX_ZIP_BYTES);
 
     private static final long KIB = 1024L;
     private static final long GIB = KIB * KIB * KIB;
@@ -348,6 +350,7 @@ public final class ConfigLoader {
         for (String s : v.list(LIBRARY_IMPORT_ALLOWED_PATHS, ConfigLoader::parseAbsolutePath)) {
             importPaths.add(Path.of(s));
         }
+        long maxZip = v.size(LIBRARY_IMPORT_MAX_ZIP_BYTES, Config.DEFAULT_LIBRARY_IMPORT_MAX_ZIP_BYTES, 1);
 
         if (!problems.isEmpty()) {
             throw new ConfigException(problems);
@@ -355,7 +358,7 @@ public final class ConfigLoader {
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
                 ffmpeg, ffprobe, ytdlp, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
                 quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl, tracksplitter,
-                tracksplitterCache, importPaths);
+                tracksplitterCache, importPaths, maxZip);
         return new Loaded(config, json == null ? null : file, warnings);
     }
 

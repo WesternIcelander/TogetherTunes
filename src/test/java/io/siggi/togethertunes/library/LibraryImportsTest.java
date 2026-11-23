@@ -584,6 +584,65 @@ class LibraryImportsTest {
         assertEquals(7, n(imports.latest(aliceId).counts(), "missing"));
     }
 
+    @Test
+    void uploadedZipNamesAreOnlyForMatching() throws Exception {
+        needFfmpeg();
+        String uploadId = io.siggi.togethertunes.db.UuidV7.newId();
+        Path zips = Files.createDirectories(dir.resolve("data/tmp/imports"));
+        Path zip = zips.resolve(uploadId + ".zip");
+        Path music = export.resolve("Media.localized/Music");
+        // A zip-slip prefix on every name, nested folders, an NFD name, and a bomb in place of a track.
+        String top = "../../evil/Nested/Export/";
+        try (OutputStream out = Files.newOutputStream(zip); ZipOutputStream z = new ZipOutputStream(out)) {
+            z.putNextEntry(new ZipEntry(top + "Library.xml"));
+            z.write(libraryXml().getBytes(StandardCharsets.UTF_8));
+            z.closeEntry();
+            z.putNextEntry(new ZipEntry(top + "Media.localized/Music/Artist A/Album/01 One.m4a"));
+            Files.copy(music.resolve("Artist A/Album/01 One.m4a"), z);
+            z.closeEntry();
+            z.putNextEntry(new ZipEntry(top + "Media.localized/Music/Artist B/Other/" + NFD_NAME + ".mp3"));
+            Files.copy(music.resolve("Artist B/Other/" + NFC_NAME + ".mp3"), z);
+            z.closeEntry();
+            z.putNextEntry(new ZipEntry(top + "Media.localized/Music/Artist A/Album/03 Three.flac"));
+            z.write(new byte[20 * 1024 * 1024]); // 20 MiB of zeros: over 1000 to 1
+            z.closeEntry();
+        }
+        try (ImportSource src = ImportSource.open(zip)) {
+            assertEquals(Map.of(top + "Media.localized/Music/Artist A/Album/03 Three.flac", "suspicious_compression"),
+                    src.rejected());
+        }
+        JsonObject s = new JsonObject();
+        s.addProperty("uploadId", uploadId);
+        imports.check(adminId, aliceId, s, false);
+        assertTrue(imports.awaitIdle(Duration.ofSeconds(30)));
+        LibraryImports.Import ready = imports.latest(aliceId);
+        assertEquals("ready", ready.state(), String.valueOf(ready.error()));
+        JsonObject c = ready.counts();
+        assertEquals(3, n(c, "matched"));
+        assertEquals(1, c.getAsJsonObject("skipped").get("suspicious_compression").getAsInt());
+        assertEquals(2, n(c, "toImport"));
+        imports.start(adminId, aliceId);
+        assertTrue(imports.awaitIdle(Duration.ofSeconds(60)));
+        LibraryImports.Import done = imports.latest(aliceId);
+        assertEquals("done", done.state(), String.valueOf(done.error()));
+        assertEquals(2, n(done.counts(), "imported"));
+        assertEquals(java.util.Set.of("One", "Two & Co"), itemsByTitle().keySet());
+        // Nothing was written by the entries' names; the zip is gone with the finished import.
+        assertFalse(Files.exists(dir.resolve("evil")));
+        assertFalse(Files.exists(dir.resolve("data/evil")));
+        assertFalse(Files.exists(zips.getParent().getParent().getParent().resolve("evil")));
+        assertFalse(Files.exists(zip));
+    }
+
+    @Test
+    void zipBombLimits() {
+        assertNull(ImportSource.Zip.reject(5_000_000, 4_000_000));
+        assertNull(ImportSource.Zip.reject(1_000_000, 10), "a tiny file can't be a bomb");
+        assertEquals("suspicious_compression", ImportSource.Zip.reject(50_000_000, 40_000));
+        assertEquals("too_large", ImportSource.Zip.reject(2L * 1024 * 1024 * 1024 + 1, 2L * 1024 * 1024 * 1024));
+        assertNull(ImportSource.Zip.reject(2L * 1024 * 1024 * 1024, 2L * 1024 * 1024 * 1024));
+    }
+
     /** The export's files with their sizes and modification times. */
     static Map<String, String> snapshot() throws IOException {
         Map<String, String> out = new java.util.TreeMap<>();

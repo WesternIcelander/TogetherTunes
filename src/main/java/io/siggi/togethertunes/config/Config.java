@@ -50,6 +50,8 @@ import java.util.List;
  *                                 disk ({@code libraryImport.allowedPaths}, absolute and normalised);
  *                                 empty = importing from a path is off
  *                                 ({@code docs/library-and-ingest.md#library-import})
+ * @param libraryImportMaxZipBytes the size limit of an uploaded library export zip
+ *                                 ({@code libraryImport.maxZipBytes}, default 100 GiB)
  */
 public record Config(
         String httpBind,
@@ -74,11 +76,30 @@ public record Config(
         String insecureBaseUrl,
         String tracksplitter,
         Path tracksplitterCacheDir,
-        List<Path> libraryImportAllowedPaths) {
+        List<Path> libraryImportAllowedPaths,
+        long libraryImportMaxZipBytes) {
+
+    /** The default of {@code libraryImport.maxZipBytes}: 100 GiB. */
+    public static final long DEFAULT_LIBRARY_IMPORT_MAX_ZIP_BYTES = 100L * 1024 * 1024 * 1024;
 
     public Config {
         trustedProxies = List.copyOf(trustedProxies);
         libraryImportAllowedPaths = libraryImportAllowedPaths == null ? List.of() : List.copyOf(libraryImportAllowedPaths);
+    }
+
+    /** With the default zip size limit. */
+    public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
+                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
+                  long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
+                  X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
+                  String insecureBaseUrl, String tracksplitter, Path tracksplitterCacheDir,
+                  List<Path> libraryImportAllowedPaths) {
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+                outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
+                ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
+                insecureBaseUrl, tracksplitter, tracksplitterCacheDir, libraryImportAllowedPaths,
+                DEFAULT_LIBRARY_IMPORT_MAX_ZIP_BYTES);
     }
 
     /** Without library import paths. */

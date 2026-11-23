@@ -229,6 +229,17 @@ class PermissionMatrixTest {
                     c -> Call.post("/api/admin/users/" + c.targetUserId() + "/library-import/cancel", null), 404),
             admin("GET /api/admin/users/{id}/library-import/problems",
                     c -> Call.get("/api/admin/users/" + c.targetUserId() + "/library-import/problems"), 404),
+            admin("POST /api/admin/library-import/uploads", c -> Call.post("/api/admin/library-import/uploads",
+                    "{\"filename\":\"export.zip\",\"size\":5}"), 201),
+            admin("GET /api/admin/library-import/uploads/{uploadId}",
+                    c -> Call.get("/api/admin/library-import/uploads/" + c.importUploadId()), 200),
+            admin("PUT /api/admin/library-import/uploads/{uploadId}/chunks/{n}",
+                    c -> Call.put("/api/admin/library-import/uploads/" + c.importUploadId() + "/chunks/0", "hello"), 200),
+            // all bytes not there yet: the route's own refusal, after the permission check
+            admin("POST /api/admin/library-import/uploads/{uploadId}/complete",
+                    c -> Call.post("/api/admin/library-import/uploads/" + c.importUploadId() + "/complete", null), 409),
+            admin("DELETE /api/admin/library-import/uploads/{uploadId}",
+                    c -> Call.delete("/api/admin/library-import/uploads/" + c.importUploadId()), 204),
             admin("GET /api/admin/roles", c -> Call.get("/api/admin/roles"), 200),
             admin("POST /api/admin/roles", c -> Call.post("/api/admin/roles",
                     "{\"name\":\"role " + c.n + "\",\"permissions\":[\"rooms.create\"]}"), 201),
@@ -788,6 +799,17 @@ class PermissionMatrixTest {
                 HttpResponse<String> r = send(cookie, ip, Call.post("/api/uploads",
                         "{\"filename\":\"song.mp3\",\"size\":10}"));
                 assertEquals(201, r.statusCode(), r.body());
+                return json(r.body()).get("uploadId").getAsString();
+            } catch (IOException | InterruptedException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        /** A library export zip upload of 5 bytes (none received yet), started by the setup admin. */
+        String importUploadId() {
+            try {
+                HttpResponse<String> r = ok(Call.post("/api/admin/library-import/uploads",
+                        "{\"filename\":\"export.zip\",\"size\":5}"));
                 return json(r.body()).get("uploadId").getAsString();
             } catch (IOException | InterruptedException e) {
                 throw new RuntimeException(e);

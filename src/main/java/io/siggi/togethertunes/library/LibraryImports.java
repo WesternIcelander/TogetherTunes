@@ -111,6 +111,11 @@ public final class LibraryImports {
         this.spacePoll = space;
     }
 
+    /** Where uploaded zips are ({@code <data>/tmp/imports}). */
+    public Path importsDir() {
+        return importsDir;
+    }
+
     /** Whether importing from a path on the server is on (and where from). */
     public List<Path> allowedPaths() {
         return allowedPaths;
@@ -288,6 +293,96 @@ public final class LibraryImports {
         return zip;
     }
 
+    /**
+     * The uploaded zips imports use: upload id → the state of the import that uses it (checking,
+     * ready, importing or paused; the most active one when several do).
+     */
+    public Map<String, String> uploadsInUse() throws SQLException {
+        return db.read(c -> {
+            Map<String, String> out = new HashMap<>();
+            try (PreparedStatement ps = c.prepareStatement("SELECT source_json, state FROM library_imports"
+                    + " WHERE state IN ('checking', 'ready', 'importing', 'paused')")) {
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String uploadId = uploadId(JsonParser.parseString(rs.getString(1)).getAsJsonObject());
+                        if (uploadId != null) {
+                            String state = rs.getString(2);
+                            out.merge(uploadId, state, (a, b) -> a.equals("ready") ? b : a);
+                        }
+                    }
+                }
+            }
+            return out;
+        });
+    }
+
+    /** The upload id of an upload source, or null. */
+    private static String uploadId(JsonObject source) {
+        JsonElement e = source == null ? null : source.get("uploadId");
+        return e != null && e.isJsonPrimitive() ? e.getAsString() : null;
+    }
+
+    /** A {@code ready} import whose uploaded zip was deleted fails with {@code error}. */
+    void uploadGone(String uploadId, String error) throws SQLException {
+        synchronized (lock) {
+            long now = EpochMs.now(clock);
+            List<String> ids = new ArrayList<>();
+            db.read(c -> {
+                try (PreparedStatement ps = c.prepareStatement("SELECT id, source_json FROM library_imports"
+                        + " WHERE state = 'ready'")) {
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) {
+                            if (uploadId.equals(uploadId(JsonParser.parseString(rs.getString(2)).getAsJsonObject()))) {
+                                ids.add(rs.getString(1));
+                            }
+                        }
+                    }
+                }
+                return null;
+            });
+            for (String id : ids) {
+                db.write(c -> {
+                    try (PreparedStatement ps = c.prepareStatement("UPDATE library_imports SET state = 'failed',"
+                            + " error = ?, finished_at = ?, updated_at = ? WHERE id = ? AND state = 'ready'")) {
+                        ps.setString(1, error);
+                        ps.setLong(2, now);
+                        ps.setLong(3, now);
+                        ps.setString(4, id);
+                        ps.executeUpdate();
+                    }
+                    return null;
+                });
+            }
+        }
+    }
+
+    /**
+     * Deletes an upload source's zip once no import (checking, ready, importing or paused) uses it
+     * any more: when its import is done, failed or cancelled.
+     */
+    private void releaseUpload(JsonObject source) {
+        String uploadId = uploadId(source);
+        if (uploadId == null || !UuidV7.isValid(uploadId)) {
+            return;
+        }
+        try {
+            if (!uploadsInUse().containsKey(uploadId)) {
+                Files.deleteIfExists(importsDir.resolve(uploadId + ".zip"));
+            }
+        } catch (SQLException | IOException e) {
+            LOG.log(System.Logger.Level.WARNING, "Library import: couldn't delete the uploaded zip " + uploadId, e);
+        }
+    }
+
+    /** Marks an uploaded zip as used now (the 7-day cleanup counts from its last use). */
+    private void touch(Path zip) {
+        try {
+            Files.setLastModifiedTime(zip, java.nio.file.attribute.FileTime.fromMillis(EpochMs.now(clock)));
+        } catch (IOException e) {
+            // only the cleanup's clock
+        }
+    }
+
     private ImportSource openSource(JsonObject source) throws IOException {
         String type = source.get("type").getAsString();
         if (type.equals("path")) {
@@ -339,6 +434,7 @@ public final class LibraryImports {
             resolved = uploadedZip(source.get("uploadId").getAsString());
             stored.addProperty("type", "upload");
             stored.addProperty("uploadId", source.get("uploadId").getAsString());
+            touch(resolved);
         } else {
             throw new HttpError(400, "invalid_source", "source needs a path or an uploadId");
         }
@@ -347,10 +443,19 @@ public final class LibraryImports {
                 throw new HttpError(409, "import_running", "Another import is running; try again when it is done");
             }
             String id = UuidV7.newId();
+            List<JsonObject> replaced = new ArrayList<>();
             try (ImportSource src = ImportSource.open(resolved)) {
                 Plan plan = plan(src, smartPlaylists);
                 long now = EpochMs.now(clock);
                 db.write(c -> {
+                    try (PreparedStatement ps = c.prepareStatement("SELECT source_json FROM library_imports"
+                            + " WHERE state = 'ready'")) {
+                        try (ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) {
+                                replaced.add(JsonParser.parseString(rs.getString(1)).getAsJsonObject());
+                            }
+                        }
+                    }
                     try (PreparedStatement ps = c.prepareStatement("UPDATE library_imports SET state = 'cancelled',"
                             + " finished_at = ?, updated_at = ? WHERE state = 'ready'")) {
                         ps.setLong(1, now);
@@ -395,6 +500,17 @@ public final class LibraryImports {
                     }
                     return null;
                 });
+            } catch (HttpError e) {
+                if (stored.has("uploadId") && e.status() == 400) {
+                    // The uploaded zip can never be imported (not a zip, no or several Library.xml,
+                    // an unreadable Library.xml); the source is closed by now.
+                    releaseUpload(stored);
+                }
+                throw e;
+            }
+            // A replaced ready import's zip goes, unless the new check uses it.
+            for (JsonObject r : replaced) {
+                releaseUpload(r);
             }
             spawn(id, false);
             return byId(id);
@@ -481,7 +597,11 @@ public final class LibraryImports {
                 p.size = src.files().get(m.file());
                 String ext = extension(m.file());
                 String kind = t.kind() == null ? "" : t.kind().toLowerCase(Locale.ROOT);
-                if (PROTECTED.contains(ext) || kind.contains("protected")) {
+                String rejected = src.rejected().get(m.file());
+                if (rejected != null) {
+                    p.state = "skipped";
+                    p.reason = rejected;
+                } else if (PROTECTED.contains(ext) || kind.contains("protected")) {
                     p.state = "skipped";
                     p.reason = "protected";
                 } else if (VIDEO.contains(ext) || (kind.contains("video") && !AUDIO.contains(ext))) {
@@ -660,6 +780,10 @@ public final class LibraryImports {
             if (!i.state().equals("ready")) {
                 throw new HttpError(409, "import_not_ready", "The import isn't checked and waiting to start");
             }
+            String uploadId = uploadId(i.source());
+            if (uploadId != null) {
+                touch(uploadedZip(uploadId)); // 404 upload_not_found once it is gone
+            }
             long now = EpochMs.now(clock);
             db.write(c -> {
                 try (PreparedStatement ps = c.prepareStatement("UPDATE library_imports SET state = 'importing',"
@@ -710,6 +834,9 @@ public final class LibraryImports {
                 AuditLog.write(c, now, actorUserId, null, null, AUDIT_CANCELLED, i.id(), details);
                 return null;
             });
+            if (i.state().equals("ready")) {
+                releaseUpload(i.source()); // no worker is reading it
+            }
             Thread t = worker;
             if (t != null) {
                 LockSupport.unpark(t);
@@ -782,6 +909,16 @@ public final class LibraryImports {
                 finish(id, "failed", message, null);
             } catch (SQLException ex) {
                 LOG.log(System.Logger.Level.WARNING, "Library import " + id + ": couldn't record the failure", ex);
+            }
+        } finally {
+            // Done, failed or cancelled (and the source closed): an uploaded zip goes.
+            try {
+                Import i = byId(id);
+                if (i != null && !i.state().equals("ready") && !ACTIVE.contains(i.state())) {
+                    releaseUpload(i.source());
+                }
+            } catch (SQLException | RuntimeException e) {
+                LOG.log(System.Logger.Level.WARNING, "Library import " + id + ": couldn't clean up", e);
             }
         }
     }

@@ -31,6 +31,15 @@ public abstract sealed class ImportSource implements Closeable {
     /** The files in the source by their path inside it, with their sizes, in a stable order. */
     public abstract Map<String, Long> files();
 
+    /**
+     * Files of {@link #files()} that are not imported, by path, with the reason (a zip's entries
+     * that look like zip bombs: {@code too_large} over {@link Zip#MAX_ENTRY_BYTES} expanded, or
+     * {@code suspicious_compression} over {@link Zip#MAX_RATIO} to 1). Empty for a directory.
+     */
+    public Map<String, String> rejected() {
+        return Map.of();
+    }
+
     /** Reads one file of {@link #files()}. */
     public abstract InputStream open(String path) throws IOException;
 
@@ -120,11 +129,25 @@ public abstract sealed class ImportSource implements Closeable {
         }
     }
 
-    /** A zip file, read in place. */
+    /**
+     * A zip file, read in place with {@link ZipFile} (ZIP64 included). Entry names are used only
+     * for matching (and in messages), never to build a path on disk, so a name like {@code ../../x}
+     * can't write anywhere: each file is copied to a server-chosen staging name. Entries that look
+     * like zip bombs are listed in {@link #rejected()}, and no entry is ever read past the size its
+     * directory declares.
+     */
     static final class Zip extends ImportSource {
+        /** Entries expanding to more than this are skipped (2 GiB). */
+        static final long MAX_ENTRY_BYTES = 2L * 1024 * 1024 * 1024;
+        /** Entries compressed more than this (expanded size to compressed size) are skipped. */
+        static final long MAX_RATIO = 1000;
+        /** The ratio check applies only above this expanded size (a tiny file can't be a bomb). */
+        static final long RATIO_MIN_BYTES = 1024 * 1024;
+
         private final ZipFile zip;
         private final Map<String, Long> files = new LinkedHashMap<>();
         private final Map<String, ZipEntry> entries = new LinkedHashMap<>();
+        private final Map<String, String> rejected = new LinkedHashMap<>();
 
         Zip(Path file) throws IOException {
             try {
@@ -145,9 +168,30 @@ public abstract sealed class ImportSource implements Closeable {
                 if (name.isEmpty() || files.containsKey(name)) {
                     continue;
                 }
-                files.put(name, Math.max(0, e.getSize()));
+                long size = Math.max(0, e.getSize());
+                files.put(name, size);
                 entries.put(name, e);
+                String reason = reject(size, e.getCompressedSize());
+                if (reason != null) {
+                    rejected.put(name, reason);
+                }
             }
+        }
+
+        /** Why an entry of this expanded and compressed size is skipped, or null. */
+        static String reject(long size, long compressed) {
+            if (size > MAX_ENTRY_BYTES) {
+                return "too_large";
+            }
+            if (size > RATIO_MIN_BYTES && (compressed <= 0 || size / compressed > MAX_RATIO)) {
+                return "suspicious_compression";
+            }
+            return null;
+        }
+
+        @Override
+        public Map<String, String> rejected() {
+            return Collections.unmodifiableMap(rejected);
         }
 
         @Override
@@ -161,12 +205,54 @@ public abstract sealed class ImportSource implements Closeable {
             if (e == null) {
                 throw new java.nio.file.NoSuchFileException(path);
             }
-            return zip.getInputStream(e);
+            return new Bounded(zip.getInputStream(e), Math.max(0, e.getSize()), path);
         }
 
         @Override
         public void close() throws IOException {
             zip.close();
+        }
+    }
+
+    /** An entry's stream that fails once it passes the size the zip's directory declares. */
+    private static final class Bounded extends java.io.FilterInputStream {
+        private final String path;
+        private long left;
+
+        Bounded(InputStream in, long size, String path) {
+            super(in);
+            this.left = size;
+            this.path = path;
+        }
+
+        @Override
+        public int read() throws IOException {
+            byte[] b = new byte[1];
+            int n = read(b, 0, 1);
+            return n < 0 ? -1 : b[0] & 0xff;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (left <= 0) {
+                // at the declared end: anything more means the entry lies about its size
+                if (in.read() >= 0) {
+                    throw new IOException("The zip entry " + path + " is larger than its declared size");
+                }
+                return -1;
+            }
+            int n = in.read(b, off, (int) Math.min(len, left));
+            if (n > 0) {
+                left -= n;
+            }
+            return n;
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            long s = in.skip(Math.min(n, left));
+            left -= s;
+            return s;
         }
     }
 }

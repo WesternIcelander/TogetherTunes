@@ -404,6 +404,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.library.LibraryImports$Plan", "a check's parsed plan; internal"),
             Map.entry("io.siggi.togethertunes.library.LibraryImports$Uploaded", "one imported file's upload result; internal"),
             Map.entry("io.siggi.togethertunes.library.LibraryImports$Import", "an import row; LibraryImportApi builds its JSON field by field (no IPs)"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImportApi$CreateUpload", "POST body of an import zip upload, parsed"),
+            Map.entry("io.siggi.togethertunes.library.LibraryImportUploads$Status", "an import zip upload's progress; LibraryImportApi sends uploadId, sizes, complete (no IPs)"),
             Map.entry("io.siggi.togethertunes.library.LibraryImports$Running", "who another import is for; LibraryImportApi sends userId, username, displayName, state"),
             Map.entry("io.siggi.togethertunes.ingest.CoverBars$Result", "a cover image during the letterbox trim; never sent"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Before", "item and playlist lookup before an add"),
@@ -1074,7 +1076,9 @@ class DtoIpLeakTest {
                 "/api/admin/providers", "/api/admin/providers/" + f.providerId(), "/api/admin/encoding", "/api/admin/guests",
                 "/api/admin/audit", "/api/admin/audit?action=auth.login_failed", "/api/admin/ip/sessions/" + f.aliceId,
                 "/api/admin/ip/sessions/" + f.adminId, "/api/admin/users/" + f.aliceId + "/library-import",
-                "/api/admin/users/" + f.aliceId + "/library-import/problems", "/api/uploads/" + f.uploadId, "/api/library",
+                "/api/admin/users/" + f.aliceId + "/library-import/problems",
+                "/api/admin/library-import/uploads/0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+                "/api/uploads/" + f.uploadId, "/api/library",
                 "/api/library?q=video&kind=video", "/api/library/shows", "/api/library/shows?name=x", "/api/library/uncategorized", "/api/items/search", "/api/items/search?q=video", "/api/search", "/api/search?q=video", "/api/youtube/search?q=found", "/api/items/" + f.itemId, "/api/items/" + f.itemId + "/job",
                 "/api/items/" + f.itemId + "/lookup/expired/cover",
                 "/api/playlists", "/api/playlists/" + f.playlistId, "/api/me/likes", "/api/me/likes/" + f.itemId,
@@ -1201,6 +1205,15 @@ class DtoIpLeakTest {
                 "{\"source\":{\"path\":\"" + dir.resolve("import-source").toString().replace("\\", "\\\\") + "\"}}");
         awaitImportState(help, aliceId, "ready");
         expect(200, help, "POST", "/api/admin/users/" + aliceId + "/library-import/cancel", null);
+        // an export zip upload's views
+        String zipId = json(expect(201, help, "POST", "/api/admin/library-import/uploads",
+                "{\"filename\":\"export.zip\",\"size\":22}")).get("uploadId").getAsString();
+        // an empty zip: just the end of central directory record
+        expect(200, help, "PUT", "/api/admin/library-import/uploads/" + zipId + "/chunks/0",
+                "PK\u0005\u0006" + "\u0000".repeat(18));
+        expect(200, help, "GET", "/api/admin/library-import/uploads/" + zipId, null);
+        expect(200, help, "POST", "/api/admin/library-import/uploads/" + zipId + "/complete", null);
+        expect(204, help, "DELETE", "/api/admin/library-import/uploads/" + zipId, null);
 
         // login providers, administered by the admin
         String providerId = json(expect(201, admin, "POST", "/api/admin/providers",

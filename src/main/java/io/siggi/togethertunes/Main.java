@@ -113,6 +113,7 @@ import io.siggi.togethertunes.library.CoverUpload;
 import io.siggi.togethertunes.library.MetadataLookupApi;
 import io.siggi.togethertunes.library.LibraryApi;
 import io.siggi.togethertunes.library.LibraryImportApi;
+import io.siggi.togethertunes.library.LibraryImportUploads;
 import io.siggi.togethertunes.library.LibraryImports;
 import io.siggi.togethertunes.library.MediaApi;
 import io.siggi.togethertunes.library.Playlists;
@@ -146,6 +147,7 @@ import io.siggi.togethertunes.settings.LinkPreference;
 import io.siggi.togethertunes.settings.SettingKey;
 import io.siggi.togethertunes.settings.Settings;
 import java.io.IOException;
+import java.time.Duration;
 import java.io.PrintStream;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -482,13 +484,38 @@ public final class Main {
                 return true;
             }
         });
-        LibraryImportApi libraryImportApi = new LibraryImportApi(libraryImports, permissions);
+        // Uploaded export zips (<data>/tmp/imports): chunked and resumable; deleted with their import,
+        // after 7 days unused, and at startup when no import uses them.
+        LibraryImportUploads libraryImportUploads = new LibraryImportUploads(libraryImports,
+                config.libraryImportMaxZipBytes(), Clock.systemUTC());
+        libraryImportUploads.diskSpace(diskSpace);
+        LibraryImportApi libraryImportApi = new LibraryImportApi(libraryImports, libraryImportUploads, permissions);
         admin.libraryImportRoutes(libraryImportApi::register);
         try {
             libraryImports.resume();
         } catch (SQLException e) {
             System.err.println("WARNING: could not resume the library import: " + e.getMessage());
         }
+        try {
+            int swept = libraryImportUploads.sweep(true);
+            if (swept > 0) {
+                System.out.println("Deleted " + swept + " unused library import uploads");
+            }
+        } catch (SQLException | IOException e) {
+            System.err.println("WARNING: could not clean up library import uploads: " + e.getMessage());
+        }
+        Thread.ofVirtual().name("library-import-upload-cleanup").start(() -> {
+            while (true) {
+                try {
+                    Thread.sleep(Duration.ofHours(1));
+                    libraryImportUploads.sweep(false);
+                } catch (InterruptedException e) {
+                    return;
+                } catch (Exception e) {
+                    System.err.println("WARNING: could not clean up library import uploads: " + e.getMessage());
+                }
+            }
+        });
         // Guests and anonymous visitors may fetch the current and next items of the rooms they are in.
         MediaApi mediaApi = new MediaApi(database, dataDir, roomRegistry.mediaAccess());
         // Ingest and purges tell the rooms when an item's status changes (an idle room starts it).

@@ -223,7 +223,21 @@ class ConfigLoaderTest {
                 "output.profile", "output.videoBitrateKbps", "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
                 "overlay.workers",
-                "overlay.cacheMaxBytes", "http.trustedProxies", "libraryImport.allowedPaths"), ConfigLoader.KEYS);
+                "overlay.cacheMaxBytes", "http.trustedProxies", "libraryImport.allowedPaths",
+                "libraryImport.maxZipBytes"), ConfigLoader.KEYS);
+    }
+
+    @Test
+    void libraryImportMaxZipBytes() throws Exception {
+        assertEquals(100L * 1024 * 1024 * 1024, load(URL_ONLY).libraryImportMaxZipBytes(), "100 GiB by default");
+        Config c = load("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\"},"
+                + " \"libraryImport\": {\"maxZipBytes\": \"20 GiB\"}}");
+        assertEquals(20L * 1024 * 1024 * 1024, c.libraryImportMaxZipBytes());
+        assertTrue(fails("{\"http\": {\"publicBaseUrl\": \"https://music.example.com\"},"
+                + " \"libraryImport\": {\"maxZipBytes\": \"lots\"}}").getMessage()
+                .contains("libraryImport.maxZipBytes"));
+        env.put("TOGETHERTUNES_LIBRARY_IMPORT_MAX_ZIP_BYTES", "1 GiB");
+        assertEquals(1024L * 1024 * 1024, load(URL_ONLY).libraryImportMaxZipBytes());
     }
 
     @Test

@@ -66,7 +66,9 @@ public final class TestUploads {
         var imports = new io.siggi.togethertunes.library.LibraryImports(db, uploads(db, dir, config, tools, clock),
                 new Playlists(db, youtube(db, config, tools, clock), clock), dir.resolve("data/tmp/imports"),
                 allowedPaths, clock);
-        admin.libraryImportRoutes(new io.siggi.togethertunes.library.LibraryImportApi(imports, permissions)::register);
+        var zips = new io.siggi.togethertunes.library.LibraryImportUploads(imports, config.libraryImportMaxZipBytes(),
+                clock);
+        admin.libraryImportRoutes(new io.siggi.togethertunes.library.LibraryImportApi(imports, zips, permissions)::register);
         return admin;
     }
 
