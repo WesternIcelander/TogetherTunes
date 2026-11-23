@@ -897,7 +897,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         args.addAll(coverArgs(source, probe.video().map(), out));
         try {
             tools.ffmpeg(args).log(log).run();
-            BufferedImage image = CardRenderer.readImage(out);
+            BufferedImage image = trimmedCover(out, log);
             if (image != null) {
                 log.append("[ingest] cover: the still frame at " + seconds(still.coverAtUs()));
                 return image;
@@ -1653,7 +1653,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     /**
-     * Writes {@code image} scaled like every {@link #COVER} as the item's waiting new cover
+     * Writes {@code image} scaled and trimmed ({@link CoverBars}) like every {@link #COVER} as the item's waiting new cover
      * ({@link #PENDING_COVER}, replacing one that is already waiting), for the card-only re-encode
      * {@link IngestJobs#enqueueCover} queues. The item's directory must exist.
      *
@@ -1668,7 +1668,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         Path tmp = dir.resolve(".cover-next-" + java.util.UUID.randomUUID() + ".jpg");
         try {
             tools.ffmpeg(coverArgs(image, "0:v:0", tmp)).timeout(java.time.Duration.ofMinutes(1)).run();
-            if (CardRenderer.readImage(tmp) == null) {
+            if (CoverBars.trimFile(tmp) == null) {
                 throw new IOException("the cover image could not be read");
             }
             Files.move(tmp, dir.resolve(PENDING_COVER), StandardCopyOption.REPLACE_EXISTING,
@@ -2072,6 +2072,21 @@ public final class IngestPipeline implements IngestQueue.Handler {
     }
 
     /**
+     * Reads a {@code cover.jpg} ffmpeg just wrote and trims its letterbox bars ({@link CoverBars}),
+     * rewriting the file when it had some; null when it can't be read.
+     */
+    private static BufferedImage trimmedCover(Path cover, JobLog log) throws IOException {
+        CoverBars.Result r = CoverBars.trimFile(cover);
+        if (r == null) {
+            return null;
+        }
+        if (r.trimmed()) {
+            log.append("[ingest] cover: cropped off bars (" + r.describe() + ")");
+        }
+        return r.image();
+    }
+
+    /**
      * Writes {@code cover.jpg} from the staged cover, else the source's embedded picture, and
      * returns it as an image for the card; null (placeholder art) if there is none or it can't be
      * converted. A broken cover never fails the job.
@@ -2088,7 +2103,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
         for (String[] c : candidates) {
             try {
                 tools.ffmpeg(coverArgs(Path.of(c[0]), c[1], out)).log(log).run();
-                BufferedImage image = CardRenderer.readImage(out);
+                BufferedImage image = trimmedCover(out, log);
                 if (image != null) {
                     return image;
                 }

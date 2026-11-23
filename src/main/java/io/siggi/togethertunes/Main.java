@@ -68,6 +68,7 @@ import io.siggi.togethertunes.ingest.JobList;
 import io.siggi.togethertunes.ingest.JobsApi;
 import io.siggi.togethertunes.ingest.MediaVersions;
 import io.siggi.togethertunes.ingest.IngestPipeline;
+import io.siggi.togethertunes.ingest.CoverBarsPass;
 import io.siggi.togethertunes.ingest.OriginalCleaning;
 import io.siggi.togethertunes.ingest.IngestQueue;
 import io.siggi.togethertunes.ingest.OutputAssets;
@@ -356,6 +357,9 @@ public final class Main {
         OriginalCleaning originalCleaning = new OriginalCleaning(database, dataDir, Tools.from(config), pipeline,
                 metadataLookup);
         new ContentIdBackfill(database, dataDir).start(originalCleaning::runLogged);
+        // The one-time pass that trims letterbox bars off older items' covers (card-only re-encodes,
+        // one at a time once the ingest queue is idle).
+        new CoverBarsPass(database, dataDir, ingest.jobs()).start();
         try {
             int swept = uploads.sweep();
             if (swept > 0) {

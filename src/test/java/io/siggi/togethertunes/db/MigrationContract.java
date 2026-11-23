@@ -399,6 +399,36 @@ abstract class MigrationContract {
     }
 
     /**
+     * 0040 records whether an item's cover was checked for letterbox bars: existing items start
+     * unchecked (the one-time pass checks them), new rows checked (their covers are trimmed when made).
+     */
+    @Test
+    void coverBarsCheckedExistingZeroNewOne() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration bars = files.stream().filter(m -> m.name().contains("cover_bars_checked")).findFirst().orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < bars.version()).toList()).migrate();
+        exec("INSERT INTO users (id, username, display_name, created_at) VALUES ('u1', 'u', 'U', 1)");
+        String insert = "INSERT INTO items (id, kind, title, source, added_by_user_id, added_at, status, output_profile,"
+                + " last_referenced_at) VALUES ";
+        exec(insert + "('old', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        new MigrationRunner(db, files).migrate();
+        exec(insert + "('new', 'audio', 't', 'upload', 'u1', 1, 'ready', '720p30', 1)");
+        Map<String, Integer> checked = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT id, cover_bars_checked FROM items")) {
+                while (rs.next()) {
+                    checked.put(rs.getString(1), rs.getInt(2));
+                }
+            }
+            return null;
+        });
+        assertEquals(Map.of("old", 0, "new", 1), checked);
+        assertThrows(SQLException.class, () -> exec("UPDATE items SET cover_bars_checked = 2 WHERE id = 'new'"));
+    }
+
+    /**
      * 0024 records whether an item's files (and each media version's) were encoded with the loudness
      * normalisation (docs/media-types.md#loudness): every existing encode was.
      */

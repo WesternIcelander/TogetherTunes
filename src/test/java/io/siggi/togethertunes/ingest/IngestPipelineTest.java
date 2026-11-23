@@ -226,11 +226,13 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         Path thumbnail = dir.resolve("thumb.webp");
         String thumbExt = "webp";
         try {
-            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=320x180", "-frames:v", "1", thumbnail.toString());
+            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=180x180", "-vf", "pad=320:180:70:0:color=0x404040",
+                    "-frames:v", "1", thumbnail.toString());
         } catch (ToolException e) { // no WebP encoder in this ffmpeg
             thumbnail = dir.resolve("thumb.png");
             thumbExt = "png";
-            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=320x180", "-frames:v", "1", thumbnail.toString());
+            ffmpeg("-f", "lavfi", "-i", "color=c=red:s=180x180", "-vf", "pad=320:180:70:0:color=0x404040",
+                    "-frames:v", "1", thumbnail.toString());
         }
         Path cookies = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
         Path argsFile = dir.resolve("ytdlp-args.txt");
@@ -259,10 +261,16 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertFalse(job.log().contains("42.0%"), "progress lines become progress, not log lines");
         assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "mezz.mp4", "original.mkv"),
                 layout(item));
+        // the square art of the 16:9 thumbnail, its grey letterbox bars cropped off (CoverBars)
         java.awt.image.BufferedImage cover = CardRenderer.readImage(cur(item).resolve("cover.jpg"));
-        assertEquals(320, cover.getWidth());
-        int rgb = cover.getRGB(160, 90);
-        assertTrue(((rgb >> 16) & 0xff) > 200 && ((rgb >> 8) & 0xff) < 60, "the thumbnail is the cover: " + Integer.toHexString(rgb));
+        assertTrue(Math.abs(cover.getWidth() - 180) <= 4, "cropped to the square: " + cover.getWidth());
+        assertEquals(180, cover.getHeight());
+        assertTrue(job.log().contains("cover: cropped off bars (320x180 -> "), job.log());
+        for (int x : new int[] {2, 90, cover.getWidth() - 3}) {
+            int rgb = cover.getRGB(x, 90);
+            assertTrue(((rgb >> 16) & 0xff) > 200 && ((rgb >> 8) & 0xff) < 60,
+                    "the thumbnail's art is the cover: " + Integer.toHexString(rgb) + " at " + x);
+        }
         assertEquals("ready", itemRow(item)[0]);
         // the merged download is kept as the original, so a re-encode doesn't need YouTube
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", Files.readAllBytes(fixture));
@@ -678,6 +686,43 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertFalse(Files.exists(pending), "applied: no longer waiting");
         assertTrue(Files.isSameFile(before.resolve("audio.m4a"), after.resolve("audio.m4a")));
         CardEncoderTest.checkSkipFrameCard(tools, after.resolve("card.mp4"), reference.encoding());
+        assertNoLeftovers();
+    }
+
+    /**
+     * Letterbox bars (docs/library-and-ingest.md#cards): an upload's embedded picture with grey
+     * 16:9 bars around square art becomes a square cover.jpg; a new cover staged with bars
+     * ({@link IngestPipeline#stagePendingCover}, Replace artwork and the looked-up cover) is cropped too.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void letterboxBarsAreCroppedOffCovers() throws Exception {
+        String item = fixtures.item("pending");
+        Path png = dir.resolve("boxed.png");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=360x360", "-vf", "pad=640:360:140:0:color=0x404040",
+                "-frames:v", "1", png.toString());
+        Path source = stage(item, "source.flac");
+        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-i", png.toString(), "-t", "3", "-map", "0:a", "-map", "1:v",
+                "-c:a", "flac", "-c:v", "png", "-disposition:v", "attached_pic", source.toString());
+        IngestJob job = run(Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        java.awt.image.BufferedImage cover = CardRenderer.readImage(cur(item).resolve(IngestPipeline.COVER));
+        assertTrue(Math.abs(cover.getWidth() - 360) <= 4, "square: " + cover.getWidth());
+        assertEquals(360, cover.getHeight());
+        assertTrue(job.log().contains("cover: cropped off bars (640x360 -> "), job.log());
+
+        // a new cover with black 4:3 bars around grey 16:9 bars around square art
+        Path boxed = dir.resolve("boxed43.png");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=270x270", "-vf",
+                "pad=480:270:105:0:color=0x404040,pad=480:360:0:45:color=black", "-frames:v", "1", boxed.toString());
+        IngestPipeline.stagePendingCover(tools, data, item, boxed);
+        java.awt.image.BufferedImage staged = javax.imageio.ImageIO.read(IngestPipeline.pendingCover(data, item).toFile());
+        assertTrue(Math.abs(staged.getWidth() - 270) <= 4, "square: " + staged.getWidth());
+        assertTrue(Math.abs(staged.getHeight() - 270) <= 4, "square: " + staged.getHeight());
+        try (var s = Files.list(IngestPipeline.itemDir(data, item))) {
+            assertTrue(s.noneMatch(p -> p.getFileName().toString().startsWith(".")), "no temporary files left");
+        }
+        Files.delete(IngestPipeline.pendingCover(data, item));
         assertNoLeftovers();
     }
 
