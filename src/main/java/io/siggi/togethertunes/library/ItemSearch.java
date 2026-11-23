@@ -158,6 +158,20 @@ public final class ItemSearch {
      */
     public Page searchMineFirst(String viewerUserId, String query, String kind, String type, String cursor,
                                 int limit) throws SQLException {
+        return searchMineFirst(viewerUserId, query, kind, type, ListSort.DEFAULT, cursor, limit);
+    }
+
+    /**
+     * As {@link #searchMineFirst(String, String, String, String, String, int)}, sorted
+     * ({@link ListSort}: {@code added} is when the item came to the server, its id; ties keep the
+     * default order, the caller's library first). A sorted search's cursor is
+     * {@link ListSort#cursor}'s, valid only with the same sort.
+     */
+    public Page searchMineFirst(String viewerUserId, String query, String kind, String type, ListSort sort,
+                                String cursor, int limit) throws SQLException {
+        if (!sort.isDefault()) {
+            return searchMineFirstSorted(viewerUserId, query, kind, type, sort, cursor, limit);
+        }
         List<String> types = MediaType.filter(type);
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
@@ -208,6 +222,77 @@ public final class ItemSearch {
         sql.append(viewerUserId == null ? " ORDER BY i.id DESC" : " ORDER BY mine DESC, i.id DESC")
                 .append(" LIMIT ").append(limit + 1);
         return run(sql.toString(), params, limit, true);
+    }
+
+    private Page searchMineFirstSorted(String viewerUserId, String query, String kind, String type, ListSort sort,
+                                       String cursor, int limit) throws SQLException {
+        List<String> types = MediaType.filter(type);
+        if (limit < 1 || limit > LIST_MAX) {
+            throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
+        }
+        if (kind != null && !kind.equals("audio") && !kind.equals("video")) {
+            throw new HttpError(400, "invalid_kind", "kind must be audio or video");
+        }
+        List<String> terms = Library.terms(query);
+        Dialect d = db.dialect();
+        String mine = "CASE WHEN EXISTS (SELECT 1 FROM library_entries v WHERE v.item_id = i.id AND v.user_id = ?)"
+                + " THEN 1 ELSE 0 END";
+        List<ListSort.Key> defaults = new ArrayList<>();
+        if (viewerUserId != null) {
+            defaults.add(new ListSort.Key("mine", mine, List.of(viewerUserId), true, ListSort.Type.LONG));
+        }
+        defaults.add(new ListSort.Key("i.id", true, ListSort.Type.STRING));
+        List<ListSort.Key> keys = sort.keys(d, "i.id", ListSort.Type.STRING, defaults);
+        List<Object> after = cursor == null ? null : sort.parseCursor(cursor, keys);
+        List<Object> params = new ArrayList<>();
+        StringBuilder sql = new StringBuilder("SELECT " + Library.ItemView.COLUMNS + ", ");
+        if (viewerUserId != null) {
+            sql.append(mine).append(" AS mine");
+            params.add(viewerUserId);
+        } else {
+            sql.append("0 AS mine");
+        }
+        sql.append(sort.selectKey(d, "i.id"));
+        sql.append(" FROM items i WHERE i.status <> 'purged' AND NOT (i.youtube_id IS NULL AND i.status = 'failed')");
+        List<String> matchParams = new ArrayList<>();
+        appendMatch(d, sql, matchParams, kind, types, terms);
+        params.addAll(matchParams);
+        if (after != null) {
+            ListSort.where(sql, params, keys, after);
+        }
+        sql.append(ListSort.orderBy(keys)).append(" LIMIT ").append(limit + 1);
+        ListSort.Type keyType = sort.keyType(ListSort.Type.STRING);
+        return db.read(c -> {
+            List<Hit> items = new ArrayList<>();
+            List<Object> lastKey = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                ListSort.bind(ps, params);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next() && items.size() <= limit) {
+                        Hit hit = new Hit(Library.ItemView.read(rs, 1), rs.getInt(14) != 0);
+                        items.add(hit);
+                        if (items.size() == limit) {
+                            lastKey.clear();
+                            if (sort.column() != null) {
+                                Object key = ListSort.read(rs, 15, keyType);
+                                lastKey.add(key == null ? 1L : 0L);
+                                lastKey.add(key);
+                            }
+                            if (viewerUserId != null) {
+                                lastKey.add(hit.inYourLibrary() ? 1L : 0L);
+                            }
+                            lastKey.add(hit.item().id());
+                        }
+                    }
+                }
+            }
+            String next = null;
+            if (items.size() > limit) {
+                items = new ArrayList<>(items.subList(0, limit));
+                next = sort.cursor(lastKey);
+            }
+            return new Page(List.copyOf(items), next);
+        });
     }
 
     private static void appendMatch(Dialect d, StringBuilder sql, List<String> params, String kind,

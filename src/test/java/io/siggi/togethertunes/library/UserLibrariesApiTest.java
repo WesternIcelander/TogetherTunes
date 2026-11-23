@@ -149,6 +149,8 @@ class UserLibrariesApiTest {
         assertEquals(song, entry.getAsJsonObject("item").get("id").getAsString());
         assertEquals("manual", entry.get("via").getAsString());
         assertEquals(0, ok("/api/users/" + bob.userId() + "/library?kind=video").getAsJsonArray("items").size());
+        assertEquals(song, ok("/api/users/" + bob.userId() + "/library?sort=artist&order=desc").getAsJsonArray("items")
+                .get(0).getAsJsonObject().getAsJsonObject("item").get("id").getAsString());
 
         JsonObject pls = ok("/api/users/" + bob.userId() + "/playlists");
         JsonObject pl = pls.getAsJsonArray("items").get(0).getAsJsonObject();
@@ -215,5 +217,7 @@ class UserLibrariesApiTest {
         assertEquals("invalid_query", code(call("/api/users?q=" + "x".repeat(101), rootToken)));
         assertEquals("invalid_query", code(call("/api/users/" + bobId + "/library?q=" + "x".repeat(201), rootToken)));
         assertEquals("invalid_kind", code(call("/api/users/" + bobId + "/library?kind=podcast", rootToken)));
+        assertEquals("invalid_sort", code(call("/api/users/" + bobId + "/library?sort=size", rootToken)));
+        assertEquals("invalid_order", code(call("/api/users/" + bobId + "/library?order=up", rootToken)));
     }
 }

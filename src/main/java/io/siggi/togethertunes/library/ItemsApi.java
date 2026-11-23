@@ -28,9 +28,11 @@ import java.util.Set;
  *       whole server"), newest item first. Nothing about whose libraries hold an item. {@code limit}
  *       1..{@value ItemSearch#LIST_MAX}, default {@value ItemSearch#LIST_DEFAULT}; {@code 400
  *       invalid_query} / {@code invalid_kind} / {@code invalid_cursor} / {@code invalid_limit}.</li>
- *   <li>{@code GET /api/search?q=&kind=&type=&cursor=&limit=&roomId=} → the same shape: every
+ *   <li>{@code GET /api/search?q=&kind=&type=&sort=&order=&cursor=&limit=&roomId=} → the same shape: every
  *       item on the server that isn't purged, the items in the caller's own library first (then
- *       the rest), each part newest item first; cursor {@code <1|0>_<itemId>}. Signed-in users
+ *       the rest), each part newest item first; cursor {@code <1|0>_<itemId>}. {@code sort} and
+ *       {@code order} as for {@code GET /api/library} ({@link ListSort}; {@code added} is when the
+ *       item came to the server; {@code 400 invalid_sort} / {@code invalid_order}). Signed-in users
  *       always; guests and anonymous visitors only with the {@code roomId} (or slug) of a room
  *       where they may request from the library ({@link RoomSearch}: {@code 404 room_not_found},
  *       {@code 403 banned_from_room}, {@code guest_library_requests_disabled},
@@ -317,7 +319,8 @@ public final class ItemsApi {
         int limit = limit(request);
         ItemSearch.Page page = search.searchMineFirst(viewer, request.query("q"),
                 emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
-                emptyToNull(request.query("cursor")), limit);
+                ListSort.parse(request.query("sort"), request.query("order")), emptyToNull(request.query("cursor")),
+                limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

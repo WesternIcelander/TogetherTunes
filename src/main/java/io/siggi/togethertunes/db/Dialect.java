@@ -45,6 +45,13 @@ public sealed interface Dialect permits SqliteDialect, PostgresDialect {
      */
     String lower(String column);
 
+    /**
+     * {@code expr} (a text expression) compared by code point, so sorting by it gives the same
+     * order on both databases: SQLite compares text bytewise already; PostgreSQL gets
+     * {@code COLLATE "C"} (UTF-8 bytes, which is code point order).
+     */
+    String sortText(String expr);
+
     /** The dialect for a JDBC URL ({@code jdbc:sqlite:...} or {@code jdbc:postgresql:...}). */
     static Dialect forJdbcUrl(String jdbcUrl) {
         if (jdbcUrl.startsWith("jdbc:sqlite:")) {

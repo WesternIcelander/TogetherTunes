@@ -196,6 +196,109 @@ abstract class LibraryContract {
         assertEquals(List.of(), ids(library.list(bob.userId() + "x", null, null, null, 10)));
     }
 
+    private void duration(String itemId, Long ms) throws SQLException {
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET duration_ms = ? WHERE id = ?")) {
+                if (ms == null) {
+                    ps.setNull(1, java.sql.Types.BIGINT);
+                } else {
+                    ps.setLong(1, ms);
+                }
+                ps.setString(2, itemId);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+    }
+
+    /** Every page of a sorted list, pages of {@code size}; checks that each cursor is new. */
+    private List<String> sorted(ListSort sort, String type, int size) throws SQLException {
+        List<String> out = new ArrayList<>();
+        Set<String> cursors = new HashSet<>();
+        String cursor = null;
+        do {
+            Library.Page page = library.list(alice.userId(), null, null, type, sort, cursor, size);
+            assertTrue(page.items().size() <= size);
+            out.addAll(ids(page));
+            cursor = page.nextCursor();
+            assertTrue(cursor == null || cursors.add(cursor));
+        } while (cursor != null);
+        return out;
+    }
+
+    @Test
+    void sortedByEachColumnWithTiesMissingValuesAndCursors() throws Exception {
+        // added_at: a 100, b 200, c 300, d 400, e 500, f 500 (f's id is newer: before e by default)
+        String a = song("banana", "Zed", "Alpha");
+        String b = song("Apple", null, "beta");
+        String c = song("cherry", "", "Alpha");
+        String d = song("apple", "ABBA", null);
+        String e = song("Éclair", "abba", "Gamma");
+        String f = song("date", "Mid", "gamma");
+        duration(a, 3000L);
+        duration(b, null);
+        duration(c, 1000L);
+        duration(d, 2000L);
+        duration(e, 2000L);
+        duration(f, null);
+        long[] at = {100, 200, 300, 400, 500, 500};
+        List<String> all = List.of(a, b, c, d, e, f);
+        for (int i = 0; i < all.size(); i++) {
+            entry(alice, all.get(i), at[i], "upload");
+        }
+        entry(bob, song("Bob's", "Aaa", "Aaa"), 50, "upload");
+        List<String> byDefault = List.of(f, e, d, c, b, a);
+        java.util.Map<String, List<String>> expected = new java.util.LinkedHashMap<>();
+        // title, case-insensitively by code point (É after the ASCII letters); ties (apple/Apple) newest first
+        expected.put("title asc", List.of(d, b, a, c, f, e));
+        expected.put("title desc", List.of(e, f, c, a, d, b));
+        // artist: missing (null, "") last both ways; abba/ABBA tie newest first
+        expected.put("artist asc", List.of(e, d, f, a, c, b));
+        expected.put("artist desc", List.of(a, f, e, d, c, b));
+        expected.put("album asc", List.of(c, a, b, f, e, d));
+        expected.put("album desc", List.of(f, e, b, c, a, d));
+        expected.put("duration asc", List.of(c, e, d, a, f, b));
+        expected.put("duration desc", List.of(a, e, d, c, f, b));
+        expected.put("added asc", List.of(a, b, c, d, f, e));
+        expected.put("added desc", List.of(f, e, d, c, b, a));
+        expected.put(" desc", List.of(a, b, c, d, e, f));
+        expected.put(" asc", byDefault);
+        for (var x : expected.entrySet()) {
+            String[] p = x.getKey().split(" ");
+            ListSort sort = ListSort.parse(p[0], p[1]);
+            for (int size : List.of(1, 2, 4, 6, 200)) {
+                assertEquals(x.getValue(), sorted(sort, null, size), x.getKey() + ", pages of " + size);
+            }
+        }
+        // the filters and search work the same when sorted
+        assertEquals(List.of(d, b), ids(library.list(alice.userId(), "apple", null, null,
+                ListSort.parse("title", "asc"), null, 10)));
+        assertEquals(List.of(), ids(library.list(alice.userId(), null, null, "movie",
+                ListSort.parse("title", "asc"), null, 10)));
+        // a cursor keeps its sort: with another sort (or the default) it is refused
+        String cursor = library.list(alice.userId(), null, null, null, ListSort.parse("title", "asc"), null, 2)
+                .nextCursor();
+        assertNotNull(cursor);
+        for (ListSort other : List.of(ListSort.parse("title", "desc"), ListSort.parse("artist", "asc"),
+                ListSort.parse(null, "desc"), ListSort.DEFAULT)) {
+            HttpError err = assertThrows(HttpError.class,
+                    () -> library.list(alice.userId(), null, null, null, other, cursor, 2), other.toString());
+            assertEquals("invalid_cursor", err.code());
+        }
+        for (String bad : List.of("x", "e30", "eyJzb3J0IjoidGl0bGUiLCJvcmRlciI6ImFzYyIsImFmdGVyIjpbXX0", "!!")) {
+            HttpError err = assertThrows(HttpError.class, () -> library.list(alice.userId(), null, null, null,
+                    ListSort.parse("title", "asc"), bad, 2), bad);
+            assertEquals("invalid_cursor", err.code());
+        }
+        for (String[] bad : List.of(new String[]{"name", null}, new String[]{"TITLE", null},
+                new String[]{"title", "up"}, new String[]{null, "ASC"})) {
+            HttpError err = assertThrows(HttpError.class, () -> ListSort.parse(bad[0], bad[1]));
+            assertEquals(bad[0] != null && !bad[0].equals("title") ? "invalid_sort" : "invalid_order", err.code());
+        }
+        assertEquals(ListSort.DEFAULT, ListSort.parse("", ""));
+        assertEquals(ListSort.DEFAULT, ListSort.parse(null, "asc"));
+    }
+
     @Test
     void entriesCarryTheItemAndHowItCameThere() throws Exception {
         String id = item("video", "Clip", "Band", "LP", "ready", "dQw4w9WgXcQ");

@@ -37,6 +37,11 @@ public final class SqliteDialect implements Dialect {
     }
 
     @Override
+    public String sortText(String expr) {
+        return expr;
+    }
+
+    @Override
     public String toString() {
         return "SqliteDialect";
     }

@@ -97,6 +97,11 @@ test("dropping on a playlist: its own entries move in its view, everything else 
   assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true }, songs), { kind: "add", itemIds: ["a", "b"] });
   assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true }, { kind: "playlist", playlistId: "p" }), { kind: "none" });
   assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true }, undefined), { kind: "none" });
+  // sorted by another column (or # descending): its own rows don't move, songs from elsewhere are still added
+  assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true, ordered: false }, own), { kind: "none" });
+  assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true, ordered: true }, own), { kind: "move", entryIds: ["pe1"] });
+  assert.deepEqual(D.playlistDrop({ playlistId: "p", inView: true, ordered: false }, songs), { kind: "add", itemIds: ["a", "b"] });
+  assert.deepEqual(D.playlistDrop({ playlistId: "q", inView: true, ordered: false }, own), { kind: "add", itemIds: ["i1"] });
 });
 
 test("who may reorder the queue", () => {

@@ -20,8 +20,8 @@ import java.util.Objects;
  *       username; {@code q} matches part of the username or display name. {@code 400
  *       invalid_query} (over {@value UserLibraries#QUERY_MAX_CHARS} characters),
  *       {@code invalid_cursor}, {@code invalid_limit}.</li>
- *   <li>{@code GET /api/users/{id}/library?q=&kind=&cursor=&limit=} → as {@code GET
- *       /api/library}, for that user.</li>
+ *   <li>{@code GET /api/users/{id}/library?q=&kind=&type=&sort=&order=&cursor=&limit=} → as
+ *       {@code GET /api/library}, for that user.</li>
  *   <li>{@code GET /api/users/{id}/playlists?cursor=&limit=} → as {@code GET /api/playlists}.</li>
  *   <li>{@code GET /api/users/{id}/playlists/{playlistId}} → as {@code GET
  *       /api/playlists/{id}}; {@code 404 playlist_not_found} also for another user's playlist.</li>
@@ -57,7 +57,8 @@ public final class UserLibrariesApi {
         int limit = limit(request, Library.LIST_DEFAULT, Library.LIST_MAX);
         Library.Page page = libraries.library(request.pathParam("id"), request.query("q"),
                 emptyToNull(request.query("kind")), emptyToNull(request.query("type")),
-                emptyToNull(request.query("cursor")), limit);
+                ListSort.parse(request.query("sort"), request.query("order")), emptyToNull(request.query("cursor")),
+                limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }

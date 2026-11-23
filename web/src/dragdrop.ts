@@ -141,6 +141,11 @@ export interface PlaylistTarget {
   playlistId: string;
   /** The drop is on the open playlist's rows (a position), not on its name in the sidebar. */
   inView: boolean;
+  /**
+   * The open playlist can be reordered (sorted by #, ascending: listsort.ts `canReorder`); when
+   * false (default true) its own rows don't move within it.
+   */
+  ordered?: boolean;
 }
 
 export type PlaylistDrop =
@@ -152,12 +157,15 @@ export type PlaylistDrop =
  * What dropping songs on one of the user's playlists does: entries of the same playlist dropped
  * on its open view move there (`POST …/entries/move`); songs from anywhere else (another playlist,
  * the queue, Recents, search results, the library) are added (`POST …/entries`, each, in order).
- * The same playlist's entries dropped on its name in the sidebar change nothing.
+ * The same playlist's entries dropped on its name in the sidebar change nothing, and neither do
+ * they on its view while it is sorted by another column than # ascending (`ordered: false`).
  */
 export function playlistDrop(t: PlaylistTarget, p: DragPayload | undefined): PlaylistDrop {
   if (p === undefined || p.kind !== "items") return { kind: "none" };
   const same = p.playlistId === t.playlistId && p.entryIds !== undefined && p.source !== "queue";
-  if (same) return t.inView ? { kind: "move", entryIds: p.entryIds as string[] } : { kind: "none" };
+  if (same) {
+    return t.inView && t.ordered !== false ? { kind: "move", entryIds: p.entryIds as string[] } : { kind: "none" };
+  }
   return { kind: "add", itemIds: p.itemIds };
 }
 

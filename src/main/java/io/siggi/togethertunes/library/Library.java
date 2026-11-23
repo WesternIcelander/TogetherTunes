@@ -136,7 +136,26 @@ public final class Library {
      */
     public Page list(String userId, String query, String kind, String type, String cursor, int limit)
             throws SQLException {
+        return list(userId, query, kind, type, ListSort.DEFAULT, cursor, limit);
+    }
+
+    /** The default order's keys: newest added first, then by item id, descending. */
+    private static final List<ListSort.Key> DEFAULT_KEYS = List.of(
+            new ListSort.Key("e.added_at", true, ListSort.Type.LONG),
+            new ListSort.Key("e.item_id", true, ListSort.Type.STRING));
+
+    /**
+     * As {@link #list(String, String, String, String, String, int)}, sorted ({@link ListSort}:
+     * {@code added} is the entry's {@code added_at}; ties keep the default order). A sorted list's
+     * cursor is {@link ListSort#cursor}'s, valid only with the same sort.
+     */
+    public Page list(String userId, String query, String kind, String type, ListSort sort, String cursor, int limit)
+            throws SQLException {
         Objects.requireNonNull(userId);
+        Objects.requireNonNull(sort);
+        if (!sort.isDefault()) {
+            return listSorted(userId, query, kind, type, sort, cursor, limit);
+        }
         List<String> types = MediaType.filter(type);
         if (limit < 1 || limit > LIST_MAX) {
             throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
@@ -206,6 +225,77 @@ public final class Library {
                 items = new ArrayList<>(items.subList(0, limit));
                 Entry last = items.get(limit - 1);
                 next = last.addedAt() + "_" + last.item().id();
+            }
+            return new Page(List.copyOf(items), next);
+        });
+    }
+
+    private Page listSorted(String userId, String query, String kind, String type, ListSort sort, String cursor,
+                            int limit) throws SQLException {
+        List<String> types = MediaType.filter(type);
+        if (limit < 1 || limit > LIST_MAX) {
+            throw new IllegalArgumentException("limit must be 1.." + LIST_MAX);
+        }
+        if (kind != null && !kind.equals("audio") && !kind.equals("video")) {
+            throw new HttpError(400, "invalid_kind", "kind must be audio or video");
+        }
+        List<String> terms = terms(query);
+        Dialect d = db.dialect();
+        List<ListSort.Key> keys = sort.keys(d, "e.added_at", ListSort.Type.LONG, DEFAULT_KEYS);
+        List<Object> after = cursor == null ? null : sort.parseCursor(cursor, keys);
+        StringBuilder sql = new StringBuilder("SELECT " + ItemView.COLUMNS + ", e.added_at, e.via")
+                .append(sort.selectKey(d, "e.added_at"))
+                .append(" FROM library_entries e JOIN items i ON i.id = e.item_id WHERE e.user_id = ?");
+        List<Object> params = new ArrayList<>();
+        params.add(userId);
+        if (kind != null) {
+            sql.append(" AND i.kind = ?");
+            params.add(kind);
+        }
+        List<String> filterParams = new ArrayList<>();
+        MediaType.appendFilter(sql, filterParams, types);
+        params.addAll(filterParams);
+        String like = " LIKE ? ESCAPE '" + Dialect.LIKE_ESCAPE + "'";
+        for (String term : terms) {
+            sql.append(" AND (").append(d.lower("i.title")).append(like)
+                    .append(" OR ").append(d.lower("i.artist")).append(like)
+                    .append(" OR ").append(d.lower("i.album")).append(like).append(")");
+            String pattern = Dialect.containsPattern(term);
+            params.add(pattern);
+            params.add(pattern);
+            params.add(pattern);
+        }
+        if (after != null) {
+            ListSort.where(sql, params, keys, after);
+        }
+        sql.append(ListSort.orderBy(keys)).append(" LIMIT ").append(limit + 1);
+        ListSort.Type keyType = sort.keyType(ListSort.Type.LONG);
+        return db.read(c -> {
+            List<Entry> items = new ArrayList<>();
+            List<Object> lastKey = new ArrayList<>();
+            try (PreparedStatement ps = c.prepareStatement(sql.toString())) {
+                ListSort.bind(ps, params);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next() && items.size() <= limit) {
+                        Entry e = entry(rs);
+                        items.add(e);
+                        if (items.size() == limit) {
+                            lastKey.clear();
+                            if (sort.column() != null) {
+                                Object key = ListSort.read(rs, 16, keyType);
+                                lastKey.add(key == null ? 1L : 0L);
+                                lastKey.add(key);
+                            }
+                            lastKey.add(e.addedAt());
+                            lastKey.add(e.item().id());
+                        }
+                    }
+                }
+            }
+            String next = null;
+            if (items.size() > limit) {
+                items = new ArrayList<>(items.subList(0, limit));
+                next = sort.cursor(lastKey);
             }
             return new Page(List.copyOf(items), next);
         });

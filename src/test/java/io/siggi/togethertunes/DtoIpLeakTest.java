@@ -391,6 +391,8 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.retention.RetentionSweeper$Limits", "the retention settings, read by the sweeper"),
             Map.entry("io.siggi.togethertunes.library.Library$Added", "add result; the API sends its entry"),
             Map.entry("io.siggi.togethertunes.library.Library$ItemRow", "item lookup"),
+            Map.entry("io.siggi.togethertunes.library.ListSort", "a list's sort, parsed from query parameters"),
+            Map.entry("io.siggi.togethertunes.library.ListSort$Key", "an ORDER BY key (SQL)"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Edit", "PATCH body, parsed"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Before", "item and playlist lookup before an add"),
             Map.entry("io.siggi.togethertunes.library.Playlists$Added", "an add's result; the API sends its entry"),

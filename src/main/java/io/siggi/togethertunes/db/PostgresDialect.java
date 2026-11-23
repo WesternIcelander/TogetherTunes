@@ -30,6 +30,11 @@ public final class PostgresDialect implements Dialect {
     }
 
     @Override
+    public String sortText(String expr) {
+        return "(" + expr + " COLLATE \"C\")";
+    }
+
+    @Override
     public String toString() {
         return "PostgresDialect";
     }

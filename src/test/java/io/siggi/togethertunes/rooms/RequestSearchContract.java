@@ -319,6 +319,60 @@ abstract class RequestSearchContract {
                 "no own library part without a user");
     }
 
+    /** Every page of a sorted {@code GET /api/search}, pages of {@code size}. */
+    private static List<String> sortedPages(ItemSearch items, String viewer, io.siggi.togethertunes.library.ListSort sort,
+                                            int size) throws Exception {
+        List<String> out = new ArrayList<>();
+        String cursor = null;
+        do {
+            ItemSearch.Page p = items.searchMineFirst(viewer, null, null, null, sort, cursor, size);
+            assertTrue(p.items().size() <= size);
+            p.items().forEach(h -> out.add(h.item().id()));
+            cursor = p.nextCursor();
+        } while (cursor != null);
+        return out;
+    }
+
+    @Test
+    void wholeServerSearchSortedByAColumn() throws Exception {
+        ItemSearch items = new ItemSearch(db);
+        var title = io.siggi.togethertunes.library.ListSort.parse("title", "asc");
+        List<String> byTitle = List.of(ownList, ownLib, carolOnly, daveOnly, video, nobody, shared);
+        List<String> byTitleDesc = new ArrayList<>(byTitle);
+        java.util.Collections.reverse(byTitleDesc);
+        for (int size : List.of(1, 2, 3, 50)) {
+            assertEquals(byTitle, sortedPages(items, carol.userId(), title, size), "pages of " + size);
+            assertEquals(byTitle, sortedPages(items, null, title, size), "nobody's, pages of " + size);
+            assertEquals(byTitleDesc, sortedPages(items, carol.userId(),
+                    io.siggi.togethertunes.library.ListSort.parse("title", "desc"), size));
+        }
+        // ties keep the default order: the searcher's own library first, then newest item first
+        List<String> newOrder = new ArrayList<>(List.of(ownLib, video));
+        newOrder.sort(java.util.Comparator.reverseOrder());
+        List<String> byArtist = new ArrayList<>(List.of(daveOnly, carolOnly));
+        byArtist.addAll(newOrder);
+        byArtist.addAll(List.of(ownList, nobody, shared));
+        for (int size : List.of(1, 2, 50)) {
+            assertEquals(byArtist, sortedPages(items, aliceId, io.siggi.togethertunes.library.ListSort.parse("artist",
+                    "asc"), size), "pages of " + size);
+        }
+        // the default order reversed: the rest oldest first, then the own library oldest first
+        List<String> reversed = new ArrayList<>(List.of(ownLib, ownList, daveOnly, nobody, video));
+        reversed.sort(null);
+        List<String> mine = new ArrayList<>(List.of(shared, carolOnly));
+        mine.sort(null);
+        reversed.addAll(mine);
+        for (int size : List.of(1, 3, 50)) {
+            assertEquals(reversed, sortedPages(items, carol.userId(), io.siggi.togethertunes.library.ListSort.parse(null,
+                    "desc"), size));
+        }
+        String cursor = items.searchMineFirst(carol.userId(), null, null, null, title, null, 2).nextCursor();
+        assertEquals("invalid_cursor", refused(() -> items.searchMineFirst(carol.userId(), null, null, null, cursor, 2)),
+                "a sorted cursor in the default order");
+        assertEquals("invalid_cursor", refused(() -> items.searchMineFirst(carol.userId(), null, null, null,
+                io.siggi.togethertunes.library.ListSort.parse("album", "asc"), cursor, 2)));
+    }
+
     @Test
     void mayRequestFromTheRoom() throws Exception {
         // the check GET /api/search uses for guests and anonymous visitors

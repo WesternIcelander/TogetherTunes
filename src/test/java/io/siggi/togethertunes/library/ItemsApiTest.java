@@ -260,6 +260,25 @@ class ItemsApiTest {
         assertEquals("invalid_type", code(call("GET", "/api/search?type=x", bob, null)));
         assertEquals("invalid_cursor", code(call("GET", "/api/search?cursor=" + a, bob, null)));
         assertEquals("invalid_query", code(call("GET", "/api/search?q=" + "x".repeat(201), bob, null)));
+        // sorted: every item has the same title, so the default order (bob's first) breaks the ties
+        List<String> sortedPaged = new ArrayList<>();
+        path = "/api/search?limit=1&sort=title&order=desc";
+        while (true) {
+            HttpResponse<String> sr = call("GET", path, bob, null);
+            assertEquals(200, sr.statusCode(), sr.body());
+            JsonObject page = json(sr);
+            sortedPaged.addAll(ids.apply(page));
+            if (!page.has("nextCursor")) {
+                break;
+            }
+            path = "/api/search?limit=1&sort=title&order=desc&cursor=" + page.get("nextCursor").getAsString();
+        }
+        assertEquals(bobs, sortedPaged);
+        List<String> oldest = new ArrayList<>(newest);
+        java.util.Collections.reverse(oldest);
+        assertEquals(oldest, ids.apply(json(call("GET", "/api/search?sort=added&order=asc", alice, null))));
+        assertEquals("invalid_sort", code(call("GET", "/api/search?sort=relevance", bob, null)));
+        assertEquals("invalid_order", code(call("GET", "/api/search?order=random", bob, null)));
     }
 
     private Object[] pinRow(String itemId) throws Exception {

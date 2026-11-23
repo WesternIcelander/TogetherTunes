@@ -243,6 +243,53 @@ class LibraryApiTest {
         assertEquals("invalid_query", code(call("GET", "/api/library?q=" + "x".repeat(201), true)));
     }
 
+    private List<String> pageIds(String firstPath) throws Exception {
+        List<String> seen = new ArrayList<>();
+        String path = firstPath;
+        while (true) {
+            HttpResponse<String> r = call("GET", path, true);
+            assertEquals(200, r.statusCode(), r.body());
+            JsonObject page = json(r);
+            page.getAsJsonArray("items").forEach(e -> seen.add(e.getAsJsonObject().getAsJsonObject("item")
+                    .get("id").getAsString()));
+            if (!page.has("nextCursor")) {
+                return seen;
+            }
+            path = firstPath + "&cursor=" + page.get("nextCursor").getAsString();
+        }
+    }
+
+    /** {@code sort=} and {@code order=}: every page in the same order, the cursor keeps the sort. */
+    @Test
+    void sortedLists() throws Exception {
+        List<String> byTitle = new ArrayList<>();
+        for (String title : List.of("Charlie", "alpha", "Bravo", "delta")) {
+            String id = item(title, "ready", null);
+            clock.advance(1000);
+            assertEquals(201, call("PUT", "/api/library/" + id, true).statusCode());
+            byTitle.add(id);
+        }
+        List<String> added = new ArrayList<>(byTitle);
+        byTitle = List.of(byTitle.get(1), byTitle.get(2), byTitle.get(0), byTitle.get(3));
+        assertEquals(byTitle, pageIds("/api/library?limit=1&sort=title&order=asc"));
+        assertEquals(byTitle, pageIds("/api/library?limit=3&sort=title"), "asc by default");
+        List<String> desc = new ArrayList<>(byTitle);
+        java.util.Collections.reverse(desc);
+        assertEquals(desc, pageIds("/api/library?limit=2&sort=title&order=desc"));
+        assertEquals(added, pageIds("/api/library?limit=2&sort=added&order=asc"));
+        assertEquals(added, pageIds("/api/library?limit=3&order=desc"), "the default order reversed");
+        assertEquals(List.of(byTitle.get(0), byTitle.get(1)), pageIds("/api/library?limit=1&sort=title&type=audio"
+                + "&q=a&kind=audio").subList(0, 2));
+        assertEquals(List.of(), pageIds("/api/library/uncategorized?limit=1&sort=artist&order=desc"));
+        // a cursor of one sort isn't valid with another
+        String cursor = json(call("GET", "/api/library?limit=1&sort=title", true)).get("nextCursor").getAsString();
+        assertEquals("invalid_cursor", code(call("GET", "/api/library?limit=1&sort=album&cursor=" + cursor, true)));
+        assertEquals("invalid_cursor", code(call("GET", "/api/library?limit=1&cursor=" + cursor, true)));
+        assertEquals("invalid_sort", code(call("GET", "/api/library?sort=name", true)));
+        assertEquals("invalid_order", code(call("GET", "/api/library?sort=title&order=up", true)));
+        assertEquals("invalid_sort", code(call("GET", "/api/library/uncategorized?sort=x", true)));
+    }
+
     /** The Uncategorized Items view: the caller's uncategorized entries and their total. */
     @Test
     void uncategorizedView() throws Exception {

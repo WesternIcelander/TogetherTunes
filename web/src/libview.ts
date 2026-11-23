@@ -24,6 +24,12 @@
 // take files and links without a position (the whole list highlighted, never reordered): files are
 // uploaded into the library with the view's type (filedrop.ts dropFilesInLibrary), a link opens Add
 // from link with that type preset. The server enforces every rule.
+// Sorting (rules in the DOM-free listsort.ts): every list but a show's episodes has clickable column
+// headings (a click sorts by that column, a second click flips the order, an arrow and aria-sort on
+// the sorted one); # is the list's own order and the default. The paged lists ask the server to sort
+// (sort=, order=); a playlist is sorted here. Only on # ascending can a playlist be reordered by
+// dragging; sorted otherwise, drops from elsewhere go to its end. The sort is remembered per list in
+// localStorage.
 import { prefs } from "./prefsclient.js";
 import { openAddLink, openAddLinkTo } from "./addlink.js";
 import { api } from "./api.js";
@@ -32,6 +38,8 @@ import { draggable, dropZone } from "./dnd.js";
 import { draggedKeys, libraryAccepts, moveIsNoop, playlistDrop, type DragPayload, type LibraryTarget } from "./dragdrop.js";
 import { dropFiles, dropFilesInLibrary } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
+import { ariaSort, canReorder, COLUMN_LABELS, DEFAULT_SORT, nextSort, parseSort, serializeSort, sortableColumns,
+  sortArrow, sortParams, sortRows, sortStorageKey, type SortColumn, type SortState } from "./listsort.js";
 import { itemPath, mediaPath, type ItemSummary, type LibraryEntry, type Page, type PlaylistDetail } from "./media.js";
 import { clickSelect, doubleClickAction, selectionText, songMenuEntries, toggleKey, type DoubleClickAction,
   type SongList } from "./interactions.js";
@@ -53,6 +61,8 @@ interface Row {
   addedAt?: number;
   /** The playlist entry's id (playlists and Liked Songs). */
   entryId?: string;
+  /** The number shown in # (a playlist's entry: its place in the playlist); else the row's place. */
+  num?: number;
 }
 
 /**
@@ -87,6 +97,67 @@ let dropZoneSignal: AbortSignal | undefined;
 let linkTimer: number | undefined;
 /** The signed-in user (the lists are for users only). */
 let me: MeUser | undefined;
+/** The list's sort, the columns it can be sorted by (none: not sortable) and where it is remembered. */
+let listSort: SortState = DEFAULT_SORT;
+let sortColumns: readonly SortColumn[] | undefined;
+let sortKey: string | undefined;
+/** Sorts chosen while this page is open (localStorage may be unavailable). */
+const chosenSorts = new Map<string, SortState>();
+
+/** The remembered sort of the list stored under `key`, the default if none (or storage fails). */
+function loadSort(key: string, columns: readonly SortColumn[]): SortState {
+  const chosen = chosenSorts.get(key);
+  if (chosen !== undefined) return chosen;
+  try {
+    return parseSort(localStorage.getItem(key), columns);
+  } catch {
+    return DEFAULT_SORT;
+  }
+}
+
+function saveSort(key: string, s: SortState): void {
+  chosenSorts.set(key, s);
+  try {
+    const text = serializeSort(s);
+    if (text === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, text);
+  } catch {
+    // Not remembered beyond this page.
+  }
+}
+
+/** A click on a column heading: sort by it (or flip it), remember that, and show the list again. */
+function chooseSort(column: SortColumn): void {
+  listSort = nextSort(listSort, column);
+  if (sortKey !== undefined) saveSort(sortKey, listSort);
+  restart();
+}
+
+/** The column headings: buttons for the sortable columns, the arrow and aria-sort on the sorted one. */
+function drawHead(): void {
+  const head = element("list-table").querySelector("thead");
+  if (head === null) return;
+  head.querySelectorAll<HTMLTableCellElement>("th[data-col]").forEach((th) => {
+    const cols = (th.dataset["col"] ?? "").split(" ") as SortColumn[];
+    const usable = sortColumns === undefined ? [] : cols.filter((c) => (sortColumns ?? []).indexOf(c) >= 0);
+    if (usable.length === 0) {
+      th.removeAttribute("aria-sort");
+      th.replaceChildren(COLUMN_LABELS[cols[0] ?? "title"]);
+      return;
+    }
+    const parts: (Node | string)[] = [];
+    usable.forEach((c, i) => {
+      if (i > 0) parts.push(" · ");
+      const arrow = sortArrow(listSort, c);
+      const b = h("button", { type: "button", class: "sort-head", "data-sort": c, title: "Sort by " + COLUMN_LABELS[c] },
+        COLUMN_LABELS[c], arrow === "" ? null : h("span", { class: "sort-arrow", "aria-hidden": "true", text: " " + arrow }));
+      b.addEventListener("click", () => chooseSort(c));
+      parts.push(b);
+    });
+    th.replaceChildren(...parts);
+    th.setAttribute("aria-sort", ariaSort(listSort, usable));
+  });
+}
 
 function mobile(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia(MOBILE_QUERY).matches;
@@ -344,7 +415,7 @@ function rowElement(r: Row, n: number): HTMLTableRowElement {
     "aria-label": "More for " + item.title, "aria-haspopup": "true" });
   more.addEventListener("click", () => { void openRowMenu(key, more); });
   const tr = h("tr", { "data-item": item.id, "data-key": key, "data-entry": r.entryId },
-    h("td", { class: "num muted" }, h("span", { class: "row-num", text: key }), check),
+    h("td", { class: "num muted" }, h("span", { class: "row-num", text: String(r.num ?? n) }), check),
     h("td", {}, coverCell(item)),
     h("td", {},
       h("a", { href: itemPath(item.id), class: "row-title", text: item.title }),
@@ -462,8 +533,11 @@ function playlistDropZone(shown: PlaylistDetail): void {
   if (app === null) return;
   dropZone(app, {
     accepts: (content, payload) => dropPlaylist !== undefined && (content === "files" || content === "link"
-      || (content === "internal" && playlistDrop({ playlistId: dropPlaylist.id, inView: true }, payload).kind !== "none")),
+      || (content === "internal" && playlistDrop({ playlistId: dropPlaylist.id, inView: true,
+        ordered: canReorder(listSort) }, payload).kind !== "none")),
     rows: { selector: "#list-rows tr[data-entry]", key: "data-entry" },
+    // Sorted by another column than # (ascending): drops go to the end, with no position line.
+    positioned: () => canReorder(listSort),
     onDrop: (d) => {
       const p = dropPlaylist;
       if (p === undefined) return;
@@ -479,7 +553,7 @@ function playlistDropZone(shown: PlaylistDetail): void {
           onAdded: (text) => { notice(text); restart(); } });
         return;
       }
-      const what = playlistDrop({ playlistId: p.id, inView: true }, d.payload);
+      const what = playlistDrop({ playlistId: p.id, inView: true, ordered: canReorder(listSort) }, d.payload);
       if (what.kind === "move") {
         if (moveIsNoop(entryOrder(), what.entryIds, d.before)) return;
         api("POST", "/api/playlists/" + encodeURIComponent(p.id) + "/entries/move",
@@ -585,7 +659,7 @@ function addAllButtons(playlistId: string): HTMLElement {
 // ------------------------------------------------------------------ the lists
 
 async function loadEntries(path: string, query: Record<string, string>): Promise<Page<LibraryEntry>> {
-  const params = new URLSearchParams({ ...query, limit: String(PAGE_SIZE) });
+  const params = new URLSearchParams({ ...query, ...sortParams(listSort), limit: String(PAGE_SIZE) });
   if (cursor !== undefined) params.set("cursor", cursor);
   return api<Page<LibraryEntry>>("GET", path + "?" + params.toString());
 }
@@ -639,7 +713,7 @@ async function showSearch(): Promise<void> {
     return;
   }
   const more = async (): Promise<void> => {
-    const params = new URLSearchParams({ q, limit: String(PAGE_SIZE) });
+    const params = new URLSearchParams({ q, ...sortParams(listSort), limit: String(PAGE_SIZE) });
     if (cursor !== undefined) params.set("cursor", cursor);
     const page = await api<Page<{ item: ItemSummary; inYourLibrary: boolean }>>("GET", "/api/search?" + params.toString());
     appendRows(page.items.map((r) => ({ item: r.item })));
@@ -710,7 +784,8 @@ async function showOneShow(name: string): Promise<void> {
 async function showPlaylist(p: PlaylistDetail & { owner?: { name: string } }, own: boolean): Promise<void> {
   songList = !own ? "othersPlaylist" : p.builtin === "likes" ? "liked" : "playlist";
   listPlaylistId = own ? p.id : undefined;
-  const rows = p.entries.map((e) => ({ item: e.item, addedAt: e.addedAt, entryId: e.id }));
+  const rows = sortRows(p.entries.map((e, i) => ({ item: e.item, addedAt: e.addedAt, entryId: e.id, num: i + 1 })),
+    listSort, (r) => ({ ...r.item, addedAt: r.addedAt }));
   setHead(p.name, songCount(p.entries.length) + " · " + formatTotal(totalDuration(p.entries.map((e) => e.item)))
     + (p.owner !== undefined ? " · " + p.owner.name + "'s playlist" : ""));
   const first = p.entries[0];
@@ -752,6 +827,17 @@ function listName(): { list: ListName; id?: string } {
 
 async function show(): Promise<void> {
   const { list, id } = listName();
+  // Every list but Shows (its episodes keep their season and episode order) can be sorted.
+  if (list === "shows") {
+    sortColumns = undefined;
+    sortKey = undefined;
+    listSort = DEFAULT_SORT;
+  } else {
+    sortColumns = sortableColumns(list);
+    sortKey = sortStorageKey(list, list === "playlist" ? id : undefined);
+    listSort = loadSort(sortKey, sortColumns);
+  }
+  drawHead();
   switch (list) {
     case "songs": return showSongs();
     case "movies": return showMovies();

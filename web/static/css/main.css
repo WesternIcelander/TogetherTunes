@@ -166,6 +166,26 @@ table.list tbody tr {
   cursor: pointer;
 }
 
+/* Sortable column headings (listsort.ts): a plain button per column, an arrow on the sorted one. */
+table.list th button.sort-head {
+  font: inherit;
+  font-weight: bold;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+table.list th button.sort-head:hover,
+table.list th button.sort-head:focus {
+  text-decoration: underline;
+}
+
+table.list th button.sort-head .sort-arrow {
+  font-size: 0.75em;
+}
+
 table.list tbody tr:hover,
 table.list tbody tr.selected {
   background: rgba(128, 128, 128, 0.15);

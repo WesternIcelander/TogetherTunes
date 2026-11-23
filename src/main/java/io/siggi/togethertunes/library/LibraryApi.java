@@ -14,17 +14,20 @@ import java.util.Objects;
  * {@code 401 not_authenticated}. Responses are {@code Cache-Control: no-store}.
  *
  * <ul>
- *   <li>{@code GET /api/library?q=&kind=&cursor=&limit=} → {@code {"items": [entry], "nextCursor"?}},
- *       most recently added first. {@code q}: every word must appear in the title, artist or album
- *       (case-insensitive, substring); {@code kind}: {@code audio} or {@code video}; {@code limit}
+ *   <li>{@code GET /api/library?q=&kind=&type=&sort=&order=&cursor=&limit=} → {@code {"items": [entry],
+ *       "nextCursor"?}}, most recently added first. {@code q}: every word must appear in the title, artist
+ *       or album (case-insensitive, substring); {@code kind}: {@code audio} or {@code video}; {@code sort}
+ *       ({@code title}, {@code artist}, {@code album}, {@code duration}, {@code added}) and {@code order}
+ *       ({@code asc}, {@code desc}; without {@code sort}, {@code desc} reverses the default order):
+ *       {@link ListSort}, the cursor keeps the sort; {@code limit}
  *       1..{@value Library#LIST_MAX}, default {@value Library#LIST_DEFAULT}. {@code 400
  *       invalid_kind}, {@code invalid_query} (over {@value Library#QUERY_MAX_CHARS} chars),
- *       {@code invalid_cursor}, {@code invalid_limit}.</li>
+ *       {@code invalid_sort}, {@code invalid_order}, {@code invalid_cursor}, {@code invalid_limit}.</li>
  *   <li>{@code GET /api/library/shows?name=} → {@code {"shows": [{"name", "seasons": [{"season"?,
  *       "episodes": [entry]}]}]}}: the {@code show} items of the library grouped by show name
  *       (case-insensitive), season (none first, then 0, 1, ...) and episode ({@link Episodes});
  *       {@code name} limits it to one show. {@code 400 invalid_query} (name too long).</li>
- *   <li>{@code GET /api/library/uncategorized?q=&cursor=&limit=} → {@code {"items": [entry],
+ *   <li>{@code GET /api/library/uncategorized?q=&sort=&order=&cursor=&limit=} → {@code {"items": [entry],
  *       "nextCursor"?, "total"}}: the Uncategorized Videos view, the caller's library entries of
  *       media type {@code uncategorized} (as {@code GET /api/library?type=uncategorized}), plus
  *       {@code total}, how many the library has in all (not narrowed by {@code q}; the sidebar
@@ -72,7 +75,7 @@ public final class LibraryApi {
         Actor.User user = user(request);
         int limit = limit(request);
         Library.Page page = library.list(user.userId(), request.query("q"), emptyToNull(request.query("kind")),
-                emptyToNull(request.query("type")), emptyToNull(request.query("cursor")), limit);
+                emptyToNull(request.query("type")), sort(request), emptyToNull(request.query("cursor")), limit);
         response.header("Cache-Control", "no-store");
         response.json(page);
     }
@@ -82,13 +85,18 @@ public final class LibraryApi {
         Actor.User user = user(request);
         int limit = limit(request);
         Library.Page page = library.list(user.userId(), request.query("q"), null, MediaType.UNCATEGORIZED.wire(),
-                emptyToNull(request.query("cursor")), limit);
+                sort(request), emptyToNull(request.query("cursor")), limit);
         long total = library.countUncategorized(user.userId());
         response.header("Cache-Control", "no-store");
         response.json(new Uncategorized(page.items(), page.nextCursor(), total));
     }
 
     private record Uncategorized(java.util.List<Library.Entry> items, String nextCursor, long total) {
+    }
+
+    /** {@code sort=} and {@code order=} ({@link ListSort}). */
+    private static ListSort sort(Request request) {
+        return ListSort.parse(request.query("sort"), request.query("order"));
     }
 
     private static int limit(Request request) {
