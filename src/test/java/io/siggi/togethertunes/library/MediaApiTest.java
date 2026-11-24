@@ -122,6 +122,14 @@ class MediaApiTest {
         return call("GET", path, token, null);
     }
 
+    /** The one message for every refused media request: it doesn't say why. */
+    private static final String FORBIDDEN_MESSAGE = "You don't have access to this item.";
+
+    private static String message(HttpResponse<byte[]> r) {
+        return JsonParser.parseString(new String(r.body())).getAsJsonObject().getAsJsonObject("error")
+                .get("message").getAsString();
+    }
+
     private static String code(HttpResponse<byte[]> r) {
         return JsonParser.parseString(new String(r.body())).getAsJsonObject().getAsJsonObject("error")
                 .get("code").getAsString();
@@ -225,6 +233,7 @@ class MediaApiTest {
             HttpResponse<byte[]> refused = get("/media/" + id + "/" + file, null);
             assertEquals(403, refused.statusCode(), file);
             assertEquals("forbidden", code(refused));
+            assertEquals(FORBIDDEN_MESSAGE, message(refused));
         }
         // a refused caller learns nothing about which items exist
         assertEquals(403, get("/media/" + UuidV7.newId() + "/audio.m4a", null).statusCode());
@@ -538,6 +547,7 @@ class MediaApiTest {
         HttpResponse<byte[]> refused = call("POST", "/api/items/" + id + "/view", null, null);
         assertEquals(403, refused.statusCode());
         assertEquals("forbidden", code(refused));
+        assertEquals(FORBIDDEN_MESSAGE, message(refused));
         assertEquals(403, call("POST", "/api/items/" + UuidV7.newId() + "/view", null, null).statusCode());
         assertEquals(t0 + 60_000, lastViewedAt(id));
         playing.add(id);

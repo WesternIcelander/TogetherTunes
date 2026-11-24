@@ -245,7 +245,7 @@ public final class MediaApi {
     }
 
     private static HttpError forbidden() {
-        return new HttpError(403, "forbidden", "Guests can only play what a room they are in is playing");
+        return new HttpError(403, "forbidden", "You don't have access to this item.");
     }
 
     /** A served name's file name, and the item's current media version. */
