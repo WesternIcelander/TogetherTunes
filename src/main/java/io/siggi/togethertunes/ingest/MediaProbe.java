@@ -109,6 +109,18 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
             return -1;
         }
         long seekUs = durationUs > 0 ? Math.max(0, startUs + durationUs - TAIL_READ_US) : -1;
+        long end = readPacketEndUs(tools, file, log, seekUs);
+        return end < 0 ? -1 : Math.max(0, end - startUs);
+    }
+
+    /**
+     * The end of the last audio packet (PTS plus duration) on the file's timeline, in
+     * microseconds, reading from {@code seekUs} (or from the start if negative); -1 if there are none.
+     */
+    long readPacketEndUs(Tools tools, Path file, JobLog log, long seekUs) throws ToolException, InterruptedException {
+        if (audio == null) {
+            return -1;
+        }
         long[] end = {-1};
         ToolCall call = tools.ffprobe(tailArgs(file, audio.index(), seekUs)).stdoutLines(line -> {
             long e = packetEndUs(line);
@@ -120,7 +132,7 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
             call.log(log);
         }
         call.run();
-        return end[0] < 0 ? -1 : Math.max(0, end[0] - startUs);
+        return end[0];
     }
 
     static List<String> tailArgs(Path file, int streamIndex, long seekUs) {
@@ -164,7 +176,38 @@ public record MediaProbe(String formatName, long startUs, long durationUs, Strea
             String why = result.stderrTail().isBlank() ? "exit code " + result.exitCode() : lastLine(result.stderrTail());
             throw new IngestFailure("The file can't be read as audio or video (" + why + ")");
         }
-        return parse(new String(result.stdout(), StandardCharsets.UTF_8));
+        MediaProbe probe = parse(new String(result.stdout(), StandardCharsets.UTF_8));
+        if (probe.lengthFromPackets()) {
+            probe = probe.withAudioEnd(probe.readPacketEndUs(tools, file, log, -1));
+        }
+        return probe;
+    }
+
+    /**
+     * Whether the container's duration can't be trusted, so {@link #probe} reads where the audio
+     * ends from the packets instead: an MP3 without a Xing/Info/VBRI header gets a duration that
+     * ffmpeg estimates from the bitrate ("Estimating duration from bitrate, this may be
+     * inaccurate"), which can be far off for VBR or a file with cover art. One with a header is
+     * read the same way (cheap: no decoding); its packets end where the header says, less the
+     * encoder delay ffmpeg skips. The packets are read from the start of the file: seeking in an
+     * MP3 without a table of contents lands on estimated times too.
+     */
+    boolean lengthFromPackets() {
+        return audio != null && video == null && "mp3".equals(formatName);
+    }
+
+    /**
+     * This probe with the container's and the audio stream's duration set from where the audio
+     * ends ({@code endUs}, on the file's timeline as packets have it), or unchanged if
+     * {@code endUs} is unknown (negative).
+     */
+    MediaProbe withAudioEnd(long endUs) {
+        if (endUs < 0 || audio == null) {
+            return this;
+        }
+        long audioStart = audio.startUs() < 0 ? startUs : audio.startUs();
+        Stream a = new Stream(audio.index(), audio.codec(), audio.startUs(), Math.max(0, endUs - audioStart));
+        return new MediaProbe(formatName, startUs, Math.max(0, endUs - startUs), a, video, cover, tags);
     }
 
     private static String lastLine(String text) {

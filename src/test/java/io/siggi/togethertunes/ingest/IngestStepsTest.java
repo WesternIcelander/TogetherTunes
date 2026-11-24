@@ -178,8 +178,9 @@ class IngestStepsTest {
 
     @Test
     void measureArguments() {
-        assertEquals(List.of("-i", "in.flac", "-map", "0:1", "-vn", "-sn", "-dn",
-                "-af", "loudnorm=I=-14:TP=-1:LRA=11:print_format=json,aresample=48000", "-f", "null", "-"),
+        assertEquals(List.of("-i", "in.flac", "-filter_complex",
+                "[0:1]asplit[measure][decoded];[measure]loudnorm=I=-14:TP=-1:LRA=11:print_format=json,anullsink;"
+                        + "[decoded]aresample=48000[out]", "-map", "[out]", "-f", "null", "-"),
                 Loudness.measureArgs("in.flac", "0:1"));
     }
 

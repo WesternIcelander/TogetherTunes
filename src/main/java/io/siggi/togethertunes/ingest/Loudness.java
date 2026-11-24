@@ -70,9 +70,12 @@ public final class Loudness {
     }
 
     /**
-     * The pass-1 ffmpeg arguments for the audio stream {@code map} of {@code input}. The resampler
-     * after loudnorm is not needed for the measurement, but without it ffmpeg's progress
-     * {@code out_time} is far too small (loudnorm's 192 kHz output), so the progress bar wouldn't move.
+     * The pass-1 ffmpeg arguments for the audio stream {@code map} of {@code input}. The decoded
+     * audio is split: loudnorm measures one copy into a sink, and the other, resampled to the
+     * profile rate, is the output whose {@code out_time} (ffmpeg's progress) is where the decoded
+     * audio ends. It isn't taken from loudnorm's output: loudnorm pads its last frame up to a
+     * whole 100 ms, so that would read up to 100 ms long (and its 192 kHz output would also make
+     * {@code out_time} far too small without a resampler, so the progress bar wouldn't move).
      */
     static List<String> measureArgs(String input, String map) {
         return measureArgs(List.of(), input, map);
@@ -81,8 +84,10 @@ public final class Loudness {
     /** @param range input options before {@code -i} that select a part of the input (a trim), or none */
     static List<String> measureArgs(List<String> range, String input, String map) {
         List<String> args = new ArrayList<>(range);
-        args.addAll(List.of("-i", input, "-map", map, "-vn", "-sn", "-dn",
-                "-af", BASE + ":print_format=json,aresample=48000", "-f", "null", "-"));
+        args.addAll(List.of("-i", input, "-filter_complex",
+                "[" + map + "]asplit[measure][decoded];[measure]" + BASE + ":print_format=json,anullsink;"
+                        + "[decoded]aresample=48000[out]",
+                "-map", "[out]", "-f", "null", "-"));
         return args;
     }
 

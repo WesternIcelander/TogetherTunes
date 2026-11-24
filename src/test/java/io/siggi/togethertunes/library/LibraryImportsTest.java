@@ -398,6 +398,36 @@ class LibraryImportsTest {
         assertEquals(4L, ((Number) q("SELECT COUNT(*) FROM items")).longValue());
     }
 
+    /** An item whose ingest failed isn't "already in the library": importing again ingests the file again into the same row. */
+    @Test
+    void aFailedItemIsIngestedAgain() throws Exception {
+        needFfmpeg();
+        imported(false);
+        String one = itemsByTitle().get("One");
+        db.write(c -> {
+            try (PreparedStatement ps = c.prepareStatement("UPDATE items SET status = 'failed' WHERE id = ?")) {
+                ps.setString(1, one);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = c.prepareStatement("UPDATE ingest_jobs SET state = 'failed' WHERE item_id = ?")) {
+                ps.setString(1, one);
+                ps.executeUpdate();
+            }
+            return null;
+        });
+        LibraryImports.Import checked = checked(false);
+        assertEquals(3, n(checked.counts(), "alreadyInLibrary"), "Two, Three, Clip; not the failed One");
+        imports.start(adminId, aliceId);
+        assertTrue(imports.awaitIdle(Duration.ofSeconds(60)));
+        LibraryImports.Import again = imports.latest(aliceId);
+        assertEquals("done", again.state(), String.valueOf(again.error()));
+        assertEquals(5, n(again.counts(), "done"));
+        assertEquals("pending", q("SELECT status FROM items WHERE id = ?", one));
+        assertEquals(1L, ((Number) q("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ? AND state = 'queued'"
+                + " AND kind = 'upload'", one)).longValue());
+        assertEquals(4L, ((Number) q("SELECT COUNT(*) FROM items")).longValue());
+    }
+
     @Test
     void resumesAfterARestart() throws Exception {
         needFfmpeg();

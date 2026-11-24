@@ -401,6 +401,60 @@ class IngestPipelineTest extends IngestPipelineTestBase {
      * Cover art (an attached JPEG in MP3 and M4A) doesn't make a video item; Motion JPEG video
      * (a camera AVI) does.
      */
+    /**
+     * A VBR MP3 with a cover and no Xing/Info header: ffmpeg estimates its duration from the
+     * bitrate (here well over 50 ms short), so the probe takes where the audio ends from the
+     * packets, and the encode verifies against that.
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void headerlessMp3LengthComesFromThePackets() throws Exception {
+        String item = fixtures.item("pending");
+        Path jpg = dir.resolve("art.jpg");
+        ffmpeg("-f", "lavfi", "-i", "testsrc2=s=300x300", "-frames:v", "1", jpg.toString());
+        Path source = stage(item, "source.mp3");
+        // a silent first second: the estimate goes by the first frame's (low) bitrate
+        ffmpeg("-f", "lavfi", "-i", "anoisesrc=r=44100:a=0.3:seed=7", "-i", jpg.toString(), "-filter_complex",
+                "[0]volume='if(lt(t,1),0,1)':eval=frame,aformat=channel_layouts=stereo[a]", "-map", "[a]", "-map", "1:v",
+                "-t", "6", "-c:a", "libmp3lame", "-q:a", "2", "-c:v", "copy", "-disposition:v", "attached_pic",
+                "-write_xing", "0", source.toString());
+        MediaProbe estimated = MediaProbe.parse(new String(tools.ffprobe(MediaProbe.args(source))
+                .stdoutToString(MediaProbe.MAX_JSON_BYTES).run().stdout(), StandardCharsets.UTF_8));
+        MediaProbe probe = MediaProbe.probe(tools, source, null);
+        assertTrue(Math.abs(estimated.durationUs() - 6_000_000) > 1_000_000,
+                "the container's duration is an estimate: " + estimated.durationUs());
+        assertTrue(Math.abs(probe.audioEndUs() - 6_000_000) < 60_000, "from the packets: " + probe.audioEndUs());
+        assertEquals(probe.audioEndUs(), probe.durationUs());
+
+        IngestJob job = run(Kind.UPLOAD, item);
+        assertEquals(State.DONE, job.state(), job.log());
+        Object[] row = itemRow(item);
+        assertEquals("ready", row[0]);
+        assertEquals("audio", row[1]);
+        assertTrue(Math.abs((Long) row[2] - probe.audioEndUs() / 1000) <= 50, "duration " + row[2]);
+        assertFalse(job.log().contains(", decoded "), "matched the source's length, not the decoded one:\n" + job.log());
+    }
+
+    /**
+     * The loudness pass's decoded length is where the decoded audio ends, not loudnorm's output
+     * (which is padded to a whole 100 ms).
+     */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void loudnessPassReportsTheDecodedLength() throws Exception {
+        Path source = dir.resolve("odd.flac");
+        // 3.437 s: not a multiple of 100 ms
+        ffmpeg("-f", "lavfi", "-i", "sine=f=440:r=44100", "-t", "3.437", "-c:a", "flac", source.toString());
+        long[] end = {-1};
+        Loudness.Measurement m = Loudness.measure(tools, source.toString(), "0:a:0", null, p -> {
+            if (p.outTimeUs() > end[0]) {
+                end[0] = p.outTimeUs();
+            }
+        });
+        assertTrue(m.usable());
+        assertTrue(Math.abs(end[0] - 3_437_000) < 5_000, "decoded until " + end[0]);
+    }
+
     @Test
     @Execution(ExecutionMode.CONCURRENT)
     void itemLayoutFollowsTheKind() throws Exception {
