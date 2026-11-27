@@ -27,3 +27,7 @@ nb-configuration.xml
 
 # Local config file (see config.example.json)
 /config.json
+
+# Test environment fixture (tools/testenv/), kept across mvn clean
+/.testenv/
+/.testenv.*/
