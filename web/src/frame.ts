@@ -35,7 +35,7 @@ import { dropFiles, dropFilesInLibrary, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
-import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, nowPlayerSize, PANE_TITLES,
+import { isPane, MINI_BAR_CONTROLS, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, nowPlayerSize, PANE_TITLES,
   roomSubTab, Selection, showBarTitle, shownPane, tabAction, type MobilePane, type MobilePlace,
   type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
@@ -276,9 +276,13 @@ export class Frame {
       // The room view may be the view under the pane already (the shell then shows nothing new).
       this.#paneFromHistory();
     });
-    // The mini bar: tapping the song opens Now Playing (on the desktop the title links to the item).
-    byId("player-bar").querySelector(".pb-now")?.addEventListener("click", (ev) => {
+    // The mini bar: a tap anywhere on it but its controls (cover, song, empty space, padding) opens Now
+    // Playing; the controls do only their own thing. The title link is the keyboard target (Enter clicks
+    // it); on the desktop it links to the item.
+    byId("player-bar").addEventListener("click", (ev) => {
       if (!this.#mobile() || this.#me?.kind !== "user") return;
+      const t = ev.target;
+      if (t instanceof Element && t.closest(MINI_BAR_CONTROLS) !== null) return;
       ev.preventDefault();
       this.#openNow();
     });
@@ -1747,6 +1751,9 @@ export class Frame {
         coverEl.replaceWith(next);
       }
     }
+    // Mobile: the title link opens Now Playing (the bar's tap target), so say so to screen readers.
+    if (this.#mobile() && this.#me?.kind === "user") title.setAttribute("aria-label", `Open Now Playing: ${title.textContent ?? ""}`);
+    else title.removeAttribute("aria-label");
     const you = s?.room.you;
     const kind = playerControls(you);
     const controls = kind === "controls";

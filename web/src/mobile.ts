@@ -145,6 +145,13 @@ export function roomSubTab(p: MobilePlace): "rooms" | "this" | undefined {
   return p.pane === "" && (p.view === "room" || p.view === "roomManage") ? "this" : "rooms";
 }
 
+/**
+ * The mini now-playing bar's controls (play/pause or mute, heart, ⋯, and the desktop-only seek bar,
+ * volume and menus): a tap inside one of these does only what the control does; a tap anywhere else on
+ * the bar (cover, song, empty space, padding) opens Now Playing. A selector for `Element.closest`.
+ */
+export const MINI_BAR_CONTROLS = "button, input, select, textarea, label, [role=menu], .menu";
+
 /** How long a touch has to stay down to count as a long press (instead of right-click). */
 export const LONG_PRESS_MS = 500;
 

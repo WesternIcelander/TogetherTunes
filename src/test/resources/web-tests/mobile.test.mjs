@@ -154,3 +154,10 @@ test("Now Playing player: the artwork is a square with margins, smaller when the
   assert.deepEqual(M.nowPlayerSize({ width: 390, available: 150, controls: 190, margin: 24 }, false),
     { area: 0, height: 0, artwork: 0 });
 });
+
+test("the mini bar's controls are kept out of its Now Playing tap target", () => {
+  const parts = M.MINI_BAR_CONTROLS.split(",").map((x) => x.trim());
+  for (const p of ["button", "input", "label", ".menu", "[role=menu]"]) assert.ok(parts.includes(p), p);
+  // The title link is part of the target (it is the keyboard way in), so links aren't excluded.
+  assert.ok(!parts.some((p) => p === "a" || p.startsWith("a[")));
+});

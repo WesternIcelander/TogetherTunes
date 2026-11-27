@@ -48,7 +48,7 @@ class MobileJsTest {
         for (String s : List.of("MOBILE_QUERY", "mPane", "pushState", "\"popstate\"", "tabAction(", "mobileBack(",
                 "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS",
                 "shownPane(", "nowPlayerSize(", "nowPlayingPath(", "#drawNowPlayer(", "--np-h", "--np-top",
-                "--np-bottom", "\"np-more\"", "#homeMenu(")) {
+                "--np-bottom", "\"np-more\"", "#homeMenu(", "closest(MINI_BAR_CONTROLS)", "Open Now Playing")) {
             assertTrue(frame.contains(s), s);
         }
         // The Now Playing pane holds only the player: the request parts stay in the room view.
