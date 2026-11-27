@@ -716,6 +716,12 @@
         <button id="ytdlp-update" type="button">Update yt-dlp</button>
         <p id="ytdlp-status" hidden></p>
         <pre id="ytdlp-log" class="job-log small" hidden></pre>
+        <p id="ytdlp-pot-status" hidden></p>
+        <p>Some videos only download with a PO token. Run a PO token provider server and its yt-dlp plugin
+          (see the deployment notes), then set <code>ytdlp.poTokenProviderUrl</code> below. The button checks that
+          yt-dlp has the token provider plugin and that the provider URL answers.</p>
+        <button id="ytdlp-pot-test" type="button">Test PO token provider</button>
+        <p id="ytdlp-pot-result" hidden></p>
         <p id="ytdlp-error" class="error" role="alert"></p>
       </section>
       <form id="settings-form">

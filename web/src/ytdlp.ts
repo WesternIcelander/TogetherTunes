@@ -13,8 +13,26 @@ export interface YtdlpUpdate {
   log: string;
 }
 
+/** Whether yt-dlp loaded the PO token provider plugin that uses the provider URL (and its version). */
+export interface PoTokenPlugin { loaded: boolean; version?: string }
+
 /** `GET /api/admin/ytdlp`. */
-export interface YtdlpInfo { available: boolean; version?: string; update?: YtdlpUpdate }
+export interface YtdlpInfo { available: boolean; version?: string; update?: YtdlpUpdate; poTokenPlugin?: PoTokenPlugin }
+
+/** `POST /api/admin/ytdlp/po-token-test`: the provider server's ping, and the plugin checked again. */
+export interface PoTokenTest {
+  url: string;
+  /** No URL was entered or stored, so the plugin's default was tested. */
+  defaultUrl: boolean;
+  reachable: boolean;
+  httpStatus?: number;
+  version?: string;
+  error?: string;
+  poTokenPlugin?: PoTokenPlugin;
+}
+
+/** The message when yt-dlp has no token provider plugin (the deployment notes say how to install it). */
+export const PLUGIN_MISSING = "yt-dlp has no PO token provider plugin installed: see the deployment notes.";
 
 /** Whether an update is running (the page polls meanwhile and disables the button). */
 export function updating(info: YtdlpInfo): boolean {
@@ -42,4 +60,30 @@ export function updateText(u: YtdlpUpdate | undefined): string | undefined {
     return `Already up to date (${u.versionAfter}).`;
   }
   return "The update finished.";
+}
+
+/** The PO token plugin line, or undefined while it isn't known (no yt-dlp, or the check couldn't run). */
+export function pluginText(info: YtdlpInfo): string | undefined {
+  if (!info.available || info.poTokenPlugin === undefined) return undefined;
+  const p = info.poTokenPlugin;
+  if (!p.loaded) return PLUGIN_MISSING;
+  return "yt-dlp has a PO token provider plugin" + (p.version === undefined ? "" : ` (version ${p.version})`) + ".";
+}
+
+/**
+ * The Test button's result: what to fix first (the plugin, then the server), or OK with the provider's
+ * version. `ok` is true only when both work.
+ */
+export function testText(t: PoTokenTest): { ok: boolean; text: string } {
+  const where = t.defaultUrl ? `the default PO token provider URL ${t.url} (none is set)` : t.url;
+  const server = t.reachable
+    ? `The PO token provider at ${where} answers` + (t.version === undefined ? "." : ` (version ${t.version}).`)
+    : `The PO token provider at ${where} can't be reached: ${t.error ?? "no answer"}.`
+      + " Check that the provider server is running and that the URL is right.";
+  if (t.poTokenPlugin !== undefined && !t.poTokenPlugin.loaded) {
+    return { ok: false, text: PLUGIN_MISSING + " " + server };
+  }
+  if (!t.reachable) return { ok: false, text: server };
+  const unknown = t.poTokenPlugin === undefined ? " Whether yt-dlp has the token provider plugin couldn't be checked." : "";
+  return { ok: t.poTokenPlugin !== undefined, text: (t.poTokenPlugin !== undefined ? "OK. " : "") + server + unknown };
 }

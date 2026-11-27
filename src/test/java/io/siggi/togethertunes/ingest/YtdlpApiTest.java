@@ -57,6 +57,10 @@ class YtdlpApiTest {
     /** Background runs, started by the test with {@link #runQueued()}. */
     private final Deque<Runnable> queued = new ArrayDeque<>();
     private Path versionFile;
+    /** What the fake yt-dlp prints to stderr for the PO token plugin check ({@code --verbose}). */
+    private Path potFile;
+    /** The stored {@code ytdlp.poTokenProviderUrl}. */
+    private volatile String storedPotUrl;
     private String admin;
     private String adminId;
     private String alice;
@@ -71,9 +75,14 @@ class YtdlpApiTest {
     private Path fakeYtdlp(String update) throws Exception {
         versionFile = dir.resolve("version");
         Files.writeString(versionFile, "2026.03.17\n");
+        potFile = dir.resolve("pot");
+        Files.writeString(potFile, "[debug] Loaded 1747 extractors\n[debug] [youtube] [pot] PO Token Providers: none\n"
+                + "ERROR: [youtube] jNQXAC9IVRw: Unable to download API page\n");
         Path p = dir.resolve("yt-dlp");
         Files.writeString(p, "#!/bin/sh\n"
                 + "if [ \"$1\" = \"--version\" ]; then cat '" + versionFile + "'; exit 0; fi\n"
+                + "if [ \"$1\" = \"--verbose\" ]; then echo \"$@\" >> '" + dir.resolve("verbose-args") + "';"
+                + " cat '" + potFile + "' >&2; exit 1; fi\n"
                 + "if [ \"$1\" = \"-U\" ]; then\n" + update + "\nfi\nexit 2\n");
         assertTrue(p.toFile().setExecutable(true));
         return p;
@@ -88,7 +97,7 @@ class YtdlpApiTest {
         Settings settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         YtdlpUpdater updater = new YtdlpUpdater(new Tools(null, null, ytdlp), clock, queued::add);
-        new YtdlpApi(updater, db, new Permissions(db, settings), clock).register(router);
+        new YtdlpApi(updater, db, new Permissions(db, settings), clock, () -> storedPotUrl).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         Sessions sessions = new Sessions(db, clock);
@@ -118,6 +127,12 @@ class YtdlpApiTest {
             b.header("Authorization", "Bearer " + token);
         }
         return http.send(b.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> post(String path, String json, String token) throws Exception {
+        return http.send(HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + server.port() + path))
+                .header("Authorization", "Bearer " + token).header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(json)).build(), HttpResponse.BodyHandlers.ofString());
     }
 
     private static JsonObject ok(int status, HttpResponse<String> r) {
@@ -207,17 +222,114 @@ class YtdlpApiTest {
         JsonObject info = ok(200, call("GET", "/api/admin/ytdlp", admin));
         assertFalse(info.get("available").getAsBoolean());
         assertFalse(info.has("version"));
+        assertFalse(info.has("poTokenPlugin"), "not known without yt-dlp");
         HttpResponse<String> r = call("POST", "/api/admin/ytdlp/update", admin);
         assertEquals(503, r.statusCode());
         assertEquals("ytdlp_unavailable", code(r));
         assertTrue(queued.isEmpty());
     }
 
+    /** A stub PO token provider server: {@code /ping} answers {@code body}. */
+    private static com.sun.net.httpserver.HttpServer stubProvider(String body) throws Exception {
+        com.sun.net.httpserver.HttpServer s = com.sun.net.httpserver.HttpServer.create(
+                new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+        s.createContext("/ping", exchange -> {
+            byte[] bytes = body.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        s.start();
+        return s;
+    }
+
+    private static int freePort() throws Exception {
+        try (java.net.ServerSocket s = new java.net.ServerSocket(0)) {
+            return s.getLocalPort();
+        }
+    }
+
+    @Test
+    void poTokenPluginStatusIsCachedAndCheckedAgainAfterAnUpdate() throws Exception {
+        start(fakeYtdlp("exit 0").toString());
+        JsonObject info = ok(200, call("GET", "/api/admin/ytdlp", admin));
+        assertFalse(info.getAsJsonObject("poTokenPlugin").get("loaded").getAsBoolean(), info.toString());
+        assertFalse(info.getAsJsonObject("poTokenPlugin").has("version"));
+        String args = Files.readString(dir.resolve("verbose-args"));
+        assertTrue(args.contains("--simulate") && args.contains("--proxy http://127.0.0.1:"), args);
+
+        // installed meanwhile: still the cached answer until the next update
+        Files.writeString(potFile, "[debug] [youtube] [pot] PO Token Providers: bgutil:http-2.0.2 (external),"
+                + " bgutil:script-node-2.0.2 (external)\n");
+        assertFalse(ok(200, call("GET", "/api/admin/ytdlp", admin)).getAsJsonObject("poTokenPlugin")
+                .get("loaded").getAsBoolean());
+        ok(202, call("POST", "/api/admin/ytdlp/update", admin));
+        runQueued();
+        JsonObject plugin = ok(200, call("GET", "/api/admin/ytdlp", admin)).getAsJsonObject("poTokenPlugin");
+        assertTrue(plugin.get("loaded").getAsBoolean());
+        assertEquals("2.0.2", plugin.get("version").getAsString());
+        assertEquals(2, Files.readAllLines(dir.resolve("verbose-args")).size(), "checked twice in all");
+    }
+
+    @Test
+    void poTokenTestPingsTheProviderAndChecksThePluginAgain() throws Exception {
+        start(fakeYtdlp("exit 0").toString());
+        ok(200, call("GET", "/api/admin/ytdlp", admin)); // caches "no plugin"
+        Files.writeString(potFile, "[debug] [youtube] [pot] PO Token Providers: bgutil:http-2.0.2 (external)\n");
+        com.sun.net.httpserver.HttpServer provider = stubProvider("{\"server_uptime\":3,\"version\":\"2.0.2\"}");
+        try {
+            String url = "http://127.0.0.1:" + provider.getAddress().getPort();
+            // the URL from the form
+            JsonObject r = ok(200, post("/api/admin/ytdlp/po-token-test", "{\"url\":\"" + url + "/\"}", admin));
+            assertEquals(url, r.get("url").getAsString());
+            assertFalse(r.get("defaultUrl").getAsBoolean());
+            assertTrue(r.get("reachable").getAsBoolean());
+            assertEquals(200, r.get("httpStatus").getAsInt());
+            assertEquals("2.0.2", r.get("version").getAsString());
+            assertFalse(r.has("error"));
+            assertTrue(r.getAsJsonObject("poTokenPlugin").get("loaded").getAsBoolean(), "checked again");
+            assertTrue(ok(200, call("GET", "/api/admin/ytdlp", admin)).getAsJsonObject("poTokenPlugin")
+                    .get("loaded").getAsBoolean());
+
+            // no body: the stored setting
+            storedPotUrl = url;
+            r = ok(200, call("POST", "/api/admin/ytdlp/po-token-test", admin));
+            assertEquals(url, r.get("url").getAsString());
+            assertTrue(r.get("reachable").getAsBoolean());
+            r = ok(200, post("/api/admin/ytdlp/po-token-test", "{}", admin));
+            assertEquals(url, r.get("url").getAsString());
+        } finally {
+            provider.stop(0);
+        }
+
+        // nothing listens there
+        String down = "http://127.0.0.1:" + freePort();
+        JsonObject r = ok(200, post("/api/admin/ytdlp/po-token-test", "{\"url\":\"" + down + "\"}", admin));
+        assertFalse(r.get("reachable").getAsBoolean());
+        assertFalse(r.has("httpStatus"));
+        assertTrue(r.get("error").getAsString().contains("refused"), r.toString());
+
+        // nothing stored or entered: the plugin's default URL
+        storedPotUrl = null;
+        r = ok(200, call("POST", "/api/admin/ytdlp/po-token-test", admin));
+        assertEquals("http://127.0.0.1:4416", r.get("url").getAsString());
+        assertTrue(r.get("defaultUrl").getAsBoolean());
+
+        for (String bad : new String[] {"\"ftp://x\"", "\"http://x/a;b\"", "\"http://u:p@x\"", "1"}) {
+            HttpResponse<String> e = post("/api/admin/ytdlp/po-token-test", "{\"url\":" + bad + "}", admin);
+            assertEquals(400, e.statusCode(), bad);
+            assertEquals("invalid_url", code(e));
+        }
+        assertEquals(403, post("/api/admin/ytdlp/po-token-test", "{}", alice).statusCode());
+    }
+
     @Test
     void onlyAdminSettingsHolders() throws Exception {
         start(fakeYtdlp("exit 0").toString());
-        for (String method : new String[] {"GET", "POST"}) {
-            String path = method.equals("GET") ? "/api/admin/ytdlp" : "/api/admin/ytdlp/update";
+        for (String method : new String[] {"GET", "POST", "POST "}) {
+            String path = method.equals("GET") ? "/api/admin/ytdlp"
+                    : method.equals("POST") ? "/api/admin/ytdlp/update" : "/api/admin/ytdlp/po-token-test";
+            method = method.strip();
             assertEquals(401, call(method, path, null).statusCode());
             assertEquals(403, call(method, path, alice).statusCode());
             HttpResponse<String> asGuest = http.send(HttpRequest.newBuilder(

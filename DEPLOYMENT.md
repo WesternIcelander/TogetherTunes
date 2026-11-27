@@ -139,6 +139,10 @@ WebSocket by itself: `music.example.com { reverse_proxy 127.0.0.1:8080 }`.
 - **Java 21**, **ffmpeg and ffprobe** (5.1 or newer; with TLS if you push to `rtmps://`),
   **yt-dlp** (kept current) with **Deno** for YouTube. The Docker image has all of them; see
   [INSTALL.md](INSTALL.md).
+- **Optional: a PO token provider** for yt-dlp (its server plus the yt-dlp plugin), when YouTube
+  downloads fail from the server's IP address. TogetherTunes doesn't install either; set them up
+  as in [INSTALL.md](INSTALL.md#po-tokens-for-youtube-optional) and enter the server's URL in
+  Admin → Settings (`ytdlp.poTokenProviderUrl`). Keep the provider server off public interfaces.
 - **FreeType, fontconfig and at least one installed font**, for the card renderer (title cards
   and the paused/idle/loading cards are drawn with Java2D, also on a headless server). The cards
   use the server's bundled DejaVu Sans, but Java's font code needs all three anyway:

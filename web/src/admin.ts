@@ -16,7 +16,8 @@ import { viewScope } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
-import { updateText, updating, versionText, type YtdlpInfo, type YtdlpUpdate } from "./ytdlp.js";
+import { pluginText, testText, updateText, updating, versionText, type PoTokenTest, type YtdlpInfo,
+  type YtdlpUpdate } from "./ytdlp.js";
 
 interface RoleRef { id: string; name: string }
 
@@ -573,6 +574,11 @@ function renderYtdlp(info: YtdlpInfo): void {
   const log = element("ytdlp-log");
   log.textContent = info.update?.log ?? "";
   log.hidden = info.update === undefined || info.update.log === "";
+  const plugin = pluginText(info);
+  const pot = element("ytdlp-pot-status");
+  pot.textContent = plugin ?? "";
+  pot.hidden = plugin === undefined;
+  element<HTMLButtonElement>("ytdlp-pot-test").disabled = !info.available;
 }
 
 function setUpYtdlp(): void {
@@ -581,6 +587,32 @@ function setUpYtdlp(): void {
   button.addEventListener("click", () => void run(error, button, async () => {
     await api<YtdlpUpdate>("POST", "/api/admin/ytdlp/update");
     await loadYtdlp();
+  }));
+  // Tests the URL in the settings form (saved or not), else the stored one, else the plugin's default.
+  const test = element<HTMLButtonElement>("ytdlp-pot-test");
+  const result = element("ytdlp-pot-result");
+  test.addEventListener("click", () => void run(error, test, async () => {
+    result.hidden = true;
+    const field = element<HTMLFormElement>("settings-form")
+      .querySelector<HTMLInputElement>("input[name=\"s:ytdlp.poTokenProviderUrl\"]");
+    const url = field === null ? "" : field.value.trim();
+    result.textContent = "Testing…";
+    result.className = "";
+    result.hidden = false;
+    let t: PoTokenTest;
+    try {
+      t = await api<PoTokenTest>("POST", "/api/admin/ytdlp/po-token-test", url === "" ? {} : { url });
+    } catch (e) {
+      result.hidden = true;
+      throw e;
+    }
+    const r = testText(t);
+    result.textContent = r.text;
+    result.className = r.ok ? "" : "error";
+    const plugin = pluginText({ available: true, poTokenPlugin: t.poTokenPlugin });
+    const pot = element("ytdlp-pot-status");
+    pot.textContent = plugin ?? "";
+    pot.hidden = plugin === undefined;
   }));
 }
 

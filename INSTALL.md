@@ -88,3 +88,59 @@ variables override it. ffmpeg, ffprobe and yt-dlp are found on `PATH` unless `to
 `tools.ffprobe` and `tools.ytdlp` name them. `--help` prints the options. Run it as its own user
 under a service manager (e.g. a systemd unit with `WorkingDirectory=` set to where `config.json`
 is) and back up the data directory (`data.dir`, default `./data`).
+
+## PO tokens for YouTube (optional)
+
+YouTube asks more and more clients for a **PO token** (proof of origin); without one, some videos
+fail to download or only offer low-quality formats, especially from server IP addresses. yt-dlp
+(2025.05.22 or newer) gets PO tokens from **provider plugins**. TogetherTunes doesn't install or
+download either part; you set up two things and then give TogetherTunes the provider's URL. See
+yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) for the background.
+
+1. **The provider server.** The usual provider is
+   [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). Run its
+   HTTP server where TogetherTunes can reach it, but **never on a public interface** (it has no
+   authentication):
+
+   ```sh
+   # next to a plain-jar install: only on the host's loopback
+   docker run --name bgutil-provider -d --init --restart unless-stopped \
+     -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+
+   # next to the TogetherTunes container: a shared network, no published port
+   docker network create togethertunes-net
+   docker run --name bgutil-provider -d --init --restart unless-stopped \
+     --network togethertunes-net brainicism/bgutil-ytdlp-pot-provider
+   # and start TogetherTunes with --network togethertunes-net as well
+   ```
+
+   It can also run without Docker (Node or Deno, `--port`/`--host` options); see its README.
+
+2. **The yt-dlp plugin**, the same release as the server (the plugin warns when the major versions
+   differ). Download `bgutil-ytdlp-pot-provider.zip` from the plugin's
+   [latest release](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest) and put
+   the zip, as it is, into a plugin directory yt-dlp searches for the server's user:
+   - **Docker image:** next to the binary, `/opt/yt-dlp/yt-dlp-plugins/`. Mount it read-only:
+     `-v /srv/togethertunes/bgutil-ytdlp-pot-provider.zip:/opt/yt-dlp/yt-dlp-plugins/bgutil-ytdlp-pot-provider.zip:ro`
+     (or copy it into `/data/.yt-dlp/plugins/`, the server user's home on the data volume).
+   - **Plain jar with yt-dlp's release binary:** `yt-dlp-plugins/` next to the binary, or
+     `~/.yt-dlp/plugins/` (also `~/.config/yt-dlp/plugins/`) in the home of the user the server
+     runs as.
+   - **yt-dlp installed with pip/pipx:** `python3 -m pip install -U bgutil-ytdlp-pot-provider` into
+     the same environment (`pipx inject yt-dlp bgutil-ytdlp-pot-provider` for pipx).
+
+   Keep the plugin current along with the server image: a newer YouTube often needs both.
+
+3. **Tell TogetherTunes the URL:** Admin → Settings, `ytdlp.poTokenProviderUrl`, e.g.
+   `http://127.0.0.1:4416` or `http://bgutil-provider:4416` (an `http://` or `https://` URL without
+   user name, query, `,` or `;`). Every yt-dlp call that talks to YouTube then gets
+   `--extractor-args "youtubepot-bgutilhttp:base_url=<url>"`. Left empty, yt-dlp gets no URL and
+   the plugin, if installed, tries its own default `http://127.0.0.1:4416`.
+
+The yt-dlp box on the same page says whether yt-dlp loaded the token provider plugin (checked
+once and again after **Update yt-dlp**), and **Test PO token provider** checks the plugin again and
+asks the server's `/ping` (the URL in the form, else the saved one, else the default) and reports
+what to fix. To watch a token being made, run
+`yt-dlp -v --simulate --extractor-args "youtubepot-bgutilhttp:base_url=<url>" <video URL>` as the
+server's user and look for `[pot:bgutil:http] Generating a … PO Token`.
+

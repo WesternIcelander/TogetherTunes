@@ -1,5 +1,6 @@
 package io.siggi.togethertunes.ingest;
 
+import io.siggi.togethertunes.ytdlp.PoTokenProvider;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
@@ -10,7 +11,8 @@ import java.util.concurrent.Executor;
  * The admin's "Update yt-dlp" button ({@code docs/library-and-ingest.md}: "Keep yt-dlp up to date"):
  * runs {@code yt-dlp -U} in the background, one run at a time, and keeps the last run's outcome and
  * output in memory (a restart forgets it). Also reports the installed version
- * ({@code yt-dlp --version}, cached until the next update).
+ * ({@code yt-dlp --version}, cached until the next update) and whether yt-dlp loaded a PO token
+ * provider plugin ({@link #pluginStatus}, cached the same way).
  *
  * <p>{@code -U} only works for yt-dlp's own release binaries and zipapp; a pip or package-manager
  * install refuses and says how to update instead, which the admin sees in the output.
@@ -20,6 +22,8 @@ public final class YtdlpUpdater {
     public static final Duration UPDATE_TIMEOUT = Duration.ofMinutes(5);
     /** Overall limit for {@code yt-dlp --version}. */
     public static final Duration VERSION_TIMEOUT = Duration.ofSeconds(30);
+    /** Overall limit for the PO token plugin check ({@link PoTokenProvider#pluginCheckArgs}). */
+    public static final Duration PLUGIN_CHECK_TIMEOUT = Duration.ofSeconds(30);
     /** Characters of output kept from a run. */
     static final int LOG_MAX_CHARS = 32 * 1024;
 
@@ -49,6 +53,7 @@ public final class YtdlpUpdater {
     private final Clock clock;
     private final Executor executor;
     private String version; // cached; null = not known yet
+    private PoTokenProvider.PluginStatus pluginStatus; // cached; null = not checked yet
     private Run current;
 
     private static final class Run {
@@ -110,6 +115,49 @@ public final class YtdlpUpdater {
         return Optional.of(v);
     }
 
+    /**
+     * Whether yt-dlp loaded a PO token provider plugin, from its verbose output
+     * ({@link PoTokenProvider#pluginCheckArgs}, nothing is fetched from YouTube); empty if yt-dlp
+     * isn't available or the check failed to run. Cached once known; an update or
+     * {@link #recheckPlugin} clears it.
+     */
+    public Optional<PoTokenProvider.PluginStatus> pluginStatus() throws InterruptedException {
+        synchronized (this) {
+            if (pluginStatus != null) {
+                return Optional.of(pluginStatus);
+            }
+        }
+        if (!available()) {
+            return Optional.empty();
+        }
+        StringBuilder out = new StringBuilder();
+        try {
+            tools.ytdlp(PoTokenProvider.pluginCheckArgs()).timeout(PLUGIN_CHECK_TIMEOUT)
+                    .idleTimeout(PLUGIN_CHECK_TIMEOUT).allowFailure().stderrLines(line -> {
+                        synchronized (out) {
+                            if (out.length() < LOG_MAX_CHARS) {
+                                out.append(line).append('\n');
+                            }
+                        }
+                    }).run();
+        } catch (ToolException e) {
+            return Optional.empty();
+        }
+        PoTokenProvider.PluginStatus status;
+        synchronized (out) {
+            status = PoTokenProvider.parse(out.toString());
+        }
+        synchronized (this) {
+            pluginStatus = status;
+        }
+        return Optional.of(status);
+    }
+
+    /** Forgets the cached {@link #pluginStatus}, so the next call checks again (the Test button). */
+    public synchronized void recheckPlugin() {
+        pluginStatus = null;
+    }
+
     /** The current or last run, if there was one since the server started. */
     public synchronized Optional<Status> status() {
         return Optional.ofNullable(current).map(YtdlpUpdater::snapshot);
@@ -162,6 +210,7 @@ public final class YtdlpUpdater {
         }
         synchronized (this) {
             version = null;
+            pluginStatus = null;
         }
         String after = null;
         if (!Thread.currentThread().isInterrupted()) {

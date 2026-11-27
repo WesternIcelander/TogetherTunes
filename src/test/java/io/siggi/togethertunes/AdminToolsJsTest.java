@@ -27,12 +27,14 @@ class AdminToolsJsTest {
     void adminPageWiresTheYtdlpBoxAndTheAuditTab() throws Exception {
         String admin = read("web/js/admin.js");
         for (String s : List.of("from \"./ytdlp.js\"", "from \"./audit.js\"", "\"/api/admin/ytdlp\"",
-                "\"/api/admin/ytdlp/update\"", "auditPath(", "\"audit\"", "actorLabel(")) {
+                "\"/api/admin/ytdlp/update\"", "\"/api/admin/ytdlp/po-token-test\"", "testText(", "pluginText(",
+                "auditPath(", "\"audit\"", "actorLabel(")) {
             assertTrue(admin.contains(s), s);
         }
         String page = NodeTests.view("view-admin");
         for (String s : List.of("data-tab=\"audit\"", "id=\"tab-audit\"", "id=\"audit-rows\"", "id=\"audit-filter\"",
-                "id=\"audit-more\"", "id=\"ytdlp-update\"", "id=\"ytdlp-version\"", "id=\"ytdlp-log\"")) {
+                "id=\"audit-more\"", "id=\"ytdlp-update\"", "id=\"ytdlp-pot-test\"", "id=\"ytdlp-pot-result\"",
+                "id=\"ytdlp-pot-status\"", "id=\"ytdlp-version\"", "id=\"ytdlp-log\"")) {
             assertTrue(page.contains(s), s);
         }
     }

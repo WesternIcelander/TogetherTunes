@@ -251,6 +251,9 @@ public final class Main {
         // Repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
         Supplier<String> cookiesFile = cookiesFile(settings);
+        // every yt-dlp call that talks to YouTube gets the PO token provider URL (ytdlp.poTokenProviderUrl)
+        Supplier<String> poTokenProviderUrl = poTokenProviderUrl(settings);
+        Tools youtubeTools = Tools.from(config).withPoTokenProvider(poTokenProviderUrl);
         // yt-dlp calls without a job directory copy the cookies file here (leftovers deleted)
         try {
             io.siggi.togethertunes.ytdlp.CookieJarFile.serverTempDir(dataDir.tmp().resolve("cookies"));
@@ -271,7 +274,7 @@ public final class Main {
                     + "): looking up song details online is off, and personal data can't be removed from uploads"
                     + " (.m4a originals aren't played in browsers)");
         }
-        IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
+        IngestPipeline pipeline = new IngestPipeline(youtubeTools, dataDir, new IngestItems(database),
                 referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
         pipeline.cleaner(metadataLookup);
         pipeline.reference(outputAssets::reference);
@@ -437,7 +440,7 @@ public final class Main {
         // Guests add media only as a request in a room that allows it (server AND room setting).
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
-        YoutubeImports youtubeImports = youtubeImports(config, database, ingest, cookiesFile);
+        YoutubeImports youtubeImports = youtubeImports(config, youtubeTools, database, ingest, cookiesFile);
         youtubeImports.outputEncoding(outputAssets::encoding);
         youtubeImports.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds,
                 config.ingestMaxDurationSeconds()));
@@ -465,11 +468,11 @@ public final class Main {
         itemsApi.lookup(metadataLookupApi);
         itemsApi.coverUpload(new CoverUpload(items, Tools.from(config), dataDir, ingest.jobs()));
         // "Find a music video": MVFinder by ISRC, the kept matches, else a yt-dlp search
-        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, Tools.from(config), cookiesFile,
+        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, youtubeTools, cookiesFile,
                 youtubeImports, linkResolver, () -> setting(() -> settings.get(Settings.MVFINDER_MAX_PER_HOUR),
                 15), Clock.systemUTC()), permissions));
         // The header search's Search YouTube and the search page's YouTube section: MVFinder, else yt-dlp
-        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(Tools.from(config), cookiesFile, linkResolver,
+        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(youtubeTools, cookiesFile, linkResolver,
                 () -> setting(() -> settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR), 60), Clock.systemUTC()),
                 permissions).roomRules(roomGuests::requireYoutubeRequests)); // the room view's request search
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
@@ -659,9 +662,9 @@ public final class Main {
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
         jobList.steps(ingest::liveStep);
         new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
-        // The admin's "Update yt-dlp" button (yt-dlp -U) and the installed version.
-        new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC())
-                .register(appRouter);
+        // The admin's "Update yt-dlp" button (yt-dlp -U), the installed version and the PO token provider check.
+        new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC(),
+                poTokenProviderUrl).register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
         new OverlayPreviewApi(rooms, overlays, customCards).register(appRouter);
         // The web player's copy of the overlay (docs/ui.md "Show QR code"): its layout, and the
@@ -1129,10 +1132,26 @@ public final class Main {
      * The YouTube import service ({@link YoutubeImports}): the duration limit from the config, new
      * items recorded for the configured output profile, each queued job wakes the ingest workers.
      */
-    static YoutubeImports youtubeImports(Config config, Database database, IngestQueue ingest,
+    static YoutubeImports youtubeImports(Config config, Tools tools, Database database, IngestQueue ingest,
                                          Supplier<String> cookiesFile) {
-        return new YoutubeImports(database, Tools.from(config), ingest.jobs(), ingest::wake, config.outputEncoding(),
+        return new YoutubeImports(database, tools, ingest.jobs(), ingest::wake, config.outputEncoding(),
                 config.ingestMaxDurationSeconds(), cookiesFile, Clock.systemUTC());
+    }
+
+    /**
+     * The {@code ytdlp.poTokenProviderUrl} setting, read each time yt-dlp runs (so an admin's change
+     * applies to the next call); null if it can't be read.
+     */
+    static Supplier<String> poTokenProviderUrl(Settings settings) {
+        return () -> {
+            try {
+                return settings.ytdlpPoTokenProviderUrl();
+            } catch (SQLException e) {
+                System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
+                        "Could not read ytdlp.poTokenProviderUrl: " + e.getMessage());
+                return null;
+            }
+        };
     }
 
     /**

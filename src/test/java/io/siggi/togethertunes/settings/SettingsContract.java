@@ -158,7 +158,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(54, all.size());
+        assertEquals(55, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -320,6 +320,25 @@ abstract class SettingsContract {
     }
 
     @Test
+    void poTokenProviderUrl() throws SQLException {
+        assertNull(settings.ytdlpPoTokenProviderUrl(), "unset by default");
+        settings.setJson("ytdlp.poTokenProviderUrl", "\" http://127.0.0.1:4416/ \"");
+        assertEquals("http://127.0.0.1:4416", settings.ytdlpPoTokenProviderUrl());
+        settings.setJson("ytdlp.poTokenProviderUrl", "\"https://pot.example/base\"");
+        assertEquals("https://pot.example/base", settings.ytdlpPoTokenProviderUrl());
+        for (String bad : List.of("\"ftp://x\"", "\"not a url\"", "\"http://x/?a=1\"", "\"http://x/#f\"",
+                "\"http://u:p@x\"", "\"http://x/a,b\"", "\"http://x/a;b\"", "\"127.0.0.1:4416\"", "1")) {
+            assertThrows(IllegalArgumentException.class, () -> settings.setJson("ytdlp.poTokenProviderUrl", bad), bad);
+        }
+        assertEquals("https://pot.example/base", settings.ytdlpPoTokenProviderUrl(), "a refused value changes nothing");
+        settings.setJson("ytdlp.poTokenProviderUrl", "\"\"");
+        assertNull(settings.ytdlpPoTokenProviderUrl(), "empty = unset");
+        // mvfinder.url still takes , and ;
+        settings.setJson("mvfinder.url", "\"http://x/a,b\"");
+        assertEquals("http://x/a,b", settings.get(Settings.MVFINDER_URL));
+    }
+
+    @Test
     void storageMinFreeBytesTakesWholeBytesFromZero() throws SQLException {
         settings.setJson("storage.minFreeBytes", "0");
         assertEquals(0, settings.storageMinFreeBytes());
@@ -340,7 +359,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(54, settings.all().size());
+        assertEquals(55, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());
