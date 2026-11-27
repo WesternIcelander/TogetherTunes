@@ -39,13 +39,16 @@ class MobileJsTest {
         for (String s : List.of("id=\"m-back\"", "id=\"m-title\"", "id=\"m-tabs\"", "id=\"m-pane-title\"",
                 "id=\"m-room-tabs\"", "id=\"m-tab-rooms\"", "id=\"m-tab-this-room\"", "id=\"m-account\"",
                 "id=\"m-now-empty\"", "Up Next", "id=\"pb-m-mute\"", "id=\"pb-m-mute-song\"",
-                "id=\"list-select-bar\"", "id=\"list-select-queue\"", "class=\"col-more\"")) {
+                "id=\"list-select-bar\"", "id=\"list-select-queue\"", "class=\"col-more\"", "id=\"m-np\"",
+                "id=\"np-title\"", "id=\"np-heart\"", "id=\"np-seek\"", "id=\"np-pos\"", "id=\"np-dur\"",
+                "id=\"np-prev\"", "id=\"np-play\"", "id=\"np-next\"")) {
             assertTrue(index.contains(s), s);
         }
         String frame = read("web/js/frame.js");
         for (String s : List.of("MOBILE_QUERY", "mPane", "pushState", "\"popstate\"", "tabAction(", "mobileBack(",
                 "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS",
-                "requestPartsInNowPane(", "\"#app .rv-request\"")) {
+                "requestPartsInNowPane(", "\"#app .rv-request\"", "shownPane(", "nowPlayerSize(", "nowPlayingPath(",
+                "#drawNowPlayer(", "--np-h")) {
             assertTrue(frame.contains(s), s);
         }
         String list = read("web/js/libview.js");
@@ -60,7 +63,9 @@ class MobileJsTest {
         String css = read("web/css/main.css");
         for (String s : List.of("@media (max-width: 799.98px)", "body[data-m-pane=\"now\"] .app-video",
                 "body.m-tabs-on .player-bar", "table.songs .col-album", ".m-tabs:not([hidden])",
-                ".rv-columns > .rv-request", "body[data-m-pane=\"now\"] .app-panel > .rv-request")) {
+                ".rv-columns > .rv-request", "body[data-m-pane=\"now\"] .app-panel > .rv-request",
+                "body[data-m-pane=\"now\"] .app-panel > .m-np", "body[data-m-pane=\"now\"] .player-bar",
+                "var(--np-h", "var(--np-art")) {
             assertTrue(css.contains(s), s);
         }
     }

@@ -1855,6 +1855,11 @@ table.songs tbody tr {
   -webkit-user-select: none;
 }
 
+/* The mobile Now Playing player's controls (drawings/mobile_now_playing.png): only in that pane (below). */
+.m-np {
+  display: none;
+}
+
 @media (max-width: 799.98px) {
   .m-only {
     display: revert;
@@ -1954,15 +1959,154 @@ table.songs tbody tr {
     display: none;
   }
 
-  /* Now Playing: the video (or the card) on top, Up Next | Recents below; scrolling moves the video away. */
+  /* Now Playing (drawings/mobile_now_playing.png): a full-screen player on top: the video from edge to edge
+     (or the artwork, a square with margins), then the song with its heart, the seek bar with the times and
+     previous / play-pause / next; then the request parts and Up Next | Recents, reached by scrolling.
+     frame.ts sizes the media area (--np-h, --np-art; mobile.ts nowPlayerSize) so a tall video stays above
+     the controls, letterboxed at the sides. The mini bar hides there (its controls are on screen). */
   body[data-m-pane="now"] .app-video {
-    order: -1;
-    margin: 0 -0.75rem 0.5rem;
+    order: -3;
+    margin: 0 -0.75rem;
   }
 
   body[data-m-pane="now"] .app-video .video-card,
-  body[data-m-pane="now"] .app-video .room-player video {
+  body[data-m-pane="now"] .app-video .room-player video,
+  body[data-m-pane="now"] .app-video .listen-overlay {
     border-radius: 0;
+  }
+
+  body[data-m-pane="now"] .app-video .room-player video {
+    height: var(--np-h, auto);
+    max-height: none;
+    object-fit: contain;
+    background: #000;
+  }
+
+  body[data-m-pane="now"] .app-video .video-card {
+    aspect-ratio: auto;
+    height: var(--np-h, auto);
+    justify-content: flex-start;
+    padding: 1.5rem 1.5rem 0;
+    background: none;
+    color: inherit;
+  }
+
+  body[data-m-pane="now"] .app-video .video-card .card-cover {
+    flex: none;
+    width: var(--np-art, calc(100vw - 3rem));
+    height: var(--np-art, calc(100vw - 3rem));
+    max-width: none;
+    aspect-ratio: 1 / 1;
+    border-radius: 0.5rem;
+  }
+
+  body[data-m-pane="now"] .app-video .video-card .card-title,
+  body[data-m-pane="now"] .app-video .video-card .card-artist {
+    display: none;
+  }
+
+  body[data-m-pane="now"] .app-panel > .m-np:not([hidden]) {
+    display: block;
+    order: -2;
+    margin: 1rem 0.75rem;
+  }
+
+  .m-np-head {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+  }
+
+  .m-np-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .m-np-title,
+  .m-np-artist {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .m-np a.m-np-title,
+  .m-np a.m-np-title:visited {
+    font-size: 1.3rem;
+    font-weight: bold;
+    color: inherit;
+    text-decoration: none;
+  }
+
+  .m-np-artist {
+    font-size: 1.05rem;
+  }
+
+  button.m-np-heart {
+    flex: none;
+    font-size: 1.6rem;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  button.m-np-heart.on {
+    color: #d81b60;
+  }
+
+  button.m-np-heart[hidden] {
+    display: none;
+  }
+
+  .m-np-seek {
+    display: block;
+    width: 100%;
+    margin: 0.75rem 0 0;
+  }
+
+  .m-np-times {
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .m-np-buttons {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 2rem;
+    margin-top: 0.5rem;
+  }
+
+  .m-np-buttons button {
+    font-size: 1.8rem;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+  }
+
+  .m-np-buttons button:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  .m-np-buttons button.m-np-play {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 4rem;
+    height: 4rem;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+  }
+
+  body[data-m-pane="now"] .player-bar {
+    display: none;
+  }
+
+  body.m-tabs-on.has-player-bar[data-m-pane="now"] {
+    padding-bottom: 4rem;
   }
 
   /* The request parts (quick output buttons, Request Link, Join as guest / the guest's name, a visitor's search

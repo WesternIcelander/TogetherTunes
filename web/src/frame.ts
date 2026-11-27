@@ -14,7 +14,9 @@
 // and the player bar as a mini now-playing bar above them. Library, Now Playing, Rooms and Account
 // are "panes" the frame shows instead of the view (the sidebar's Library or Rooms tab, the right
 // panel with the video on top, the account menu); each is a history entry of the view's URL with
-// `mPane` in history.state, so the browser's back button closes it.
+// `mPane` in history.state, so the browser's back button closes it. Now Playing with a room is the
+// room's Now Playing View URL instead (`/rooms/{ref}/now-playing`, the desktop Now Playing View): a
+// full-screen player (artwork or video, title, heart, seek bar, previous / play-pause / next) on top.
 //
 // Drag and drop (desktop; rules in the DOM-free dragdrop.ts, page side in dnd.ts): the user's
 // playlists drag up and down in the sidebar (PUT /api/playlists/order), each playlist takes songs,
@@ -33,8 +35,9 @@ import { dropFiles, dropFilesInLibrary, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
-import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, PANE_TITLES, requestPartsInNowPane, roomSubTab,
-  Selection, showBarTitle, tabAction, type MobilePane, type MobilePlace, type MobileTab } from "./mobile.js";
+import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, nowPlayerSize, PANE_TITLES, requestPartsInNowPane,
+  roomSubTab, Selection, showBarTitle, shownPane, tabAction, type MobilePane, type MobilePlace,
+  type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
 import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
@@ -279,13 +282,14 @@ export class Frame {
     byId("player-bar").querySelector(".pb-now")?.addEventListener("click", (ev) => {
       if (!this.#mobile() || this.#me?.kind !== "user") return;
       ev.preventDefault();
-      this.#openPane("now");
+      this.#openNow();
     });
     // A pane is a history entry of the view's URL with mPane in its state (the shell ignores a
     // popstate that keeps the view's URL; one that changes it calls navigated(), which reads the state too).
     window.addEventListener("popstate", () => this.#paneFromHistory());
+    // Crossing 800 px on the Now Playing View URL switches between it and the Now Playing pane in place.
     const onChange = (): void => {
-      if (!this.#mobile()) this.#pane = "";
+      this.#pane = this.#computePane();
       this.update();
     };
     if (this.#mobileQuery !== undefined) {
@@ -296,9 +300,18 @@ export class Frame {
     window.addEventListener("resize", () => this.#drawBarTitle(), { passive: true });
   }
 
-  #paneFromHistory(): void {
+  /**
+   * The pane shown (mobile.ts shownPane): one opened over the view (mPane in history.state), else Now
+   * Playing while the URL is the room's Now Playing View URL and that room view is the view.
+   */
+  #computePane(): MobilePane {
     const state = (history.state ?? {}) as { mPane?: unknown };
-    const pane = isPane(state.mPane) && this.#mobile() ? state.mPane : "";
+    const statePane = isPane(state.mPane) ? state.mPane : "";
+    return shownPane(this.#mobile(), statePane, this.#nowWanted && this.#host.roomShown());
+  }
+
+  #paneFromHistory(): void {
+    const pane = this.#computePane();
     if (pane === this.#pane) return;
     this.#pane = pane;
     this.update();
@@ -323,9 +336,35 @@ export class Frame {
     window.scrollTo(0, 0);
   }
 
+  /**
+   * Now Playing (the tab, the mini bar's song): the room's Now Playing View URL, which shows the pane on a
+   * phone; already there with another pane over it, a new entry of that URL without the pane.
+   */
+  #openNow(): void {
+    this.#tapTab("now");
+  }
+
   #tapTab(tab: MobileTab): void {
     const room = this.#host.room();
-    const a = tabAction(tab, this.#placeNow(), room?.path());
+    const nowPath = room !== undefined ? nowPlayingPath(room.path()) : undefined;
+    const a = tabAction(tab, this.#placeNow(), room?.path(), nowPath);
+    if (a.path !== undefined && a.path === nowPath && this.#nowWanted && this.#host.roomShown()) {
+      // On that URL already: the pane shows, or comes back from under another pane (a new entry, so Back
+      // returns to that pane as from any other screen).
+      if (this.#pane === "now") window.scrollTo(0, 0);
+      else {
+        const state = (history.state ?? {}) as Record<string, unknown>;
+        try {
+          history.replaceState({ ...state, scrollY: window.scrollY }, "");
+          history.pushState({ depth: historyDepth(state) + 1 }, "");
+        } catch {
+          // Not allowed (a file:// page): the pane shows, Back doesn't return.
+        }
+        this.#paneFromHistory();
+        window.scrollTo(0, 0);
+      }
+      return;
+    }
     if (a.pane !== undefined) this.#openPane(a.pane);
     else if (a.path !== undefined) {
       navigate(a.path);
@@ -366,7 +405,8 @@ export class Frame {
     const thisRoom = byId<HTMLButtonElement>("m-tab-this-room");
     thisRoom.setAttribute("aria-selected", sub === "this" ? "true" : "false");
     thisRoom.disabled = this.#host.room() === undefined;
-    byId("m-now-empty").hidden = pane !== "now" || this.#host.room() !== undefined;
+    // On the Now Playing View URL the room is on its way (a fresh load): nothing is said meanwhile.
+    byId("m-now-empty").hidden = pane !== "now" || this.#host.room() !== undefined || this.#nowWanted;
     // The sidebar's tab follows the pane (Library or Rooms); Now Playing has no Room tab (This Room has the people).
     const sideTab = pane === "rooms" ? "rooms" : pane === "library" ? "library" : "";
     if (sideTab !== "") {
@@ -479,16 +519,15 @@ export class Frame {
 
   /** The shell showed another view (`path`): mark it in the sidebar; pick up a login or logout. */
   navigated(path: string): void {
-    const state = (history.state ?? {}) as { mPane?: unknown };
-    const pane = isPane(state.mPane) && this.#mobile() ? state.mPane : "";
+    const q = path.indexOf("?");
+    this.#nowWanted = isNowPlaying(routeOf(q >= 0 ? path.slice(0, q) : path));
+    const pane = this.#computePane();
     if (pane !== this.#pane) {
       this.#pane = pane;
       this.update();
     }
     this.#markCurrent(path);
     this.#search?.close();
-    const q = path.indexOf("?");
-    this.#nowWanted = isNowPlaying(routeOf(q >= 0 ? path.slice(0, q) : path));
     this.#applyNowView();
     if (this.#me?.kind !== "user") void this.#reloadMe();
   }
@@ -1592,6 +1631,18 @@ export class Frame {
       const id = byId("pb-heart").dataset["item"];
       if (id !== undefined && id !== "") void this.#toggleLike(id);
     });
+    // Mobile Now Playing: the player bar's own controls, pressed from the full-screen player (same rules and
+    // states: #drawNowPlayer mirrors them; without control the round button is the bar's mute).
+    byId("np-prev").addEventListener("click", () => byId("pb-prev").click());
+    byId("np-next").addEventListener("click", () => byId("pb-next").click());
+    byId("np-play").addEventListener("click", () => byId(byId("pb-play").hidden ? "pb-mute-big" : "pb-play").click());
+    byId("np-heart").addEventListener("click", () => byId("pb-heart").click());
+    const npSeek = byId<HTMLInputElement>("np-seek");
+    npSeek.addEventListener("input", () => { this.#seeking = true; });
+    npSeek.addEventListener("change", () => {
+      this.#seeking = false;
+      send({ type: "seek", positionMs: Math.round(Number(npSeek.value)) });
+    });
     const volume = byId<HTMLInputElement>("pb-volume");
     volume.value = String(this.#volume);
     volume.addEventListener("input", () => {
@@ -1750,7 +1801,77 @@ export class Frame {
     requestsOnly.disabled = room === undefined || room.forcedRequestsOnly();
     (requestsOnly.parentElement as HTMLElement).title = room?.forcedRequestsOnly() === true
       ? "Set by the room: nothing plays on this page" : "Play nothing here; just request and vote";
+    this.#drawNowPlayer(room);
     this.#tick();
+  }
+
+  /**
+   * The mobile Now Playing player's song and controls (docs/ui.md#mobile-narrow-windows): a copy of the
+   * player bar's state just drawn (title, artist, heart, which buttons may be used, play/pause or mute),
+   * so its rules stay the bar's. Without control previous and next are greyed out and the round button
+   * mutes and unmutes, as the bar's mute does.
+   */
+  #drawNowPlayer(room: ShellRoom | undefined): void {
+    byId("m-np").hidden = room === undefined;
+    const pbTitle = byId<HTMLAnchorElement>("pb-title");
+    const title = byId<HTMLAnchorElement>("np-title");
+    title.textContent = pbTitle.textContent;
+    title.href = pbTitle.href;
+    byId("np-artist").textContent = byId("pb-artist").textContent;
+    const pbHeart = byId<HTMLButtonElement>("pb-heart");
+    const heart = byId<HTMLButtonElement>("np-heart");
+    heart.hidden = pbHeart.hidden;
+    const item = pbHeart.dataset["item"] ?? "";
+    if (pbHeart.hidden || item === "") delete heart.dataset["heart"];
+    else heart.dataset["heart"] = item;
+    const liked = pbHeart.classList.contains("on");
+    heart.textContent = liked ? "♥" : "♡";
+    heart.classList.toggle("on", liked);
+    heart.setAttribute("aria-pressed", liked ? "true" : "false");
+    heart.title = liked ? "Remove from Liked Songs" : "Add to Liked Songs";
+    const controls = !byId("pb-play").hidden;
+    byId<HTMLButtonElement>("np-prev").disabled = !controls;
+    byId<HTMLButtonElement>("np-next").disabled = !controls;
+    const from = byId(controls ? "pb-play" : "pb-mute-big");
+    const play = byId<HTMLButtonElement>("np-play");
+    play.textContent = from.textContent;
+    play.title = from.title;
+    play.setAttribute("aria-label", from.getAttribute("aria-label") ?? from.title);
+    play.classList.toggle("on", !controls && from.classList.contains("on"));
+    play.disabled = room === undefined || (!controls && from.hidden === true);
+    byId<HTMLInputElement>("np-seek").disabled = byId<HTMLInputElement>("pb-seek").disabled;
+  }
+
+  /**
+   * Sizes the mobile Now Playing player's video or artwork (mobile.ts nowPlayerSize): the video as wide as
+   * the screen and, when tall, only as high as the space above the controls; the artwork a square with
+   * margins. Run on every tick, so resizes and the video's size once known follow.
+   */
+  #layoutNowPlayer(): void {
+    const panel = byId("app-video");
+    if (!this.#mobile() || this.#pane !== "now" || panel.hidden) return;
+    const np = byId("m-np");
+    const header = document.querySelector<HTMLElement>(".app-header");
+    const tabs = byId("m-tabs");
+    const top = header !== null ? header.getBoundingClientRect().height : 0;
+    const bottom = tabs.hidden ? 0 : tabs.getBoundingClientRect().height;
+    let controls = 0;
+    if (!np.hidden) {
+      const cs = getComputedStyle(np);
+      controls = np.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+    }
+    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    const video = byId("app-video-card").hidden === true;
+    let media: { width: number; height: number } | undefined;
+    for (const v of Array.from(byId("room-player").querySelectorAll("video"))) {
+      if (!v.hidden && v.videoWidth > 0) media = { width: v.videoWidth, height: v.videoHeight };
+    }
+    const size = nowPlayerSize({ width: panel.getBoundingClientRect().width, available: window.innerHeight - top - bottom,
+      controls, margin: 1.5 * rem }, video, media);
+    const height = size.height + "px";
+    const art = size.artwork + "px";
+    if (panel.style.getPropertyValue("--np-h") !== height) panel.style.setProperty("--np-h", height);
+    if (panel.style.getPropertyValue("--np-art") !== art) panel.style.setProperty("--np-art", art);
   }
 
   /** Moves the seek bar and the times along. */
@@ -1772,6 +1893,7 @@ export class Frame {
       dur.textContent = "0:00";
       seek.max = "1";
       seek.value = "0";
+      this.#tickNowPlayer();
       return;
     }
     const duration = c.item.durationMs ?? 0;
@@ -1783,9 +1905,21 @@ export class Frame {
     dur.textContent = formatDuration(duration);
     seek.max = String(Math.max(duration, 1));
     if (!this.#seeking) seek.value = String(p);
+    this.#tickNowPlayer();
     // "Mute only until end of song" ends when the song does.
     const wasMuted = this.#mute.muted;
     if (this.#mute.current(c.entryId) !== wasMuted) this.update();
+  }
+
+  /** The mobile Now Playing player's seek bar and times follow the player bar's; its media area is sized. */
+  #tickNowPlayer(): void {
+    byId("np-pos").textContent = byId("pb-pos").textContent;
+    byId("np-dur").textContent = byId("pb-dur").textContent;
+    const from = byId<HTMLInputElement>("pb-seek");
+    const seek = byId<HTMLInputElement>("np-seek");
+    seek.max = from.max;
+    if (!this.#seeking) seek.value = from.value;
+    this.#layoutNowPlayer();
   }
 
   // ---------------------------------------------------------------- system media controls
@@ -1853,6 +1987,7 @@ export class Frame {
       }
     }
     this.#drawQr();
+    this.#layoutNowPlayer();
     // The room view's title line under the video: only while a video shows (the card has it otherwise).
     const title = document.getElementById("rv-title");
     if (title !== null) {
@@ -1944,7 +2079,8 @@ export class Frame {
    * (it stays in the room view's video area), so the media keep playing.
    */
   #applyNowView(): void {
-    const on = this.#nowWanted && this.#host.room() !== undefined && this.#host.roomShown();
+    // Below 800 px the same URL is the Now Playing tab (a pane) instead.
+    const on = this.#nowWanted && this.#host.room() !== undefined && this.#host.roomShown() && !this.#mobile();
     if (on === this.#nowViewOpen()) return;
     document.body.classList.toggle("now-view-open", on);
     byId("app-now-close").hidden = !on;

@@ -121,15 +121,16 @@ export interface TabAction {
 }
 
 /**
- * Tapping a tab: Library → the library's list; Now Playing → its pane; Room → the room view of the
- * room open here ("This Room"), or the room list without one (or when already on the room view);
- * Search → the search view; Account → the account menu.
- * `roomPath` is the room open here, if any; `place` where the user is now.
+ * Tapping a tab: Library → the library's list; Now Playing → the room's Now Playing View URL
+ * (`nowPath`, router.ts nowPlayingPath of the room playing here, which shows this pane on a phone), or
+ * the pane itself without a room; Room → the room view of the room open here ("This Room"), or the
+ * room list without one (or when already on the room view); Search → the search view; Account → the
+ * account menu. `roomPath` is the room open here, if any; `place` where the user is now.
  */
-export function tabAction(tab: MobileTab, place: MobilePlace, roomPath: string | undefined): TabAction {
+export function tabAction(tab: MobileTab, place: MobilePlace, roomPath: string | undefined, nowPath?: string): TabAction {
   switch (tab) {
     case "library": return { pane: "library" };
-    case "now": return { pane: "now" };
+    case "now": return nowPath !== undefined ? { path: nowPath } : { pane: "now" };
     case "search": return { path: "/search" };
     case "account": return { pane: "account" };
     case "room":
@@ -213,4 +214,57 @@ export function showBarTitle(largeTitleBottom: number | undefined, barBottom: nu
  */
 export function requestPartsInNowPane(mobile: boolean, pane: MobilePane, roomOpen: boolean): boolean {
   return mobile && pane === "now" && roomOpen;
+}
+
+/**
+ * The pane shown (docs/ui.md#mobile-narrow-windows): none in the desktop layout; a pane opened over the
+ * view (`mPane` in history.state) wins; otherwise Now Playing while the URL is the room's Now Playing View
+ * URL (`/rooms/{ref}/now-playing`) and that room view is the view (`nowUrl`): the same URL is the desktop
+ * Now Playing View, so crossing 800 px switches between the two without a navigation.
+ */
+export function shownPane(mobile: boolean, statePane: MobilePane, nowUrl: boolean): MobilePane {
+  if (!mobile) return "";
+  if (statePane !== "") return statePane;
+  return nowUrl ? "now" : "";
+}
+
+/** What the mobile Now Playing player is laid out in (CSS px). */
+export interface NowPlayerSpace {
+  /** The pane's width: the video's width (it reaches the screen's edges). */
+  width: number;
+  /** The window's height between the top bar and the bottom tabs. */
+  available: number;
+  /** The height of the block under the video or artwork (title and heart, seek bar, times, buttons) with its margins. */
+  controls: number;
+  /** The artwork's margin (sides and top). */
+  margin: number;
+}
+
+/** The mobile Now Playing player's media area: its height, and the artwork's side (both CSS px, whole numbers). */
+export interface NowPlayerSize {
+  height: number;
+  artwork: number;
+}
+
+/** The smallest video height and artwork side, so a very short window still shows something. */
+export const NOW_PLAYER_MIN_PX = 96;
+
+/**
+ * The mobile Now Playing player's media area (docs/ui.md#mobile-narrow-windows, drawings/mobile_now_playing.png).
+ * A **video** (`media` its size, undefined before it is known: 16:9) is as wide as the screen; its height
+ * is what that width needs, limited so the controls under it stay on screen (a portrait or other tall video
+ * then gets the space above the controls and is letterboxed at the sides, centred). Without a video, the
+ * **artwork** is a square with the margin at the sides and on top, as large as the width allows and small
+ * enough for the controls to stay on screen; the area's height is the artwork plus its top margin.
+ */
+export function nowPlayerSize(space: NowPlayerSpace, video: boolean, media?: { width: number; height: number }): NowPlayerSize {
+  const width = Math.max(0, space.width);
+  const room = Math.max(NOW_PLAYER_MIN_PX, space.available - space.controls);
+  if (video) {
+    const ratio = media !== undefined && media.width > 0 && media.height > 0 ? media.height / media.width : 9 / 16;
+    const height = Math.max(NOW_PLAYER_MIN_PX, Math.min(width * ratio, room));
+    return { height: Math.floor(height), artwork: 0 };
+  }
+  const artwork = Math.max(NOW_PLAYER_MIN_PX, Math.min(width - 2 * space.margin, room - space.margin));
+  return { height: Math.floor(artwork + space.margin), artwork: Math.floor(artwork) };
 }

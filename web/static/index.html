@@ -84,6 +84,26 @@
         </div>
         <button type="button" id="app-now-close" class="now-close" hidden>Close</button>
       </section>
+      <!-- Mobile Now Playing (drawings/mobile_now_playing.png): under the video or artwork, the song, the heart,
+           the seek bar with its times and previous / play-pause / next; the player bar's controls (frame.ts),
+           shown only in that pane (main.css). -->
+      <section id="m-np" class="m-np" aria-label="Now playing controls" hidden>
+        <div class="m-np-head">
+          <div class="m-np-text">
+            <a id="np-title" class="m-np-title" href="#"></a>
+            <div id="np-artist" class="muted m-np-artist"></div>
+          </div>
+          <button type="button" id="np-heart" class="icon heart m-np-heart" title="Add to Liked Songs"
+                  aria-label="Like" aria-pressed="false" hidden>♡</button>
+        </div>
+        <input type="range" id="np-seek" class="m-np-seek" min="0" max="1" step="1000" value="0" aria-label="Position">
+        <div class="m-np-times small num"><span id="np-pos">0:00</span><span id="np-dur">0:00</span></div>
+        <div class="m-np-buttons">
+          <button type="button" id="np-prev" class="icon" title="Previous" aria-label="Previous">⏮</button>
+          <button type="button" id="np-play" class="icon m-np-play" title="Play" aria-label="Play">▶</button>
+          <button type="button" id="np-next" class="icon" title="Next" aria-label="Next">⏭</button>
+        </div>
+      </section>
     </aside>
   </div>
   <footer id="player-bar" class="player-bar" aria-label="Player" hidden>

@@ -48,7 +48,9 @@ test("the back button: lists to the library, the room view to the rooms, account
 test("tapping a tab", () => {
   const place = at("list", { list: "songs" });
   assert.deepEqual(M.tabAction("library", place, undefined), { pane: "library" });
-  assert.deepEqual(M.tabAction("now", place, "/rooms/a"), { pane: "now" });
+  // Now Playing: the room's Now Playing View URL (the pane on a phone); the pane itself without a room
+  assert.deepEqual(M.tabAction("now", place, "/rooms/a", "/rooms/a/now-playing"), { path: "/rooms/a/now-playing" });
+  assert.deepEqual(M.tabAction("now", place, undefined, undefined), { pane: "now" });
   assert.deepEqual(M.tabAction("search", place, undefined), { path: "/search" });
   assert.deepEqual(M.tabAction("account", place, undefined), { pane: "account" });
   // Room: This Room when in a room, the room list without one or from the room view itself
@@ -111,4 +113,44 @@ test("the request parts go under the video in Now Playing only on mobile, with a
   assert.equal(M.requestPartsInNowPane(true, "now", false), false);
   assert.equal(M.requestPartsInNowPane(false, "now", true), false);
   for (const pane of ["", "library", "rooms", "account"]) assert.equal(M.requestPartsInNowPane(true, pane, true), false);
+});
+
+test("the pane shown: an opened pane wins, then Now Playing on the Now Playing View URL; none on the desktop", () => {
+  assert.equal(M.shownPane(true, "", true), "now");
+  assert.equal(M.shownPane(true, "", false), "");
+  assert.equal(M.shownPane(true, "library", true), "library");
+  assert.equal(M.shownPane(true, "account", false), "account");
+  // the desktop layout: the same URL is the Now Playing View, no pane
+  assert.equal(M.shownPane(false, "", true), "");
+  assert.equal(M.shownPane(false, "library", false), "");
+});
+
+test("Now Playing player: a landscape video is full width at its own height", () => {
+  const space = { width: 390, available: 844 - 44 - 56, controls: 190, margin: 24 };
+  assert.deepEqual(M.nowPlayerSize(space, true, { width: 1280, height: 720 }), { height: 219, artwork: 0 });
+  // before the video's size is known: 16:9
+  assert.deepEqual(M.nowPlayerSize(space, true, undefined), { height: 219, artwork: 0 });
+  assert.deepEqual(M.nowPlayerSize(space, true, { width: 0, height: 0 }), { height: 219, artwork: 0 });
+});
+
+test("Now Playing player: a portrait or tall video stays above the controls", () => {
+  const space = { width: 390, available: 744, controls: 190, margin: 24 };
+  // 9:16 at full width would be 693 px; the controls need 190 of 744
+  assert.deepEqual(M.nowPlayerSize(space, true, { width: 720, height: 1280 }), { height: 554, artwork: 0 });
+  // square: 390 fits
+  assert.deepEqual(M.nowPlayerSize(space, true, { width: 500, height: 500 }), { height: 390, artwork: 0 });
+  // a very short window still shows some video
+  assert.deepEqual(M.nowPlayerSize({ ...space, available: 200 }, true, { width: 720, height: 1280 }),
+    { height: M.NOW_PLAYER_MIN_PX, artwork: 0 });
+});
+
+test("Now Playing player: the artwork is a square with margins, smaller when the window is short", () => {
+  const space = { width: 390, available: 744, controls: 190, margin: 24 };
+  // 390 - 2 × 24 = 342; its area is 342 + the top margin
+  assert.deepEqual(M.nowPlayerSize(space, false), { height: 366, artwork: 342 });
+  // a landscape phone: 300 px between the bars, 190 for the controls → 110 - 24 = 86 → the minimum
+  assert.deepEqual(M.nowPlayerSize({ width: 780, available: 300, controls: 190, margin: 24 }, false),
+    { height: M.NOW_PLAYER_MIN_PX + 24, artwork: M.NOW_PLAYER_MIN_PX });
+  assert.deepEqual(M.nowPlayerSize({ width: 780, available: 600, controls: 190, margin: 24 }, false),
+    { height: 410, artwork: 386 });
 });
