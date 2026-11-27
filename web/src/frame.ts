@@ -35,7 +35,7 @@ import { dropFiles, dropFilesInLibrary, dropFilesOnQueue } from "./filedrop.js";
 import { formatDuration, h } from "./dom.js";
 import { ingestText } from "./jobtext.js";
 import { itemPath, type Page, type Playlist } from "./media.js";
-import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, nowPlayerSize, PANE_TITLES, requestPartsInNowPane,
+import { isPane, MOBILE_QUERY, MOBILE_TABS, mobileBack, mobileTab, nowPlayerSize, PANE_TITLES,
   roomSubTab, Selection, showBarTitle, shownPane, tabAction, type MobilePane, type MobilePlace,
   type MobileTab } from "./mobile.js";
 import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
@@ -145,8 +145,6 @@ export class Frame {
     ? window.matchMedia(MOBILE_QUERY) : undefined;
   /** The mobile pane shown instead of the view ("" = the view); always "" in the desktop layout. */
   #pane: MobilePane = "";
-  /** Where the room view's request parts (`.rv-request`) belong while the Now Playing pane holds them. */
-  #requestHome: HTMLElement | undefined;
   /** The URL is a room's Now Playing View (`/rooms/{ref}/now-playing`): open it once that room view is shown. */
   #nowWanted = false;
   /** The Now Playing View's auto-hiding player bar (rules in panels.ts). */
@@ -307,7 +305,7 @@ export class Frame {
   #computePane(): MobilePane {
     const state = (history.state ?? {}) as { mPane?: unknown };
     const statePane = isPane(state.mPane) ? state.mPane : "";
-    return shownPane(this.#mobile(), statePane, this.#nowWanted && this.#host.roomShown());
+    return shownPane(this.#mobile(), statePane, this.#nowWanted && this.#host.roomShown(), this.#me?.kind === "user");
   }
 
   #paneFromHistory(): void {
@@ -379,6 +377,7 @@ export class Frame {
     const user = this.#me?.kind === "user";
     if (!mobile) this.#pane = "";
     const pane = this.#pane;
+    if (pane !== "now") this.#homeMenu();
     const place = this.#placeNow();
     document.body.classList.toggle("mobile", mobile);
     document.body.classList.toggle("m-tabs-on", mobile && user);
@@ -468,40 +467,6 @@ export class Frame {
   release(el: HTMLElement): void {
     const video = byId("app-video");
     if (el.contains(video)) byId("app-panel").append(video);
-    // The Now Playing pane may hold this view's request parts: they go back into the view.
-    if (this.#requestHome !== undefined && el.contains(this.#requestHome)) this.#returnRequest();
-  }
-
-  /**
-   * Mobile Now Playing (docs/ui.md#mobile-narrow-windows): the room view's request parts (`.rv-request`, drawn
-   * by room.ts by id) move between the video and Up Next | Recents, and back into the view otherwise. One copy,
-   * moved, so no id is doubled; the room view itself orders them above its queue with CSS.
-   */
-  #placeRequest(): void {
-    const want = requestPartsInNowPane(this.#mobile(), this.#pane, this.#host.room() !== undefined);
-    const panel = byId("app-panel");
-    const held = panel.querySelector<HTMLElement>(":scope > .rv-request");
-    if (held !== null && (!want || this.#requestHome === undefined || !this.#requestHome.isConnected)) {
-      this.#returnRequest();
-    }
-    if (!want || panel.querySelector(":scope > .rv-request") !== null) return;
-    const req = document.querySelector<HTMLElement>("#app > .view:not([hidden]) .rv-request")
-      ?? document.querySelector<HTMLElement>("#app .rv-request");
-    if (req === null || req.parentElement === null) return;
-    this.#requestHome = req.parentElement;
-    const video = byId("app-video");
-    if (video.parentElement === panel) video.after(req);
-    else panel.append(req);
-  }
-
-  /** The request parts go back to the end of their room view's column (where the markup has them). */
-  #returnRequest(): void {
-    const req = byId("app-panel").querySelector<HTMLElement>(":scope > .rv-request");
-    const home = this.#requestHome;
-    this.#requestHome = undefined;
-    if (req === null) return;
-    if (home !== undefined && home.isConnected) home.append(req);
-    else req.remove();
   }
 
   /** The room view is shown: the video panel lives in its video area; otherwise in the right panel. */
@@ -573,6 +538,8 @@ export class Frame {
     if (user) {
       await this.#loadLibrary();
     }
+    // The Now Playing pane is for those with the tabs (mobile.ts shownPane).
+    this.#pane = this.#computePane();
     this.update();
   }
 
@@ -960,7 +927,6 @@ export class Frame {
     const roomView = this.#roomViewShown();
     document.body.classList.toggle("room-view", roomView);
     this.#placeVideo(roomView);
-    this.#placeRequest();
     byId("app-panel").hidden = room === undefined;
     byId("player-bar").hidden = room === undefined && !user;
     document.body.classList.toggle("has-panel", room !== undefined);
@@ -1685,8 +1651,21 @@ export class Frame {
     const menuButton = byId("pb-menu-button");
     const menu = byId("pb-menu");
     menuButton.addEventListener("click", () => {
+      this.#homeMenu();
       menu.hidden = !menu.hidden;
       menuButton.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+    });
+    // The mobile Now Playing player's ⋯: the same menu (the mini bar is hidden there), as a sheet at the
+    // bottom of the screen (main.css): moved out of the hidden bar while open, back on the next use.
+    const npMore = byId("np-more");
+    npMore.addEventListener("click", () => {
+      if (menu.parentElement !== document.body) {
+        menu.hidden = true;
+        document.body.append(menu);
+      }
+      menu.hidden = !menu.hidden;
+      npMore.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+      menuButton.setAttribute("aria-expanded", "false");
     });
     byId<HTMLInputElement>("pb-audio-only").addEventListener("change", (ev) => {
       this.#host.room()?.setAudioOnly((ev.target as HTMLInputElement).checked);
@@ -1699,6 +1678,9 @@ export class Frame {
     byId("pb-now-view").addEventListener("click", () => {
       menu.hidden = true;
       menuButton.setAttribute("aria-expanded", "false");
+      npMore.setAttribute("aria-expanded", "false");
+      // On a phone the Now Playing View is the Now Playing tab: already there from its own ⋯.
+      if (this.#mobile() && this.#pane === "now") return;
       if (this.#nowViewOpen()) {
         this.#exitNowView();
         return;
@@ -1718,15 +1700,26 @@ export class Frame {
     });
   }
 
+  /** The player bar's ⋯ menu back in the bar (from the mobile Now Playing player's ⋯), closed. */
+  #homeMenu(): void {
+    const menu = byId("pb-menu");
+    const home = byId("pb-menu-button").parentElement;
+    if (home === null || menu.parentElement === home) return;
+    menu.hidden = true;
+    byId("np-more").setAttribute("aria-expanded", "false");
+    home.append(menu);
+  }
+
   /** Closes the open menus on a click elsewhere. */
   #closeMenus(ev: MouseEvent): void {
     const t = ev.target;
     if (!(t instanceof Element)) return;
     if (this.#personMenu !== undefined && t.closest(".person-menu") === null) this.#closePersonMenu();
     const menu = byId("pb-menu");
-    if (!menu.hidden && t.closest("#pb-menu, #pb-menu-button") === null) {
+    if (!menu.hidden && t.closest("#pb-menu, #pb-menu-button, #np-more") === null) {
       menu.hidden = true;
       byId("pb-menu-button").setAttribute("aria-expanded", "false");
+      byId("np-more").setAttribute("aria-expanded", "false");
     }
     const mute = byId("pb-mute-menu");
     if (!mute.hidden && t.closest("#pb-mute-menu") === null) mute.hidden = true;
@@ -1843,35 +1836,41 @@ export class Frame {
   }
 
   /**
-   * Sizes the mobile Now Playing player's video or artwork (mobile.ts nowPlayerSize): the video as wide as
-   * the screen and, when tall, only as high as the space above the controls; the artwork a square with
-   * margins. Run on every tick, so resizes and the video's size once known follow.
+   * Lays out the mobile Now Playing player (mobile.ts nowPlayerSize): the pane is the whole screen between
+   * the top bar and the tabs (--np-top, --np-bottom), the controls at its bottom, and the video (as wide as
+   * the screen, as high as its shape needs and the space above the controls allows) or the artwork (a square
+   * with margins) centred above them. Run on every tick, so resizes and the video's size once known follow.
    */
   #layoutNowPlayer(): void {
-    const panel = byId("app-video");
-    if (!this.#mobile() || this.#pane !== "now" || panel.hidden) return;
+    const video = byId("app-video");
+    if (!this.#mobile() || this.#pane !== "now") return;
+    const pane = byId("app-panel");
     const np = byId("m-np");
     const header = document.querySelector<HTMLElement>(".app-header");
     const tabs = byId("m-tabs");
-    const top = header !== null ? header.getBoundingClientRect().height : 0;
-    const bottom = tabs.hidden ? 0 : tabs.getBoundingClientRect().height;
+    const top = header !== null ? Math.max(0, header.getBoundingClientRect().bottom) : 0;
+    const bottom = tabs.hidden ? 0 : Math.max(0, window.innerHeight - tabs.getBoundingClientRect().top);
+    const set = (el: HTMLElement, name: string, value: string): void => {
+      if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
+    };
+    set(pane, "--np-top", Math.round(top) + "px");
+    set(pane, "--np-bottom", Math.round(bottom) + "px");
+    if (video.hidden) return;
     let controls = 0;
     if (!np.hidden) {
       const cs = getComputedStyle(np);
       controls = np.getBoundingClientRect().height + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
     }
     const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const video = byId("app-video-card").hidden === true;
+    const playing = byId("app-video-card").hidden === true;
     let media: { width: number; height: number } | undefined;
     for (const v of Array.from(byId("room-player").querySelectorAll("video"))) {
       if (!v.hidden && v.videoWidth > 0) media = { width: v.videoWidth, height: v.videoHeight };
     }
-    const size = nowPlayerSize({ width: panel.getBoundingClientRect().width, available: window.innerHeight - top - bottom,
-      controls, margin: 1.5 * rem }, video, media);
-    const height = size.height + "px";
-    const art = size.artwork + "px";
-    if (panel.style.getPropertyValue("--np-h") !== height) panel.style.setProperty("--np-h", height);
-    if (panel.style.getPropertyValue("--np-art") !== art) panel.style.setProperty("--np-art", art);
+    const size = nowPlayerSize({ width: pane.getBoundingClientRect().width, available: window.innerHeight - top - bottom,
+      controls, margin: (window.innerHeight < 500 ? 0.75 : 1.5) * rem }, playing, media);
+    set(video, "--np-h", size.height + "px");
+    set(video, "--np-art", size.artwork + "px");
   }
 
   /** Moves the seek bar and the times along. */

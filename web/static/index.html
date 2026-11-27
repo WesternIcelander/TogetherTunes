@@ -84,9 +84,9 @@
         </div>
         <button type="button" id="app-now-close" class="now-close" hidden>Close</button>
       </section>
-      <!-- Mobile Now Playing (drawings/mobile_now_playing.png): under the video or artwork, the song, the heart,
-           the seek bar with its times and previous / play-pause / next; the player bar's controls (frame.ts),
-           shown only in that pane (main.css). -->
+      <!-- Mobile Now Playing (drawings/mobile_now_playing.png): at the bottom of the pane, under the video or
+           artwork, the song, the heart and ⋯ (the player bar's menu), the seek bar with its times and
+           previous / play-pause / next; the player bar's controls (frame.ts), shown only in that pane (main.css). -->
       <section id="m-np" class="m-np" aria-label="Now playing controls" hidden>
         <div class="m-np-head">
           <div class="m-np-text">
@@ -95,6 +95,8 @@
           </div>
           <button type="button" id="np-heart" class="icon heart m-np-heart" title="Add to Liked Songs"
                   aria-label="Like" aria-pressed="false" hidden>♡</button>
+          <button type="button" id="np-more" class="icon m-np-more" title="More" aria-label="More" aria-haspopup="true"
+                  aria-expanded="false">⋯</button>
         </div>
         <input type="range" id="np-seek" class="m-np-seek" min="0" max="1" step="1000" value="0" aria-label="Position">
         <div class="m-np-times small num"><span id="np-pos">0:00</span><span id="np-dur">0:00</span></div>

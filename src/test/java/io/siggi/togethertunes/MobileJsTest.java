@@ -41,16 +41,18 @@ class MobileJsTest {
                 "id=\"m-now-empty\"", "Up Next", "id=\"pb-m-mute\"", "id=\"pb-m-mute-song\"",
                 "id=\"list-select-bar\"", "id=\"list-select-queue\"", "class=\"col-more\"", "id=\"m-np\"",
                 "id=\"np-title\"", "id=\"np-heart\"", "id=\"np-seek\"", "id=\"np-pos\"", "id=\"np-dur\"",
-                "id=\"np-prev\"", "id=\"np-play\"", "id=\"np-next\"")) {
+                "id=\"np-prev\"", "id=\"np-play\"", "id=\"np-next\"", "id=\"np-more\"")) {
             assertTrue(index.contains(s), s);
         }
         String frame = read("web/js/frame.js");
         for (String s : List.of("MOBILE_QUERY", "mPane", "pushState", "\"popstate\"", "tabAction(", "mobileBack(",
                 "showBarTitle(", "onLongPress(", "\"/mine\"", "PLAYLIST_ACTION_LABELS",
-                "requestPartsInNowPane(", "\"#app .rv-request\"", "shownPane(", "nowPlayerSize(", "nowPlayingPath(",
-                "#drawNowPlayer(", "--np-h")) {
+                "shownPane(", "nowPlayerSize(", "nowPlayingPath(", "#drawNowPlayer(", "--np-h", "--np-top",
+                "--np-bottom", "\"np-more\"", "#homeMenu(")) {
             assertTrue(frame.contains(s), s);
         }
+        // The Now Playing pane holds only the player: the request parts stay in the room view.
+        assertFalse(frame.contains("rv-request"), "frame.ts doesn't move the request parts");
         String list = read("web/js/libview.js");
         for (String s : List.of("onLongPress(", "openMenu(", "new Selection()", "\"queue.add\"", "Add to Queue",
                 "Select")) {
@@ -63,10 +65,12 @@ class MobileJsTest {
         String css = read("web/css/main.css");
         for (String s : List.of("@media (max-width: 799.98px)", "body[data-m-pane=\"now\"] .app-video",
                 "body.m-tabs-on .player-bar", "table.songs .col-album", ".m-tabs:not([hidden])",
-                ".rv-columns > .rv-request", "body[data-m-pane=\"now\"] .app-panel > .rv-request",
+                ".rv-columns > .rv-request", "body[data-m-pane=\"now\"] .app-panel > *",
                 "body[data-m-pane=\"now\"] .app-panel > .m-np", "body[data-m-pane=\"now\"] .player-bar",
-                "var(--np-h", "var(--np-art")) {
+                "var(--np-h", "var(--np-art", "var(--np-top", "var(--np-bottom", "body > #pb-menu",
+                "@media (max-width: 799.98px) and (max-height: 499.98px)")) {
             assertTrue(css.contains(s), s);
         }
+        assertFalse(css.contains("body[data-m-pane=\"now\"] .app-panel > .rv-request"), "no request parts in Now Playing");
     }
 }

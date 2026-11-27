@@ -207,64 +207,57 @@ export function showBarTitle(largeTitleBottom: number | undefined, barBottom: nu
 }
 
 /**
- * Whether the room view's request parts (`.rv-request`: quick output buttons, Request Link, Join as guest /
- * the guest's name, a visitor's search and uploads, the RTMP viewer URL) are shown in the Now Playing pane,
- * between the video and Up Next | Recents (docs/ui.md#mobile-narrow-windows): only in the mobile layout,
- * on that pane, while a room view is open (it owns and draws them; the frame moves the one copy over).
- */
-export function requestPartsInNowPane(mobile: boolean, pane: MobilePane, roomOpen: boolean): boolean {
-  return mobile && pane === "now" && roomOpen;
-}
-
-/**
  * The pane shown (docs/ui.md#mobile-narrow-windows): none in the desktop layout; a pane opened over the
  * view (`mPane` in history.state) wins; otherwise Now Playing while the URL is the room's Now Playing View
  * URL (`/rooms/{ref}/now-playing`) and that room view is the view (`nowUrl`): the same URL is the desktop
- * Now Playing View, so crossing 800 px switches between the two without a navigation.
+ * Now Playing View, so crossing 800 px switches between the two without a navigation. A visitor without the
+ * bottom tabs (`tabs` false: not signed in) gets the room view there instead: the Now Playing pane holds only
+ * the player, and without tabs there would be no way to the room view's request parts.
  */
-export function shownPane(mobile: boolean, statePane: MobilePane, nowUrl: boolean): MobilePane {
+export function shownPane(mobile: boolean, statePane: MobilePane, nowUrl: boolean, tabs: boolean): MobilePane {
   if (!mobile) return "";
   if (statePane !== "") return statePane;
-  return nowUrl ? "now" : "";
+  return nowUrl && tabs ? "now" : "";
 }
 
 /** What the mobile Now Playing player is laid out in (CSS px). */
 export interface NowPlayerSpace {
   /** The pane's width: the video's width (it reaches the screen's edges). */
   width: number;
-  /** The window's height between the top bar and the bottom tabs. */
+  /** The pane's height: the window between the top bar and the bottom tabs (the pane doesn't scroll). */
   available: number;
-  /** The height of the block under the video or artwork (title and heart, seek bar, times, buttons) with its margins. */
+  /** The height of the controls block at the bottom (title, artist, heart and ⋯, seek bar, times, buttons) with its margins. */
   controls: number;
-  /** The artwork's margin (sides and top). */
+  /** The artwork's margin (around it). */
   margin: number;
 }
 
-/** The mobile Now Playing player's media area: its height, and the artwork's side (both CSS px, whole numbers). */
+/** The mobile Now Playing player's media: the video's height, and the artwork's side (both CSS px, whole numbers). */
 export interface NowPlayerSize {
+  /** The space above the controls (the video or artwork is centred in it). */
+  area: number;
+  /** The video's height (0 for the artwork). */
   height: number;
+  /** The artwork's side (0 for a video). */
   artwork: number;
 }
 
-/** The smallest video height and artwork side, so a very short window still shows something. */
-export const NOW_PLAYER_MIN_PX = 96;
-
 /**
- * The mobile Now Playing player's media area (docs/ui.md#mobile-narrow-windows, drawings/mobile_now_playing.png).
- * A **video** (`media` its size, undefined before it is known: 16:9) is as wide as the screen; its height
- * is what that width needs, limited so the controls under it stay on screen (a portrait or other tall video
- * then gets the space above the controls and is letterboxed at the sides, centred). Without a video, the
- * **artwork** is a square with the margin at the sides and on top, as large as the width allows and small
- * enough for the controls to stay on screen; the area's height is the artwork plus its top margin.
+ * The mobile Now Playing player (docs/ui.md#mobile-narrow-windows, drawings/mobile_now_playing.png): the pane
+ * is the whole screen between the top bar and the tabs, the controls at its bottom, and the video or artwork
+ * centred in the space above them (`area`), shrunk to fit so the controls are never pushed off the pane
+ * (a phone in landscape too). A **video** (`media` its size, undefined before it is known: 16:9) is as wide
+ * as the screen at the height that width needs, at most the area (a portrait or other tall video is then
+ * letterboxed at the sides). Without a video, the **artwork** is a square with the margin around it, as large
+ * as the width and the area allow.
  */
 export function nowPlayerSize(space: NowPlayerSpace, video: boolean, media?: { width: number; height: number }): NowPlayerSize {
   const width = Math.max(0, space.width);
-  const room = Math.max(NOW_PLAYER_MIN_PX, space.available - space.controls);
+  const area = Math.max(0, space.available - space.controls);
   if (video) {
     const ratio = media !== undefined && media.width > 0 && media.height > 0 ? media.height / media.width : 9 / 16;
-    const height = Math.max(NOW_PLAYER_MIN_PX, Math.min(width * ratio, room));
-    return { height: Math.floor(height), artwork: 0 };
+    return { area: Math.floor(area), height: Math.floor(Math.min(width * ratio, area)), artwork: 0 };
   }
-  const artwork = Math.max(NOW_PLAYER_MIN_PX, Math.min(width - 2 * space.margin, room - space.margin));
-  return { height: Math.floor(artwork + space.margin), artwork: Math.floor(artwork) };
+  const artwork = Math.max(0, Math.min(width - 2 * space.margin, area - 2 * space.margin));
+  return { area: Math.floor(area), height: 0, artwork: Math.floor(artwork) };
 }
