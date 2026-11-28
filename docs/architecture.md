@@ -10,7 +10,7 @@
                    │        │ media file serving (Range)         │          └─ Packager (opt.)   │
  VRChat player ──► │        └─ /live/{slug}.ts, .m3u8 ◄─────────┼──────────── │                 │
                    │                                            │             └─► ffmpeg (RTMP) ─┼──► VRCDN etc.
-                   │  IngestQueue ── workers ──► ffmpeg/ffprobe/yt-dlp (subprocesses)            │
+                   │  IngestQueue ── workers ──► ffmpeg/ffprobe (subprocesses), YouTube service  │
                    │  DB (JDBC: SQLite | PostgreSQL)      Media store (filesystem)               │
                    └────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -19,10 +19,10 @@
 |---|---|
 | **HTTP layer** | The author's own HTTP server. Routes requests, serves static files and media with Range support, handles WebSocket upgrades and streaming responses that never end. |
 | **Auth** | Local accounts, OIDC login, sessions, permission checks. See [auth.md](auth.md). |
-| **Library** | Item metadata, search, uploads, yt-dlp imports, and the ingest job queue. See [library-and-ingest.md](library-and-ingest.md). |
+| **Library** | Item metadata, search, uploads, YouTube imports (through the YouTube service), and the ingest job queue. See [library-and-ingest.md](library-and-ingest.md). |
 | **Rooms** | Room state in memory (queue, timeline, votes, members), persisted to the DB, and broadcast over WebSocket. See [rooms.md](rooms.md). |
 | **Packager** | One per room with program output enabled. Builds the continuous TS stream and fans it out to `.ts` listeners, the HLS segmenter and the RTMP pusher. See [program-output.md](program-output.md). |
-| **Ingest workers** | A bounded pool that runs ffprobe, ffmpeg and yt-dlp as subprocesses. |
+| **Ingest workers** | A bounded pool that runs ffprobe and ffmpeg as subprocesses, and downloads YouTube videos from the YouTube service (YTSucks, over HTTP; it runs yt-dlp, not TogetherTunes; [library-and-ingest.md](library-and-ingest.md#youtube-caching)). |
 | **Overlay encoder** | A separate bounded pool that renders per-room overlay cards and, where permitted, re-encodes music videos with the QR overlay. See [overlay.md](overlay.md). |
 | **Retention sweeper** | A periodic job that deletes items no library or playlist references, after the retention period. See [libraries.md](libraries.md#retention). |
 | **Identity** | Resolves every request to a user, a guest, or anonymous. Applies the IP-redaction policy to every response. See [auth.md](auth.md). |
@@ -79,7 +79,7 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 | `http.insecureBaseUrl` | unset (off) | Optional `http://` address of the same server (env `TOGETHERTUNES_HTTP_INSECURE_BASE_URL`; anything but `http://` stops startup with exit code 1). When set and `http.publicBaseUrl` is `https://`, plain HTTP serves only stream URLs (public and unlisted rooms' slug URLs, private rooms' token URLs) and redirects everything else ([Plain HTTP](#plain-http)). No effect (a startup warning) while `http.publicBaseUrl` is itself `http://` |
 | `data.dir` | `./data` | |
 | `db.url` | `jdbc:sqlite:<data>/db/media.db` | Or `jdbc:postgresql://…` |
-| `tools.ffmpeg`, `tools.ffprobe`, `tools.ytdlp` | resolved from PATH | |
+| `tools.ffmpeg`, `tools.ffprobe` | resolved from PATH | (`tools.ytdlp` is no longer used since 2026-11-28: accepted and ignored with one startup warning, so old configs keep starting) |
 | `tools.tracksplitter` | resolved from PATH | Optional (2026-11-22): TrackSplitter, for looking song details up online and for removing personal data from audio uploads ([library-and-ingest.md](library-and-ingest.md#looking-details-up-online)); without it, `.m4a` upload originals aren't served. Not found and not set: the feature is off (a startup line, no warning); set to a path that isn't an executable: exit code 1 |
 | `tracksplitter.cacheDir` | `<data.dir>/tracksplitter` | TrackSplitter's cache, rate-limit state and catalogue credentials for this server (`--cache-dir`), apart from anyone's personal TrackSplitter. Env `TOGETHERTUNES_TRACKSPLITTER_CACHE_DIR` |
 | `output.profile` | `720p30` | *admin*. `720p30` \| `1080p30`. Changing it re-encodes every item ([library-and-ingest.md](library-and-ingest.md#re-encodes)) |
@@ -87,7 +87,7 @@ A single JSON config file, with environment-variable overrides. Keys marked *adm
 | `output.audioOnlyBitrateKbps` | 800 | *admin*. Constant video stream rate of audio-only rooms' program output (cards only, so it may be below the cap), 500–25000. Re-encodes nothing ([program-output.md](program-output.md#constant-rate-padding)) |
 | `ingest.workers` | cores/2 | *admin*. 1..256 |
 | `ingest.maxUploadBytes` | 4 GiB | *admin* |
-| `ingest.maxDurationSeconds` | 1800 | *admin*. Applies to both uploads and yt-dlp |
+| `ingest.maxDurationSeconds` | 1800 | *admin*. Applies to both uploads and YouTube imports |
 | `ingest.quickPreset` | veryfast | *admin*. x264 preset for items a room wants now; default of the admin setting of the same name ([library-and-ingest.md](library-and-ingest.md#presets)) |
 | `ingest.qualityPreset` | slow | *admin*. x264 preset for library items (quality re-encodes) |
 | `overlay.workers` | 1 | *admin*. Concurrent overlay re-encodes |
@@ -103,8 +103,8 @@ Runtime settings live in the DB and are edited in the admin UI: registration mod
 - **Reachability:** web users, and VRChat clients using the `.ts` or HLS outputs, fetch **directly** from the server, so it must be publicly reachable over **HTTPS**. VRChat on Android/Quest refuses plain HTTP. If the host has no public IPv4 address (for example behind CGNAT), run the server on a VPS, or reverse-proxy or tunnel from one. RTMP push only needs outbound connectivity, because viewers fetch the stream from the RTMP service, not from this server. Plain-HTTP deployments are not a supported use case for the upload **pre-check**: it is on only when `http.publicBaseUrl` is `https://` (browsers hash with `crypto.subtle`, which needs a secure context); over HTTP uploads always send every byte ([library-and-ingest.md](library-and-ingest.md#pre-check)).
 - **VRChat allowlist:** a self-hosted domain is not on VRChat's video allowlist. Viewers must enable "Allow Untrusted URLs". In public and group-public instances, the world must also list the domain in its "Video Player Allowed Domains". The UI that shows stream URLs says so generically ("Some players only play URLs from an allowlist…", no product names); the VRChat specifics are in [user-guide.md](user-guide.md#in-vrchat).
 - **Operator notes:** `DEPLOYMENT.md` in the repo root (main branch) collects this section for people running a server: HTTPS and the pre-check, the reverse proxy (nginx example with `proxy_buffering off` for `/live/`, WebSocket on `/ws`, `client_max_body_size` for the 8 MiB upload chunks, no access log for `/live/` because private tokens are in the path), trusted proxies, the VRChat allowlist, runtime requirements incl. fonts on offline servers, and backups (SQLite/PostgreSQL, `secret.key`, `media/`, `fonts/uploads/`).
-- **Packaging:** a Docker image (`Dockerfile` in the repo root, built from the jar after `mvn package`) that bundles ffmpeg/ffprobe (Ubuntu 24.04's 6.1.1, pinned, a version from the skip-frame card matrix, with TLS for `rtmps://`), yt-dlp (standalone binary in a directory the server user owns, so `yt-dlp -U` works) with Deno as its JavaScript runtime, and FreeType, fontconfig and DejaVu; it runs as uid 10001 with `/data` as data and working directory. Plus a plain jar for running without Docker. Build and run instructions for both: `INSTALL.md` in the repo root.
-- **Runtime requirements:** Java 21; ffmpeg, ffprobe and yt-dlp; and for the cards (Java2D text, also headless) the **FreeType library, fontconfig and at least one installed font** (Debian/Ubuntu `libfreetype6 fontconfig fonts-dejavu-core`, Alpine `freetype fontconfig font-dejavu`, Fedora `freetype fontconfig dejavu-sans-fonts`). Card text uses the bundled DejaVu Sans, but Java's font manager needs all three anyway (verified in containers, [library-and-ingest.md](library-and-ingest.md#card-fonts)); without them the server exits at startup with code 3 and says what to install. Script fonts (CJK, Thai, Indic, …) are downloaded on demand from GitHub; offline servers upload fonts or install system fonts instead.
+- **Packaging:** a Docker image (`Dockerfile` in the repo root, built from the jar after `mvn package`) that bundles ffmpeg/ffprobe (Ubuntu 24.04's 6.1.1, pinned, a version from the skip-frame card matrix, with TLS for `rtmps://`), and FreeType, fontconfig and DejaVu; it runs as uid 10001 with `/data` as data and working directory. No yt-dlp or Deno since 2026-11-28: YouTube goes through the YouTube service (YTSucks), its own container. Plus a plain jar for running without Docker. Build and run instructions for both: `INSTALL.md` in the repo root.
+- **Runtime requirements:** Java 21; ffmpeg and ffprobe; for YouTube a reachable YouTube service (YTSucks, `youtube.serviceUrl`); and for the cards (Java2D text, also headless) the **FreeType library, fontconfig and at least one installed font** (Debian/Ubuntu `libfreetype6 fontconfig fonts-dejavu-core`, Alpine `freetype fontconfig font-dejavu`, Fedora `freetype fontconfig dejavu-sans-fonts`). Card text uses the bundled DejaVu Sans, but Java's font manager needs all three anyway (verified in containers, [library-and-ingest.md](library-and-ingest.md#card-fonts)); without them the server exits at startup with code 3 and says what to install. Script fonts (CJK, Thai, Indic, …) are downloaded on demand from GitHub; offline servers upload fonts or install system fonts instead.
 - **Reverse proxy:** turn off response buffering for `/live/` paths (in nginx: `proxy_buffering off`). Otherwise `.ts` streams stall. The proxy must send `X-Forwarded-Proto` (`https` or `http`) and be in `http.trustedProxies` (loopback always is): that is how the server knows a request came over plain HTTP.
 
 ### Plain HTTP
@@ -142,7 +142,7 @@ server/
   http/        adapters onto the own HTTP stack, router, static/media file handler
   auth/        local accounts, OIDC client, sessions, permission checks
   db/          JDBC helpers, dialect, migrations (sqlite/ and postgres/)
-  library/     items, search, uploads, yt-dlp import
+  library/     items, search, uploads, YouTube import
   ingest/      job queue, ffprobe/ffmpeg wrappers, card renderer (Java2D), index builder
   rooms/       RoomState, executor, queue/vote logic, WebSocket protocol
   media/       mp4 box walker, sample index reader, H.264/AAC helpers (AVCC→Annex B, ADTS)

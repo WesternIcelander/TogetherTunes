@@ -7,7 +7,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 ## Goals
 
 - **Libraries and playlists.** Media items are stored once on the server. Each user has a private library of references to them, and can make playlists. (Sharing items with other accounts was removed in M9: people send an item's link instead.) Nobody can browse another user's library without a role permission, but anyone with a direct link to an item can open it.
-- **Adding media.** Upload a file, or paste a YouTube URL (fetched with yt-dlp and cached by video ID). Admins decide who may do each, including logged-out users.
+- **Adding media.** Upload a file, or paste a YouTube URL (fetched through the YouTube service, YTSucks, and cached by video ID). Admins decide who may do each, including logged-out users.
 - **Rooms.** A user creates a room and others join it. The owner controls the queue, or lets listeners vote on songs or edit the queue directly. Each room keeps one history of what played; anyone in the room can add an item from it to their own library or (by the room's request rules) to the queue again.
 - **Guests.** Logged-out users can vote and request (from a library, by upload or by YouTube URL) where the admin and the room owner allow it. They get a generated name (adjective + noun) or, if the admin allows, a name of their choice. They are identified by a persistent cookie or by IP address (admin setting).
 - **Synchronised web/app playback.** Web and app listeners play the files locally, kept in sync with the room's server timeline. They can switch between video and audio-only without a break in the audio, or use **remote mode**, which plays nothing locally (for people who hear the room in VRChat).
@@ -34,7 +34,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | Backend | Java (21+, virtual threads) on the **author's own HTTP stack** (`io.siggi:SiggiHTTP`, WebSocket via `io.siggi:SimpleWebsocket`), not a framework. Built with **Maven** |
 | Database | **SQLite and PostgreSQL** both supported, via plain JDBC; SQLite is the default |
 | Web frontend | **Vanilla TypeScript**, no framework, no bundler. Compiled with `tsc` during the Maven build and served by the backend as static files |
-| Media tools | `ffmpeg` / `ffprobe` / `yt-dlp` as subprocesses: at ingest, for overlay encodes, and for the v1 RTMP pusher |
+| Media tools | `ffmpeg` / `ffprobe` as subprocesses: at ingest, for overlay encodes, and for the v1 RTMP pusher. YouTube goes over HTTP to the YouTube service (YTSucks), which runs yt-dlp |
 | Codec profile | H.264 (x264 preset admin-chosen per tier, **veryfast** quick / **slow** quality by default, all with one avcC; no B-frames, closed 2 s GOPs, bitrate **capped** at `output.videoBitrateKbps`, nothing on disk padded; the packager pads the program output to a **constant rate**) + AAC-LC 48 kHz stereo, **720p30 by default** (1080p30 configurable). Identical for every item, card and overlay encode |
 | VRChat delivery | RTMP push, MPEG-TS and HLS, all built from one shared TS byte stream; each enabled or disabled independently. Plus an MP3 stream (one ffmpeg audio encode per room with listeners) for internet radio |
 | Web sync | Server clock + timeline anchor; clients play the files locally and correct drift |
@@ -48,7 +48,7 @@ This folder is the design. It is written so an implementer (human or Claude Code
 | [data-model.md](data-model.md) | Tables, ID and time conventions, notes on the two SQL dialects |
 | [auth.md](auth.md) | Accounts, OIDC, sessions, roles and permissions, guests, IP policy, tokens on stream URLs |
 | [libraries.md](libraries.md) | Items vs. libraries, playlists, visibility, media access rules, retention (item sharing: removed in M9) |
-| [library-and-ingest.md](library-and-ingest.md) | Upload and yt-dlp import, YouTube caching, the mezzanine encoding profile, cards, sample index |
+| [library-and-ingest.md](library-and-ingest.md) | Upload and YouTube import, YouTube caching, the mezzanine encoding profile, cards, sample index |
 | [rooms.md](rooms.md) | Room state, timeline model, queue modes and voting, guests in rooms, the room's history, clock sync, web playback modes |
 | [program-output.md](program-output.md) | The packager: splicing, timestamps, MPEG-TS muxer, RTMP / `.ts` / HLS / MP3 outputs |
 | [overlay.md](overlay.md) | QR overlay: per-room cards, re-encoding music videos, permissions |
