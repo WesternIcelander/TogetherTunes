@@ -86,7 +86,9 @@ class ShellJsTest {
     @Test
     void indexHtmlIsTheOneDocumentWithEveryView() throws Exception {
         String index = read("web/index.html");
-        assertEquals(1, index.split("<script", -1).length - 1, index);
+        // The app's one module, plus the Appearance preference's tiny head script (theme.ts).
+        assertEquals(2, index.split("<script", -1).length - 1, index);
+        assertEquals(1, index.split("<script type=\"module\"", -1).length - 1, index);
         assertTrue(index.contains("<script type=\"module\" src=\"/js/app.js\"></script>"));
         assertTrue(index.contains("<nav id=\"site-nav\""));
         assertTrue(index.contains("<main id=\"app\"></main>"));

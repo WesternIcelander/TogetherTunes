@@ -42,6 +42,7 @@ import { navigate, reloadPage, setFrame, type ShellRoom } from "./nav.js";
 import { listenerVolume } from "./volume.js";
 import { buildReport, recordEvent, stripQuery } from "./diagnostics.js";
 import { prefs } from "./prefsclient.js";
+import { applyTheme } from "./themeclient.js";
 import { offersNextEpisode } from "./shows.js";
 import { MediaSessionSync, sessionPlan, type MediaSessionLike, type SessionMetadata } from "./mediasession.js";
 import { frameRect, layoutKey, overlayShown, overlaySvg, SHOW_QR_KEY, type OverlayLayout } from "./overlayshow.js";
@@ -208,6 +209,9 @@ export class Frame {
     window.setInterval(() => this.#tick(), 250);
     // Debug mode (a user preference): "Send diagnostics" at the top of the page.
     prefs.subscribe((p, changed) => { if (changed.indexOf("debug") >= 0) byId("app-debug").hidden = !p.debug; });
+    // The Appearance (light/dark override): applied at once; a reset (logged out, another user)
+    // follows the system without touching this browser's mirror.
+    prefs.subscribe((p, changed) => { if (changed.indexOf("theme") >= 0) applyTheme(p.theme, prefs.get() !== undefined); });
     byId("app-diagnostics").addEventListener("click", () => { void this.#sendDiagnostics(); });
     document.addEventListener("keydown", (ev) => {
       if (ev.key !== "Escape" || !this.#nowViewOpen() || ev.defaultPrevented) return;
@@ -535,7 +539,10 @@ export class Frame {
     // The user's preferences (debug mode, Web Audio, double-click): another user's are forgotten.
     const now = this.#me;
     if (now.kind !== "user" || before?.kind !== "user" || before.id !== now.id) prefs.reset();
-    if (user) prefs.load().catch(() => undefined);
+    // The server's Appearance wins over the mirror index.html applied (also when it is the default,
+    // which the store's change events leave out); guests and anonymous visitors follow the system.
+    if (user) prefs.load().then((p) => { applyTheme(p.theme, true); }, () => undefined);
+    else applyTheme("system", false);
     document.body.classList.toggle("signed-in", user);
     byId("app-sidebar").hidden = !user;
     byId("app-search").hidden = !user;

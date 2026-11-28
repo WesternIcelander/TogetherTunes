@@ -12,7 +12,8 @@ import java.util.Objects;
  *
  * <ul>
  *   <li>{@code GET /api/me/settings} → {@code {"doubleClickAlone": "play"|"queue",
- *       "webAudio": "auto"|"on"|"off", "debug": boolean}}, every key, defaults included.</li>
+ *       "webAudio": "auto"|"on"|"off", "debug": boolean,
+ *       "theme": "system"|"light"|"dark"}}, every key, defaults included.</li>
  *   <li>{@code PATCH /api/me/settings} with any subset of those keys → {@code 200} and all of
  *       them as in {@code GET}; {@code 400 unknown_setting}, {@code 400 invalid_setting} (nothing
  *       is saved then).</li>

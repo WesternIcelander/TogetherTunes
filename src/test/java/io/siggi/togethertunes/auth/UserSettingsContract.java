@@ -77,7 +77,7 @@ abstract class UserSettingsContract {
     @Test
     void usersWithoutARowHaveTheDefaults() throws SQLException {
         String jane = fixtures.user("jane", false);
-        assertEquals(new UserSettings.Prefs("play", "auto", false), settings.get(jane));
+        assertEquals(new UserSettings.Prefs("play", "auto", false, "system"), settings.get(jane));
         assertEquals(UserSettings.Prefs.DEFAULTS, settings.patch(jane, new JsonObject()));
         assertEquals(null, stored(jane), "an empty patch stores nothing");
     }
@@ -86,20 +86,41 @@ abstract class UserSettingsContract {
     void patchSetsOnlyTheGivenKeysAndStoresOnlyThose() throws SQLException {
         String jane = fixtures.user("jane", false);
         String joe = fixtures.user("joe", false);
-        assertEquals(new UserSettings.Prefs("queue", "auto", false),
+        assertEquals(new UserSettings.Prefs("queue", "auto", false, "system"),
                 settings.patch(jane, json("{\"doubleClickAlone\":\"queue\"}")));
         assertEquals(json("{\"doubleClickAlone\":\"queue\"}").toString() + "@" + NOW, stored(jane));
         clock.advance(5000);
-        assertEquals(new UserSettings.Prefs("queue", "on", true),
+        assertEquals(new UserSettings.Prefs("queue", "on", true, "system"),
                 settings.patch(jane, json("{\"webAudio\":\"on\",\"debug\":true}")));
-        assertEquals(new UserSettings.Prefs("queue", "on", true), settings.get(jane));
+        assertEquals(new UserSettings.Prefs("queue", "on", true, "system"), settings.get(jane));
         assertEquals(json("{\"doubleClickAlone\":\"queue\",\"webAudio\":\"on\",\"debug\":true}"),
                 json(stored(jane).split("@")[0]));
         assertEquals(NOW + 5000, Long.parseLong(stored(jane).split("@")[1]));
         // Setting a key back to its default keeps it stored (explicit), still reads as the default.
-        assertEquals(new UserSettings.Prefs("play", "on", false),
+        assertEquals(new UserSettings.Prefs("play", "on", false, "system"),
                 settings.patch(jane, json("{\"doubleClickAlone\":\"play\",\"debug\":false}")));
         assertEquals(UserSettings.Prefs.DEFAULTS, settings.get(joe), "other users unaffected");
+    }
+
+    @Test
+    void themeDefaultsToSystemAndRoundTrips() throws SQLException {
+        String jane = fixtures.user("jane", false);
+        assertEquals("system", settings.get(jane).theme());
+        assertEquals("system", UserSettings.Prefs.DEFAULTS.toJson().get("theme"));
+        for (String theme : List.of("dark", "light", "system")) {
+            assertEquals(new UserSettings.Prefs("play", "auto", false, theme),
+                    settings.patch(jane, json("{\"theme\":\"" + theme + "\"}")), theme);
+            assertEquals(theme, settings.get(jane).theme(), theme);
+        }
+        assertEquals(json("{\"theme\":\"system\"}"), json(stored(jane).split("@")[0]));
+        for (String bad : List.of("{\"theme\":\"Dark\"}", "{\"theme\":\"auto\"}", "{\"theme\":true}",
+                "{\"theme\":null}", "{\"theme\":[\"dark\"]}")) {
+            HttpError e = assertThrows(HttpError.class, () -> settings.patch(jane, json(bad)), bad);
+            assertEquals("invalid_setting", e.code(), bad);
+        }
+        String joe = fixtures.user("joe", false);
+        store(joe, "{\"theme\":\"sepia\"}");
+        assertEquals("system", settings.get(joe).theme(), "a stored value not understood reads as the default");
     }
 
     @Test
@@ -121,7 +142,7 @@ abstract class UserSettingsContract {
     void storedValuesNotUnderstoodReadAsDefaultsAndAreDropped() throws SQLException {
         String jane = fixtures.user("jane", false);
         store(jane, "{\"doubleClickAlone\":\"later\",\"webAudio\":\"off\",\"debug\":\"yes\",\"oldSetting\":1}");
-        assertEquals(new UserSettings.Prefs("play", "off", false), settings.get(jane));
+        assertEquals(new UserSettings.Prefs("play", "off", false, "system"), settings.get(jane));
         settings.patch(jane, json("{\"debug\":true}"));
         assertEquals(json("{\"doubleClickAlone\":\"later\",\"webAudio\":\"off\",\"debug\":true}"),
                 json(stored(jane).split("@")[0]), "unknown keys go on the next save");
@@ -129,7 +150,7 @@ abstract class UserSettingsContract {
         String joe = fixtures.user("joe", false);
         store(joe, "not json");
         assertEquals(UserSettings.Prefs.DEFAULTS, settings.get(joe));
-        assertEquals(new UserSettings.Prefs("queue", "auto", false),
+        assertEquals(new UserSettings.Prefs("queue", "auto", false, "system"),
                 settings.patch(joe, json("{\"doubleClickAlone\":\"queue\"}")));
     }
 
@@ -155,7 +176,7 @@ abstract class UserSettingsContract {
                 t.join();
             }
             assertEquals(List.of(), errors);
-            assertEquals(new UserSettings.Prefs("queue", "off", true), settings.get(user));
+            assertEquals(new UserSettings.Prefs("queue", "off", true, "system"), settings.get(user));
         }
     }
 

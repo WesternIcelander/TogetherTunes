@@ -7,11 +7,14 @@ import { pathToFileURL } from "node:url";
 const P = await import(pathToFileURL(process.env.PREFS_JS).href);
 
 test("parsing: defaults for anything missing or not understood", () => {
-  assert.deepEqual(P.parsePrefs(undefined), { doubleClickAlone: "play", webAudio: "auto", debug: false });
-  assert.deepEqual(P.parsePrefs({ doubleClickAlone: "queue", webAudio: "off", debug: true }),
-    { doubleClickAlone: "queue", webAudio: "off", debug: true });
-  assert.deepEqual(P.parsePrefs({ doubleClickAlone: "x", webAudio: 1, debug: "yes", other: 1 }),
-    { doubleClickAlone: "play", webAudio: "auto", debug: false });
+  assert.deepEqual(P.parsePrefs(undefined), { doubleClickAlone: "play", webAudio: "auto", debug: false, theme: "system" });
+  assert.deepEqual(P.parsePrefs({ doubleClickAlone: "queue", webAudio: "off", debug: true, theme: "dark" }),
+    { doubleClickAlone: "queue", webAudio: "off", debug: true, theme: "dark" });
+  assert.deepEqual(P.parsePrefs({ doubleClickAlone: "x", webAudio: 1, debug: "yes", theme: "Dark", other: 1 }),
+    { doubleClickAlone: "play", webAudio: "auto", debug: false, theme: "system" });
+  assert.equal(P.parsePrefs({ theme: "light" }).theme, "light");
+  assert.deepEqual(P.THEME_OPTIONS.map(([, label]) => label), ["Match System", "Light Mode", "Dark Mode"]);
+  assert.deepEqual(P.THEME_OPTIONS.map(([v]) => v), ["system", "light", "dark"]);
 });
 
 test("patches carry only what changes", () => {
@@ -19,7 +22,7 @@ test("patches carry only what changes", () => {
   assert.equal(P.prefsPatch(cur, {}), null);
   assert.equal(P.prefsPatch(cur, { webAudio: "auto" }), null);
   assert.deepEqual(P.prefsPatch(cur, { webAudio: "on", debug: false }), { webAudio: "on" });
-  assert.deepEqual(P.changedKeys(undefined, cur), ["doubleClickAlone", "webAudio", "debug"]);
+  assert.deepEqual(P.changedKeys(undefined, cur), ["doubleClickAlone", "webAudio", "debug", "theme"]);
   assert.deepEqual(P.changedKeys(cur, { ...cur, debug: true }), ["debug"]);
 });
 

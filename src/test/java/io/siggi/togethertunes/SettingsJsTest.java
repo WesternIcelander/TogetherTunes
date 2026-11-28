@@ -1,5 +1,6 @@
 package io.siggi.togethertunes;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -35,6 +36,48 @@ class SettingsJsTest {
     }
 
     @Test
+    void themeUnitTestsPass() throws Exception {
+        NodeTests.run("theme.test.mjs", Map.of("THEME_JS", "web/js/theme.js"));
+    }
+
+    /**
+     * The Appearance preference: a select in Preferences, applied by the frame, mirrored for
+     * index.html's head script (which runs before the stylesheet), and main.css's dark-scheme
+     * rules follow {@code data-theme}.
+     */
+    @Test
+    void appearanceFollowsThePreference() throws Exception {
+        String html = NodeTests.view("view-account");
+        assertTrue(html.contains("id=\"pref-theme\""));
+        assertTrue(read("web/js/account.js").contains("THEME_OPTIONS"));
+        String frame = read("web/js/frame.js");
+        assertTrue(frame.contains("applyTheme(p.theme, true)"));
+        assertTrue(frame.contains("applyTheme(\"system\", false)"));
+        String index = read("web/index.html");
+        int script = index.indexOf("localStorage.getItem(\"tt.theme\")");
+        assertTrue(script > 0 && script < index.indexOf("/css/main.css"), "the head script runs before the stylesheet");
+        String css = read("web/css/main.css");
+        assertTrue(css.contains(":root[data-theme=\"light\"] {\n  color-scheme: light;"));
+        assertTrue(css.contains(":root[data-theme=\"dark\"] {\n  color-scheme: dark;"));
+        // Every dark-scheme block applies only without the light override, and has a forced-dark twin.
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("@media \\(prefers-color-scheme: dark\\) \\{\\n([^@]*?)\\n\\}\\n")
+                .matcher(css);
+        int blocks = 0;
+        while (m.find()) {
+            blocks++;
+            String body = m.group(1);
+            for (String line : body.split("\n")) {
+                if (line.endsWith("{") || line.endsWith(",")) {
+                    assertTrue(line.trim().startsWith(":root:not([data-theme=\"light\"])"), line);
+                    String twin = line.trim().replace(":root:not([data-theme=\"light\"])", ":root[data-theme=\"dark\"]");
+                    assertTrue(css.contains("\n" + twin + "\n"), twin);
+                }
+            }
+        }
+        assertEquals(4, blocks);
+    }
+
+    @Test
     void invitesUnitTestsPass() throws Exception {
         NodeTests.run("invites.test.mjs", Map.of("INVITES_JS", "web/js/invites.js"));
     }
@@ -43,6 +86,7 @@ class SettingsJsTest {
     void theRulesArePureLogic() throws Exception {
         assertPure("web/js/prefs.js");
         assertPure("web/js/invites.js");
+        assertPure("web/js/theme.js");
     }
 
     @Test

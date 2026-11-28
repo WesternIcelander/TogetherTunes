@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>TogetherTunes</title>
+  <!-- The Appearance preference (theme.ts): the last value this browser applied, set before the
+       stylesheet so a forced light or dark page doesn't flash the other scheme first. -->
+  <script>try{var t=localStorage.getItem("tt.theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
   <link rel="stylesheet" href="/css/main.css">
   <!-- The single-page app's one document, served for every UI path (docs/ui.md#single-page-app).
        The shell (/js/app.js, shell.ts) shows the URL's view: a template below plus its module. -->
@@ -539,6 +542,10 @@
             itself if Web Audio stutters on this device. On: always Web Audio. Off: straight from the media element,
             which costs the crossfade on the audio-only switch and, where the browser can't set the volume, the
             loudness adjustment for originals.</small>
+          <label>Appearance
+            <select id="pref-theme" name="theme"></select>
+          </label>
+          <small>Light or dark pages. Match System follows your device's setting.</small>
           <label class="check"><input type="checkbox" id="pref-debug" name="debug"> Debug mode</label>
           <small>Shows a "Send diagnostics" button at the top of the page, which sends what the player did to the
             server log (for playback problems).</small>

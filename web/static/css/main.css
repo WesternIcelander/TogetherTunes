@@ -23,13 +23,34 @@
   --z-dialog: 100;
 }
 
+/*
+ * The Appearance preference (user settings → Preferences, theme.ts): `data-theme` on <html> forces
+ * one scheme; without it the page follows the system. Every dark-scheme block below is written
+ * twice: under the media query for :root:not([data-theme="light"]), and for :root[data-theme="dark"]
+ * whatever the system says (no light-dark() or nesting: Safari 15 baseline).
+ */
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --link: #8ab4f8;
     --link-visited: #c9a7f5;
     --link-hover: #b3cefb;
     --link-current: #e8e8e8;
   }
+}
+
+:root[data-theme="dark"] {
+  --link: #8ab4f8;
+  --link-visited: #c9a7f5;
+  --link-hover: #b3cefb;
+  --link-current: #e8e8e8;
 }
 
 a:link,
@@ -1382,19 +1403,33 @@ table.rooms td {
 }
 
 @media (prefers-color-scheme: dark) {
-  .output-connected,
-  .output-ready {
+  :root:not([data-theme="light"]) .output-connected,
+  :root:not([data-theme="light"]) .output-ready {
     color: #81c995;
   }
 
-  .output-retrying,
-  .output-connecting {
+  :root:not([data-theme="light"]) .output-retrying,
+  :root:not([data-theme="light"]) .output-connecting {
     color: #fdd663;
   }
 
-  .output-error {
+  :root:not([data-theme="light"]) .output-error {
     color: #f28b82;
   }
+}
+
+:root[data-theme="dark"] .output-connected,
+:root[data-theme="dark"] .output-ready {
+  color: #81c995;
+}
+
+:root[data-theme="dark"] .output-retrying,
+:root[data-theme="dark"] .output-connecting {
+  color: #fdd663;
+}
+
+:root[data-theme="dark"] .output-error {
+  color: #f28b82;
 }
 
 .output-detail {
@@ -1498,9 +1533,13 @@ table.rooms td {
 }
 
 @media (prefers-color-scheme: dark) {
-  .classify-prompt .form {
+  :root:not([data-theme="light"]) .classify-prompt .form {
     background: #222;
   }
+}
+
+:root[data-theme="dark"] .classify-prompt .form {
+  background: #222;
 }
 
 /* ------------------------------------------------------------------ room view (docs/ui.md#room-view-desktop) */
@@ -2451,9 +2490,13 @@ li.entry.selected {
 }
 
 @media (prefers-color-scheme: dark) {
-  .drop-uploads {
+  :root:not([data-theme="light"]) .drop-uploads {
     background: #222;
   }
+}
+
+:root[data-theme="dark"] .drop-uploads {
+  background: #222;
 }
 
 /* The page a popup login ends at (/auth/popup-done). */

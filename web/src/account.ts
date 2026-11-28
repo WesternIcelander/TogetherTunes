@@ -14,7 +14,7 @@ import { canRevoke, DEFAULT_EXPIRY_HOURS, EXPIRY_OPTIONS, inviteBody, inviteStat
   type Invite } from "./invites.js";
 import { viewScope } from "./nav.js";
 import { copyField } from "./outputspanel.js";
-import { DOUBLE_CLICK_OPTIONS, WEB_AUDIO_OPTIONS, type Prefs } from "./prefs.js";
+import { DOUBLE_CLICK_OPTIONS, parseTheme, THEME_OPTIONS, WEB_AUDIO_OPTIONS, type Prefs } from "./prefs.js";
 import { prefs } from "./prefsclient.js";
 import {
   canInvite, formValue, LOGIN_PAGE, message, onReady, onSubmit, renderNav, requireUser, type MeUser,
@@ -250,14 +250,17 @@ function showPrefs(p: Prefs): void {
   element<HTMLSelectElement>("pref-doubleClickAlone").value = p.doubleClickAlone;
   element<HTMLSelectElement>("pref-webAudio").value = p.webAudio;
   element<HTMLInputElement>("pref-debug").checked = p.debug;
+  element<HTMLSelectElement>("pref-theme").value = p.theme;
 }
 
 async function setUpPrefs(): Promise<void> {
   const dc = element<HTMLSelectElement>("pref-doubleClickAlone");
   const wa = element<HTMLSelectElement>("pref-webAudio");
   const debug = element<HTMLInputElement>("pref-debug");
+  const theme = element<HTMLSelectElement>("pref-theme");
   fillSelect(dc, DOUBLE_CLICK_OPTIONS);
   fillSelect(wa, WEB_AUDIO_OPTIONS);
+  fillSelect(theme, THEME_OPTIONS);
   const status = element("prefs-status");
   const error = element("prefs-error");
   element<HTMLFormElement>("prefs-form").addEventListener("submit", (ev) => ev.preventDefault());
@@ -279,6 +282,7 @@ async function setUpPrefs(): Promise<void> {
   dc.addEventListener("change", () => save({ doubleClickAlone: dc.value === "queue" ? "queue" : "play" }));
   wa.addEventListener("change", () => save({ webAudio: wa.value === "on" || wa.value === "off" ? wa.value : "auto" }));
   debug.addEventListener("change", () => save({ debug: debug.checked }));
+  theme.addEventListener("change", () => save({ theme: parseTheme(theme.value) }));
   try {
     const p = await prefs.load();
     if (!VIEW.signal.aborted) showPrefs(p);

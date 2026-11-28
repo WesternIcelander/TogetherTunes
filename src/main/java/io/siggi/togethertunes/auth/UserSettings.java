@@ -31,6 +31,8 @@ import java.util.Objects;
  *       player plays through Web Audio (the client decides what Auto does).</li>
  *   <li>{@code debug}: {@code false} (default) or {@code true}: debug mode (e.g. the Send
  *       diagnostics button).</li>
+ *   <li>{@code theme}: {@code "system"} (default: follow the system's light/dark scheme),
+ *       {@code "light"} or {@code "dark"}: the Appearance preference.</li>
  * </ul>
  * A user without a row has the defaults. The row stores only the keys the user set; a stored value
  * that is missing or not understood (e.g. an option removed later) reads as the default.
@@ -41,17 +43,20 @@ public final class UserSettings {
     public static final String DOUBLE_CLICK_ALONE = "doubleClickAlone";
     public static final String WEB_AUDIO = "webAudio";
     public static final String DEBUG = "debug";
+    public static final String THEME = "theme";
 
     private static final List<String> DOUBLE_CLICK_VALUES = List.of("play", "queue");
     private static final List<String> WEB_AUDIO_VALUES = List.of("auto", "on", "off");
+    private static final List<String> THEME_VALUES = List.of("system", "light", "dark");
 
     /** The effective preferences. */
-    public record Prefs(String doubleClickAlone, String webAudio, boolean debug) {
-        public static final Prefs DEFAULTS = new Prefs("play", "auto", false);
+    public record Prefs(String doubleClickAlone, String webAudio, boolean debug, String theme) {
+        public static final Prefs DEFAULTS = new Prefs("play", "auto", false, "system");
 
         public Prefs {
             Objects.requireNonNull(doubleClickAlone);
             Objects.requireNonNull(webAudio);
+            Objects.requireNonNull(theme);
         }
 
         /** The API form: every key, defaults included. */
@@ -60,6 +65,7 @@ public final class UserSettings {
             m.put(DOUBLE_CLICK_ALONE, doubleClickAlone);
             m.put(WEB_AUDIO, webAudio);
             m.put(DEBUG, debug);
+            m.put(THEME, theme);
             return m;
         }
     }
@@ -109,7 +115,7 @@ public final class UserSettings {
             }
             // Keep only the keys this version knows (drops leftovers of removed settings).
             JsonObject keep = new JsonObject();
-            for (String key : List.of(DOUBLE_CLICK_ALONE, WEB_AUDIO, DEBUG)) {
+            for (String key : List.of(DOUBLE_CLICK_ALONE, WEB_AUDIO, DEBUG, THEME)) {
                 if (stored.has(key)) {
                     keep.add(key, stored.get(key));
                 }
@@ -156,9 +162,11 @@ public final class UserSettings {
         String doubleClick = choice(stored.get(DOUBLE_CLICK_ALONE), DOUBLE_CLICK_VALUES);
         String webAudio = choice(stored.get(WEB_AUDIO), WEB_AUDIO_VALUES);
         Boolean debug = bool(stored.get(DEBUG));
+        String theme = choice(stored.get(THEME), THEME_VALUES);
         return new Prefs(doubleClick == null ? d.doubleClickAlone() : doubleClick,
                 webAudio == null ? d.webAudio() : webAudio,
-                debug == null ? d.debug() : debug);
+                debug == null ? d.debug() : debug,
+                theme == null ? d.theme() : theme);
     }
 
     /** Checks every key and value of a patch; returns them (a {@code null} value is invalid). */
@@ -173,6 +181,7 @@ public final class UserSettings {
             switch (key) {
                 case DOUBLE_CLICK_ALONE -> requireChoice(key, value, DOUBLE_CLICK_VALUES);
                 case WEB_AUDIO -> requireChoice(key, value, WEB_AUDIO_VALUES);
+                case THEME -> requireChoice(key, value, THEME_VALUES);
                 case DEBUG -> {
                     if (bool(value) == null) {
                         throw new HttpError(400, "invalid_setting", key + " must be true or false");

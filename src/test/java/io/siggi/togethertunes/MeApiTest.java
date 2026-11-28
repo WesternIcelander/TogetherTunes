@@ -604,7 +604,7 @@ class MeApiTest {
         HttpResponse<String> r = send("GET", "/api/me/settings", null, admin);
         assertEquals(200, r.statusCode(), r.body());
         assertEquals("no-store", r.headers().firstValue("Cache-Control").orElse(null));
-        assertEquals(JsonParser.parseString("{\"doubleClickAlone\":\"play\",\"webAudio\":\"auto\",\"debug\":false}"),
+        assertEquals(JsonParser.parseString("{\"doubleClickAlone\":\"play\",\"webAudio\":\"auto\",\"debug\":false,\"theme\":\"system\"}"),
                 JsonParser.parseString(r.body()));
         assertEquals(0, count("SELECT COUNT(*) FROM user_settings"));
 
@@ -619,11 +619,17 @@ class MeApiTest {
         assertTrue(patched.get("debug").getAsBoolean());
         assertEquals(patched, call(200, "GET", "/api/me/settings", null, admin));
         assertEquals(patched, call(200, "PATCH", "/api/me/settings", "{}", admin), "an empty patch changes nothing");
+
+        patched = call(200, "PATCH", "/api/me/settings", "{\"theme\":\"dark\"}", admin);
+        assertEquals("dark", patched.get("theme").getAsString());
+        assertEquals("off", patched.get("webAudio").getAsString(), "other keys keep their value");
+        assertEquals("dark", call(200, "GET", "/api/me/settings", null, admin).get("theme").getAsString());
     }
 
     @Test
     void userSettingsValidation() throws Exception {
-        assertError("unknown_setting", call(400, "PATCH", "/api/me/settings", "{\"theme\":\"dark\"}", admin));
+        assertError("unknown_setting", call(400, "PATCH", "/api/me/settings", "{\"colour\":\"dark\"}", admin));
+        assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"theme\":\"auto\"}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"doubleClickAlone\":\"skip\"}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"webAudio\":true}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/me/settings", "{\"debug\":\"yes\"}", admin));

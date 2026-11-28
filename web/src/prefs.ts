@@ -1,5 +1,5 @@
 // The user's preferences (`GET`/`PATCH /api/me/settings`, docs/ui.md#existing-features-in-the-new-ui):
-// double-click behaviour alone, Web Audio and debug mode. Pure logic (no DOM): the store gets its
+// double-click behaviour alone, Web Audio, debug mode and the Appearance (theme.ts). Pure logic (no DOM): the store gets its
 // loader and saver from prefsclient.ts, so it runs under Node in the tests (prefs.test.mjs).
 //
 // Changes apply at once: `set()` updates the cached value and tells the subscribers synchronously
@@ -8,18 +8,22 @@
 
 export type DoubleClickAlone = "play" | "queue";
 export type WebAudioPref = "auto" | "on" | "off";
+export type ThemePref = "system" | "light" | "dark";
 
 export interface Prefs {
   doubleClickAlone: DoubleClickAlone;
   webAudio: WebAudioPref;
   debug: boolean;
+  theme: ThemePref;
 }
 
 export type PrefKey = keyof Prefs;
 
-export const DEFAULT_PREFS: Readonly<Prefs> = { doubleClickAlone: "play", webAudio: "auto", debug: false };
+export const DEFAULT_PREFS: Readonly<Prefs> = {
+  doubleClickAlone: "play", webAudio: "auto", debug: false, theme: "system",
+};
 
-export const PREF_KEYS: readonly PrefKey[] = ["doubleClickAlone", "webAudio", "debug"];
+export const PREF_KEYS: readonly PrefKey[] = ["doubleClickAlone", "webAudio", "debug", "theme"];
 
 /** The choices of each select-type preference, with their labels. */
 export const DOUBLE_CLICK_OPTIONS: readonly [DoubleClickAlone, string][] = [
@@ -33,6 +37,17 @@ export const WEB_AUDIO_OPTIONS: readonly [WebAudioPref, string][] = [
   ["off", "Off"],
 ];
 
+export const THEME_OPTIONS: readonly [ThemePref, string][] = [
+  ["system", "Match System"],
+  ["light", "Light Mode"],
+  ["dark", "Dark Mode"],
+];
+
+/** A theme value; anything else is "system". */
+export function parseTheme(v: unknown): ThemePref {
+  return v === "light" || v === "dark" ? v : "system";
+}
+
 /** The server's answer as preferences: anything missing or not understood is the default. */
 export function parsePrefs(raw: unknown): Prefs {
   const r = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -42,6 +57,7 @@ export function parsePrefs(raw: unknown): Prefs {
     doubleClickAlone: dc === "queue" ? "queue" : "play",
     webAudio: wa === "on" || wa === "off" ? wa : "auto",
     debug: r["debug"] === true,
+    theme: parseTheme(r["theme"]),
   };
 }
 
