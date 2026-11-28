@@ -1690,7 +1690,7 @@ body.now-view-open .app-video .video-card .card-artist {
    Request Link, ...) above the queue | people and Earlier. The view needs about 67rem (28rem video, 20rem queue,
    16rem people, the gaps) plus #app's padding and scrollbar, and with the left sidebar (signed-in users) 15rem
    more. One row: the video area (.rv-stage) and the request/queue column side by side, the video area at the top
-   of its cell (sticky from 800 px, below). Here the video keeps 60vh at most (the list is beside it).
+   of its cell (sticky from 800 px wide and 900 px tall, below). Here the video keeps 60vh at most (the list is beside it).
    (A media query, not @container: the baseline is Safari 15.) */
 @media (min-width: 71rem) {
   body.room-view:not(.signed-in) .rv-main {
@@ -2642,7 +2642,19 @@ li.entry.selected {
     overscroll-behavior: contain;
   }
 
-  /* The room view: the video doesn't scroll (docs/ui.md#room-view-desktop). #app doesn't scroll here; the view
+  /* The list under the video (two columns, one column): the video smaller, so an 800 or 900 px tall window still
+     shows a good part of the list. */
+  body.room-view:not(.now-view-open) .rv-video-slot .room-player video,
+  body.room-view:not(.now-view-open) .rv-video-slot .video-card {
+    max-height: 38vh;
+  }
+}
+
+@media (min-width: 800px) and (min-height: 900px) {
+  /* The room view on tall windows: the video doesn't scroll (docs/ui.md#room-view-desktop). Only from 900 px
+     tall: on shorter windows (e.g. 1024x768) the list under or beside the sticky video got only ~200 px, so there
+     the room view scrolls in #app as one page like every other view (the 800 px rules above), with the same
+     columns and the video's max-height. #app doesn't scroll here; the view
      fills it as a flex column (room head, notices, then .rv-grid) and .rv-grid is the scroll container, with the
      video area (.rv-stage: video slot, title line, vote to skip) sticky at its top. Three columns: the request/queue
      column and the people/Earlier column scroll together beside the video; two columns: the queue/request part
@@ -2696,13 +2708,6 @@ li.entry.selected {
   body.room-view .rv-under-video {
     margin-bottom: 0;
     padding-bottom: 0.75rem;
-  }
-
-  /* The list under the video (two columns, one column): the video smaller, so an 800 or 900 px tall window still
-     shows a good part of the list. */
-  body.room-view:not(.now-view-open) .rv-video-slot .room-player video,
-  body.room-view:not(.now-view-open) .rv-video-slot .video-card {
-    max-height: 38vh;
   }
 }
 
