@@ -88,14 +88,6 @@ public final class Settings {
      * server on the service's allow list). A secret: never returned or logged.
      */
     public static final SettingKey<String> YOUTUBE_SERVICE_TOKEN = SettingKey.secret("youtube.serviceToken", 1000);
-    public static final SettingKey<String> YTDLP_COOKIES_FILE = SettingKey.optionalString("ytdlp.cookiesFile");
-    /**
-     * Base URL of a PO token provider server for yt-dlp's provider plugin
-     * ({@code docs/library-and-ingest.md#youtube-caching}); unset = yt-dlp gets no provider URL
-     * (the plugin, if installed, then tries its own default).
-     */
-    public static final SettingKey<String> YTDLP_PO_TOKEN_PROVIDER_URL = SettingKey.optionalUrl(
-            "ytdlp.poTokenProviderUrl", true);
     /**
      * Looking song details up online with TrackSplitter ({@code docs/library-and-ingest.md#looking-details-up-online});
      * only works while {@code tools.tracksplitter} is found.
@@ -292,7 +284,7 @@ public final class Settings {
         for (SettingKey<?> k : List.of(REGISTRATION_MODE, AUTH_LOGIN_MESSAGE, AUTH_REGISTER_MESSAGE,
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
-                YTDLP_ENABLED, YOUTUBE_SERVICE_URL, YOUTUBE_SERVICE_TOKEN, YTDLP_COOKIES_FILE, YTDLP_PO_TOKEN_PROVIDER_URL, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
+                YTDLP_ENABLED, YOUTUBE_SERVICE_URL, YOUTUBE_SERVICE_TOKEN, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
                 MVFINDER_URL, MVFINDER_HEADER_NAME, MVFINDER_HEADER_VALUE, MVFINDER_PREFER, MVFINDER_ALLOW_GUESTS,
                 MVFINDER_MAX_PER_HOUR, YOUTUBE_SEARCH_MAX_PER_HOUR,
                 RETENTION_UNREFERENCED_DAYS,
@@ -566,16 +558,6 @@ public final class Settings {
     /** The YouTube service's token; empty for none. */
     public String youtubeServiceToken() throws SQLException {
         return get(YOUTUBE_SERVICE_TOKEN);
-    }
-
-    /** The yt-dlp cookies file, or {@code null} for none. */
-    public String ytdlpCookiesFile() throws SQLException {
-        return get(YTDLP_COOKIES_FILE);
-    }
-
-    /** The PO token provider URL for yt-dlp, or {@code null} for none. */
-    public String ytdlpPoTokenProviderUrl() throws SQLException {
-        return get(YTDLP_PO_TOKEN_PROVIDER_URL);
     }
 
     /** Days an unreferenced item is kept; 0 means never delete. */

@@ -77,10 +77,8 @@ import io.siggi.togethertunes.ingest.ReferenceCard;
 import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
-import io.siggi.togethertunes.ingest.YtdlpApi;
 import io.siggi.togethertunes.youtube.YoutubeService;
 import io.siggi.togethertunes.youtube.YoutubeServiceApi;
-import io.siggi.togethertunes.ingest.YtdlpUpdater;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.CleartextTokens;
 import io.siggi.togethertunes.output.FillerSource.Filler;
@@ -163,7 +161,6 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Supplier;
 
 /**
  * Entry point of the runnable jar.
@@ -254,15 +251,6 @@ public final class Main {
         SilenceFrame silence = loadSilenceFrame(config, System.err);
         // every YouTube call goes to the YouTube service (youtube.serviceUrl, youtube.serviceToken)
         YoutubeService youtube = youtubeService(settings);
-        // the old yt-dlp settings, unused since YouTube goes through the service (removed with the old code)
-        Supplier<String> poTokenProviderUrl = poTokenProviderUrl(settings);
-        // yt-dlp calls without a job directory copy the cookies file here (leftovers deleted)
-        try {
-            io.siggi.togethertunes.ytdlp.CookieJarFile.serverTempDir(dataDir.tmp().resolve("cookies"));
-        } catch (IOException e) {
-            System.err.println("Could not set up " + dataDir.tmp().resolve("cookies") + " (" + e.getMessage()
-                    + "); private copies of the yt-dlp cookies file go to the system temp dir");
-        }
         // The quick and quality x264 presets, each checked against the reference avcC before use.
         EncodePresets presets = encodePresets(config, dataDir, outputAssets, settings, System.err);
         // TrackSplitter (docs/library-and-ingest.md#looking-details-up-online): the item page's Look up
@@ -666,9 +654,6 @@ public final class Main {
         new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
         // The admin's YouTube service box: its status, Update now, the update log and the connection test.
         new YoutubeServiceApi(youtube, settings, database, permissions, Clock.systemUTC()).register(appRouter);
-        // The old yt-dlp routes (no longer used by the admin page; removed with TogetherTunes's own yt-dlp).
-        new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC(),
-                poTokenProviderUrl).register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
         new OverlayPreviewApi(rooms, overlays, customCards).register(appRouter);
         // The web player's copy of the overlay (docs/ui.md "Show QR code"): its layout, and the
@@ -1155,38 +1140,6 @@ public final class Main {
                 return YoutubeService.Endpoint.NONE;
             }
         });
-    }
-
-    /**
-     * The {@code ytdlp.poTokenProviderUrl} setting, read each time yt-dlp runs (so an admin's change
-     * applies to the next call); null if it can't be read.
-     */
-    static Supplier<String> poTokenProviderUrl(Settings settings) {
-        return () -> {
-            try {
-                return settings.ytdlpPoTokenProviderUrl();
-            } catch (SQLException e) {
-                System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
-                        "Could not read ytdlp.poTokenProviderUrl: " + e.getMessage());
-                return null;
-            }
-        };
-    }
-
-    /**
-     * The {@code ytdlp.cookiesFile} setting, read each time yt-dlp runs (so an admin's change
-     * applies to the next import); null if it can't be read.
-     */
-    static Supplier<String> cookiesFile(Settings settings) {
-        return () -> {
-            try {
-                return settings.ytdlpCookiesFile();
-            } catch (SQLException e) {
-                System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
-                        "Could not read ytdlp.cookiesFile: " + e.getMessage());
-                return null;
-            }
-        };
     }
 
     /**

@@ -9,7 +9,6 @@ import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.SampleIndex;
-import io.siggi.togethertunes.ytdlp.CookieJarFile;
 import io.siggi.togethertunes.youtube.YoutubeService;
 import io.siggi.togethertunes.youtube.YoutubeServiceException;
 import java.awt.image.BufferedImage;
@@ -28,7 +27,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
-import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -1959,66 +1957,6 @@ public final class IngestPipeline implements IngestQueue.Handler {
                 "-vf", "scale=w='min(" + COVER_MAX + ",iw)':h='min(" + COVER_MAX + ",ih)'"
                         + ":force_original_aspect_ratio=decrease",
                 "-q:v", "2", "-update", "1", "-f", "image2", out.toString());
-    }
-
-    static List<String> downloadArgs(String youtubeId, Path dir, String ffmpeg) {
-        return downloadArgs(youtubeId, dir, ffmpeg, null);
-    }
-
-    /**
-     * The download command ({@code docs/library-and-ingest.md#youtube-caching}, step 4), plus the
-     * best thumbnail as {@code cover.<ext>} next to {@code src.<ext>}.
-     *
-     * @param cookies a cookies file for {@code --cookies}, or null
-     */
-    static List<String> downloadArgs(String youtubeId, Path dir, String ffmpeg, Path cookies) {
-        List<String> args = new ArrayList<>(List.of("--no-playlist", "--newline", "--no-mtime",
-                "-f", "bv*[height<=1080]+ba/b", "--merge-output-format", "mkv",
-                "--write-thumbnail", "-o", "thumbnail:" + dir.resolve(COVER_NAME + ".%(ext)s"),
-                "-o", dir.resolve("src.%(ext)s").toString()));
-        if (ffmpeg != null && ffmpeg.contains("/")) {
-            args.addAll(List.of("--ffmpeg-location", ffmpeg));
-        }
-        args.addAll(cookiesArgs(cookies));
-        args.add("--");
-        args.add(canonicalUrl(youtubeId));
-        return args;
-    }
-
-    /**
-     * The metadata command: {@code yt-dlp -J --no-playlist} on the canonical URL (never the URL
-     * as pasted), with the cookies file if there is one.
-     */
-    public static List<String> metadataArgs(String youtubeId, Path cookies) {
-        // --verbose: -J is quiet otherwise; verbose mode prints the progress lines ("[youtube] …:
-        // Downloading webpage") to stderr, which the lookup's live feedback follows (stdout stays the JSON)
-        List<String> args = new ArrayList<>(List.of("-J", "--no-playlist", "--no-warnings", "--verbose"));
-        args.addAll(cookiesArgs(cookies));
-        args.add("--");
-        args.add(canonicalUrl(youtubeId));
-        return args;
-    }
-
-    /** {@code https://www.youtube.com/watch?v=<id>}; the ID must be 11 characters of [A-Za-z0-9_-]. */
-    static String canonicalUrl(String youtubeId) {
-        if (youtubeId == null || !youtubeId.matches("[A-Za-z0-9_-]{11}")) {
-            throw new IllegalArgumentException("Not a YouTube video ID: " + youtubeId);
-        }
-        return "https://www.youtube.com/watch?v=" + youtubeId;
-    }
-
-    /** {@code --cookies <file>}, or nothing. */
-    static List<String> cookiesArgs(Path cookies) {
-        return cookies == null ? List.of() : List.of("--cookies", cookies.toString());
-    }
-
-    /**
-     * The cookies file named by the {@code ytdlp.cookiesFile} setting, if it is a readable regular
-     * file; null if the setting is empty ({@link CookieJarFile#sharedFile}). Callers pass yt-dlp a
-     * private copy of it ({@link CookieJarFile#open}), never the shared file itself.
-     */
-    public static Path cookiesFile(String setting, Consumer<String> warn) {
-        return CookieJarFile.sharedFile(setting, warn);
     }
 
     // ------------------------------------------------------------------ steps

@@ -35,7 +35,7 @@ public record IngestJob(String id, String itemId, Kind kind, State state, int at
     public enum Kind {
         /** A file upload: ingest from the uploaded original. */
         UPLOAD,
-        /** A YouTube import: download with yt-dlp, then ingest. */
+        /** A YouTube import: download from the YouTube service, then ingest. */
         YOUTUBE,
         /**
          * Re-encode a ready item for a new output profile. The item stays {@code ready} (playing

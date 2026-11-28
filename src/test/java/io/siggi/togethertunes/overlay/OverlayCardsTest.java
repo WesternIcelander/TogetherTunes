@@ -45,7 +45,7 @@ class OverlayCardsTest {
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
-        return new Tools(ffmpeg, ffprobe, null);
+        return new Tools(ffmpeg, ffprobe);
     }
 
     private static String onPath(String name) {

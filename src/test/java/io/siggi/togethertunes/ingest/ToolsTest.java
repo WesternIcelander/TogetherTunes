@@ -43,49 +43,16 @@ class ToolsTest {
 
     @Test
     void addsDefaultArgumentsAndLimits() {
-        Tools tools = new Tools("/x/ffmpeg", "/x/ffprobe", "/x/yt-dlp");
+        Tools tools = new Tools("/x/ffmpeg", "/x/ffprobe");
         assertEquals(List.of("/x/ffmpeg", "-hide_banner", "-nostdin", "-i", "a"), tools.ffmpeg("-i", "a").command());
         assertEquals(List.of("/x/ffmpeg", "-progress", "pipe:1", "-nostats", "-hide_banner", "-nostdin", "-i", "a"),
                 tools.ffmpeg("-i", "a").ffmpegProgress(p -> { }).command());
         assertEquals(List.of("/x/ffprobe", "-hide_banner", "a"), tools.ffprobe("a").command());
-        assertEquals(List.of("/x/yt-dlp", "-J", "u"), tools.ytdlp("-J", "u").command());
-        assertTrue(tools.hasFfmpeg() && tools.hasFfprobe() && tools.hasYtdlp());
-        Tools none = new Tools(null, null, null);
-        assertFalse(none.hasFfmpeg() || none.hasFfprobe() || none.hasYtdlp());
-        ToolException e = assertThrows(ToolException.class, () -> none.ytdlp("-U").run());
+        assertTrue(tools.hasFfmpeg() && tools.hasFfprobe());
+        Tools none = new Tools(null, null);
+        assertFalse(none.hasFfmpeg() || none.hasFfprobe());
+        ToolException e = assertThrows(ToolException.class, () -> none.ffprobe("-version").run());
         assertEquals(ToolException.Kind.NOT_AVAILABLE, e.kind());
-    }
-
-    @Test
-    void ytdlpGetsThePoTokenProviderUrlWhenSet() {
-        java.util.concurrent.atomic.AtomicReference<String> url = new java.util.concurrent.atomic.AtomicReference<>();
-        Tools plain = new Tools("/x/ffmpeg", "/x/ffprobe", "/x/yt-dlp");
-        Tools tools = plain.withPoTokenProvider(url::get);
-        assertEquals(List.of("/x/yt-dlp", "-J", "u"), tools.ytdlp("-J", "u").command(), "unset adds nothing");
-        url.set("");
-        assertEquals(List.of("/x/yt-dlp", "-J", "u"), tools.ytdlp("-J", "u").command(), "blank adds nothing");
-        url.set("http://127.0.0.1:4416");
-        String pot = "youtubepot-bgutilhttp:base_url=http://127.0.0.1:4416";
-        assertEquals(List.of("/x/yt-dlp", "--extractor-args", pot, "-J", "u"), tools.ytdlp("-J", "u").command());
-        assertEquals(List.of("/x/yt-dlp", "-J", "u"), plain.ytdlp("-J", "u").command(), "the original is unchanged");
-        assertEquals(List.of("/x/ffmpeg", "-hide_banner", "-nostdin", "-i", "a"), tools.ffmpeg("-i", "a").command());
-
-        // with the cookies file: the metadata lookup and the download keep their arguments after it
-        Path cookies = Path.of("/tmp/c.txt");
-        List<String> meta = tools.ytdlp(IngestPipeline.metadataArgs("jNQXAC9IVRw", cookies)).command();
-        assertEquals(List.of("/x/yt-dlp", "--extractor-args", pot), meta.subList(0, 3));
-        assertEquals(IngestPipeline.metadataArgs("jNQXAC9IVRw", cookies), meta.subList(3, meta.size()));
-        assertTrue(meta.containsAll(List.of("--cookies", "/tmp/c.txt")));
-        List<String> download = tools.ytdlp(IngestPipeline.downloadArgs("jNQXAC9IVRw", Path.of("/d"), "/x/ffmpeg",
-                cookies)).command();
-        assertEquals(1, Collections.frequency(download, "--extractor-args"));
-        assertEquals("--", download.get(download.size() - 2), "options stay before --");
-        assertTrue(download.indexOf("--extractor-args") < download.indexOf("--"));
-
-        // other extractor args in a call stay: yt-dlp merges them by key
-        List<String> other = tools.ytdlp("--extractor-args", "youtube:player_client=web", "--", "u").command();
-        assertEquals(List.of("/x/yt-dlp", "--extractor-args", pot, "--extractor-args", "youtube:player_client=web",
-                "--", "u"), other);
     }
 
     @Test
@@ -93,7 +60,7 @@ class ToolsTest {
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
-        Tools tools = new Tools(ffmpeg, ffprobe, null);
+        Tools tools = new Tools(ffmpeg, ffprobe);
         JobLog log = new JobLog();
         Path out = dir.resolve("clip.mp4");
         List<FfmpegProgress> progress = Collections.synchronizedList(new ArrayList<>());

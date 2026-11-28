@@ -143,7 +143,7 @@ class SilenceFrameTest {
 
     @Test
     void missingFfmpegFails() {
-        Tools tools = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe", null);
+        Tools tools = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe");
         ToolException e = assertThrows(ToolException.class, () -> SilenceFrame.generate(tools, null));
         assertEquals(ToolException.Kind.START_FAILED, e.kind());
     }

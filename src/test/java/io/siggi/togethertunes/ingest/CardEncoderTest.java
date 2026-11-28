@@ -43,7 +43,7 @@ class CardEncoderTest {
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
-        return new Tools(ffmpeg, ffprobe, null);
+        return new Tools(ffmpeg, ffprobe);
     }
 
     static List<String> tempFiles(Path dir) throws IOException {
@@ -215,7 +215,7 @@ class CardEncoderTest {
     void missingToolsLeaveNothingBehind() throws Exception {
         Tools tools = tools();
         ReferenceCard ref = ReferenceCard.ensure(tools, dir.resolve("cards"), OutputEncoding.defaultFor(OutputProfile.P720_30), null);
-        Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe", null);
+        Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe");
         Path out = dir.resolve("x").resolve("card.mp4");
         ToolException e = assertThrows(ToolException.class,
                 () -> CardEncoder.encode(none, new BufferedImage(16, 16, BufferedImage.TYPE_INT_RGB), out, ref, null));

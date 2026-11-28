@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 /**
  * The admin page's YouTube service box and audit log viewer: runs
  * {@code src/test/resources/web-tests/admin-tools.test.mjs} against the compiled
- * {@code web/js/youtubeservice.js}, {@code web/js/ytdlp.js} and {@code web/js/audit.js}, and checks the
+ * {@code web/js/youtubeservice.js} and {@code web/js/audit.js}, and checks the
  * admin page wires them to their APIs.
  */
 class AdminToolsJsTest {
@@ -21,7 +21,7 @@ class AdminToolsJsTest {
 
     @Test
     void unitTestsPass() throws Exception {
-        NodeTests.run("admin-tools.test.mjs", Map.of("YTDLP_JS", "web/js/ytdlp.js", "AUDIT_JS", "web/js/audit.js",
+        NodeTests.run("admin-tools.test.mjs", Map.of("AUDIT_JS", "web/js/audit.js",
                 "YTSERVICE_JS", "web/js/youtubeservice.js"));
     }
 

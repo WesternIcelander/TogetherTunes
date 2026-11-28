@@ -18,7 +18,6 @@ import java.util.List;
  * @param dbUrl                    JDBC URL, SQLite or PostgreSQL ({@code db.url})
  * @param ffmpeg                   ffmpeg command or path ({@code tools.ffmpeg})
  * @param ffprobe                  ffprobe command or path ({@code tools.ffprobe})
- * @param ytdlp                    yt-dlp command or path ({@code tools.ytdlp})
  * @param outputProfile            output profile ({@code output.profile})
  * @param outputVideoBitrateKbps   video bitrate cap of every encode and the program output's
  *                                 constant stream rate in kb/s ({@code output.videoBitrateKbps};
@@ -27,7 +26,7 @@ import java.util.List;
  *                                 kb/s ({@code output.audioOnlyBitrateKbps}; default 800)
  * @param ingestWorkers            ingest worker count ({@code ingest.workers})
  * @param ingestMaxUploadBytes     upload size limit ({@code ingest.maxUploadBytes})
- * @param ingestMaxDurationSeconds media duration limit for uploads and yt-dlp
+ * @param ingestMaxDurationSeconds media duration limit for uploads and YouTube imports
  *                                 ({@code ingest.maxDurationSeconds})
  * @param ingestQuickPreset        default x264 preset of quick encodes ({@code ingest.quickPreset};
  *                                 the admin settings can override it)
@@ -62,7 +61,6 @@ public record Config(
         String dbUrl,
         String ffmpeg,
         String ffprobe,
-        String ytdlp,
         OutputProfile outputProfile,
         int outputVideoBitrateKbps,
         int outputAudioOnlyBitrateKbps,
@@ -89,13 +87,13 @@ public record Config(
 
     /** With the default zip size limit. */
     public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
-                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  String dbUrl, String ffmpeg, String ffprobe, OutputProfile outputProfile,
                   int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
                   long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
                   X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
                   String insecureBaseUrl, String tracksplitter, Path tracksplitterCacheDir,
                   List<Path> libraryImportAllowedPaths) {
-        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, outputProfile,
                 outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
                 ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
                 insecureBaseUrl, tracksplitter, tracksplitterCacheDir, libraryImportAllowedPaths,
@@ -104,12 +102,12 @@ public record Config(
 
     /** Without library import paths. */
     public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
-                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  String dbUrl, String ffmpeg, String ffprobe, OutputProfile outputProfile,
                   int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
                   long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
                   X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
                   String insecureBaseUrl, String tracksplitter, Path tracksplitterCacheDir) {
-        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, outputProfile,
                 outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
                 ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
                 insecureBaseUrl, tracksplitter, tracksplitterCacheDir, List.of());
@@ -117,12 +115,12 @@ public record Config(
 
     /** Without TrackSplitter (tests). */
     public Config(String httpBind, int httpPort, String publicBaseUrl, List<String> trustedProxies, Path dataDir,
-                  String dbUrl, String ffmpeg, String ffprobe, String ytdlp, OutputProfile outputProfile,
+                  String dbUrl, String ffmpeg, String ffprobe, OutputProfile outputProfile,
                   int outputVideoBitrateKbps, int outputAudioOnlyBitrateKbps, int ingestWorkers,
                   long ingestMaxUploadBytes, int ingestMaxDurationSeconds, X264Preset ingestQuickPreset,
                   X264Preset ingestQualityPreset, int overlayWorkers, long overlayCacheMaxBytes,
                   String insecureBaseUrl) {
-        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, ytdlp, outputProfile,
+        this(httpBind, httpPort, publicBaseUrl, trustedProxies, dataDir, dbUrl, ffmpeg, ffprobe, outputProfile,
                 outputVideoBitrateKbps, outputAudioOnlyBitrateKbps, ingestWorkers, ingestMaxUploadBytes,
                 ingestMaxDurationSeconds, ingestQuickPreset, ingestQualityPreset, overlayWorkers, overlayCacheMaxBytes,
                 insecureBaseUrl, null, dataDir == null ? null : dataDir.resolve("tracksplitter"));

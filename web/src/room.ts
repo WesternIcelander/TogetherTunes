@@ -707,7 +707,7 @@ function linkPanel(s: RoomState): HTMLElement {
     if (link === "") return;
     submit.disabled = true;
     status.className = "muted small";
-    // The lookup can take a while: show yt-dlp's stages (request.progress) and the seconds so far.
+    // The lookup can take a while: show the lookup's stages (request.progress) and the seconds so far.
     const started = Date.now();
     let stageText: string | undefined;
     const showLookup = (): void => { status.textContent = lookupText(stageText, Date.now() - started); };

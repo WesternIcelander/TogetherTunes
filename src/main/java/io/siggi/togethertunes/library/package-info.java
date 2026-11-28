@@ -1,4 +1,4 @@
 /**
- * Libraries and items: search, uploads and yt-dlp import.
+ * Libraries and items: search, uploads and YouTube import.
  */
 package io.siggi.togethertunes.library;

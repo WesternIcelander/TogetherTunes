@@ -179,7 +179,7 @@ class LibraryImportsTest {
         adminId = accounts.createLocal("root", "Root", "root-password", true, null, "account.setup").id();
         aliceId = accounts.createLocal("alice", "Alice", "alice-password", false, null, "account.register").id();
         DataDir data = DataDir.create(dir.resolve("data"));
-        Tools tools = new Tools(ffmpeg == null ? "ffmpeg" : ffmpeg, ffprobe == null ? "ffprobe" : ffprobe, null);
+        Tools tools = new Tools(ffmpeg == null ? "ffmpeg" : ffmpeg, ffprobe == null ? "ffprobe" : ffprobe);
         IngestJobs jobs = new IngestJobs(db, Clock.systemUTC());
         var config = new io.siggi.togethertunes.config.ConfigLoader(Map.of("PATH", "",
                 "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example"), 4, dir).load(null).config();

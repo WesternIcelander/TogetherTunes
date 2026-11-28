@@ -314,14 +314,6 @@ public final class SettingKey<T> {
      * slash is dropped.
      */
     static SettingKey<String> optionalUrl(String name) {
-        return optionalUrl(name, false);
-    }
-
-    /**
-     * Like {@link #optionalUrl(String)}; with {@code extractorArg}, the URL also mustn't contain
-     * {@code ,} or {@code ;}, which split a yt-dlp {@code --extractor-args} value.
-     */
-    static SettingKey<String> optionalUrl(String name, boolean extractorArg) {
         return new SettingKey<>(name, String.class, null, true, new Codec<>() {
             @Override
             public String decode(JsonElement json) {
@@ -343,9 +335,6 @@ public final class SettingKey<T> {
                 if (!(scheme.equals("http") || scheme.equals("https")) || uri.getHost() == null
                         || uri.getRawQuery() != null || uri.getRawFragment() != null || uri.getRawUserInfo() != null) {
                     throw new IllegalArgumentException("expected an http:// or https:// URL without query or user info");
-                }
-                if (extractorArg && (s.indexOf(',') >= 0 || s.indexOf(';') >= 0)) {
-                    throw new IllegalArgumentException("the URL must not contain , or ;");
                 }
                 while (s.endsWith("/")) {
                     s = s.substring(0, s.length() - 1);

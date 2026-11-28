@@ -117,7 +117,7 @@ class IndexBuilderTest {
     @Test
     void filesMustBeNextToTheIndex() throws Exception {
         Files.createDirectories(dir.resolve("sub"));
-        assertThrows(IllegalArgumentException.class, () -> IndexBuilder.build(new Tools(null, null, null),
+        assertThrows(IllegalArgumentException.class, () -> IndexBuilder.build(new Tools(null, null),
                 OutputEncoding.defaultFor(OutputProfile.P720_30), dir.resolve("sub/mezz.mp4"), dir.resolve("audio.m4a"),
                 dir.resolve("index.bin"), new JobLog()));
     }

@@ -118,7 +118,7 @@ abstract class UploadsContract {
         permissions = new Permissions(db, settings);
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
-        tools = ffmpeg != null && ffprobe != null ? new Tools(ffmpeg, ffprobe, null) : null;
+        tools = ffmpeg != null && ffprobe != null ? new Tools(ffmpeg, ffprobe) : null;
         uploads = uploads();
         server = start(uploads);
 
@@ -149,7 +149,7 @@ abstract class UploadsContract {
     private final List<String> libraryAdds = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private Uploads uploads() {
-        Tools t = tools != null ? tools : new Tools(null, null, null);
+        Tools t = tools != null ? tools : new Tools(null, null);
         Uploads u = new Uploads(db, data, t, new IngestJobs(db, clock), () -> {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_BYTES, MAX_SECONDS, new GuestUploadQuota(db, settings, clock), clock);
         u.libraryAddListener(libraryAdds::add);

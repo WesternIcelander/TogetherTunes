@@ -99,7 +99,7 @@ abstract class AutoplayContract {
         owner = RoomActor.user(aliceId, Rooms.Role.OWNER);
         bob = RoomActor.user(bobId, Rooms.Role.MEMBER);
         carol = RoomActor.user(carolId, null);
-        Tools tools = new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString());
+        Tools tools = new Tools("ffmpeg", "ffprobe");
         youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         library = new Library(db, youtube, clock);
         playlists = new Playlists(db, library, youtube, clock);
@@ -127,7 +127,7 @@ abstract class AutoplayContract {
     }
 
     private Tools toolsFor() {
-        return new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString());
+        return new Tools("ffmpeg", "ffprobe");
     }
 
     private void restart() {

@@ -2,6 +2,7 @@ package io.siggi.togethertunes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonArray;
@@ -612,9 +613,12 @@ class AdminApiTest {
         JsonObject blocklist = find(items, "guests.nameBlocklist");
         assertEquals("stringList", blocklist.get("type").getAsString());
         assertEquals(0, blocklist.getAsJsonArray("value").size());
-        JsonObject cookies = find(items, "ytdlp.cookiesFile");
-        assertEquals("string", cookies.get("type").getAsString());
-        assertFalse(cookies.has("value"));
+        JsonObject serviceUrl = find(items, "youtube.serviceUrl");
+        assertEquals("string", serviceUrl.get("type").getAsString());
+        assertFalse(serviceUrl.has("value"));
+        // the yt-dlp cookies file and PO token provider settings are gone (YouTube goes through the service)
+        assertThrows(AssertionError.class, () -> find(items, "ytdlp.cookiesFile"));
+        assertThrows(AssertionError.class, () -> find(items, "ytdlp.poTokenProviderUrl"));
         assertEquals("integer", find(items, "retention.unreferencedDays").get("type").getAsString());
         assertEquals("retention", find(items, "retention.unreferencedDays").get("group").getAsString());
         assertEquals(72, find(items, "retention.videoAfterViewHours").get("value").getAsInt());
@@ -624,11 +628,11 @@ class AdminApiTest {
 
         JsonObject changed = call(200, "PATCH", "/api/admin/settings",
                 "{\"registration.mode\":\"open\",\"guests.uploadQuota\":{\"perHour\":5,\"maxItemBytes\":1000},"
-                        + "\"ytdlp.cookiesFile\":\"/data/cookies.txt\",\"overlay.enabled\":true}", admin);
+                        + "\"youtube.serviceUrl\":\"http://ytsucks:8080/\",\"overlay.enabled\":true}", admin);
         assertEquals("open", find(changed.getAsJsonArray("items"), "registration.mode").get("value").getAsString());
         assertEquals(RegistrationMode.OPEN, settings.registrationMode());
         assertEquals(5, settings.guestsUploadQuota().perHour());
-        assertEquals("/data/cookies.txt", settings.ytdlpCookiesFile());
+        assertEquals("http://ytsucks:8080", settings.youtubeServiceUrl());
         assertTrue(settings.overlayEnabled());
         JsonObject listed = call(200, "PATCH", "/api/admin/settings",
                 "{\"guests.nameBlocklist\":[\" bad  word \",\"\",\"other\"]}", admin);
@@ -665,9 +669,9 @@ class AdminApiTest {
         call(200, "PATCH", "/api/admin/settings", "{\"ingest.qualityPreset\":null}", admin);
 
         // null resets to the default.
-        call(200, "PATCH", "/api/admin/settings", "{\"overlay.enabled\":null,\"ytdlp.cookiesFile\":null}", admin);
+        call(200, "PATCH", "/api/admin/settings", "{\"overlay.enabled\":null,\"youtube.serviceUrl\":null}", admin);
         assertFalse(settings.overlayEnabled());
-        assertEquals(null, settings.ytdlpCookiesFile());
+        assertEquals(null, settings.youtubeServiceUrl());
         assertEquals(5, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"));
 
         // Feature switches show up in the role editor.
@@ -719,25 +723,8 @@ class AdminApiTest {
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.headerName\":\"a b\"}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":0}", admin));
         assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings", "{\"mvfinder.maxPerHour\":1001}", admin));
-        // the PO token provider URL for yt-dlp, in the Library group next to the cookies file
-        JsonObject pot = find(items, "ytdlp.poTokenProviderUrl");
-        assertEquals("string", pot.get("type").getAsString());
-        assertEquals("library", pot.get("group").getAsString());
-        assertFalse(pot.has("value"), "unset by default");
-        List<String> keys = new java.util.ArrayList<>();
-        items.forEach(i -> keys.add(i.getAsJsonObject().get("key").getAsString()));
-        assertEquals(keys.indexOf("ytdlp.cookiesFile") + 1, keys.indexOf("ytdlp.poTokenProviderUrl"));
-        JsonObject potSet = call(200, "PATCH", "/api/admin/settings",
-                "{\"ytdlp.poTokenProviderUrl\":\"http://bgutil:4416/\"}", admin);
-        assertEquals("http://bgutil:4416",
-                find(potSet.getAsJsonArray("items"), "ytdlp.poTokenProviderUrl").get("value").getAsString());
-        assertEquals("http://bgutil:4416", settings.ytdlpPoTokenProviderUrl());
-        for (String badUrl : List.of("\"ftp://x\"", "\"http://x/a;b\"", "\"http://x/?q=1\"", "\"http://u:p@x\"")) {
-            assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
-                    "{\"ytdlp.poTokenProviderUrl\":" + badUrl + "}", admin));
-        }
-        call(200, "PATCH", "/api/admin/settings", "{\"ytdlp.poTokenProviderUrl\":null}", admin);
-        org.junit.jupiter.api.Assertions.assertNull(settings.ytdlpPoTokenProviderUrl());
+        assertError("unknown_setting", call(400, "PATCH", "/api/admin/settings",
+                "{\"ytdlp.poTokenProviderUrl\":\"http://bgutil:4416/\"}", admin));
         // the YouTube search's own limit, in the Library group
         JsonObject yt = find(items, "youtubeSearch.maxPerHour");
         assertEquals(60, yt.get("value").getAsInt());

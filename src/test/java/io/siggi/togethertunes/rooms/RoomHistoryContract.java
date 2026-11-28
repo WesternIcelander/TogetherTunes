@@ -116,7 +116,7 @@ abstract class RoomHistoryContract {
         bob = RoomActor.user(bobId, Rooms.Role.MEMBER);
         carol = RoomActor.user(carolId, Rooms.Role.MODERATOR);
         guest = RoomActor.guest(guestId, true, true);
-        Tools tools = new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString());
+        Tools tools = new Tools("ffmpeg", "ffprobe");
         youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         playlists = new Playlists(db, youtube, clock);
         uploads = TestUploads.uploads(db, dir, config, tools, clock);

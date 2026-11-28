@@ -103,7 +103,7 @@ abstract class QueueOpsContract {
         carol = RoomActor.user(carolId, null);
         guest = RoomActor.guest(guestId, true, true);
         // No yt-dlp: only cached YouTube items work, which is what these tests use.
-        Tools tools = new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString());
+        Tools tools = new Tools("ffmpeg", "ffprobe");
         youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         playlists = new Playlists(db, youtube, clock);
         registry = new RoomRegistry(db, clock, PackagerHook.NONE);

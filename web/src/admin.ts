@@ -1,4 +1,4 @@
-// The admin pages (/admin/): users, roles, server settings (with the yt-dlp update), fonts, encode jobs and
+// The admin pages (/admin/): users, roles, server settings (with the YouTube service box), fonts, encode jobs and
 // the audit log, on top of /api/admin/...
 // (docs/api.md#admin).
 // Each tab loads its data when opened; tabs the user has no permission for show the API's error.
@@ -75,7 +75,7 @@ const GROUPS: Record<string, string> = {
 // ------------------------------------------------------------------ DOM helpers
 
 /**
- * This view's start (before any await): its signal stops the polling (yt-dlp update, fonts, jobs),
+ * This view's start (before any await): its signal stops the polling (YouTube service update, fonts, jobs),
  * and its elements only.
  */
 const VIEW = viewScope(import.meta.url);

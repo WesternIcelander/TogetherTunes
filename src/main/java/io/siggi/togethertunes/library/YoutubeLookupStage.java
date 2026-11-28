@@ -49,8 +49,8 @@ public enum YoutubeLookupStage {
     }
 
     /**
-     * The stage a yt-dlp stderr line shows, or null for any other line (debug output, warnings,
-     * errors, anything unknown).
+     * The stage a yt-dlp progress line (as the YouTube service passes it on) shows, or null for
+     * any other line (debug output, warnings, errors, anything unknown).
      */
     public static YoutubeLookupStage of(String line) {
         if (line == null) {

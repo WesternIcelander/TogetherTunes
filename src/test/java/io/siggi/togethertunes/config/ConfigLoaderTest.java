@@ -28,7 +28,7 @@ class ConfigLoaderTest {
     @BeforeEach
     void setUp() throws IOException {
         bin = Files.createDirectory(dir.resolve("bin"));
-        for (String tool : List.of("ffmpeg", "ffprobe", "yt-dlp")) {
+        for (String tool : List.of("ffmpeg", "ffprobe")) {
             executable(bin.resolve(tool));
         }
         env = new HashMap<>();
@@ -70,7 +70,6 @@ class ConfigLoaderTest {
         assertFalse(c.isPostgres());
         assertEquals(bin.resolve("ffmpeg").toString(), c.ffmpeg());
         assertEquals(bin.resolve("ffprobe").toString(), c.ffprobe());
-        assertEquals(bin.resolve("yt-dlp").toString(), c.ytdlp());
         assertEquals(OutputProfile.P720_30, c.outputProfile());
         assertEquals(3000, c.outputVideoBitrateKbps());
         assertEquals("720p30-3000k-v3", c.outputEncoding().id());
@@ -103,7 +102,7 @@ class ConfigLoaderTest {
                   },
                   "data": {"dir": "srv"},
                   "db": {"url": "jdbc:postgresql://localhost/tt"},
-                  "tools": {"ffmpeg": "./my-ffmpeg", "ffprobe": "ffprobe", "ytdlp": "yt-dlp"},
+                  "tools": {"ffmpeg": "./my-ffmpeg", "ffprobe": "ffprobe"},
                   "output.profile": "1080p30",
                   "ingest": {"workers": 3, "maxUploadBytes": "512 MiB", "maxDurationSeconds": "600"},
                   "overlay": {"workers": 2, "cacheMaxBytes": 1048576}
@@ -219,7 +218,7 @@ class ConfigLoaderTest {
     void everyDocumentedKeyIsKnown() {
         // docs/architecture.md#configuration
         assertEquals(List.of("http.bind", "http.port", "http.publicBaseUrl", "http.insecureBaseUrl", "data.dir", "db.url",
-                "tools.ffmpeg", "tools.ffprobe", "tools.ytdlp", "tools.tracksplitter", "tracksplitter.cacheDir",
+                "tools.ffmpeg", "tools.ffprobe", "tools.tracksplitter", "tracksplitter.cacheDir",
                 "output.profile", "output.videoBitrateKbps", "output.audioOnlyBitrateKbps", "ingest.workers",
                 "ingest.maxUploadBytes", "ingest.maxDurationSeconds", "ingest.quickPreset", "ingest.qualityPreset",
                 "overlay.workers",
@@ -422,18 +421,34 @@ class ConfigLoaderTest {
 
     @Test
     void tools() throws IOException, ConfigException {
-        Files.delete(bin.resolve("yt-dlp"));
+        Files.delete(bin.resolve("ffprobe"));
         ConfigLoader.Loaded loaded = loader().loadFromJson(null, URL_ONLY);
-        assertEquals("yt-dlp", loaded.config().ytdlp(), "a missing default stays a bare name");
-        assertTrue(loaded.warnings().get(0).contains("yt-dlp was not found on PATH"), loaded.warnings().toString());
+        assertEquals("ffprobe", loaded.config().ffprobe(), "a missing default stays a bare name");
+        assertTrue(loaded.warnings().get(0).contains("ffprobe was not found on PATH"), loaded.warnings().toString());
 
-        assertProblem(fails("{\"http.publicBaseUrl\": \"https://a.example\", \"tools.ytdlp\": \"yt-dlp\"}"),
-                "'tools.ytdlp': 'yt-dlp' was not found on PATH");
+        assertProblem(fails("{\"http.publicBaseUrl\": \"https://a.example\", \"tools.ffprobe\": \"ffprobe\"}"),
+                "'tools.ffprobe': 'ffprobe' was not found on PATH");
         assertProblem(fails("{\"http.publicBaseUrl\": \"https://a.example\", \"tools.ffprobe\": \"/nonexistent/ffprobe\"}"),
                 "'tools.ffprobe': not an executable file");
         Path notExecutable = Files.writeString(dir.resolve("plain"), "x");
         assertProblem(fails("{\"http.publicBaseUrl\": \"https://a.example\", \"tools.ffmpeg\": \"" + notExecutable + "\"}"),
                 "'tools.ffmpeg': not an executable file");
+    }
+
+    @Test
+    void toolsYtdlpIsAcceptedButIgnoredWithOneWarning() throws ConfigException {
+        String warning = "tools.ytdlp is no longer used: YouTube goes through the YouTube service setting";
+        assertFalse(loader().loadFromJson(null, URL_ONLY).warnings().contains(warning), "unset: no warning");
+        // an old config: the file's value (even a path that doesn't exist) starts the server with one warning
+        ConfigLoader.Loaded loaded = loader().loadFromJson(null,
+                "{\"http.publicBaseUrl\": \"https://a.example\", \"tools\": {\"ytdlp\": \"/nonexistent/yt-dlp\"}}");
+        assertEquals(1, loaded.warnings().stream().filter(warning::equals).count(), loaded.warnings().toString());
+        // as an environment variable too (not "unknown"), and set in both places: still one warning
+        env.put("TOGETHERTUNES_TOOLS_YTDLP", "yt-dlp");
+        loaded = loader().loadFromJson(null, "{\"http.publicBaseUrl\": \"https://a.example\", \"tools.ytdlp\": \"yt-dlp\"}");
+        assertEquals(List.of(warning), loaded.warnings());
+        loaded = loader().loadFromJson(null, URL_ONLY);
+        assertEquals(List.of(warning), loaded.warnings());
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.siggi.togethertunes;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.siggi.togethertunes.config.ConfigLoader;
@@ -43,10 +44,13 @@ class DockerfileTest {
         for (String[] kv : new String[][] {
                 {ConfigLoader.DATA_DIR, "/data"},
                 {ConfigLoader.TOOLS_FFMPEG, "/usr/bin/ffmpeg"},
-                {ConfigLoader.TOOLS_FFPROBE, "/usr/bin/ffprobe"},
-                {ConfigLoader.TOOLS_YTDLP, "/opt/yt-dlp/yt-dlp"}}) {
+                {ConfigLoader.TOOLS_FFPROBE, "/usr/bin/ffprobe"}}) {
             String line = ConfigLoader.envName(kv[0]) + "=" + kv[1];
             assertTrue(dockerfile.contains(line), "Dockerfile sets " + line);
+        }
+        // YouTube goes through the YouTube service: no yt-dlp (or its JavaScript runtime) in the image
+        for (String gone : List.of(ConfigLoader.envName(ConfigLoader.TOOLS_YTDLP), "yt-dlp", "deno", "DENO")) {
+            assertFalse(dockerfile.contains(gone), "Dockerfile has no " + gone);
         }
     }
 

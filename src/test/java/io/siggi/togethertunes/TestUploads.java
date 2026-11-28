@@ -151,10 +151,10 @@ public final class TestUploads {
                     new io.siggi.togethertunes.settings.Settings(db),
                     new io.siggi.togethertunes.library.MetadataLookup(fake.script.toString(), fake.cacheDir,
                             "TogetherTunes/test", null, clock),
-                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs, clock));
+                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null), data, jobs, clock));
             // Replace artwork: an image body on the same cover route
             api.coverUpload(new io.siggi.togethertunes.library.CoverUpload(items,
-                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs));
+                    new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null), data, jobs));
             // "Find a music video": a fake YouTube service whose search finds one video (no MVFinder)
             YoutubeService ytService = searchService().service();
             YoutubeImports youtube = new YoutubeImports(db, ytService, jobs, () -> {

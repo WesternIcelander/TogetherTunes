@@ -1,8 +1,11 @@
 # Installing TogetherTunes
 
-TogetherTunes runs either as a Docker image (ffmpeg, yt-dlp and the font libraries included) or as a
+TogetherTunes runs either as a Docker image (ffmpeg and the font libraries included) or as a
 plain jar on a host that provides them. Either way it needs a public **HTTPS** URL (normally a
-reverse proxy in front of port 8080) and keeps everything in one data directory.
+reverse proxy in front of port 8080) and keeps everything in one data directory. YouTube links,
+searches and downloads go through a separate service, **YTSucks**, in its own container (see
+[YouTube](#youtube-the-ytsucks-service) below); without it everything else works and YouTube is
+unavailable.
 
 [DEPLOYMENT.md](DEPLOYMENT.md) has the rest of what a real deployment needs: HTTPS, the reverse
 proxy (with an nginx example), trusted proxies, VRChat, card fonts on offline servers and backups.
@@ -26,11 +29,6 @@ What the image contains:
 - **ffmpeg / ffprobe 6.1.1** (Ubuntu's package, pinned by `FFMPEG_VERSION`), built with TLS, so
   `rtmps://` push works. This is a version the card encoder was tested with; changing it changes
   the reference card, which makes the server re-encode the cards once.
-- **yt-dlp** (the standalone release binary, `YTDLP_VERSION`, checked against the release's
-  checksums) and **Deno** (`DENO_VERSION`), the JavaScript runtime yt-dlp needs for YouTube.
-  yt-dlp lives in `/opt/yt-dlp/`, owned by the server's user, so **Admin → Settings → Update
-  yt-dlp** works; the update lasts until the container is recreated. Rebuild with a newer
-  `--build-arg YTDLP_VERSION=…` to make it permanent.
 - FreeType, fontconfig and DejaVu fonts, which the card renderer needs.
 
 Run it:
@@ -66,8 +64,6 @@ Requirements on the host:
 - **Java 21** (a JRE is enough).
 - **ffmpeg and ffprobe**, 5.1 or newer; with TLS support if you push to `rtmps://` services
   (`ffmpeg -protocols` lists `rtmps`).
-- **yt-dlp**, kept up to date (the admin panel can run `yt-dlp -U` when the server's user may write
-  to its file), and **Deno** on `PATH` for YouTube.
 - **FreeType, fontconfig and at least one font**, also on a server without a display:
   - Debian/Ubuntu: `apt-get install libfreetype6 fontconfig fonts-dejavu-core`
   - Alpine: `apk add freetype fontconfig font-dejavu`
@@ -84,63 +80,63 @@ java -jar target/TogetherTunes-1.0-SNAPSHOT.jar
 ```
 
 The server reads `./config.json` (or `--config <file>`, or `TOGETHERTUNES_CONFIG`), and environment
-variables override it. ffmpeg, ffprobe and yt-dlp are found on `PATH` unless `tools.ffmpeg`,
-`tools.ffprobe` and `tools.ytdlp` name them. `--help` prints the options. Run it as its own user
+variables override it. ffmpeg and ffprobe are found on `PATH` unless `tools.ffmpeg` and
+`tools.ffprobe` name them. (`tools.ytdlp` from older configs is ignored, with a warning at
+startup.) `--help` prints the options. Run it as its own user
 under a service manager (e.g. a systemd unit with `WorkingDirectory=` set to where `config.json`
 is) and back up the data directory (`data.dir`, default `./data`).
 
-## PO tokens for YouTube (optional)
+## YouTube: the YTSucks service
 
-YouTube asks more and more clients for a **PO token** (proof of origin); without one, some videos
-fail to download or only offer low-quality formats, especially from server IP addresses. yt-dlp
-(2025.05.22 or newer) gets PO tokens from **provider plugins**. TogetherTunes doesn't install or
-download either part; you set up two things and then give TogetherTunes the provider's URL. See
-yt-dlp's [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) for the background.
+TogetherTunes doesn't run yt-dlp itself. Every YouTube call (looking a link up, searching,
+downloading the video) goes over HTTP to [YTSucks](https://github.com/WesternIcelander/YTSucks), a Docker
+service that runs yt-dlp, its PO token provider, Deno and ffmpeg and keeps them up to date by
+itself (each new set of tools is tested with a real download before it is used, without downtime).
+Cookies, proxies and PO tokens are YTSucks's business; TogetherTunes passes none of them.
 
-1. **The provider server.** The usual provider is
-   [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). Run its
-   HTTP server where TogetherTunes can reach it, but **never on a public interface** (it has no
-   authentication):
+1. **Build and run YTSucks** from its repository (its README has the details). Keep it **off public
+   interfaces**: put it on a Docker network shared with TogetherTunes without publishing its port,
+   or publish it on loopback only:
 
    ```sh
-   # next to a plain-jar install: only on the host's loopback
-   docker run --name bgutil-provider -d --init --restart unless-stopped \
-     -p 127.0.0.1:4416:4416 brainicism/bgutil-ytdlp-pot-provider
+   docker build -t ytsucks .                     # in the YTSucks checkout
+   YT_TOKEN="$(openssl rand -hex 24)"            # TogetherTunes sends this token
 
    # next to the TogetherTunes container: a shared network, no published port
    docker network create togethertunes-net
-   docker run --name bgutil-provider -d --init --restart unless-stopped \
-     --network togethertunes-net brainicism/bgutil-ytdlp-pot-provider
-   # and start TogetherTunes with --network togethertunes-net as well
+   docker run -d --name ytsucks --restart unless-stopped \
+     --network togethertunes-net -v ytsucks-data:/data \
+     -e API_TOKEN="$YT_TOKEN" -e TZ="$(timedatectl show -p Timezone --value)" \
+     ytsucks
+   # and start TogetherTunes with --network togethertunes-net as well;
+   # the service URL is then http://ytsucks:8080
+
+   # next to a plain-jar install: only on the host's loopback (8081, since TogetherTunes has 8080)
+   docker run -d --name ytsucks --restart unless-stopped \
+     -p 127.0.0.1:8081:8080 -v ytsucks-data:/data \
+     -e API_TOKEN="$YT_TOKEN" -e TZ="$(timedatectl show -p Timezone --value)" \
+     ytsucks
+   # the service URL is then http://127.0.0.1:8081
    ```
 
-   It can also run without Docker (Node or Deno, `--port`/`--host` options); see its README.
+2. **Access:** YTSucks wants a token from every caller it doesn't `allow`. Either give TogetherTunes
+   a token (`API_TOKEN` as above, or a `token <value>` line in YTSucks's
+   `/data/config/access.txt`) and enter it in `youtube.serviceToken`, or add an
+   `allow <TogetherTunes's address>` line to that access list and leave the token empty. Don't
+   `allow` a Docker gateway address (with a published port, connections from the host or Docker
+   Desktop can appear to come from it, which would let everyone in); see YTSucks's README,
+   "Access control".
 
-2. **The yt-dlp plugin**, the same release as the server (the plugin warns when the major versions
-   differ). Download `bgutil-ytdlp-pot-provider.zip` from the plugin's
-   [latest release](https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/latest) and put
-   the zip, as it is, into a plugin directory yt-dlp searches for the server's user:
-   - **Docker image:** next to the binary, `/opt/yt-dlp/yt-dlp-plugins/`. Mount it read-only:
-     `-v /srv/togethertunes/bgutil-ytdlp-pot-provider.zip:/opt/yt-dlp/yt-dlp-plugins/bgutil-ytdlp-pot-provider.zip:ro`
-     (or copy it into `/data/.yt-dlp/plugins/`, the server user's home on the data volume).
-   - **Plain jar with yt-dlp's release binary:** `yt-dlp-plugins/` next to the binary, or
-     `~/.yt-dlp/plugins/` (also `~/.config/yt-dlp/plugins/`) in the home of the user the server
-     runs as.
-   - **yt-dlp installed with pip/pipx:** `python3 -m pip install -U bgutil-ytdlp-pot-provider` into
-     the same environment (`pipx inject yt-dlp bgutil-ytdlp-pot-provider` for pipx).
+3. **Tell TogetherTunes:** Admin → Settings, Library group: `youtube.serviceUrl` (e.g.
+   `http://ytsucks:8080` or `http://127.0.0.1:8081`; `http://` or `https://`, no user name, query
+   or fragment) and, if used, `youtube.serviceToken` (a secret: never shown again, blank keeps the
+   saved one, **Clear** removes it). `ytdlp.enabled` stays the switch that turns YouTube on or
+   off. The **YouTube service** box on the same page shows whether the service answers, its tool
+   versions, provider health and last update; **Test connection** checks the URL and that the
+   token is accepted, **Update now** asks YTSucks to update its tools, and **Show update log**
+   shows the last update's log.
 
-   Keep the plugin current along with the server image: a newer YouTube often needs both.
-
-3. **Tell TogetherTunes the URL:** Admin → Settings, `ytdlp.poTokenProviderUrl`, e.g.
-   `http://127.0.0.1:4416` or `http://bgutil-provider:4416` (an `http://` or `https://` URL without
-   user name, query, `,` or `;`). Every yt-dlp call that talks to YouTube then gets
-   `--extractor-args "youtubepot-bgutilhttp:base_url=<url>"`. Left empty, yt-dlp gets no URL and
-   the plugin, if installed, tries its own default `http://127.0.0.1:4416`.
-
-The yt-dlp box on the same page says whether yt-dlp loaded the token provider plugin (checked
-once and again after **Update yt-dlp**), and **Test PO token provider** checks the plugin again and
-asks the server's `/ping` (the URL in the form, else the saved one, else the default) and reports
-what to fix. To watch a token being made, run
-`yt-dlp -v --simulate --extractor-args "youtubepot-bgutilhttp:base_url=<url>" <video URL>` as the
-server's user and look for `[pot:bgutil:http] Generating a … PO Token`.
-
+**Cookies:** on a VPS or other datacenter address YouTube often asks for a sign-in ("confirm
+you're not a bot"). Put a `cookies.txt` from a throwaway account into YTSucks's volume
+(`docker cp cookies.txt ytsucks:/data/config/cookies.txt`; picked up on the next run, no restart),
+or set YTSucks's `YTDLP_PROXY`. TogetherTunes has no cookies setting.

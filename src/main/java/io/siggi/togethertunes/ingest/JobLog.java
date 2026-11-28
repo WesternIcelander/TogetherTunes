@@ -7,7 +7,7 @@ import java.util.function.Consumer;
 /**
  * The log of one job (an ingest job, later also an overlay encode or the RTMP pusher): a bounded
  * tail of lines, kept in memory and written to the job's {@code log} column. Tool output (stderr
- * of ffmpeg, ffprobe and yt-dlp) goes here through {@link ToolCall#log(JobLog)}.
+ * of ffmpeg and ffprobe, and the YouTube service's download messages) goes here through {@link ToolCall#log(JobLog)}.
  *
  * <p>Holds at most {@code maxChars} characters (newlines included); the oldest lines are dropped
  * first, and the first line kept after a drop is preceded by a marker so readers can see that

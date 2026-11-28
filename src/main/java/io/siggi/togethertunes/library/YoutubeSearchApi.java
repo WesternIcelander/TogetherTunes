@@ -30,7 +30,7 @@ import java.util.Objects;
  * {@code banned_from_room} / {@code timed_out}, {@code forbidden} / {@code guest_youtube_disabled},
  * {@code 401 identity_required} for an anonymous visitor who could as a guest), guests included.
  * The same per-person limit (a guest counted by its guest identity); MVFinder is asked for a
- * guest only while {@code mvfinder.allowGuests} is on (else yt-dlp).
+ * guest only while {@code mvfinder.allowGuests} is on (else the YouTube service's search).
  */
 public final class YoutubeSearchApi {
     private final YoutubeSearch search;

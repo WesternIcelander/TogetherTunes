@@ -59,7 +59,7 @@ class ReferenceCardTest {
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
-        return new Tools(ffmpeg, ffprobe, null);
+        return new Tools(ffmpeg, ffprobe);
     }
 
     /** A mezzanine-style encode of a moving lavfi source, with the profile constant. */
@@ -280,7 +280,7 @@ class ReferenceCardTest {
 
     @Test
     void missingToolsFail() {
-        Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe", null);
+        Tools none = new Tools("/nonexistent/ffmpeg", "/nonexistent/ffprobe");
         ToolException e = assertThrows(ToolException.class,
                 () -> ReferenceCard.ensure(none, dir.resolve("cards"), OutputEncoding.defaultFor(OutputProfile.P720_30), null));
         assertEquals(ToolException.Kind.START_FAILED, e.kind());

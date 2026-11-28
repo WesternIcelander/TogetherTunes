@@ -74,6 +74,10 @@ public final class ConfigLoader {
     public static final String DB_URL = "db.url";
     public static final String TOOLS_FFMPEG = "tools.ffmpeg";
     public static final String TOOLS_FFPROBE = "tools.ffprobe";
+    /**
+     * No longer used (YouTube goes through the YouTube service setting); still accepted so old
+     * configs keep starting, with one startup warning ({@link #IGNORED_KEYS}).
+     */
     public static final String TOOLS_YTDLP = "tools.ytdlp";
     public static final String TOOLS_TRACKSPLITTER = "tools.tracksplitter";
     public static final String TRACKSPLITTER_CACHE_DIR = "tracksplitter.cacheDir";
@@ -93,11 +97,18 @@ public final class ConfigLoader {
     /** Every key, in documentation order ({@code docs/architecture.md#configuration}). */
     public static final List<String> KEYS = List.of(
             HTTP_BIND, HTTP_PORT, HTTP_PUBLIC_BASE_URL, HTTP_INSECURE_BASE_URL, DATA_DIR, DB_URL,
-            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_YTDLP, TOOLS_TRACKSPLITTER, TRACKSPLITTER_CACHE_DIR, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
+            TOOLS_FFMPEG, TOOLS_FFPROBE, TOOLS_TRACKSPLITTER, TRACKSPLITTER_CACHE_DIR, OUTPUT_PROFILE, OUTPUT_VIDEO_BITRATE_KBPS,
             OUTPUT_AUDIO_ONLY_BITRATE_KBPS, INGEST_WORKERS, INGEST_MAX_UPLOAD_BYTES, INGEST_MAX_DURATION_SECONDS,
             INGEST_QUICK_PRESET, INGEST_QUALITY_PRESET,
             OVERLAY_WORKERS, OVERLAY_CACHE_MAX_BYTES, HTTP_TRUSTED_PROXIES, LIBRARY_IMPORT_ALLOWED_PATHS,
             LIBRARY_IMPORT_MAX_ZIP_BYTES);
+
+    /** Keys that are no longer used: accepted (in the file and as environment variables) but ignored, with a warning. */
+    public static final List<String> IGNORED_KEYS = List.of(TOOLS_YTDLP);
+
+    /** The startup warning for {@link #TOOLS_YTDLP}. */
+    static final String TOOLS_YTDLP_WARNING =
+            "tools.ytdlp is no longer used: YouTube goes through the YouTube service setting";
 
     private static final long KIB = 1024L;
     private static final long GIB = KIB * KIB * KIB;
@@ -209,6 +220,7 @@ public final class ConfigLoader {
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         Map<String, Raw> raw = new LinkedHashMap<>();
+        Set<String> ignoredKeys = new TreeSet<>();
 
         if (json != null) {
             String where = file == null ? "config" : "config file " + file;
@@ -218,11 +230,24 @@ public final class ConfigLoader {
                 throw new ConfigException(where + ": invalid JSON: " + e.getMessage());
             }
             for (String key : raw.keySet()) {
-                if (!KEYS.contains(key)) {
+                if (!KEYS.contains(key) && !IGNORED_KEYS.contains(key)) {
                     problems.add(where + ": unknown key '" + key + "'" + suggestion(key));
                 }
             }
+            for (String key : IGNORED_KEYS) {
+                if (raw.containsKey(key)) {
+                    ignoredKeys.add(key);
+                }
+            }
             raw.keySet().retainAll(KEYS);
+        }
+        for (String key : IGNORED_KEYS) {
+            if (!isBlank(env.get(envName(key)))) {
+                ignoredKeys.add(key);
+            }
+        }
+        if (ignoredKeys.contains(TOOLS_YTDLP)) {
+            warnings.add(TOOLS_YTDLP_WARNING);
         }
 
         for (String key : KEYS) {
@@ -246,6 +271,9 @@ public final class ConfigLoader {
         }
         Set<String> known = new TreeSet<>();
         for (String key : KEYS) {
+            known.add(envName(key));
+        }
+        for (String key : IGNORED_KEYS) {
             known.add(envName(key));
         }
         known.add(CONFIG_FILE_ENV);
@@ -307,7 +335,6 @@ public final class ConfigLoader {
 
         String ffmpeg = tool(v, TOOLS_FFMPEG, "ffmpeg", problems, warnings);
         String ffprobe = tool(v, TOOLS_FFPROBE, "ffprobe", problems, warnings);
-        String ytdlp = tool(v, TOOLS_YTDLP, "yt-dlp", problems, warnings);
         // Optional: without it, looking song details up online is off (no warning).
         String tracksplitter = v.isSet(TOOLS_TRACKSPLITTER)
                 ? tool(v, TOOLS_TRACKSPLITTER, "tracksplitter", problems, warnings)
@@ -356,7 +383,7 @@ public final class ConfigLoader {
             throw new ConfigException(problems);
         }
         Config config = new Config(bind, port, publicBaseUrl, trustedProxies, dataDir, dbUrl,
-                ffmpeg, ffprobe, ytdlp, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
+                ffmpeg, ffprobe, profile, videoBitrate, audioOnlyBitrate, ingestWorkers, maxUpload, maxDuration,
                 quickPreset, qualityPreset, overlayWorkers, overlayCache, insecureBaseUrl, tracksplitter,
                 tracksplitterCache, importPaths, maxZip);
         return new Loaded(config, json == null ? null : file, warnings);

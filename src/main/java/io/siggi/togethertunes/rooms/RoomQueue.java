@@ -23,7 +23,7 @@ import java.util.Random;
  * the room's executor through the {@link RoomRegistry}. {@code add} and {@code addPlaylist} do
  * their slow part first, outside the executor: an {@code uploadId} becomes the item its
  * {@code complete} produced, a {@code youtubeUrl} is imported ({@link YoutubeImports}, which may
- * run yt-dlp), and a purged or failed YouTube item is fetched again. The cheap checks
+ * ask the YouTube service), and a purged or failed YouTube item is fetched again. The cheap checks
  * ({@link QueueOps#checkAdd}) run on the executor before that, so a refused request starts nothing;
  * everything is checked again when the entry is made.
  *
@@ -110,7 +110,7 @@ public final class RoomQueue {
 
     /**
      * Like {@link #add(String, Actor, RoomActor, Source)}, telling {@code lookup} the stages of a
-     * YouTube link's {@code yt-dlp -J} lookup while it runs (only when there is one).
+     * YouTube link's lookup (the YouTube service) while it runs (only when there is one).
      */
     public QueueOps.Added add(String roomId, Actor actor, RoomActor a, Source source,
                               YoutubeLookupStage.Listener lookup) throws Exception {

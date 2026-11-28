@@ -62,7 +62,7 @@ import java.util.function.Supplier;
  * {@code presentAsAudio} is applied when the import creates the item or brings a purged or failed
  * one back; for an item that already exists it is ignored (changing it is a metadata edit, with
  * its own permission rules). Imports of the same ID are serialised, so concurrent requests for a
- * new video run yt-dlp once and make one item. The item row, its job and the library entry are
+ * new video look it up once and make one item. The item row, its job and the library entry are
  * written in one transaction. The download itself (and the thumbnail that becomes the cover) is
  * the ingest job's work ({@link IngestPipeline}).
  */

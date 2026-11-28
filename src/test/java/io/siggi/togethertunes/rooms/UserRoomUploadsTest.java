@@ -108,7 +108,7 @@ class UserRoomUploadsTest {
         roomGuests = new RoomGuests(db, settings, permissions, rooms, registry);
         rooms.liveIps(registry.mediaAccess());
         AddMediaPolicy policy = new AddMediaPolicy(permissions, settings, roomGuests);
-        Tools tools = new Tools(null, null, null);
+        Tools tools = new Tools(null, null);
         Uploads uploads = new Uploads(db, DataDir.create(dir.resolve("data")), tools, new IngestJobs(db, clock), () -> {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), 20_000_000, 600, new GuestUploadQuota(db, settings, clock),
                 clock);

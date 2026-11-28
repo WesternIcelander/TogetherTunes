@@ -179,7 +179,7 @@ class EncodeProfileTest {
         String ffmpeg = onPath("ffmpeg");
         String ffprobe = onPath("ffprobe");
         assumeTrue(ffmpeg != null && ffprobe != null, "ffmpeg/ffprobe not on PATH");
-        return new Tools(ffmpeg, ffprobe, null);
+        return new Tools(ffmpeg, ffprobe);
     }
 
     /** A lavfi source scaled to the profile: a mezzanine-style encode. */

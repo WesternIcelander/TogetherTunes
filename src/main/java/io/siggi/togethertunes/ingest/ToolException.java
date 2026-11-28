@@ -1,7 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
 /**
- * A tool run (ffmpeg, ffprobe, yt-dlp) that did not succeed. The message names the tool and the
+ * A tool run (ffmpeg, ffprobe) that did not succeed. The message names the tool and the
  * reason and ends with the last lines of the tool's stderr, so it can go straight into a job's
  * error state. Secrets registered with {@link ToolCall#secret(String)} are already redacted.
  */

@@ -86,7 +86,7 @@ import java.util.Set;
  *       {@code uploadQuota} ({@code {"perHour", "maxItemBytes"}}), {@code stringList} (an array
  *       of strings) or {@code secret} (a string never sent back: no {@code value} or {@code default},
  *       only {@code "isSet"}; never in the audit log either); a {@code null} value (e.g. no
- *       yt-dlp cookies file) is left out. {@code purchaseDataRemoval}: whether personal data can be
+ *       YouTube service URL) is left out. {@code purchaseDataRemoval}: whether personal data can be
  *       removed from audio uploads (TrackSplitter is installed, {@link #purchaseDataRemoval}).</li>
  *   <li>{@code PATCH /api/admin/settings} {@code {"key": value, ...}} → the same as {@code GET}.
  *       {@code null} resets a setting to its default. All or nothing: {@code 400 unknown_setting}

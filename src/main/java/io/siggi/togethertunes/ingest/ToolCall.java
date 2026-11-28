@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
- * One run of an external tool (ffmpeg, ffprobe, yt-dlp) as a subprocess. Made by {@link Tools},
+ * One run of an external tool (ffmpeg, ffprobe) as a subprocess. Made by {@link Tools},
  * configured with the fluent setters, then {@link #run()}. Not reusable.
  *
  * <ul>

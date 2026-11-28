@@ -529,6 +529,35 @@ abstract class MigrationContract {
     }
 
     /**
+     * 0042 deletes the stored yt-dlp cookies file and PO token provider settings (YouTube goes
+     * through the YouTube service, docs/library-and-ingest.md#youtube-caching); the other settings,
+     * the {@code ytdlp.enabled} switch among them, are kept.
+     */
+    @Test
+    void removeYtdlpSettingsKeepsTheOthers() throws SQLException {
+        List<Migration> files = MigrationRunner.loadClasspath(getClass().getClassLoader(),
+                MigrationRunner.CLASSPATH_ROOT, db.dialect());
+        Migration removal = files.stream().filter(m -> m.name().contains("remove_ytdlp_settings")).findFirst()
+                .orElseThrow();
+        new MigrationRunner(db, files.stream().filter(m -> m.version() < removal.version()).toList()).migrate();
+        exec("INSERT INTO settings (key, value_json) VALUES ('ytdlp.cookiesFile', '\"/srv/cookies.txt\"'),"
+                + " ('ytdlp.poTokenProviderUrl', '\"http://pot:4416\"'), ('ytdlp.enabled', 'false'),"
+                + " ('youtube.serviceUrl', '\"http://ytsucks:8080\"')");
+        new MigrationRunner(db, files).migrate();
+        Map<String, String> settings = new java.util.HashMap<>();
+        db.read(c -> {
+            try (Statement st = c.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT key, value_json FROM settings")) {
+                while (rs.next()) {
+                    settings.put(rs.getString(1), rs.getString(2));
+                }
+            }
+            return null;
+        });
+        assertEquals(Map.of("ytdlp.enabled", "false", "youtube.serviceUrl", "\"http://ytsucks:8080\""), settings);
+    }
+
+    /**
      * Migration {@code 0028_playlists_v2}: playlists keep the order they were listed in (most
      * recently changed first, per owner) as positions 1..n, none is built in, and every item in a
      * playlist ends up in its owner's library (added when it first went into one of their

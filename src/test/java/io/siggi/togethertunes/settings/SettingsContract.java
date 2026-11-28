@@ -82,7 +82,12 @@ abstract class SettingsContract {
         assertFalse(Settings.KEYS.containsKey("guests.download"));
         assertThrows(IllegalArgumentException.class, () -> settings.setJson("guests.download", "true"));
         assertTrue(settings.ytdlpEnabled());
-        assertNull(settings.ytdlpCookiesFile());
+        // the yt-dlp cookies file and PO token provider settings are gone (YouTube goes through the service)
+        assertFalse(Settings.KEYS.containsKey("ytdlp.cookiesFile"));
+        assertFalse(Settings.KEYS.containsKey("ytdlp.poTokenProviderUrl"));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("ytdlp.cookiesFile", "\"/c.txt\""));
+        assertThrows(IllegalArgumentException.class, () -> settings.setJson("ytdlp.poTokenProviderUrl", "\"http://x\""));
+        assertNull(settings.cardsFont());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(14, settings.retentionVideoUnviewedDays());
         assertEquals(72, settings.retentionVideoAfterViewHours());
@@ -158,7 +163,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(57, all.size());
+        assertEquals(55, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -169,7 +174,7 @@ abstract class SettingsContract {
         settings.set(Settings.REGISTRATION_MODE, RegistrationMode.INVITE);
         settings.set(Settings.GUESTS_IDENTIFY_BY, GuestIdentity.IP);
         settings.set(Settings.GUESTS_UPLOAD_QUOTA, new UploadQuota(0, 1));
-        settings.set(Settings.YTDLP_COOKIES_FILE, "/srv/cookies.txt");
+        settings.set(Settings.CARDS_FONT, "Noto Sans");
         settings.set(Settings.RETENTION_UNREFERENCED_DAYS, 0);
         settings.set(Settings.OUTPUTS_HLS_ENABLED, false);
         settings.set(Settings.OUTPUTS_MAX_AUTO_OFF_MINUTES, 5);
@@ -200,7 +205,7 @@ abstract class SettingsContract {
         assertEquals(RegistrationMode.INVITE, settings.registrationMode());
         assertEquals(GuestIdentity.IP, settings.guestsIdentifyBy());
         assertEquals(new UploadQuota(0, 1), settings.guestsUploadQuota());
-        assertEquals("/srv/cookies.txt", settings.ytdlpCookiesFile());
+        assertEquals("Noto Sans", settings.cardsFont());
         assertEquals(0, settings.retentionUnreferencedDays());
         assertFalse(settings.outputsHlsEnabled());
 
@@ -218,10 +223,10 @@ abstract class SettingsContract {
         assertNull(raw("registration.mode"));
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
 
-        settings.set(Settings.YTDLP_COOKIES_FILE, null);
-        assertNull(settings.ytdlpCookiesFile());
-        settings.set(Settings.YTDLP_COOKIES_FILE, "");
-        assertNull(settings.ytdlpCookiesFile());
+        settings.set(Settings.CARDS_FONT, null);
+        assertNull(settings.cardsFont());
+        settings.set(Settings.CARDS_FONT, "");
+        assertNull(settings.cardsFont());
     }
 
     @Test
@@ -274,7 +279,7 @@ abstract class SettingsContract {
         assertEquals("", settings.authLoginMessage());
         assertNull(raw("auth.loginMessage"));
         assertTrue(Settings.AUTH_LOGIN_MESSAGE.multiline());
-        assertFalse(Settings.YTDLP_COOKIES_FILE.multiline());
+        assertFalse(Settings.CARDS_FONT.multiline());
     }
 
     @Test
@@ -315,8 +320,8 @@ abstract class SettingsContract {
         settings.setJson("guests.nameBlocklist", "[]");
         assertEquals(List.of(), settings.guestsNameBlocklist());
 
-        settings.setJson("ytdlp.cookiesFile", "null");
-        assertNull(settings.ytdlpCookiesFile());
+        settings.setJson("cards.font", "null");
+        assertNull(settings.cardsFont());
     }
 
     @Test
@@ -339,20 +344,7 @@ abstract class SettingsContract {
     }
 
     @Test
-    void poTokenProviderUrl() throws SQLException {
-        assertNull(settings.ytdlpPoTokenProviderUrl(), "unset by default");
-        settings.setJson("ytdlp.poTokenProviderUrl", "\" http://127.0.0.1:4416/ \"");
-        assertEquals("http://127.0.0.1:4416", settings.ytdlpPoTokenProviderUrl());
-        settings.setJson("ytdlp.poTokenProviderUrl", "\"https://pot.example/base\"");
-        assertEquals("https://pot.example/base", settings.ytdlpPoTokenProviderUrl());
-        for (String bad : List.of("\"ftp://x\"", "\"not a url\"", "\"http://x/?a=1\"", "\"http://x/#f\"",
-                "\"http://u:p@x\"", "\"http://x/a,b\"", "\"http://x/a;b\"", "\"127.0.0.1:4416\"", "1")) {
-            assertThrows(IllegalArgumentException.class, () -> settings.setJson("ytdlp.poTokenProviderUrl", bad), bad);
-        }
-        assertEquals("https://pot.example/base", settings.ytdlpPoTokenProviderUrl(), "a refused value changes nothing");
-        settings.setJson("ytdlp.poTokenProviderUrl", "\"\"");
-        assertNull(settings.ytdlpPoTokenProviderUrl(), "empty = unset");
-        // mvfinder.url still takes , and ;
+    void urlsMayContainCommasAndSemicolons() throws SQLException {
         settings.setJson("mvfinder.url", "\"http://x/a,b\"");
         assertEquals("http://x/a,b", settings.get(Settings.MVFINDER_URL));
     }
@@ -378,7 +370,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(57, settings.all().size());
+        assertEquals(55, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());
@@ -397,7 +389,7 @@ abstract class SettingsContract {
     @Test
     void configSuppliesTheMaxDurationAndPresetDefaults() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
-                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.values()[0], 3000, 800, 1,
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", OutputProfile.values()[0], 3000, 800, 1,
                 1L << 32, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 34, null);
         Settings withConfig = new Settings(db, config);
         assertEquals(X264Preset.FASTER, withConfig.ingestQuickPreset());
@@ -424,7 +416,7 @@ abstract class SettingsContract {
     @Test
     void configKeysThatAreSettingsRoundTripAndOverrideTheirConfigDefault() throws SQLException {
         Config config = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
-                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P1080_30, 6000, 1200, 3,
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", OutputProfile.P1080_30, 6000, 1200, 3,
                 2 * Settings.GIB, 600, X264Preset.FASTER, X264Preset.SLOWER, 2, 7 * Settings.GIB, null);
         Settings s = new Settings(db, config);
         assertEquals(OutputProfile.P1080_30, s.outputProfile());
@@ -471,7 +463,7 @@ abstract class SettingsContract {
 
         // A configured bitrate other than the profile's default is the setting's default.
         Config custom = new Config("0.0.0.0", 8080, "https://example.test", List.of(), Path.of("/tmp/data"),
-                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", "yt-dlp", OutputProfile.P720_30, 4000, 800, 1,
+                "jdbc:sqlite::memory:", "ffmpeg", "ffprobe", OutputProfile.P720_30, 4000, 800, 1,
                 1L << 62, 600, X264Preset.FASTER, X264Preset.SLOWER, 1, 1L << 62, null);
         Settings c = new Settings(db, custom);
         assertEquals(4000, c.outputVideoBitrateKbps());

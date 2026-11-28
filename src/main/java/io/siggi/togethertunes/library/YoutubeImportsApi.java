@@ -38,7 +38,7 @@ import java.util.Objects;
  * {@code before_entry_not_found}) leaves the item in the library.
  *
  * <p><b>Lookup stages:</b> with {@code Accept: application/x-ndjson}, a request that runs a
- * {@code yt-dlp -J} lookup is answered as a stream of JSON lines as soon as the first stage is
+ * YouTube lookup ({@code /api/info} on the YouTube service) is answered as a stream of JSON lines as soon as the first stage is
  * known: {@code {"type":"progress","stage","text"}} per stage ({@link YoutubeLookupStage}), then
  * {@code {"type":"result","itemId","cached","status"}} or
  * {@code {"type":"error","status","error":{"code","message"},"retryAfter"?}}. Without a lookup
