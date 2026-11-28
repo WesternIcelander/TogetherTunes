@@ -113,7 +113,7 @@ class UserRoomUploadsTest {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), 20_000_000, 600, new GuestUploadQuota(db, settings, clock),
                 clock);
         uploads.precheck(true);
-        YoutubeImports youtube = TestUploads.youtube(db, config, tools, clock);
+        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         queue = new RoomQueue(registry, db, uploads, youtube, new Playlists(db, youtube, clock), policy, new Random(1));
         Router router = new Router(new ActorResolver(db, settings, clock).hook());
         new UploadsApi(uploads, policy, new Guests(db, settings, clock, false, GuestNames.bundled())).register(router);

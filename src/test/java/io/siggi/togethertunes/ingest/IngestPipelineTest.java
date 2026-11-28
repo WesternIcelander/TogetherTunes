@@ -1,5 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
+import io.siggi.togethertunes.youtube.FakeYtSucks;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -205,8 +207,8 @@ class IngestPipelineTest extends IngestPipelineTestBase {
     }
 
     /**
-     * A YouTube job downloads from the canonical URL (fake yt-dlp, with the cookies file) and
-     * ingests the result; the downloaded thumbnail (WebP) becomes {@code cover.jpg}.
+     * A YouTube job has the YouTube service download the video (by its ID, 1080p, with the token),
+     * fetches the file and ingests it; the info's thumbnail (WebP) becomes {@code cover.jpg}.
      */
     @Test
     @Execution(ExecutionMode.CONCURRENT)
@@ -221,9 +223,9 @@ class IngestPipelineTest extends IngestPipelineTestBase {
             }
             return null;
         });
-        Path fixture = dir.resolve("yt.mkv");
+        Path fixture = dir.resolve("yt.mp4");
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=426x240:r=30", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
-                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "libopus", fixture.toString());
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", fixture.toString());
         Path thumbnail = dir.resolve("thumb.webp");
         String thumbExt = "webp";
         try {
@@ -235,40 +237,29 @@ class IngestPipelineTest extends IngestPipelineTestBase {
             ffmpeg("-f", "lavfi", "-i", "color=c=red:s=180x180", "-vf", "pad=320:180:70:0:color=0x404040",
                     "-frames:v", "1", thumbnail.toString());
         }
-        Path cookies = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
-        Path argsFile = dir.resolve("ytdlp-args.txt");
-        Path script = dir.resolve("fake-yt-dlp");
-        Files.writeString(script, "#!/bin/sh\n"
-                + "printf '%s\\n' \"$@\" > '" + argsFile + "'\n"
-                + "out=''\nthumb=''\n"
-                // yt-dlp writes a refreshed cookie to the file it was given
-                + "for a; do if [ \"$prev\" = --cookies ]; then"
-                + " printf '.youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tFRESH\\tyes\\n' >> \"$a\"; fi; prev=\"$a\"; done\n"
-                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then case \"$2\" in thumbnail:*) thumb=\"${2#thumbnail:}\";;"
-                + " *) out=\"$2\";; esac; shift; fi; shift; done\n"
-                + "echo '[youtube] dQw4w9WgXcQ: Downloading webpage'\n"
-                + "echo '[download]  42.0% of 1.00MiB at 1.00MiB/s ETA 00:01'\n"
-                + "echo '[download] 100% of 1.00MiB'\n"
-                + "cp '" + thumbnail + "' \"$(echo \"$thumb\" | sed 's/%(ext)s/" + thumbExt + "/')\"\n"
-                + "cp '" + fixture + "' \"$(echo \"$out\" | sed 's/%(ext)s/mkv/')\"\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
-        Tools withYtdlp = new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
+        FakeYtSucks fake = fakeYtSucks(fixture);
+        fake.requiredToken = "job-token";
+        String thumbUrl = "https://i.ytimg.com/vi_webp/dQw4w9WgXcQ/maxresdefault." + thumbExt;
+        fake.info("dQw4w9WgXcQ", "{\"id\":\"dQw4w9WgXcQ\",\"title\":\"t\",\"thumbnail\":\"" + thumbUrl + "\"}");
+        fake.image(thumbUrl, Files.readAllBytes(thumbnail));
 
-        IngestJob job = run(queue(withYtdlp, reference, 1800, cookies::toString), Kind.YOUTUBE, item);
+        IngestJob job = run(queue(fake.service("job-token"), reference, 1800), Kind.YOUTUBE, item);
         assertEquals(State.DONE, job.state(), job.log());
-        List<String> args = Files.readAllLines(argsFile);
-        assertEquals("https://www.youtube.com/watch?v=dQw4w9WgXcQ", args.get(args.size() - 1));
-        // a private copy (in the job's directory, deleted afterwards), its change merged into the shared file
-        Path privateCopy = Path.of(args.get(args.indexOf("--cookies") + 1));
-        assertNotEquals(cookies, privateCopy);
-        assertFalse(Files.exists(privateCopy));
-        assertTrue(Files.readString(cookies).contains(".youtube.com\tTRUE\t/\tTRUE\t0\tFRESH\tyes\n"),
-                "merged back into the shared file");
+        FakeYtSucks.Req video = fake.requests("/api/video").get(0);
+        assertEquals(java.util.Map.of("vid", "dQw4w9WgXcQ", "quality", "1080", "download", "true", "stream", "true"),
+                video.query());
+        for (FakeYtSucks.Req r : fake.requests()) {
+            assertEquals("Bearer job-token", r.authorization(), r.path());
+            assertFalse(r.query().containsKey("token"), r.path());
+        }
+        assertEquals(1, fake.requests("/api/jobs/dQw4w9WgXcQ/file").size(), "the file fetched once");
+        assertEquals(List.of(java.net.URI.create(thumbUrl)), fake.imageRequests());
+        assertFalse(job.log().contains("job-token"), "the token never in the log");
         assertTrue(job.log().contains("thumbnail cover." + thumbExt), job.log());
         assertTrue(job.log().contains("step: download"));
-        assertTrue(job.log().contains("[youtube] dQw4w9WgXcQ: Downloading webpage"), job.log());
-        assertFalse(job.log().contains("42.0%"), "progress lines become progress, not log lines");
-        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "mezz.mp4", "original.mkv"),
+        assertTrue(job.log().contains("[youtube] downloading 40.0%"), job.log());
+        assertTrue(job.log().contains("[youtube] done 100.0%"), job.log());
+        assertEquals(List.of("audio.m4a", "card.mp4", "cover.jpg", "index.bin", "mezz.mp4", "original.mp4"),
                 layout(item));
         // the square art of the 16:9 thumbnail, its grey letterbox bars cropped off (CoverBars)
         java.awt.image.BufferedImage cover = CardRenderer.readImage(cur(item).resolve("cover.jpg"));
@@ -281,18 +272,39 @@ class IngestPipelineTest extends IngestPipelineTestBase {
                     "the thumbnail's art is the cover: " + Integer.toHexString(rgb) + " at " + x);
         }
         assertEquals("ready", itemRow(item)[0]);
-        // the merged download is kept as the original, so a re-encode doesn't need YouTube
-        assertKeptOnly(item, "original.mkv", "opus/matroska,webm", Files.readAllBytes(fixture));
+        // the download is kept as the original, so a re-encode doesn't need YouTube
+        assertKeptOnly(item, "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", Files.readAllBytes(fixture));
         assertNoLeftovers();
 
-        // a cookies setting that points nowhere is reported and ignored
-        IngestJob again = run(queue(withYtdlp, reference, 1800, () -> dir.resolve("gone.txt").toString()),
-                Kind.REFETCH, item);
+        // a refetch without a cover (no thumbnail, YouTube's fallback missing too) still becomes ready
+        fake.info("dQw4w9WgXcQ", "{\"id\":\"dQw4w9WgXcQ\",\"title\":\"t\"}");
+        IngestJob again = run(queue(fake.service("job-token"), reference, 1800), Kind.REFETCH, item);
         assertEquals(State.DONE, again.state(), again.log());
-        assertFalse(Files.readAllLines(argsFile).contains("--cookies"));
-        assertTrue(again.log().contains("gone.txt (ytdlp.cookiesFile) can't be read"), again.log());
-        assertKeptOnly(item, "original.mkv", "opus/matroska,webm", Files.readAllBytes(fixture));
+        assertTrue(again.log().contains("[ingest] no thumbnail"), again.log());
+        assertTrue(fake.imageRequests().contains(java.net.URI.create("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")));
+        assertKeptOnly(item, "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", Files.readAllBytes(fixture));
         assertNoLeftovers();
+    }
+
+    /** A download YouTube refuses fails the job with the service's message; nothing is left behind. */
+    @Test
+    @Execution(ExecutionMode.CONCURRENT)
+    void youtubeJobFailsWithTheServicesError() throws Exception {
+        String item = fixtures.item("pending");
+        makeYoutube(item);
+        FakeYtSucks fake = fakeYtSucks(null);
+        fake.videoError("dQw4w9WgXcQ", "private", "[youtube] dQw4w9WgXcQ: Private video");
+        IngestJob job = run(queue(fake.service(), reference, 1800), Kind.YOUTUBE, item);
+        assertEquals(State.FAILED, job.state(), job.log());
+        assertTrue(job.log().contains("youtube (private): [youtube] dQw4w9WgXcQ: Private video"), job.log());
+        assertTrue(job.log().contains("YouTube didn't return this video"), job.log());
+        assertEquals(0, fake.requests("/api/jobs/dQw4w9WgXcQ/file").size());
+        assertNoLeftovers();
+
+        // no service set up at all
+        IngestJob none = run(queue(tools, reference, 1800), Kind.YOUTUBE, item);
+        assertEquals(State.FAILED, none.state());
+        assertTrue(none.log().contains("The YouTube service isn't set up"), none.log());
     }
 
     /** Digital silence can't be measured; it is encoded without normalisation and no loudness is stored. */
@@ -336,7 +348,7 @@ class IngestPipelineTest extends IngestPipelineTestBase {
                 // WMA decodes 72 ms longer than its container says; verify accepts the decoded length
                 new Case("source.wma", new String[] {"-ar", "44100", "-c:a", "wmav2"}, "original.wma", "wmav2/asf", 0));
         // the cases are independent: stage and enqueue them all, then check each (several workers)
-        IngestQueue q = queue(tools, reference, 1800, () -> null, 4);
+        IngestQueue q = queue(tools, reference, 1800, io.siggi.togethertunes.youtube.YoutubeService.none(), 4);
         List<String> items = new ArrayList<>();
         List<String> jobIds = new ArrayList<>();
         List<byte[]> uploads = new ArrayList<>();
@@ -1087,21 +1099,12 @@ class IngestPipelineTest extends IngestPipelineTestBase {
     @Test
     @Execution(ExecutionMode.CONCURRENT)
     void unreferencedItemsArePurgedAndYoutubeRefetchesIntoTheSameRow() throws Exception {
-        Path ytSource = dir.resolve("yt-retention.webm");
+        Path ytSource = dir.resolve("yt-retention.mp4");
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
-                "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", ytSource.toString());
-        Path calls = dir.resolve("yt-calls.txt");
-        Path script = dir.resolve("fake-yt-dlp-retention");
-        Files.writeString(script, "#!/bin/sh\n"
-                + "printf '%s\\n' \"$@\" >> '" + calls + "'\n"
-                + "echo '----' >> '" + calls + "'\n"
-                + "out=''\n"
-                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi; shift; done\n"
-                + "[ -n \"$out\" ] || { echo 'unexpected call' >&2; exit 1; }\n"
-                + "cp '" + ytSource + "' \"$(echo \"$out\" | sed 's/%(ext)s/webm/')\"\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
-        Tools ytTools = new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
-        IngestQueue q = queue(ytTools, reference, 1800);
+                "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", ytSource.toString());
+        FakeYtSucks fake = fakeYtSucks(ytSource);
+        io.siggi.togethertunes.youtube.YoutubeService ytService = fake.service();
+        IngestQueue q = queue(ytService, reference, 1800);
 
         // a ready upload, a ready YouTube item and a ready upload in someone's library
         String upload = fixtures.item("pending");
@@ -1134,7 +1137,7 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         }
         Path ytDir = IngestPipeline.itemDir(data, yt);
         Path uploadDir = IngestPipeline.itemDir(data, upload);
-        assertKeptOnly(yt, "original.webm", "opus/matroska,webm", Files.readAllBytes(ytSource));
+        assertKeptOnly(yt, "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", Files.readAllBytes(ytSource));
         assertTrue(Files.exists(uploadDir.resolve("original.mp3")));
         Object[] ytBefore = itemRow(yt);
         // the finished job was the last reference
@@ -1164,11 +1167,12 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         assertEquals("ready", itemRow(kept)[0]);
         assertTrue(Files.exists(cur(kept).resolve("audio.m4a")));
         assertFalse(Files.exists(uploadDir));
-        long ytCallsBefore = Files.readAllLines(calls).stream().filter("----"::equals).count();
+        int downloadsBefore = fake.requests("/api/video").size();
+        int lookupsBefore = fake.requests("/api/info").size();
 
         // the YouTube link again: the same row, refetched
-        YoutubeImports imports = new YoutubeImports(db, ytTools, jobs, q::wake, OutputEncoding.defaultFor(OutputProfile.P720_30), 1800,
-                () -> null, clock);
+        YoutubeImports imports = new YoutubeImports(db, ytService, jobs, q::wake, OutputEncoding.defaultFor(OutputProfile.P720_30), 1800,
+                clock);
         YoutubeImports.Imported again = imports.importUrl(new Actor.User(user, "s", Actor.Via.BEARER),
                 "https://youtu.be/dQw4w9WgXcQ?t=7", null, null, new io.siggi.togethertunes.library.Classify.Classification(
                         io.siggi.togethertunes.library.MediaType.MUSIC_VIDEO, null)); // a video going into the library
@@ -1192,16 +1196,16 @@ class IngestPipelineTest extends IngestPipelineTestBase {
                 }
             }
         }), "one row per video ID");
-        List<String> after = Files.readAllLines(calls);
-        assertEquals(ytCallsBefore + 1, after.stream().filter("----"::equals).count(), "only the download ran");
-        assertFalse(after.contains("-J"), "no metadata request");
-        assertTrue(after.contains("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "canonical URL: " + after);
+        assertEquals(downloadsBefore + 1, fake.requests("/api/video").size(), "downloaded again");
+        // the import itself asked nothing; only the job's cover lookup did
+        assertEquals(lookupsBefore + 1, fake.requests("/api/info").size(), "only the cover's lookup");
+        assertEquals("dQw4w9WgXcQ", fake.requests("/api/video").get(downloadsBefore).query().get("vid"));
         Object[] ytAfter = itemRow(yt);
         assertEquals("ready", ytAfter[0]);
         assertEquals(ytBefore[1], ytAfter[1]);
         assertEquals(ytBefore[3], ytAfter[3]);
         assertSameAvcC("refetched youtube", yt, true);
-        assertKeptOnly(yt, "original.webm", "opus/matroska,webm", Files.readAllBytes(ytSource));
+        assertKeptOnly(yt, "original.mp4", "aac/mov,mp4,m4a,3gp,3g2,mj2", Files.readAllBytes(ytSource));
         assertNoLeftovers();
         // the purged upload has nothing to refetch from; it stays purged
         assertEquals("purged", itemRow(upload)[0]);
@@ -1244,7 +1248,7 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         long window = 48L * 60 * 60 * 1000;
         MediaVersions versions = new MediaVersions(data, db);
         versions.undoWindow(() -> window);
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800, () -> null);
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800);
         pipeline.mediaVersions(versions);
         IngestQueue q = new IngestQueue(jobs, 1, pipeline, java.time.Clock.systemUTC(), java.time.Duration.ofHours(1),
                 java.time.Duration.ZERO);
@@ -1325,7 +1329,7 @@ class IngestPipelineTest extends IngestPipelineTestBase {
         Path fixture = dir.resolve("yt-still.mkv");
         stillVideo(fixture);
 
-        IngestJob job = run(queue(fakeYtdlp(fixture, "yt-still"), reference, 1800), Kind.YOUTUBE, item);
+        IngestJob job = run(queue(fakeYoutube(fixture), reference, 1800), Kind.YOUTUBE, item);
         assertEquals(State.DONE, job.state(), job.log());
         assertTrue(job.log().contains("no video version is kept"), job.log());
         assertFalse(job.log().contains("step: still image: audio version"), job.log());

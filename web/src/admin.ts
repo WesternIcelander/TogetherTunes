@@ -16,8 +16,9 @@ import { viewScope } from "./nav.js";
 import { adjustedNotice, coupledChange } from "./roomsettings.js";
 import { formatGib, parseGib, storageText, type StorageStatus } from "./storage.js";
 import { isAdmin, onReady, renderNav, requireUser } from "./session.js";
-import { pluginText, testText, updateText, updating, versionText, type PoTokenTest, type YtdlpInfo,
-  type YtdlpUpdate } from "./ytdlp.js";
+import { INTRO as SERVICE_INTRO, lastUpdateText, logText, providerText, startedText, statusText as serviceStatusText,
+  testText as serviceTestText, updating as serviceUpdating, versionLines, type ConnectionTest, type ServiceStatus,
+  type UpdateLog, type UpdateStarted } from "./youtubeservice.js";
 
 interface RoleRef { id: string; name: string }
 
@@ -537,82 +538,91 @@ async function loadSettings(): Promise<void> {
   element("cleaning-note").hidden = r.purchaseDataRemoval !== false;
   renderSettings();
   await loadStorage();
-  await loadYtdlp();
+  await loadYoutubeService();
 }
 
-// ------------------------------------------------------------------ yt-dlp
+// ------------------------------------------------------------------ YouTube service
 
-let ytdlpPoll: number | undefined;
+let servicePoll: number | undefined;
 
-/** The yt-dlp box (admin.settings): version, the Update button and the last run's output; polls while it runs. */
-async function loadYtdlp(): Promise<void> {
-  if (ytdlpPoll !== undefined) {
-    clearTimeout(ytdlpPoll);
-    ytdlpPoll = undefined;
+/** The YouTube service box (admin.settings): status, versions, the last update; polls while it updates. */
+async function loadYoutubeService(): Promise<void> {
+  if (servicePoll !== undefined) {
+    clearTimeout(servicePoll);
+    servicePoll = undefined;
   }
-  let info: YtdlpInfo;
+  let s: ServiceStatus;
   try {
-    info = await api<YtdlpInfo>("GET", "/api/admin/ytdlp");
+    s = await api<ServiceStatus>("GET", "/api/admin/youtube-service");
   } catch (e) {
-    if (!VIEW.signal.aborted) element("ytdlp-version").textContent = "yt-dlp: " + message(e);
+    if (!VIEW.signal.aborted) element("ytservice-status").textContent = "YouTube service: " + message(e);
     return;
   }
   if (VIEW.signal.aborted) return;
-  renderYtdlp(info);
-  if (updating(info) && currentTab() === "settings") {
-    ytdlpPoll = VIEW.signal.aborted ? undefined : window.setTimeout(() => void loadYtdlp(), 2000);
+  renderYoutubeService(s);
+  if (serviceUpdating(s) && currentTab() === "settings") {
+    servicePoll = VIEW.signal.aborted ? undefined : window.setTimeout(() => void loadYoutubeService(), 3000);
   }
 }
 
-function renderYtdlp(info: YtdlpInfo): void {
-  element("ytdlp-version").textContent = versionText(info);
-  element<HTMLButtonElement>("ytdlp-update").disabled = !info.available || updating(info);
-  const text = updateText(info.update);
-  const line = element("ytdlp-status");
-  line.textContent = text ?? "";
-  line.hidden = text === undefined;
-  const log = element("ytdlp-log");
-  log.textContent = info.update?.log ?? "";
-  log.hidden = info.update === undefined || info.update.log === "";
-  const plugin = pluginText(info);
-  const pot = element("ytdlp-pot-status");
-  pot.textContent = plugin ?? "";
-  pot.hidden = plugin === undefined;
-  element<HTMLButtonElement>("ytdlp-pot-test").disabled = !info.available;
+function renderYoutubeService(s: ServiceStatus): void {
+  element("ytservice-status").textContent = serviceStatusText(s);
+  const versions = element("ytservice-versions");
+  versions.replaceChildren(...versionLines(s).map((l) => h("li", { text: l })));
+  versions.hidden = versions.childElementCount === 0;
+  const provider = providerText(s);
+  const p = element("ytservice-provider");
+  p.textContent = provider ?? "";
+  p.hidden = provider === undefined;
+  const last = lastUpdateText(s);
+  const line = element("ytservice-last");
+  line.textContent = last?.text ?? "";
+  line.className = last?.warning === true ? "notice error" : "";
+  line.hidden = last === undefined;
+  const usable = s.configured && s.reachable;
+  element<HTMLButtonElement>("ytservice-update").disabled = !usable || serviceUpdating(s);
+  element<HTMLButtonElement>("ytservice-log-button").disabled = !usable;
 }
 
-function setUpYtdlp(): void {
-  const button = element<HTMLButtonElement>("ytdlp-update");
-  const error = element("ytdlp-error");
-  button.addEventListener("click", () => void run(error, button, async () => {
-    await api<YtdlpUpdate>("POST", "/api/admin/ytdlp/update");
-    await loadYtdlp();
-  }));
-  // Tests the URL in the settings form (saved or not), else the stored one, else the plugin's default.
-  const test = element<HTMLButtonElement>("ytdlp-pot-test");
-  const result = element("ytdlp-pot-result");
-  test.addEventListener("click", () => void run(error, test, async () => {
-    result.hidden = true;
-    const field = element<HTMLFormElement>("settings-form")
-      .querySelector<HTMLInputElement>("input[name=\"s:ytdlp.poTokenProviderUrl\"]");
-    const url = field === null ? "" : field.value.trim();
-    result.textContent = "Testing…";
-    result.className = "";
+function setUpYoutubeService(): void {
+  element("ytservice-intro").textContent = SERVICE_INTRO;
+  const error = element("ytservice-error");
+  const result = element("ytservice-result");
+  const show = (text: string, ok: boolean): void => {
+    result.textContent = text;
+    result.className = ok ? "" : "error";
     result.hidden = false;
-    let t: PoTokenTest;
+  };
+  const update = element<HTMLButtonElement>("ytservice-update");
+  update.addEventListener("click", () => void run(error, update, async () => {
+    show(startedText(await api<UpdateStarted>("POST", "/api/admin/youtube-service/update")), true);
+    await loadYoutubeService();
+  }));
+  const logButton = element<HTMLButtonElement>("ytservice-log-button");
+  const log = element("ytservice-log");
+  logButton.addEventListener("click", () => void run(error, logButton, async () => {
+    log.textContent = logText(await api<UpdateLog>("GET", "/api/admin/youtube-service/update-log"));
+    log.hidden = false;
+  }));
+  // Tests the URL and token in the settings form (saved or not), else the stored ones.
+  const test = element<HTMLButtonElement>("ytservice-test");
+  test.addEventListener("click", () => void run(error, test, async () => {
+    const form = element<HTMLFormElement>("settings-form");
+    const url = form.querySelector<HTMLInputElement>("input[name=\"s:youtube.serviceUrl\"]")?.value.trim() ?? "";
+    const token = form.querySelector<HTMLInputElement>("input[name=\"s:youtube.serviceToken\"]")?.value.trim() ?? "";
+    const body: Record<string, string> = {};
+    if (url !== "") body["url"] = url;
+    if (token !== "") body["token"] = token;
+    show("Testing…", true);
+    let t: ConnectionTest;
     try {
-      t = await api<PoTokenTest>("POST", "/api/admin/ytdlp/po-token-test", url === "" ? {} : { url });
+      t = await api<ConnectionTest>("POST", "/api/admin/youtube-service/test", body);
     } catch (e) {
       result.hidden = true;
       throw e;
     }
-    const r = testText(t);
-    result.textContent = r.text;
-    result.className = r.ok ? "" : "error";
-    const plugin = pluginText({ available: true, poTokenPlugin: t.poTokenPlugin });
-    const pot = element("ytdlp-pot-status");
-    pot.textContent = plugin ?? "";
-    pot.hidden = plugin === undefined;
+    const r = serviceTestText(t);
+    show(r.text, r.ok);
   }));
 }
 
@@ -857,7 +867,7 @@ function setUpSettings(): void {
 
 let fontsTimer: number | undefined;
 VIEW.signal.addEventListener("abort", () => {
-  window.clearTimeout(ytdlpPoll);
+  window.clearTimeout(servicePoll);
   window.clearTimeout(fontsTimer);
 }, { once: true });
 
@@ -1072,7 +1082,7 @@ async function start(): Promise<void> {
   setUpUsers();
   setUpRoles();
   setUpSettings();
-  setUpYtdlp();
+  setUpYoutubeService();
   setUpAudit();
   window.addEventListener("hashchange", () => void showTab(), { signal: VIEW.signal });
   void showTab();

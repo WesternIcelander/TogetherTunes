@@ -77,7 +77,7 @@ class ItemLinksApiTest {
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         this.settings = settings;
         jobs = new io.siggi.togethertunes.ingest.IngestJobs(db, clock);
-        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
+        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         youtube.diskSpace(new io.siggi.togethertunes.storage.DiskSpace(
                 () -> new io.siggi.togethertunes.storage.DiskSpace.Usage(free.get(), 100L << 30), () -> 5L << 30,
                 java.time.Duration.ZERO, System::nanoTime));

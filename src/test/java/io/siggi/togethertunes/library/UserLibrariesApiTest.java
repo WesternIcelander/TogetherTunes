@@ -66,7 +66,7 @@ class UserLibrariesApiTest {
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         TestUploads.userLibrariesApi(db, config, new Permissions(db, settings), clock).register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
-        YoutubeImports youtube = TestUploads.youtube(db, config, Tools.from(config), clock);
+        YoutubeImports youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         library = new Library(db, youtube, clock);
         playlists = new Playlists(db, youtube, clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);

@@ -55,6 +55,16 @@ class ProductNamesTest {
     static final java.util.Set<String> RESOLVER_NAME_ALLOWED = java.util.Set.of(
             "java/io/siggi/togethertunes/settings/Settings.java", "java/io/siggi/togethertunes/Main.java");
 
+    /**
+     * The YouTube service's name (YTSucks, Siggi's own tool, like MVFinder) may only appear in the
+     * admin settings: the {@code youtube.service*} settings (Settings), their wiring (Main) and the
+     * admin's YouTube service box ({@code youtubeservice.ts}). Everywhere else the UI says "YouTube service".
+     */
+    static final Pattern SERVICE_NAME = Pattern.compile("(?i)ytsucks");
+    static final java.util.Set<String> SERVICE_NAME_ALLOWED = java.util.Set.of(
+            "java/io/siggi/togethertunes/settings/Settings.java", "java/io/siggi/togethertunes/Main.java",
+            "src/youtubeservice.ts");
+
     /** Removes {@code //} and block comments from JS/TS/Java/CSS source, keeping strings and newlines. */
     static String stripCodeComments(String src) {
         StringBuilder out = new StringBuilder(src.length());
@@ -124,11 +134,36 @@ class ProductNamesTest {
             found.addAll(productNames(file, stripped));
         }
         if (!RESOLVER_NAME_ALLOWED.contains(file)) {
-            String[] lines = stripped.split("\n", -1);
-            for (int i = 0; i < lines.length; i++) {
-                Matcher m = RESOLVER_NAME.matcher(lines[i]);
-                while (m.find()) found.add(file + ":" + (i + 1) + ": " + m.group());
-            }
+            found.addAll(matches(file, stripped, RESOLVER_NAME));
+        }
+        if (!SERVICE_NAME_ALLOWED.contains(file)) {
+            found.addAll(matches(file, stripped, SERVICE_NAME));
+        }
+        return found;
+    }
+
+    private static List<String> matches(String file, String text, Pattern p) {
+        List<String> found = new ArrayList<>();
+        String[] lines = text.split("\n", -1);
+        for (int i = 0; i < lines.length; i++) {
+            Matcher m = p.matcher(lines[i]);
+            while (m.find()) found.add(file + ":" + (i + 1) + ": " + m.group());
+        }
+        return found;
+    }
+
+    @Test
+    void theServiceNameOnlyInTheAdminSettings() throws IOException {
+        assertEquals(List.of("src/x.ts:1: YTSucks"), scanText("src/x.ts", "const t = \"YTSucks\"; // YTSucks"));
+        assertEquals(List.of(), scanText("src/youtubeservice.ts", "const t = \"YTSucks\";"));
+        assertEquals(List.of(), scanText("src/x.ts", "// YTSucks only in a comment"));
+    }
+
+    private static List<String> scanText(String file, String text) {
+        String stripped = stripCodeComments(text);
+        List<String> found = new ArrayList<>(productNames(file, stripped));
+        if (!SERVICE_NAME_ALLOWED.contains(file)) {
+            found.addAll(matches(file, stripped, SERVICE_NAME));
         }
         return found;
     }

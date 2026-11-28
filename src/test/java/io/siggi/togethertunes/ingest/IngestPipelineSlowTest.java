@@ -1,5 +1,7 @@
 package io.siggi.togethertunes.ingest;
 
+import io.siggi.togethertunes.youtube.YoutubeService;
+
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -209,7 +211,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
     }
 
     /**
-     * A YouTube item re-encodes from its kept original, without YouTube (the fake yt-dlp fails).
+     * A YouTube item re-encodes from its kept original, without YouTube (the fake YouTube service fails).
      * One without its original (made before downloads were kept) downloads it again and keeps the
      * new download; if that download fails, it falls back to its old mezzanine. An item that is
      * no longer ready isn't touched.
@@ -223,8 +225,8 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=426x240:r=30", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
                 "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "libopus", fixture.toString());
         byte[] downloaded = Files.readAllBytes(fixture);
-        Tools ok = fakeYtdlp(fixture, "yt-ok");
-        Tools broken = fakeYtdlp(null, "yt-broken");
+        YoutubeService ok = fakeYoutube(fixture);
+        YoutubeService broken = fakeYoutube(null);
         assertEquals(State.DONE, run(queue(ok, reference, 1800), Kind.YOUTUBE, item).state());
         Path itemDir = IngestPipeline.itemDir(data, item);
         assertKeptOnly(item, "original.mkv", "opus/matroska,webm", downloaded);
@@ -447,7 +449,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
 
     /**
      * The M2 "done when" set on one queue: an MP3, a FLAC with cover art, 24 fps and 60 fps
-     * videos, a portrait video and a YouTube download (fake yt-dlp) all become ready, and every
+     * videos, a portrait video and a YouTube download (fake YouTube service) all become ready, and every
      * card, mezzanine and index carries the reference card's avcC byte for byte.
      */
     @Test
@@ -459,7 +461,7 @@ class IngestPipelineSlowTest extends IngestPipelineTestBase {
         ffmpeg("-f", "lavfi", "-i", "testsrc2=s=640x360:r=25", "-f", "lavfi", "-i", "sine=f=330:r=48000", "-t", "3",
                 "-c:v", "libvpx-vp9", "-deadline", "realtime", "-c:a", "libopus", ytSource.toString());
         IngestQueue uploads = queue(tools, reference, 1800);
-        IngestQueue youtube = queue(fakeYtdlp(ytSource, "fake-yt-dlp-set"), reference, 1800);
+        IngestQueue youtube = queue(fakeYoutube(ytSource), reference, 1800);
 
         // original: the kept file and its codec (web-playable for audio uploads, kept only for videos)
         record Case(String name, String staged, String original, String codec, List<String> encode) {

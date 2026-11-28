@@ -57,7 +57,7 @@ class OriginalCleaningTest extends IngestPipelineTestBase {
     }
 
     private IngestPipeline pipeline(OriginalCleaner cleaner) {
-        IngestPipeline p = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800, () -> null);
+        IngestPipeline p = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800);
         p.cleaner(cleaner);
         return p;
     }

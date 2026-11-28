@@ -15,6 +15,8 @@ import io.siggi.togethertunes.db.SqliteDialect;
 import io.siggi.togethertunes.ingest.IngestJob.Kind;
 import io.siggi.togethertunes.media.Mp4Boxes;
 import io.siggi.togethertunes.media.SampleIndex;
+import io.siggi.togethertunes.youtube.FakeYtSucks;
+import io.siggi.togethertunes.youtube.YoutubeService;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,6 +50,8 @@ abstract class IngestPipelineTestBase {
     IngestFixtures fixtures;
     ReferenceCard reference;
     final List<IngestQueue> queues = new ArrayList<>();
+    /** The fake YouTube services of this test, closed after it. */
+    final List<FakeYtSucks> fakes = new ArrayList<>();
 
     @BeforeEach
     void setUp() throws Exception {
@@ -66,22 +70,25 @@ abstract class IngestPipelineTestBase {
         for (IngestQueue q : queues) {
             q.close();
         }
+        for (FakeYtSucks f : fakes) {
+            f.close();
+        }
         db.close();
     }
 
     IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds) throws Exception {
-        return queue(tools, reference, maxSeconds, () -> null);
+        return queue(tools, reference, maxSeconds, YoutubeService.none(), 1);
     }
 
-    IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds,
-                      java.util.function.Supplier<String> cookies) throws Exception {
-        return queue(tools, reference, maxSeconds, cookies, 1);
+    /** A queue whose YouTube jobs go to {@code youtube} (e.g. {@link #fakeYoutube}). */
+    IngestQueue queue(YoutubeService youtube, ReferenceCard reference, int maxSeconds) throws Exception {
+        return queue(tools, reference, maxSeconds, youtube, 1);
     }
 
     /** A queue with {@code workers} workers, for tests that run independent jobs side by side. */
-    IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds,
-                      java.util.function.Supplier<String> cookies, int workers) throws Exception {
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, maxSeconds, cookies);
+    IngestQueue queue(Tools tools, ReferenceCard reference, int maxSeconds, YoutubeService youtube, int workers)
+            throws Exception {
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, maxSeconds, youtube);
         IngestQueue q = new IngestQueue(jobs, workers, pipeline, Clock.systemUTC(), Duration.ofHours(1), Duration.ZERO);
         queues.add(q);
         q.start();
@@ -93,8 +100,8 @@ abstract class IngestPipelineTestBase {
         for (IngestQueue q : queues) {
             q.close();
         }
-        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800, () -> null,
-                presets);
+        IngestPipeline pipeline = new IngestPipeline(tools, data, new IngestItems(db), reference, 1800,
+                YoutubeService.none(), presets);
         jobs.qualityPreset(presets::quality);
         IngestQueue q = new IngestQueue(jobs, 1, pipeline, Clock.systemUTC(), Duration.ofMillis(200), Duration.ZERO);
         queues.add(q);
@@ -294,17 +301,24 @@ abstract class IngestPipelineTestBase {
         });
     }
 
-    /** A fake yt-dlp that copies {@code fixture} to the requested output, or fails if it is null. */
-    Tools fakeYtdlp(Path fixture, String name) throws Exception {
-        Path script = dir.resolve(name);
-        String body = fixture == null
-                ? "echo 'ERROR: [youtube] dQw4w9WgXcQ: Video unavailable' >&2\nexit 1\n"
-                : "out=''\n"
-                + "while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then out=\"$2\"; shift; fi; shift; done\n"
-                + "cp '" + fixture + "' \"$(echo \"$out\" | sed 's/%(ext)s/mkv/')\"\n";
-        Files.writeString(script, "#!/bin/sh\n" + body, StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
-        return new Tools(CardEncoderTest.onPath("ffmpeg"), CardEncoderTest.onPath("ffprobe"), script.toString());
+    /**
+     * A fake YouTube service whose download of {@code dQw4w9WgXcQ} delivers {@code fixture}, or fails
+     * (YouTube: unavailable) if it is null.
+     */
+    YoutubeService fakeYoutube(Path fixture) throws Exception {
+        return fakeYtSucks(fixture).service();
+    }
+
+    /** {@link #fakeYoutube}'s fake itself. */
+    FakeYtSucks fakeYtSucks(Path fixture) throws Exception {
+        FakeYtSucks fake = new FakeYtSucks();
+        fakes.add(fake);
+        if (fixture == null) {
+            fake.videoError("dQw4w9WgXcQ", "unavailable", "[youtube] dQw4w9WgXcQ: Video unavailable");
+        } else {
+            fake.video("dQw4w9WgXcQ", Files.readAllBytes(fixture));
+        }
+        return fake;
     }
 
     String itemProfile(String item) throws Exception {

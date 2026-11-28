@@ -753,6 +753,53 @@ class AdminApiTest {
         assertEquals("", settings.get(Settings.MVFINDER_HEADER_VALUE));
     }
 
+    /** The YouTube service's URL and its token (a secret like {@code mvfinder.headerValue}). */
+    @Test
+    void youtubeServiceSettingsNeverReturnTheToken() throws Exception {
+        String secret = "ytsucks-token-0123456789";
+        JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");
+        JsonObject url = find(items, "youtube.serviceUrl");
+        assertEquals("string", url.get("type").getAsString());
+        assertEquals("library", url.get("group").getAsString());
+        assertFalse(url.has("value"), "unset by default: YouTube unavailable");
+        JsonObject token = find(items, "youtube.serviceToken");
+        assertEquals("secret", token.get("type").getAsString());
+        assertEquals("library", token.get("group").getAsString());
+        assertFalse(token.has("value"));
+        assertFalse(token.has("default"));
+        assertFalse(token.get("isSet").getAsBoolean());
+        List<String> keys = new java.util.ArrayList<>();
+        items.forEach(i -> keys.add(i.getAsJsonObject().get("key").getAsString()));
+        assertEquals(keys.indexOf("ytdlp.enabled") + 1, keys.indexOf("youtube.serviceUrl"), "next to the switch");
+        assertEquals(keys.indexOf("youtube.serviceUrl") + 1, keys.indexOf("youtube.serviceToken"));
+
+        JsonObject patched = call(200, "PATCH", "/api/admin/settings", "{\"youtube.serviceUrl\":\"http://ytsucks:8080/\","
+                + "\"youtube.serviceToken\":\"" + secret + "\"}", admin);
+        assertFalse(patched.toString().contains(secret), patched.toString());
+        assertTrue(find(patched.getAsJsonArray("items"), "youtube.serviceToken").get("isSet").getAsBoolean());
+        assertEquals("http://ytsucks:8080", settings.youtubeServiceUrl());
+        assertEquals(secret, settings.youtubeServiceToken());
+        assertFalse(call(200, "GET", "/api/admin/settings", null, admin).toString().contains(secret));
+        assertEquals(0, count("SELECT COUNT(*) FROM audit_log WHERE details_json LIKE '%" + secret + "%'"),
+                "never in the audit log");
+        assertEquals(1, count("SELECT COUNT(*) FROM audit_log WHERE action = 'admin.settings_changed'"
+                + " AND details_json LIKE '%youtube.serviceToken%'"));
+        JsonObject bad = call(400, "PATCH", "/api/admin/settings",
+                "{\"youtube.serviceToken\":\"" + secret + "\\u0001x\"}", admin);
+        assertError("invalid_setting", bad);
+        assertFalse(bad.toString().contains(secret), bad.toString());
+        for (String badUrl : List.of("\"ftp://x\"", "\"http://x/?q=1\"", "\"http://u:p@x\"", "\"http://x/#f\"")) {
+            assertError("invalid_setting", call(400, "PATCH", "/api/admin/settings",
+                    "{\"youtube.serviceUrl\":" + badUrl + "}", admin));
+        }
+        // Clear removes the token; an empty URL turns YouTube off
+        JsonObject cleared = call(200, "PATCH", "/api/admin/settings",
+                "{\"youtube.serviceToken\":null,\"youtube.serviceUrl\":\"\"}", admin);
+        assertFalse(find(cleared.getAsJsonArray("items"), "youtube.serviceToken").get("isSet").getAsBoolean());
+        assertEquals("", settings.youtubeServiceToken());
+        org.junit.jupiter.api.Assertions.assertNull(settings.youtubeServiceUrl());
+    }
+
     @Test
     void loginAndRegisterMessages() throws Exception {
         JsonArray items = call(200, "GET", "/api/admin/settings", null, admin).getAsJsonArray("items");

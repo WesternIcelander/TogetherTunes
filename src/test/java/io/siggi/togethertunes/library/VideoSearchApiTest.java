@@ -44,7 +44,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * "Find a music video" over HTTP ({@code POST /api/items/{id}/video-search[/pick]}, {@link VideoSearch})
- * against a fake MVFinder and a fake yt-dlp: candidate order and dedupe, MVFinder off / failing / no
+ * against a fake MVFinder and a fake YouTube service: candidate order and dedupe, MVFinder off / failing / no
  * ISRC, the per-person limit, permissions, the feature switch, and picking (import, automatic link
  * for a non-editor, lyric video type, the cap, audit).
  */
@@ -75,7 +75,7 @@ class VideoSearchApiTest {
     private Database db;
     private WebServer server;
     private FakeMvfinder mvfinder;
-    private FakeYtdlpSearch ytdlp;
+    private FakeYoutubeSearch ytdlp;
     private Settings settings;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
@@ -91,21 +91,20 @@ class VideoSearchApiTest {
         mvfinder = new FakeMvfinder();
         mvfinder.body = ISRC_ANSWER;
         mvfinderUrl = mvfinder.url();
-        ytdlp = new FakeYtdlpSearch(dir.resolve("yt"));
-        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example",
-                "TOGETHERTUNES_TOOLS_YTDLP", ytdlp.script.toString()), 4, dir).load(null).config();
+        ytdlp = new FakeYoutubeSearch();
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example"), 4, dir).load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
         settings = new Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
         Permissions permissions = new Permissions(db, settings);
-        YoutubeImports youtube = TestUploads.youtube(db, config, Tools.from(config), clock);
+        YoutubeImports youtube = TestUploads.youtube(db, config, ytdlp.service(), clock);
         Items items = new Items(db, io.siggi.togethertunes.DataDir.create(dir.resolve("data")), clock);
         ItemsApi itemsApi = new ItemsApi(items, permissions, youtube);
         MusicLinkResolver resolver = new MusicLinkResolver(() -> new MusicLinkResolver.Options(mvfinderUrl,
                 "X-Api-Key", "sekret", LinkPreference.SONG, false, 1000), clock);
-        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(db, Tools.from(config), () -> null, youtube, resolver,
+        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(db, ytdlp.service(), youtube, resolver,
                 maxPerHour::get, clock), permissions));
         itemsApi.register(router);
         server = WebServer.start("127.0.0.1", 0, router, dir.toFile());
@@ -122,6 +121,7 @@ class VideoSearchApiTest {
     void tearDown() {
         server.close();
         mvfinder.close();
+        ytdlp.close();
         db.close();
     }
 
@@ -224,7 +224,7 @@ class VideoSearchApiTest {
         assertEquals("lyric_video", candidate(r, LYRIC).get("type").getAsString());
         assertEquals("Lyrics", candidate(r, LYRIC).get("title").getAsString(), "MVFinder's comes first");
         assertFalse(candidate(r, VISUAL).has("channel"));
-        // MVFinder was asked by ISRC with the header; yt-dlp wasn't run
+        // MVFinder was asked by ISRC with the header; YouTube service wasn't run
         assertEquals(1, mvfinder.seen.size());
         assertEquals("/isrc/USUM71000000", mvfinder.seen.get(0).path());
         assertEquals("type=all", mvfinder.seen.get(0).query());
@@ -234,7 +234,7 @@ class VideoSearchApiTest {
 
     @Test
     void withoutAnIsrcOrMvfinderTheKeptMatchesAndElseYoutube() throws Exception {
-        ytdlp.searchJson(FakeYtdlpSearch.entries(new String[] {FOUND1, "Katy Perry - Firework (Official)", "KatyPerryVEVO", "231.5"},
+        ytdlp.searchJson(FakeYoutubeSearch.entries(new String[] {FOUND1, "Katy Perry - Firework (Official)", "KatyPerryVEVO", "231.5"},
                 new String[] {LIVE, "Live now", "Somebody", "null", "is_live"},
                 new String[] {FOUND2, "Firework lyrics", "Lyrics Channel", "228"},
                 new String[] {FOUND1, "Same again", "x", "1"},
@@ -254,13 +254,13 @@ class VideoSearchApiTest {
         assertEquals("KatyPerryVEVO", f.get("channel").getAsString());
         assertEquals(231500, f.get("durationMs").getAsLong());
         assertFalse(f.has("type"));
-        assertEquals(List.of("--flat-playlist -J --no-warnings -- ytsearch8:Katy Perry Firework"), ytdlp.searches());
+        assertEquals(List.of("q=Katy Perry Firework n=8 exclude_live=true"), ytdlp.searches());
         // MVFinder's search was asked first and found nothing
         assertEquals(1, mvfinder.seen.size());
         assertEquals("/search", mvfinder.seen.get(0).path());
 
         // MVFinder failing (or not knowing the ISRC) falls through to the search too (its own
-        // search failing the same way: yt-dlp)
+        // search failing the same way: YouTube service)
         mvfinder.status = 503;
         String isrc = song("USUM71000001", null);
         assertEquals(List.of(FOUND1, FOUND2), ids(search(isrc, bob)));
@@ -274,10 +274,10 @@ class VideoSearchApiTest {
         assertEquals(5, mvfinder.seen.size());
         assertEquals(4, ytdlp.searches().size());
 
-        // nothing anywhere: an empty list; a failing yt-dlp: 502
+        // nothing anywhere: an empty list; a failing YouTube service: 502
         ytdlp.searchJson("{\"entries\":[]}");
         assertEquals(List.of(), ids(search(plain, bob)));
-        ytdlp.searchExit(1);
+        ytdlp.searchFails();
         HttpResponse<String> failed = search(plain, bob);
         assertEquals(502, failed.statusCode(), failed.body());
         assertEquals("search_failed", code(failed));
@@ -303,11 +303,11 @@ class VideoSearchApiTest {
     @Test
     void theYoutubeSearchGoesThroughMvfinderFirst() throws Exception {
         mvfinder.searchBody = SEARCH_ANSWER;
-        ytdlp.searchJson(FakeYtdlpSearch.entries(new String[] {FOUND2, "From yt-dlp", "C", "1"}));
+        ytdlp.searchJson(FakeYoutubeSearch.entries(new String[] {FOUND2, "From YouTube service", "C", "1"}));
         String plain = song(null, null);
         HttpResponse<String> r = search(plain, bob);
         assertEquals(200, r.statusCode(), r.body());
-        // YouTube's order; no song upload, no live stream, no bad ID, no duplicate; yt-dlp not run
+        // YouTube's order; no song upload, no live stream, no bad ID, no duplicate; YouTube service not run
         assertEquals(List.of(MV, LYRIC, USER, FOUND1), ids(r));
         assertEquals(List.of(), ytdlp.searches());
         assertEquals(1, mvfinder.seen.size());
@@ -338,11 +338,11 @@ class VideoSearchApiTest {
         assertEquals("not_a_candidate", code(call("POST", path, bob, "{\"videoId\":\"" + SONG + "\"}")));
         assertEquals("not_a_candidate", code(call("POST", path, bob, "{\"videoId\":\"" + LIVE + "\"}")));
 
-        // only songs and live streams: nothing usable, so yt-dlp
+        // only songs and live streams: nothing usable, so YouTube service
         mvfinder.searchBody = "{\"query\":\"q\",\"matches\":[{\"type\":\"song\",\"videoId\":\"" + SONG + "\"},"
                 + "{\"type\":\"video\",\"videoId\":\"" + LIVE + "\",\"live\":true}]}";
         assertEquals(List.of(FOUND2), ids(search(plain, bob)));
-        // MVFinder's search failing, timing out or unreadable: yt-dlp
+        // MVFinder's search failing, timing out or unreadable: YouTube service
         mvfinder.searchBody = SEARCH_ANSWER;
         mvfinder.searchStatus = 502;
         assertEquals(List.of(FOUND2), ids(search(plain, bob)));
@@ -351,7 +351,7 @@ class VideoSearchApiTest {
         mvfinder.searchStatus = 200;
         mvfinder.searchBody = "<html>";
         assertEquals(List.of(FOUND2), ids(search(plain, bob)));
-        // not configured: yt-dlp, nobody asked
+        // not configured: YouTube service, nobody asked
         int asked = mvfinder.seen.size();
         mvfinderUrl = null;
         assertEquals(List.of(FOUND2), ids(search(plain, bob)));
@@ -403,8 +403,8 @@ class VideoSearchApiTest {
         // a kept match's thumbnail
         assertEquals("https://lh3.googleusercontent.com/abc=w480", candidate(r, SONG).get("thumbnailUrl").getAsString());
 
-        // yt-dlp: the largest not wider than 480, else the first; none or a foreign one: the fallback
-        ytdlp.searchJson(FakeYtdlpSearch.entries(
+        // YouTube service: the largest not wider than 480, else the first; none or a foreign one: the fallback
+        ytdlp.searchJson(FakeYoutubeSearch.entries(
                 new String[] {FOUND1, "One", "C", "1", "", "[{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/a.jpg\",\"width\":168},"
                         + "{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/b.jpg?sqp=x&rs=y\",\"width\":336},"
                         + "{\"url\":\"https://i.ytimg.com/vi/" + FOUND1 + "/c.jpg\",\"width\":720}]"},

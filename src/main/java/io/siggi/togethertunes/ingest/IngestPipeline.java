@@ -10,6 +10,8 @@ import io.siggi.togethertunes.ingest.IngestJob.Tier;
 import io.siggi.togethertunes.media.EncodeProfile;
 import io.siggi.togethertunes.media.SampleIndex;
 import io.siggi.togethertunes.ytdlp.CookieJarFile;
+import io.siggi.togethertunes.youtube.YoutubeService;
+import io.siggi.togethertunes.youtube.YoutubeServiceException;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -42,10 +44,12 @@ import java.util.regex.Pattern;
  * code placed in the item's staging directory, {@code <data>/tmp/ingest/<itemId>/}, named
  * {@code source} or {@code source.<ext>}; a {@code cover.<ext>} next to it (e.g. a YouTube
  * thumbnail) is used as artwork instead of the cover embedded in the source. A {@code youtube}
- * or {@code refetch} job downloads {@code https://www.youtube.com/watch?v=<youtube_id>} with
- * yt-dlp into its scratch directory first, together with the video's best thumbnail, which becomes
- * the cover. yt-dlp gets {@code --cookies <file>} when the {@code ytdlp.cookiesFile} setting names
- * a readable file ({@link #cookiesArgs}).
+ * or {@code refetch} job has the YouTube service ({@link YoutubeService}) download the video
+ * ({@code /api/video?vid=<youtube_id>&quality=1080&download=true&stream=true}, its progress driving
+ * the {@code download} step) and streams the MP4 into its scratch directory as {@code src.mp4}
+ * (an idle timeout of {@link YoutubeService#DOWNLOAD_IDLE_TIMEOUT}, no total one), together with
+ * the video's thumbnail ({@link YoutubeService#cover}), which becomes the cover; no cover is not a
+ * failure.
  *
  * <p><b>Re-encodes.</b> A {@code reencode} job (queued at startup for every ready item encoded for
  * another output profile, {@link IngestJobs#enqueueReencodes}) encodes a ready item again for the
@@ -127,6 +131,10 @@ public final class IngestPipeline implements IngestQueue.Handler {
     public static final String SOURCE_NAME = "source";
     /** Base name of a staged cover image ({@code cover.<ext>}). */
     public static final String COVER_NAME = "cover";
+    /** The downloaded source of a YouTube job, in its scratch directory. */
+    static final String DOWNLOAD_NAME = "src.mp4";
+    /** The height asked of the YouTube service. */
+    static final int DOWNLOAD_QUALITY = 1080;
 
     static final String WORK_PREFIX = ".ingest-";
     /**
@@ -165,7 +173,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final IngestItems items;
     private volatile Supplier<ReferenceCard> reference;
     private volatile java.util.function.IntSupplier maxDurationSec;
-    private final Supplier<String> cookiesFile;
+    private final YoutubeService youtube;
     private final EncodePresets presets;
     private volatile MediaVersions versions;
     private volatile OriginalCleaner cleaner;
@@ -177,35 +185,34 @@ public final class IngestPipeline implements IngestQueue.Handler {
     private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock> itemLocks =
             new java.util.concurrent.ConcurrentHashMap<>();
 
-    /** Without a cookies file. */
+    /** Without a YouTube service (YouTube jobs fail). */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
                           int maxDurationSec) {
-        this(tools, dataDir, items, reference, maxDurationSec, () -> null);
+        this(tools, dataDir, items, reference, maxDurationSec, YoutubeService.none());
     }
 
     /**
      * @param reference      the reference card of the configured output profile; null if it could
      *                       not be made at startup (then every job fails with a clear message)
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
-     * @param cookiesFile    the {@code ytdlp.cookiesFile} setting, read for every download (null or
-     *                       blank = none)
+     * @param youtube        the YouTube service that downloads YouTube items
      */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
-                          int maxDurationSec, Supplier<String> cookiesFile) {
-        this(tools, dataDir, items, reference, maxDurationSec, cookiesFile,
+                          int maxDurationSec, YoutubeService youtube) {
+        this(tools, dataDir, items, reference, maxDurationSec, youtube,
                 EncodePresets.fixed(X264Preset.REFERENCE, X264Preset.REFERENCE));
     }
 
     /** @param presets the quick and quality x264 presets ({@code ingest.quickPreset}, {@code ingest.qualityPreset}) */
     public IngestPipeline(Tools tools, DataDir dataDir, IngestItems items, ReferenceCard reference,
-                          int maxDurationSec, Supplier<String> cookiesFile, EncodePresets presets) {
+                          int maxDurationSec, YoutubeService youtube, EncodePresets presets) {
         this.presets = Objects.requireNonNull(presets);
         this.tools = Objects.requireNonNull(tools);
         this.dataDir = Objects.requireNonNull(dataDir);
         this.items = Objects.requireNonNull(items);
         this.reference = () -> reference;
         this.maxDurationSec = () -> maxDurationSec;
-        this.cookiesFile = Objects.requireNonNull(cookiesFile);
+        this.youtube = Objects.requireNonNull(youtube);
     }
 
     /**
@@ -406,7 +413,7 @@ public final class IngestPipeline implements IngestQueue.Handler {
     enum SourceKind {
         /** The upload in the staging directory. */
         STAGED,
-        /** Downloaded with yt-dlp. */
+        /** Downloaded through the YouTube service. */
         DOWNLOAD,
         /** The item's kept original (re-encode). */
         ORIGINAL,
@@ -2022,41 +2029,69 @@ public final class IngestPipeline implements IngestQueue.Handler {
         if (id == null || !id.matches("[A-Za-z0-9_-]{11}")) {
             throw new IngestFailure("The item has no YouTube video ID");
         }
-        if (!tools.hasYtdlp()) {
-            throw new IngestFailure("yt-dlp isn't available on this server");
+        if (!youtube.configured()) {
+            throw new IngestFailure("The YouTube service isn't set up on this server");
         }
-        Consumer<String> lines = line -> {
-            Matcher m = YTDLP_PERCENT.matcher(line);
-            if (m.find()) {
-                progress.accept(Double.parseDouble(m.group(1)) / 100);
-            } else if (!line.isBlank()) {
-                log.append(line);
-            }
-        };
-        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), scratch,
-                w -> log.append("[ingest] " + w))) {
-            tools.ytdlp(downloadArgs(id, scratch, tools.ffmpegExecutable(), cookies.file())).log(log)
-                    .stdoutLines(lines).run();
-        }
-        Path file = null;
-        try (DirectoryStream<Path> files = Files.newDirectoryStream(scratch, "src.*")) {
-            for (Path f : files) {
-                String n = f.getFileName().toString();
-                if (n.endsWith(".part") || n.endsWith(".ytdl") || !Files.isRegularFile(f)) {
-                    continue;
+        Path file = scratch.resolve(DOWNLOAD_NAME);
+        try {
+            log.append("[youtube] asking the YouTube service for " + id + " (up to " + DOWNLOAD_QUALITY + "p)");
+            String fileUrl = youtube.download(id, DOWNLOAD_QUALITY, p -> progress.accept(p * 0.9),
+                    state -> log.append(describe(state)), youtube.downloadIdleTimeout());
+            log.append("[youtube] fetching the file from the YouTube service");
+            long[] lastLogged = {0};
+            long size = youtube.fetchFile(fileUrl, file, bytes -> {
+                if (bytes - lastLogged[0] >= 64L * 1024 * 1024) {
+                    lastLogged[0] = bytes;
+                    log.append("[youtube] " + bytes / (1024 * 1024) + " MiB received");
                 }
-                if (file == null || n.equals("src.mkv")) {
-                    file = f;
-                }
-            }
+            }, youtube.downloadIdleTimeout());
+            progress.accept(1);
+            log.append("[ingest] downloaded " + file.getFileName() + " (" + size + " bytes)");
+        } catch (YoutubeServiceException e) {
+            log.append("[youtube] " + e.kind().name().toLowerCase(Locale.ROOT)
+                    + (e.errorType() == null ? "" : " (" + e.errorType() + ")") + ": " + e.getMessage());
+            throw new IngestFailure(downloadFailure(e));
         }
-        if (file == null) {
-            throw new IngestFailure("yt-dlp finished but produced no file");
-        }
-        log.append("[ingest] downloaded " + file.getFileName() + " (" + Files.size(file) + " bytes)");
-        Path thumbnail = staged(scratch, COVER_NAME);
+        Path thumbnail = youtube.cover(id, scratch, COVER_NAME, line -> log.append("[youtube] " + line));
         log.append(thumbnail == null ? "[ingest] no thumbnail" : "[ingest] thumbnail " + thumbnail.getFileName());
         return file;
+    }
+
+    /** The job log line for a new state of the YouTube service's download. */
+    static String describe(com.google.gson.JsonObject state) {
+        StringBuilder b = new StringBuilder("[youtube] ");
+        com.google.gson.JsonElement status = state.get("status");
+        b.append(status != null && status.isJsonPrimitive() ? status.getAsString() : "?");
+        com.google.gson.JsonElement p = state.get("progress");
+        if (p != null && p.isJsonPrimitive() && p.getAsJsonPrimitive().isNumber()) {
+            b.append(String.format(Locale.ROOT, " %.1f%%", p.getAsDouble()));
+        }
+        for (String key : List.of("error_type", "error")) {
+            com.google.gson.JsonElement v = state.get(key);
+            if (v != null && v.isJsonPrimitive()) {
+                b.append(' ').append(key).append(": ").append(v.getAsString());
+            }
+        }
+        return b.toString();
+    }
+
+    /** What a failed download says on the item (the details are in the job log). */
+    static String downloadFailure(YoutubeServiceException e) {
+        return switch (e.kind()) {
+            case NOT_CONFIGURED -> "The YouTube service isn't set up on this server";
+            case UNREACHABLE, UNAUTHORIZED, BAD_ANSWER -> "The YouTube service couldn't be reached or gave no file";
+            case TIMEOUT -> "The download from the YouTube service stalled";
+            case YOUTUBE -> "sign_in_required".equals(e.errorType())
+                    ? "YouTube asked the server to sign in to confirm it isn't a bot"
+                    : "YouTube didn't return this video: " + truncate(e.getMessage(), 300);
+        };
+    }
+
+    private static String truncate(String s, int max) {
+        String l = s == null ? "" : s.strip().lines().reduce((a, b) -> b).orElse("");
+        // "[youtube] dQw4w9WgXcQ: Private video" → "Private video"
+        l = l.replaceFirst("^(ERROR:\\s*)?\\[[^\\]]*\\]\\s*[A-Za-z0-9_-]{11}:\\s*", "");
+        return l.length() > max ? l.substring(0, max) + "…" : l;
     }
 
     /**

@@ -76,7 +76,18 @@ public final class Settings {
             "guests.nameBlocklist", 2000, 64);
 
     // Library
+    /** The YouTube feature switch (imports, searches, retries); YouTube itself goes through {@link #YOUTUBE_SERVICE_URL}. */
     public static final SettingKey<Boolean> YTDLP_ENABLED = SettingKey.bool("ytdlp.enabled", true);
+    /**
+     * Base URL of the YouTube service (YTSucks) that every YouTube call goes to
+     * ({@code docs/library-and-ingest.md#youtube-caching}); unset = YouTube unavailable.
+     */
+    public static final SettingKey<String> YOUTUBE_SERVICE_URL = SettingKey.optionalUrl("youtube.serviceUrl");
+    /**
+     * The bearer token sent to the YouTube service; empty = no {@code Authorization} header (for a
+     * server on the service's allow list). A secret: never returned or logged.
+     */
+    public static final SettingKey<String> YOUTUBE_SERVICE_TOKEN = SettingKey.secret("youtube.serviceToken", 1000);
     public static final SettingKey<String> YTDLP_COOKIES_FILE = SettingKey.optionalString("ytdlp.cookiesFile");
     /**
      * Base URL of a PO token provider server for yt-dlp's provider plugin
@@ -281,7 +292,7 @@ public final class Settings {
         for (SettingKey<?> k : List.of(REGISTRATION_MODE, AUTH_LOGIN_MESSAGE, AUTH_REGISTER_MESSAGE,
                 GUESTS_ENABLED, GUESTS_IDENTIFY_BY, GUESTS_ALLOW_CUSTOM_NAMES, GUESTS_NAME_BLOCKLIST, GUESTS_CAN_VOTE,
                 GUESTS_CAN_REQUEST_LIBRARY, GUESTS_CAN_UPLOAD, GUESTS_CAN_YOUTUBE, GUESTS_UPLOAD_QUOTA,
-                YTDLP_ENABLED, YTDLP_COOKIES_FILE, YTDLP_PO_TOKEN_PROVIDER_URL, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
+                YTDLP_ENABLED, YOUTUBE_SERVICE_URL, YOUTUBE_SERVICE_TOKEN, YTDLP_COOKIES_FILE, YTDLP_PO_TOKEN_PROVIDER_URL, METADATA_LOOKUP_ENABLED, METADATA_LOOKUP_AUTO_ON_UPLOAD,
                 MVFINDER_URL, MVFINDER_HEADER_NAME, MVFINDER_HEADER_VALUE, MVFINDER_PREFER, MVFINDER_ALLOW_GUESTS,
                 MVFINDER_MAX_PER_HOUR, YOUTUBE_SEARCH_MAX_PER_HOUR,
                 RETENTION_UNREFERENCED_DAYS,
@@ -545,6 +556,16 @@ public final class Settings {
 
     public boolean ytdlpEnabled() throws SQLException {
         return get(YTDLP_ENABLED);
+    }
+
+    /** The YouTube service's base URL, or {@code null} when it isn't set up. */
+    public String youtubeServiceUrl() throws SQLException {
+        return get(YOUTUBE_SERVICE_URL);
+    }
+
+    /** The YouTube service's token; empty for none. */
+    public String youtubeServiceToken() throws SQLException {
+        return get(YOUTUBE_SERVICE_TOKEN);
     }
 
     /** The yt-dlp cookies file, or {@code null} for none. */

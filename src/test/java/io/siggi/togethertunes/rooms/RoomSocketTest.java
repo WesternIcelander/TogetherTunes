@@ -86,28 +86,22 @@ class RoomSocketTest {
     private String alice;
     private String bob;
     private Accounts accounts;
+    private io.siggi.togethertunes.youtube.FakeYtSucks youtubeService;
 
     @BeforeEach
     void setUp() throws Exception {
-        // A slow fake yt-dlp: -J prints yt-dlp's progress lines (and others to ignore) to stderr, then the JSON.
-        Path ytdlp = dir.resolve("fake-yt-dlp");
-        java.nio.file.Files.writeString(ytdlp, "#!/bin/sh\n"
-                + "echo '[debug] Command-line config: [\"-J\"]' >&2\n"
-                + "echo '[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw' >&2\n"
-                + "sleep 0.2\n"
-                + "echo '[youtube] jNQXAC9IVRw: Downloading webpage' >&2\n"
-                + "echo 'Something yt-dlp has never printed before' >&2\n"
-                + "sleep 0.2\n"
-                + "echo '[youtube] jNQXAC9IVRw: Downloading android vr player API JSON' >&2\n"
-                + "echo '[youtube] jNQXAC9IVRw: Downloading webpage' >&2\n"
-                + "sleep 0.2\n"
-                + "echo '[info] jNQXAC9IVRw: Downloading 1 format(s): 18' >&2\n"
-                + "echo '{\"id\":\"jNQXAC9IVRw\",\"title\":\"Me at the zoo\",\"uploader\":\"jawed\","
-                + "\"duration\":19,\"live_status\":\"not_live\",\"is_live\":false}'\n",
-                java.nio.charset.StandardCharsets.UTF_8);
-        java.nio.file.Files.setPosixFilePermissions(ytdlp, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"));
-        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", ORIGIN,
-                "TOGETHERTUNES_TOOLS_YTDLP", ytdlp.toString()), 4, dir).load(null).config();
+        // A slow fake YouTube service: yt-dlp's progress lines (and others to ignore) as stages, then the result.
+        youtubeService = new io.siggi.togethertunes.youtube.FakeYtSucks();
+        youtubeService.stages = List.of("[debug] Command-line config: [\"-J\"]",
+                "[youtube] Extracting URL: https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                "[youtube] jNQXAC9IVRw: Downloading webpage", "Something yt-dlp has never printed before",
+                "[youtube] jNQXAC9IVRw: Downloading android vr player API JSON",
+                "[youtube] jNQXAC9IVRw: Downloading webpage", "[info] jNQXAC9IVRw: Downloading 1 format(s): 18");
+        youtubeService.infoDelayMs = 600;
+        youtubeService.info("jNQXAC9IVRw", "{\"id\":\"jNQXAC9IVRw\",\"title\":\"Me at the zoo\",\"uploader\":\"jawed\","
+                + "\"duration\":19,\"live_status\":\"not_live\"}");
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", ORIGIN), 4, dir)
+                .load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
@@ -118,7 +112,8 @@ class RoomSocketTest {
         Passwords passwords = new Passwords(new Passwords.Params(64, 1, 1));
         accounts = new Accounts(db, passwords, clock);
         IdentityTickets tickets = new IdentityTickets(clock);
-        wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock);
+        wiring = TestUploads.rooms(db, dir, config, settings, permissions, actors, tickets, clock,
+                youtubeService.service());
         wiring.api().register(router);
         jobs = new IngestJobs(db, clock);
         jobs.statusListener(wiring.registry()); // as Main wires it
@@ -141,6 +136,7 @@ class RoomSocketTest {
         }
         server.close();
         wiring.registry().close();
+        youtubeService.close();
         db.close();
         assertEquals(List.of(), leaks, "messages with an IP address");
     }

@@ -10,13 +10,8 @@ import io.siggi.togethertunes.db.Database;
 import io.siggi.togethertunes.db.EpochMs;
 import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
-import io.siggi.togethertunes.ingest.IngestPipeline;
-import io.siggi.togethertunes.ingest.JobLog;
-import io.siggi.togethertunes.ingest.ToolException;
-import io.siggi.togethertunes.ingest.ToolResult;
-import io.siggi.togethertunes.ingest.Tools;
-import io.siggi.togethertunes.ytdlp.CookieJarFile;
-import java.nio.file.Path;
+import io.siggi.togethertunes.youtube.YoutubeService;
+import io.siggi.togethertunes.youtube.YoutubeServiceException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -31,7 +26,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.IntSupplier;
-import java.util.function.Supplier;
 
 /**
  * "Find a music video" ({@code docs/library-and-ingest.md#linked-media}): the candidates for a
@@ -44,12 +38,11 @@ import java.util.function.Supplier;
  * was imported from ({@code metadata_json.link.videos}); only when those found nothing, a YouTube
  * search for {@code <artist> <title>}: through MVFinder's {@code /search}
  * ({@link MusicLinkResolver#search}, YouTube's order, without live streams and {@code song}
- * uploads) when it is configured, else (or when it fails or finds nothing usable) through yt-dlp
- * ({@code --flat-playlist -J "ytsearch8:<artist> <title>"}, nothing downloaded,
- * {@link #SEARCH_TIMEOUT}). Each search counts against the person's
+ * uploads) when it is configured, else (or when it fails or finds nothing usable) through the YouTube service
+ * ({@link #serviceSearch}: {@code /api/search?q=<artist> <title>&n=8&exclude_live=true}, nothing downloaded). Each search counts against the person's
  * {@code mvfinder.maxPerHour} ({@code 429 too_many_searches}). Every candidate has a thumbnail
  * URL ({@link #thumbnail}): MVFinder's {@code thumbnails[0].url} (also kept with the stored
- * matches), yt-dlp's largest thumbnail not wider than 480, else YouTube's {@code hqdefault.jpg}.
+ * matches), the YouTube service's largest thumbnail not wider than 480, else YouTube's {@code hqdefault.jpg}.
  *
  * <p><b>Picking</b> takes only a video this person was offered for this item in the past
  * {@link #REMEMBER} ({@code 400 not_a_candidate}): the normal YouTube import (not into a library);
@@ -62,10 +55,8 @@ import java.util.function.Supplier;
  * may link this way, not only the song's editors.
  */
 public final class VideoSearch {
-    /** yt-dlp search results asked for. */
+    /** Search results asked for. */
     static final int SEARCH_RESULTS = 8;
-    static final Duration SEARCH_TIMEOUT = Duration.ofSeconds(30);
-    private static final int SEARCH_MAX_BYTES = 4 * 1024 * 1024;
     /** How long a search's candidates may be picked. */
     static final Duration REMEMBER = Duration.ofHours(1);
     /** {@code audit_log} action of a link saved from a pick. */
@@ -78,11 +69,11 @@ public final class VideoSearch {
     /**
      * One candidate as sent to the client.
      *
-     * @param channel    the uploader (yt-dlp) or the artists joined (MVFinder), or null
+     * @param channel    the channel or uploader (the YouTube service) or the artists joined (MVFinder), or null
      * @param durationMs null when unknown
      * @param type       MVFinder's match type ({@code music_video}, {@code lyric_video},
      *                   {@code official_video}, {@code visualizer}; from its search also
-     *                   {@code official_audio} and {@code video}), null for a yt-dlp search result
+     *                   {@code official_audio} and {@code video}), null for a YouTube service search result
      * @param thumbnailUrl an allowed thumbnail ({@link #thumbnail}), never null
      */
     public record Candidate(String videoId, String title, String channel, Long durationMs, String type,
@@ -107,8 +98,7 @@ public final class VideoSearch {
     }
 
     private final Database db;
-    private final Tools tools;
-    private final Supplier<String> cookiesFile;
+    private final YoutubeService youtube;
     private final YoutubeImports imports;
     private final PerHourLimit limit;
     private final Clock clock;
@@ -121,15 +111,14 @@ public final class VideoSearch {
     };
 
     /**
-     * @param cookiesFile the {@code ytdlp.cookiesFile} setting, read for every search
-     * @param maxPerHour  {@code mvfinder.maxPerHour}, read for every search
-     * @param resolver    MVFinder, or null (then only the kept matches and yt-dlp)
+     * @param youtube    the YouTube service, for the search when nothing else found candidates
+     * @param maxPerHour {@code mvfinder.maxPerHour}, read for every search
+     * @param resolver   MVFinder, or null (then only the kept matches and the YouTube service)
      */
-    public VideoSearch(Database db, Tools tools, Supplier<String> cookiesFile, YoutubeImports imports,
+    public VideoSearch(Database db, YoutubeService youtube, YoutubeImports imports,
                        MusicLinkResolver resolver, IntSupplier maxPerHour, Clock clock) {
         this.db = Objects.requireNonNull(db);
-        this.tools = Objects.requireNonNull(tools);
-        this.cookiesFile = Objects.requireNonNull(cookiesFile);
+        this.youtube = Objects.requireNonNull(youtube);
         this.imports = Objects.requireNonNull(imports);
         this.resolver = resolver;
         this.clock = Objects.requireNonNull(clock);
@@ -164,7 +153,7 @@ public final class VideoSearch {
                 add(out, seen, c);
             }
             if (out.isEmpty()) {
-                for (Candidate c : ytdlpSearch(tools, cookiesFile, q, SEARCH_RESULTS)) {
+                for (Candidate c : serviceSearch(youtube, q, SEARCH_RESULTS)) {
                     add(out, seen, c);
                 }
             }
@@ -286,7 +275,7 @@ public final class VideoSearch {
     /**
      * MVFinder's YouTube search for {@code query} ({@link MusicLinkResolver#search}, at most
      * {@link #SEARCH_RESULTS}) without {@code song} uploads (a still picture, not a video); empty
-     * when MVFinder is off or fails (logged), so the yt-dlp search runs instead.
+     * when MVFinder is off or fails (logged), so the YouTube service's search runs instead.
      */
     private static List<Candidate> resolverSearch(MusicLinkResolver r, String query, String itemId)
             throws InterruptedException {
@@ -314,7 +303,7 @@ public final class VideoSearch {
 
     /** YouTube's own thumbnail of {@code videoId}, for a candidate without an allowed one. */
     static String fallbackThumbnail(String videoId) {
-        return "https://i.ytimg.com/vi/" + videoId + "/hqdefault.jpg";
+        return YoutubeService.fallbackThumbnail(videoId);
     }
 
     /**
@@ -323,24 +312,11 @@ public final class VideoSearch {
      * {@link #fallbackThumbnail}: the page loads it directly.
      */
     static String thumbnail(String url, String videoId) {
-        if (url != null && url.length() <= 2048) {
-            try {
-                java.net.URI u = new java.net.URI(url);
-                String host = u.getHost() == null ? null : u.getHost().toLowerCase(java.util.Locale.ROOT);
-                if ("https".equalsIgnoreCase(u.getScheme()) && host != null && u.getRawUserInfo() == null
-                        && (u.getPort() == -1 || u.getPort() == 443)
-                        && (host.equals("ytimg.com") || host.endsWith(".ytimg.com")
-                        || host.endsWith(".googleusercontent.com"))) {
-                    return u.toASCIIString();
-                }
-            } catch (java.net.URISyntaxException e) {
-                // falls back
-            }
-        }
-        return fallbackThumbnail(videoId);
+        java.net.URI u = YoutubeService.allowedThumbnail(url);
+        return u != null ? u.toASCIIString() : fallbackThumbnail(videoId);
     }
 
-    /** The largest of yt-dlp's {@code thumbnails} not wider than 480, else the first one; or null. */
+    /** The largest of the result's {@code thumbnails} not wider than 480, else the first one; or null. */
     static String ytdlpThumbnail(JsonObject entry) {
         if (!(entry.get("thumbnails") instanceof JsonArray ts)) {
             return null;
@@ -402,42 +378,44 @@ public final class VideoSearch {
     }
 
     /**
-     * {@code yt-dlp --flat-playlist -J "ytsearch<count>:<query>"}'s videos (nothing downloaded,
-     * {@link #SEARCH_TIMEOUT}; live and upcoming streams left out).
+     * The YouTube service's search for {@code query} ({@code /api/search}, nothing downloaded; live
+     * and upcoming streams left out).
      *
-     * @throws HttpError {@code 503 youtube_unavailable} (no yt-dlp), {@code 504 youtube_timeout},
-     *                   {@code 502 search_failed}
+     * @throws HttpError {@code 503 youtube_unavailable} (no service, unreachable, token refused),
+     *                   {@code 504 youtube_timeout}, {@code 502 search_failed}
      */
-    static List<Candidate> ytdlpSearch(Tools tools, Supplier<String> cookiesFile, String query, int count)
-            throws InterruptedException {
+    static List<Candidate> serviceSearch(YoutubeService youtube, String query, int count) throws InterruptedException {
         if (query.isBlank()) {
             return List.of();
         }
-        if (!tools.hasYtdlp()) {
-            throw new HttpError(503, "youtube_unavailable", "Searching YouTube isn't available right now");
-        }
-        JobLog log = new JobLog();
-        ToolResult result;
-        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), null,
-                w -> LOG.log(System.Logger.Level.WARNING, w))) {
-            List<String> args = new ArrayList<>(List.of("--flat-playlist", "-J", "--no-warnings"));
-            args.addAll(cookies.args());
-            args.add("--");
-            args.add("ytsearch" + count + ":" + query);
-            result = tools.ytdlp(args).timeout(SEARCH_TIMEOUT).idleTimeout(SEARCH_TIMEOUT).log(log)
-                    .stdoutToString(SEARCH_MAX_BYTES).run();
-        } catch (ToolException e) {
-            LOG.log(System.Logger.Level.INFO, "yt-dlp search failed (" + e.kind() + "):\n" + log.tail());
+        JsonObject result;
+        try {
+            result = youtube.search(query, count);
+        } catch (YoutubeServiceException e) {
             throw switch (e.kind()) {
-                case TIMEOUT, IDLE_TIMEOUT -> new HttpError(504, "youtube_timeout",
-                        "YouTube didn't answer in time; try again later");
-                default -> new HttpError(502, "search_failed", "Searching YouTube failed; try again later");
+                case NOT_CONFIGURED -> new HttpError(503, "youtube_unavailable", "Searching YouTube isn't available right now");
+                case UNREACHABLE, UNAUTHORIZED -> {
+                    LOG.log(System.Logger.Level.WARNING, "YouTube search failed: " + e.getMessage()
+                            + (e.kind() == YoutubeServiceException.Kind.UNAUTHORIZED
+                            ? " (the YouTube service refused the token: check youtube.serviceToken)" : ""));
+                    yield new HttpError(503, "youtube_unavailable", "Searching YouTube isn't available right now");
+                }
+                case TIMEOUT -> new HttpError(504, "youtube_timeout", "YouTube didn't answer in time; try again later");
+                default -> {
+                    LOG.log(System.Logger.Level.INFO, "YouTube search failed (" + e.kind()
+                            + (e.errorType() == null ? "" : ", " + e.errorType()) + "): " + e.getMessage());
+                    yield new HttpError(502, "search_failed", "Searching YouTube failed; try again later");
+                }
             };
         }
-        return parseSearch(result.stdoutString());
+        List<Candidate> out = parseSearch(result.toString());
+        return out.size() > count ? List.copyOf(out.subList(0, count)) : out;
     }
 
-    /** The videos of yt-dlp's {@code --flat-playlist -J} answer (live and upcoming streams left out). */
+    /**
+     * The videos of a search answer: the YouTube service's {@code results} (or yt-dlp's own
+     * {@code --flat-playlist -J} {@code entries}); live and upcoming streams left out.
+     */
     static List<Candidate> parseSearch(String json) {
         List<Candidate> out = new ArrayList<>();
         JsonElement root;
@@ -446,7 +424,12 @@ public final class VideoSearch {
         } catch (RuntimeException e) {
             return out;
         }
-        if (!root.isJsonObject() || !(root.getAsJsonObject().get("entries") instanceof JsonArray entries)) {
+        if (!root.isJsonObject()) {
+            return out;
+        }
+        JsonElement list = root.getAsJsonObject().has("results") ? root.getAsJsonObject().get("results")
+                : root.getAsJsonObject().get("entries");
+        if (!(list instanceof JsonArray entries)) {
             return out;
         }
         for (JsonElement e : entries) {

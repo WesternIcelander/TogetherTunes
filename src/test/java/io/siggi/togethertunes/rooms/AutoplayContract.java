@@ -100,7 +100,7 @@ abstract class AutoplayContract {
         bob = RoomActor.user(bobId, Rooms.Role.MEMBER);
         carol = RoomActor.user(carolId, null);
         Tools tools = new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString());
-        youtube = TestUploads.youtube(db, config, tools, clock);
+        youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock);
         library = new Library(db, youtube, clock);
         playlists = new Playlists(db, library, youtube, clock);
         // as Main wires it: playlist changes reach the rooms autoplaying them

@@ -67,9 +67,9 @@ abstract class PlaylistsContract {
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
         jobs = new IngestJobs(db, clock);
-        YoutubeImports youtube = new YoutubeImports(db, new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString()),
+        YoutubeImports youtube = new YoutubeImports(db, io.siggi.togethertunes.youtube.YoutubeService.none(),
                 jobs, () -> {
-                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, clock);
+                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, clock);
         playlists = new Playlists(db, youtube, clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         alice = new Actor.User(accounts.createLocal("alice", "Alice", "alice-password", false, null,
@@ -689,9 +689,9 @@ abstract class PlaylistsContract {
     // ------------------------------------------------------------------ playlist ⊂ library
 
     private YoutubeImports youtube() {
-        return new YoutubeImports(db, new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString()),
+        return new YoutubeImports(db, io.siggi.togethertunes.youtube.YoutubeService.none(),
                 jobs, () -> {
-                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, clock);
+                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, clock);
     }
 
     private String uncategorizedVideo(String title) throws SQLException {

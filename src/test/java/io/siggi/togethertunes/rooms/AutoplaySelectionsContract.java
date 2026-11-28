@@ -85,7 +85,7 @@ abstract class AutoplaySelectionsContract {
         RoomGuests guests = new RoomGuests(db, settings, permissions, rooms, registry);
         RoomsApi api = new RoomsApi(rooms, registry, permissions, guests, new RequestSearch(db, rooms, guests),
                 new RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
-        playlists = new Playlists(db, TestUploads.youtube(db, config, Tools.from(config), clock), clock);
+        playlists = new Playlists(db, TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock), clock);
         api.autoplay(new AutoplaySelections(rooms, playlists));
         api.register(router);
         TestUploads.playlistsApi(db, config, permissions, clock).register(router);

@@ -158,7 +158,7 @@ abstract class SettingsContract {
     void allListsEveryKeyInOrder() throws SQLException {
         Map<SettingKey<?>, Object> all = settings.all();
         assertEquals(List.copyOf(Settings.KEYS.values()), List.copyOf(all.keySet()));
-        assertEquals(55, all.size());
+        assertEquals(57, all.size());
         settings.set(Settings.OVERLAY_ENABLED, true);
         assertEquals(true, settings.all().get(Settings.OVERLAY_ENABLED));
         assertEquals(14, settings.all().get(Settings.RETENTION_UNREFERENCED_DAYS));
@@ -320,6 +320,25 @@ abstract class SettingsContract {
     }
 
     @Test
+    void youtubeService() throws SQLException {
+        assertNull(settings.youtubeServiceUrl(), "unset by default: YouTube unavailable");
+        assertEquals("", settings.youtubeServiceToken(), "no token by default");
+        assertTrue(Settings.YOUTUBE_SERVICE_TOKEN.secret());
+        settings.setJson("youtube.serviceUrl", "\" https://yt.example/base/ \"");
+        assertEquals("https://yt.example/base", settings.youtubeServiceUrl());
+        for (String bad : List.of("\"ftp://x\"", "\"http://x/?a=1\"", "\"http://x/#f\"", "\"http://u:p@x\"", "1")) {
+            assertThrows(IllegalArgumentException.class, () -> settings.setJson("youtube.serviceUrl", bad), bad);
+        }
+        settings.setJson("youtube.serviceToken", "\" tok \"");
+        assertEquals("tok", settings.youtubeServiceToken());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> settings.setJson("youtube.serviceToken", "\"hidden\\u0001value\""));
+        assertFalse(e.getMessage().contains("hidden"), e.getMessage());
+        settings.setJson("youtube.serviceUrl", "\"\"");
+        assertNull(settings.youtubeServiceUrl(), "empty = unset");
+    }
+
+    @Test
     void poTokenProviderUrl() throws SQLException {
         assertNull(settings.ytdlpPoTokenProviderUrl(), "unset by default");
         settings.setJson("ytdlp.poTokenProviderUrl", "\" http://127.0.0.1:4416/ \"");
@@ -359,7 +378,7 @@ abstract class SettingsContract {
         assertTrue(settings.guestsEnabled());
         assertEquals(14, settings.retentionUnreferencedDays());
         assertEquals(RegistrationMode.CLOSED, settings.registrationMode());
-        assertEquals(55, settings.all().size());
+        assertEquals(57, settings.all().size());
         // A good value written later replaces the bad row.
         settings.set(Settings.GUESTS_ENABLED, false);
         assertFalse(settings.guestsEnabled());

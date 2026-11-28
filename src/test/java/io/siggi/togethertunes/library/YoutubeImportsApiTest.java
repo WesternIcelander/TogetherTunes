@@ -1,5 +1,7 @@
 package io.siggi.togethertunes.library;
 
+import io.siggi.togethertunes.youtube.FakeYtSucks;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -41,7 +43,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 /**
  * {@code POST /api/imports/youtube} with {@code Accept: application/x-ndjson}: the lookup's stages
- * arrive as JSON lines while a slow fake yt-dlp runs, then the result; a known item and errors
+ * arrive as JSON lines while a slow fake YouTube service looks the video up, then the result; a known item and errors
  * before the lookup answer as plain JSON; a lookup that fails ends the stream with an error line.
  */
 class YoutubeImportsApiTest {
@@ -57,31 +59,26 @@ class YoutubeImportsApiTest {
     private String token;
     private String aliceId;
     private Playlists playlists;
-    private Path failFile;
+    private FakeYtSucks fake;
     private YoutubeImports youtube;
 
     @BeforeEach
     void setUp() throws Exception {
-        failFile = dir.resolve("fail");
-        Path ytdlp = dir.resolve("fake-yt-dlp");
-        Files.writeString(ytdlp, "#!/bin/sh\n"
-                + "echo '[youtube] Extracting URL: https://www.youtube.com/watch?v=" + ID + "' >&2\n"
-                + "sleep 0.3\n"
-                + "echo '[youtube] " + ID + ": Downloading webpage' >&2\n"
-                + "sleep 0.3\n"
-                + "if [ -f '" + failFile + "' ]; then echo 'ERROR: [youtube] " + ID + ": Private video' >&2; exit 1; fi\n"
-                + "echo '[info] " + ID + ": Downloading 1 format(s): 18' >&2\n"
-                + "echo '{\"id\":\"" + ID + "\",\"title\":\"Me at the zoo\",\"uploader\":\"jawed\",\"duration\":19,"
-                + "\"live_status\":\"not_live\",\"is_live\":false}'\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(ytdlp, PosixFilePermissions.fromString("rwx------"));
-        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example",
-                "TOGETHERTUNES_TOOLS_YTDLP", ytdlp.toString()), 4, dir).load(null).config();
+        fake = new FakeYtSucks();
+        fake.stages = List.of("[youtube] Extracting URL: https://www.youtube.com/watch?v=" + ID,
+                "[youtube] " + ID + ": Downloading webpage", "[info] " + ID + ": Downloading 1 format(s): 18");
+        fake.infoDelayMs = 600;
+        fake.anyVideo = true; // a resolved link's video
+        fake.info(ID, "{\"id\":\"" + ID + "\",\"title\":\"Me at the zoo\",\"uploader\":\"jawed\",\"duration\":19,"
+                + "\"live_status\":\"not_live\"}");
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example"),
+                4, dir).load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
         io.siggi.togethertunes.settings.Settings settings = new io.siggi.togethertunes.settings.Settings(db, config);
         Router router = new Router(new ActorResolver(db, settings, clock, false).hook());
-        youtube = TestUploads.youtube(db, config, io.siggi.togethertunes.ingest.Tools.from(config), clock);
+        youtube = TestUploads.youtube(db, config, fake.service(), clock);
         playlists = new Playlists(db, youtube, clock);
         new YoutubeImportsApi(youtube, TestUploads.policy(new Permissions(db, settings), settings), playlists)
                 .register(router);
@@ -93,6 +90,7 @@ class YoutubeImportsApiTest {
 
     @AfterEach
     void tearDown() {
+        fake.close();
         server.close();
         db.close();
     }
@@ -139,7 +137,7 @@ class YoutubeImportsApiTest {
         }
         assertEquals(List.of("progress:contacting", "progress:page", "progress:formats", "result"), types);
         assertEquals("Reading the video page…", lines.get(1).json().get("text").getAsString());
-        // the first stage arrives long before the answer (the fake takes 0.6 s)
+        // the stages arrive long before the answer (the fake takes 0.6 s)
         assertTrue(lines.get(3).atMs() - lines.get(0).atMs() >= 400, lines.toString());
         JsonObject result = lines.get(3).json();
         assertFalse(result.get("cached").getAsBoolean());
@@ -204,7 +202,7 @@ class YoutubeImportsApiTest {
 
     @Test
     void aFailedLookupEndsTheStreamWithAnErrorLine() throws Exception {
-        Files.writeString(failFile, "x");
+        fake.infoError(ID, "private", "[youtube] " + ID + ": Private video");
         HttpResponse<java.io.InputStream> r = http.send(post("application/x-ndjson"), HttpResponse.BodyHandlers.ofInputStream());
         assertEquals(200, r.statusCode());
         List<Line> lines = stream(r, System.nanoTime());
@@ -230,7 +228,7 @@ class YoutubeImportsApiTest {
     @Test
     void addFromLinkIntoAPlaylist() throws Exception {
         String mix = playlists.create(aliceId, "Mix", null).id();
-        // checked before anything is imported (the fake yt-dlp isn't run)
+        // checked before anything is imported (the fake service isn't asked)
         HttpResponse<String> missing = http.send(post("application/x-ndjson",
                 ",\"mediaType\":\"music_video\",\"playlistId\":\"no-such\""), HttpResponse.BodyHandlers.ofString());
         assertEquals(404, missing.statusCode(), missing.body());

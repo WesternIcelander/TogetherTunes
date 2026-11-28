@@ -186,9 +186,9 @@ class LibraryImportsTest {
         uploads = new Uploads(db, data, tools, jobs, () -> {
         }, OutputEncoding.defaultFor(OutputProfile.P720_30), 100_000_000, 600,
                 new GuestUploadQuota(db, new Settings(db, config), Clock.systemUTC()), Clock.systemUTC());
-        YoutubeImports youtube = new YoutubeImports(db, new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString()),
+        YoutubeImports youtube = new YoutubeImports(db, io.siggi.togethertunes.youtube.YoutubeService.none(),
                 jobs, () -> {
-                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, Clock.systemUTC());
+                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, Clock.systemUTC());
         playlists = new Playlists(db, youtube, Clock.systemUTC());
         imports = newImports(() -> false);
     }

@@ -28,7 +28,7 @@ export const AUDIT_ACTIONS: readonly string[] = [
   "admin.role_created", "admin.role_deleted", "admin.role_permissions_set", "admin.role_updated",
   "admin.settings_changed",
   "admin.user_created", "admin.user_password_set", "admin.user_roles_set", "admin.user_updated",
-  "admin.ytdlp_update",
+  "admin.youtube_service_update", "admin.ytdlp_update",
   "auth.identity_linked", "auth.identity_unlinked", "auth.login", "auth.login_failed", "auth.login_throttled",
   "auth.logout", "auth.password_change_failed", "auth.password_changed", "auth.session_revoked",
   "auth.sessions_revoked", "auth.token",

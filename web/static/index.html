@@ -707,22 +707,19 @@
       <p id="cleaning-note" class="notice" hidden>TrackSplitter isn't installed (<code>tools.tracksplitter</code>), so
         personal data can't be removed from uploaded music files: files bought from a music store can name the buyer.
         Uploaded .m4a files are therefore played from their converted copy, and their original files aren't served.</p>
-      <section id="ytdlp-box" aria-live="polite">
-        <h3>yt-dlp</h3>
-        <p>YouTube changes often, and old yt-dlp versions stop working. The button runs <code>yt-dlp -U</code>
-          on the server (this works for yt-dlp's own release files; a package-manager install says how to update it
-          instead).</p>
-        <p id="ytdlp-version"></p>
-        <button id="ytdlp-update" type="button">Update yt-dlp</button>
-        <p id="ytdlp-status" hidden></p>
-        <pre id="ytdlp-log" class="job-log small" hidden></pre>
-        <p id="ytdlp-pot-status" hidden></p>
-        <p>Some videos only download with a PO token. Run a PO token provider server and its yt-dlp plugin
-          (see the deployment notes), then set <code>ytdlp.poTokenProviderUrl</code> below. The button checks that
-          yt-dlp has the token provider plugin and that the provider URL answers.</p>
-        <button id="ytdlp-pot-test" type="button">Test PO token provider</button>
-        <p id="ytdlp-pot-result" hidden></p>
-        <p id="ytdlp-error" class="error" role="alert"></p>
+      <section id="ytservice-box" aria-live="polite">
+        <h3>YouTube service</h3>
+        <p id="ytservice-intro"></p>
+        <p id="ytservice-status"></p>
+        <ul id="ytservice-versions" hidden></ul>
+        <p id="ytservice-provider" hidden></p>
+        <p id="ytservice-last" hidden></p>
+        <button id="ytservice-update" type="button">Update now</button>
+        <button id="ytservice-log-button" type="button">Show update log</button>
+        <button id="ytservice-test" type="button">Test connection</button>
+        <p id="ytservice-result" hidden></p>
+        <pre id="ytservice-log" class="job-log small" hidden></pre>
+        <p id="ytservice-error" class="error" role="alert"></p>
       </section>
       <form id="settings-form">
         <div id="settings-fields"></div>

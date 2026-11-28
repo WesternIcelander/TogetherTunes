@@ -49,7 +49,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * The room form of the YouTube search ({@code GET /api/rooms/{room}/youtube-search},
  * {@link YoutubeSearchApi}, {@link RoomGuests#requireYoutubeRequests}) against a fake MVFinder and
- * a fake yt-dlp: who may search by the room's rules for YouTube requests (users, guests by the
+ * a fake YouTube service: who may search by the room's rules for YouTube requests (users, guests by the
  * server and room settings, anonymous visitors, bans and timeouts, the feature switch), the shared
  * per-person limit (guests counted by their identity) and MVFinder for guests only with
  * {@code mvfinder.allowGuests}.
@@ -70,7 +70,7 @@ class RoomYoutubeSearchApiTest {
     private RoomRegistry registry;
     private WebServer server;
     private FakeMvfinder mvfinder;
-    private FakeYtdlpSearch ytdlp;
+    private FakeYoutubeSearch ytdlp;
     private Settings settings;
     private final HttpClient http = HttpClient.newHttpClient();
     private final TestClock clock = new TestClock(1_800_000_000_000L);
@@ -85,10 +85,9 @@ class RoomYoutubeSearchApiTest {
         mvfinder = new FakeMvfinder();
         mvfinder.searchBody = SEARCH_ANSWER;
         String mvfinderUrl = mvfinder.url();
-        ytdlp = new FakeYtdlpSearch(dir.resolve("yt"));
-        ytdlp.searchJson(FakeYtdlpSearch.entries(new String[] {FOUND1, "Found one", "Chan", "200"}));
-        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example",
-                "TOGETHERTUNES_TOOLS_YTDLP", ytdlp.script.toString()), 4, dir).load(null).config();
+        ytdlp = new FakeYoutubeSearch();
+        ytdlp.searchJson(FakeYoutubeSearch.entries(new String[] {FOUND1, "Found one", "Chan", "200"}));
+        Config config = new ConfigLoader(Map.of("PATH", "", "TOGETHERTUNES_HTTP_PUBLIC_BASE_URL", "https://tunes.example"), 4, dir).load(null).config();
         db = Database.open("jdbc:sqlite:" + dir.resolve("test.db"));
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
@@ -104,7 +103,7 @@ class RoomYoutubeSearchApiTest {
                 permissions);
         MusicLinkResolver resolver = new MusicLinkResolver(() -> new MusicLinkResolver.Options(mvfinderUrl,
                 "X-Api-Key", "sekret", LinkPreference.SONG, allowGuests, 1), clock);
-        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(Tools.from(config), () -> null, resolver,
+        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(ytdlp.service(), resolver,
                 () -> {
                     try {
                         return settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR);
@@ -133,6 +132,7 @@ class RoomYoutubeSearchApiTest {
         server.close();
         registry.close();
         mvfinder.close();
+        ytdlp.close();
         db.close();
     }
 
@@ -236,7 +236,7 @@ class RoomYoutubeSearchApiTest {
         guestLinks(false, true);
         expectError(403, "guest_youtube_disabled", asGuest("?q=firework"));
         guestLinks(true, true);
-        // allowGuests off: yt-dlp, not MVFinder
+        // allowGuests off: YouTube service, not MVFinder
         assertEquals(List.of(FOUND1), ids(asGuest("?q=firework")));
         assertEquals(0, mvfinder.seen.size());
         assertEquals(1, ytdlp.searches().size());

@@ -281,6 +281,13 @@ class DtoIpLeakTest {
             Map.entry("io.siggi.togethertunes.ingest.JobList$Row", "jobs page row; JobsApi.json builds the response from named fields (no IP column is read)"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$ItemRef", "item columns of a jobs page row; JobsApi.json copies named fields, no adder, no IP"),
             Map.entry("io.siggi.togethertunes.ingest.JobList$Page", "a page of JobList rows; JobsApi builds the JSON"),
+            Map.entry("io.siggi.togethertunes.youtube.YoutubeService$Endpoint", "the YouTube service's URL and token (toString leaves the token out); never sent to clients"),
+            Map.entry("io.siggi.togethertunes.ytdlp.CookieJarFile$Cookie", "one cookie of a yt-dlp cookies file, merged back into the file; never sent to clients"),
+            Map.entry("io.siggi.togethertunes.ytdlp.CookieJarFile$Jar", "a parsed yt-dlp cookies file; never sent to clients"),
+            Map.entry("io.siggi.togethertunes.ytdlp.CookieJarFile$Key", "a cookie's identity (domain, path, name) for merging; never sent to clients"),
+            Map.entry("io.siggi.togethertunes.ytdlp.PoTokenProvider$PingResult", "the PO token provider ping; YtdlpApi copies named fields (reachable, status, version, error), no IP"),
+            Map.entry("io.siggi.togethertunes.ytdlp.PoTokenProvider$PluginStatus", "yt-dlp's PO token plugin check; YtdlpApi.json copies loaded/version only"),
+            Map.entry("io.siggi.togethertunes.ytdlp.PoTokenProvider$Provider", "a PO token provider yt-dlp reported (name, version); no IP"),
             Map.entry("io.siggi.togethertunes.ingest.YtdlpUpdater$Status", "yt-dlp update run; YtdlpApi.json copies named fields (state, times, exit code, versions, the tool output), no IP"),
             Map.entry("io.siggi.togethertunes.ingest.IngestQueue$LiveStep", "a running job's step name and fraction, copied into job views by named fields"),
             Map.entry("io.siggi.togethertunes.ingest.IngestProgress$Status", "room ingest message; toJson writes state, kind, position, step, progress and a short error only"),
@@ -605,7 +612,7 @@ class DtoIpLeakTest {
         roles = new Roles(database);
         permissions = new Permissions(database, settings);
         guests = new Guests(database, settings, config.secureCookies());
-        library = new Library(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
+        library = new Library(database, TestUploads.youtube(database, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock), clock);
         items = new Items(database, DataDir.create(dir.resolve("data")), clock);
         io.siggi.togethertunes.ingest.MediaVersions versions = new io.siggi.togethertunes.ingest.MediaVersions(
                 DataDir.create(dir.resolve("data")), database, clock::millis,
@@ -613,7 +620,7 @@ class DtoIpLeakTest {
         versions.undoWindow(() -> 48 * 3_600_000L);
         items.mediaVersions(versions);
         items.trimJobs(new io.siggi.togethertunes.ingest.IngestJobs(database, clock));
-        playlists = new Playlists(database, TestUploads.youtube(database, config, Tools.from(config), clock), clock);
+        playlists = new Playlists(database, TestUploads.youtube(database, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock), clock);
         rooms = new io.siggi.togethertunes.rooms.Rooms(database, permissions, clock);
         roomRegistry = new io.siggi.togethertunes.rooms.RoomRegistry(database, clock,
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);

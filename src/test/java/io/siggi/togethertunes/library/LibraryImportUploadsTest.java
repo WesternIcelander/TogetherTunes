@@ -83,7 +83,7 @@ class LibraryImportUploadsTest {
         Permissions permissions = new Permissions(db, settings);
         Tools tools = Tools.from(config);
         imports = new LibraryImports(db, TestUploads.uploads(db, dir, config, tools, clock),
-                new Playlists(db, TestUploads.youtube(db, config, tools, clock), clock),
+                new Playlists(db, TestUploads.youtube(db, config, io.siggi.togethertunes.youtube.YoutubeService.none(), clock), clock),
                 dir.resolve("data/tmp/imports"), List.of(), clock);
         zips = new LibraryImportUploads(imports, config.libraryImportMaxZipBytes(), clock);
         zips.diskSpace(new DiskSpace(() -> new DiskSpace.Usage(free.get(), Long.MAX_VALUE / 2), () -> 1000,

@@ -24,6 +24,8 @@ import io.siggi.togethertunes.library.YoutubeImports;
 import io.siggi.togethertunes.library.YoutubeImportsApi;
 import io.siggi.togethertunes.rooms.RoomGuestRules;
 import io.siggi.togethertunes.settings.Settings;
+import io.siggi.togethertunes.youtube.FakeYtSucks;
+import io.siggi.togethertunes.youtube.YoutubeService;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
@@ -64,7 +66,7 @@ public final class TestUploads {
             Clock clock) {
         Tools tools = Tools.from(config);
         var imports = new io.siggi.togethertunes.library.LibraryImports(db, uploads(db, dir, config, tools, clock),
-                new Playlists(db, youtube(db, config, tools, clock), clock), dir.resolve("data/tmp/imports"),
+                new Playlists(db, youtube(db, config, YoutubeService.none(), clock), clock), dir.resolve("data/tmp/imports"),
                 allowedPaths, clock);
         var zips = new io.siggi.togethertunes.library.LibraryImportUploads(imports, config.libraryImportMaxZipBytes(),
                 clock);
@@ -88,32 +90,32 @@ public final class TestUploads {
                 new Guests(db, settings, clock, config.secureCookies(), GuestNames.bundled()));
     }
 
-    /** YouTube imports with the configured tools (no cookies file). */
-    public static YoutubeImports youtube(Database db, Config config, Tools tools, Clock clock) {
-        return new YoutubeImports(db, tools, new IngestJobs(db, clock), () -> {
-        }, config.outputEncoding(), config.ingestMaxDurationSeconds(), () -> null, clock);
+    /** YouTube imports through {@code youtube} (e.g. a {@code FakeYtSucks}, or none). */
+    public static YoutubeImports youtube(Database db, Config config, YoutubeService youtube, Clock clock) {
+        return new YoutubeImports(db, youtube, new IngestJobs(db, clock), () -> {
+        }, config.outputEncoding(), config.ingestMaxDurationSeconds(), clock);
     }
 
     public static YoutubeImportsApi youtubeApi(Database db, Config config, Permissions permissions, Clock clock) {
-        return new YoutubeImportsApi(youtube(db, config, Tools.from(config), clock),
+        return new YoutubeImportsApi(youtube(db, config, YoutubeService.none(), clock),
                 policy(permissions, new Settings(db, config)));
     }
 
     /** The library API over YouTube imports with the configured tools. */
     public static LibraryApi libraryApi(Database db, Config config, Permissions permissions, Clock clock) {
-        return new LibraryApi(new Library(db, youtube(db, config, Tools.from(config), clock), clock),
+        return new LibraryApi(new Library(db, youtube(db, config, YoutubeService.none(), clock), clock),
                 policy(permissions, new Settings(db, config)));
     }
 
     /** The playlists API over YouTube imports with the configured tools. */
     public static PlaylistsApi playlistsApi(Database db, Config config, Permissions permissions, Clock clock) {
-        return new PlaylistsApi(new Playlists(db, youtube(db, config, Tools.from(config), clock), clock),
+        return new PlaylistsApi(new Playlists(db, youtube(db, config, YoutubeService.none(), clock), clock),
                 policy(permissions, new Settings(db, config)));
     }
 
     /** The {@code library.viewAll} API over YouTube imports with the configured tools. */
     public static UserLibrariesApi userLibrariesApi(Database db, Config config, Permissions permissions, Clock clock) {
-        YoutubeImports youtube = youtube(db, config, Tools.from(config), clock);
+        YoutubeImports youtube = youtube(db, config, YoutubeService.none(), clock);
         return new UserLibrariesApi(new UserLibraries(db, new Library(db, youtube, clock),
                 new Playlists(db, youtube, clock)), permissions);
     }
@@ -153,22 +155,17 @@ public final class TestUploads {
             // Replace artwork: an image body on the same cover route
             api.coverUpload(new io.siggi.togethertunes.library.CoverUpload(items,
                     new io.siggi.togethertunes.ingest.Tools(onPath("ffmpeg"), null, null), data, jobs));
-            // "Find a music video": a fake yt-dlp whose search finds one video (no MVFinder)
-            io.siggi.togethertunes.library.FakeYtdlpSearch ytdlp =
-                    new io.siggi.togethertunes.library.FakeYtdlpSearch(dir.resolve("yt-dlp-search"));
-            ytdlp.searchJson(io.siggi.togethertunes.library.FakeYtdlpSearch.entries(
-                    new String[] {FOUND_VIDEO_ID, "Found Video", "Channel", "200"}));
-            io.siggi.togethertunes.ingest.Tools ytTools = new io.siggi.togethertunes.ingest.Tools(null, null,
-                    ytdlp.script.toString());
-            YoutubeImports youtube = new YoutubeImports(db, ytTools, jobs, () -> {
-            }, io.siggi.togethertunes.config.OutputEncoding.DEFAULT, 3600, () -> null, clock);
+            // "Find a music video": a fake YouTube service whose search finds one video (no MVFinder)
+            YoutubeService ytService = searchService().service();
+            YoutubeImports youtube = new YoutubeImports(db, ytService, jobs, () -> {
+            }, io.siggi.togethertunes.config.OutputEncoding.DEFAULT, 3600, clock);
             api.videoSearch(new io.siggi.togethertunes.library.VideoSearchApi(
-                    new io.siggi.togethertunes.library.VideoSearch(db, ytTools, () -> null, youtube, null, () -> 1000,
+                    new io.siggi.togethertunes.library.VideoSearch(db, ytService, youtube, null, () -> 1000,
                             clock), permissions));
-            // The YouTube search: the same fake yt-dlp (no MVFinder)
+            // The YouTube search: the same fake service (no MVFinder)
             io.siggi.togethertunes.library.YoutubeSearchApi youtubeSearch =
                     new io.siggi.togethertunes.library.YoutubeSearchApi(new io.siggi.togethertunes.library.YoutubeSearch(
-                            ytTools, () -> null, null, () -> 1000, clock), permissions);
+                            ytService, null, () -> 1000, clock), permissions);
             if (roomGuests != null) {
                 youtubeSearch.roomRules(roomGuests::requireYoutubeRequests);
             }
@@ -181,6 +178,18 @@ public final class TestUploads {
 
     /** The video the test items API's "Find a music video" search finds. */
     public static final String FOUND_VIDEO_ID = "fOuNdViDe01";
+
+    private static FakeYtSucks searchService;
+
+    /** One fake YouTube service for every test items API: its search finds {@link #FOUND_VIDEO_ID}, any video looks up. */
+    static synchronized FakeYtSucks searchService() throws IOException {
+        if (searchService == null) {
+            searchService = new FakeYtSucks();
+            searchService.anyVideo = true;
+            searchService.searchBody = FakeYtSucks.results(new String[] {FOUND_VIDEO_ID, "Found Video", "Channel", "200"});
+        }
+        return searchService;
+    }
 
     /** A tool's path when it is on PATH (setting a found cover scales it with ffmpeg), else null. */
     static String onPath(String name) {
@@ -222,6 +231,14 @@ public final class TestUploads {
     public static RoomsWiring rooms(Database db, Path dir, Config config, Settings settings, Permissions permissions,
                                     io.siggi.togethertunes.auth.ActorResolver actors,
                                     io.siggi.togethertunes.auth.IdentityTickets tickets, Clock clock) {
+        return rooms(db, dir, config, settings, permissions, actors, tickets, clock, YoutubeService.none());
+    }
+
+    /** {@link RoomsWiring} whose YouTube imports go to {@code ytService}. */
+    public static RoomsWiring rooms(Database db, Path dir, Config config, Settings settings, Permissions permissions,
+                                    io.siggi.togethertunes.auth.ActorResolver actors,
+                                    io.siggi.togethertunes.auth.IdentityTickets tickets, Clock clock,
+                                    YoutubeService ytService) {
         io.siggi.togethertunes.rooms.Rooms rooms = new io.siggi.togethertunes.rooms.Rooms(db, permissions, clock);
         io.siggi.togethertunes.rooms.RoomRegistry registry = new io.siggi.togethertunes.rooms.RoomRegistry(db, clock,
                 io.siggi.togethertunes.rooms.PackagerHook.NONE);
@@ -230,8 +247,8 @@ public final class TestUploads {
         // the rooms hear about status changes of the jobs imports and retries queue, as in Main
         IngestJobs youtubeJobs = new IngestJobs(db, clock);
         youtubeJobs.statusListener(registry);
-        YoutubeImports youtube = new YoutubeImports(db, Tools.from(config), youtubeJobs, () -> {
-        }, config.outputEncoding(), config.ingestMaxDurationSeconds(), () -> null, clock);
+        YoutubeImports youtube = new YoutubeImports(db, ytService, youtubeJobs, () -> {
+        }, config.outputEncoding(), config.ingestMaxDurationSeconds(), clock);
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, guests);
         io.siggi.togethertunes.rooms.RoomsApi api = new io.siggi.togethertunes.rooms.RoomsApi(rooms, registry,
                 permissions, guests, new io.siggi.togethertunes.rooms.RequestSearch(db, rooms, guests),
@@ -265,7 +282,7 @@ public final class TestUploads {
                 new io.siggi.togethertunes.rooms.RoomHistory(db, rooms, settings::roomsRequestHistoryDays, clock));
         alone(api, db, rooms, registry, settings, clock);
         api.autoplay(new io.siggi.togethertunes.rooms.AutoplaySelections(rooms,
-                new io.siggi.togethertunes.library.Playlists(db, youtube(db, config, Tools.from(config), clock), clock)));
+                new io.siggi.togethertunes.library.Playlists(db, youtube(db, config, YoutubeService.none(), clock), clock)));
         return api;
     }
 

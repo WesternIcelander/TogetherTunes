@@ -21,11 +21,9 @@ import io.siggi.togethertunes.db.UuidV7;
 import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestJobs;
-import io.siggi.togethertunes.ingest.Tools;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
+import io.siggi.togethertunes.youtube.FakeYtSucks;
+import io.siggi.togethertunes.youtube.YoutubeService;
 import java.nio.file.Path;
-import java.nio.file.attribute.PosixFilePermissions;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -43,9 +41,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 /**
- * YouTube imports ({@link YoutubeImports}) against a fake yt-dlp that answers {@code -J} from a
- * file and records every call: normalisation, the cache lookup for every item status, the
- * metadata rules and rejections, library entries, {@code presentAsAudio} and the cookies file.
+ * YouTube imports ({@link YoutubeImports}) against a fake YouTube service ({@link FakeYtSucks})
+ * that answers {@code /api/info} and records every call: normalisation, the cache lookup for every
+ * item status, the metadata rules and rejections, the service's errors, library entries,
+ * {@code presentAsAudio} and the token.
  */
 abstract class YoutubeImportsContract {
     static final String ID = "dQw4w9WgXcQ";
@@ -60,12 +59,7 @@ abstract class YoutubeImportsContract {
     private IngestJobs jobs;
     private YoutubeImports imports;
     private final AtomicInteger wakes = new AtomicInteger();
-    private volatile String cookies;
-    private Path metaFile;
-    private Path errorFile;
-    private Path callsFile;
-    /** A script whose output the fake prints to stderr before answering (yt-dlp's progress lines). */
-    private Path stagesFile;
+    private FakeYtSucks fake;
     private Actor.User alice;
     private Actor.User bob;
     private Actor.Guest guest;
@@ -79,22 +73,8 @@ abstract class YoutubeImportsContract {
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
         jobs = new IngestJobs(db, clock);
-        metaFile = dir.resolve("meta.json");
-        errorFile = dir.resolve("error.txt");
-        callsFile = dir.resolve("calls.txt");
-        stagesFile = dir.resolve("stages.sh");
-        Path script = dir.resolve("fake-yt-dlp");
-        Files.writeString(script, "#!/bin/sh\n"
-                + "printf '%s\\n' \"$@\" >> '" + callsFile + "'\n"
-                + "echo '----' >> '" + callsFile + "'\n"
-                // yt-dlp writes a refreshed cookie to the cookies file it was given
-                + "for a; do if [ \"$prev\" = --cookies ]; then"
-                + " printf '.youtube.com\\tTRUE\\t/\\tTRUE\\t0\\tFRESH\\tyes\\n' >> \"$a\"; fi; prev=\"$a\"; done\n"
-                + "if [ -f '" + stagesFile + "' ]; then sh '" + stagesFile + "' >&2; fi\n"
-                + "if [ -f '" + errorFile + "' ]; then cat '" + errorFile + "' >&2; exit 1; fi\n"
-                + "cat '" + metaFile + "'\n", StandardCharsets.UTF_8);
-        Files.setPosixFilePermissions(script, PosixFilePermissions.fromString("rwx------"));
-        imports = imports(new Tools("ffmpeg", "ffprobe", script.toString()));
+        fake = new FakeYtSucks();
+        imports = imports(fake.service());
         meta("{\"id\":\"" + ID + "\",\"title\":\"Rick Astley - Never Gonna Give You Up (Official Video)\","
                 + "\"uploader\":\"Rick Astley\",\"track\":\"Never Gonna Give You Up\",\"artist\":\"Rick Astley\","
                 + "\"duration\":212,\"live_status\":\"not_live\",\"is_live\":false}");
@@ -119,34 +99,29 @@ abstract class YoutubeImportsContract {
 
     @AfterEach
     void tearDown() {
+        if (fake != null) {
+            fake.close();
+        }
         if (db != null) {
             db.close();
         }
     }
 
-    private YoutubeImports imports(Tools tools) {
-        return new YoutubeImports(db, tools, jobs, wakes::incrementAndGet, OutputEncoding.defaultFor(OutputProfile.P720_30), MAX_SECONDS,
-                () -> cookies, clock);
+    private YoutubeImports imports(YoutubeService service) {
+        return new YoutubeImports(db, service, jobs, wakes::incrementAndGet, OutputEncoding.defaultFor(OutputProfile.P720_30),
+                MAX_SECONDS, clock);
     }
 
-    private void meta(String json) throws Exception {
-        Files.writeString(metaFile, json);
+    /** What the fake's lookup answers for every video (raw, may be broken). */
+    private void meta(String json) {
+        fake.defaultInfo = json;
     }
 
-    /** The argument lists of every yt-dlp call so far. */
-    private List<List<String>> calls() throws Exception {
-        List<List<String>> out = new ArrayList<>();
-        if (!Files.exists(callsFile)) {
-            return out;
-        }
-        List<String> current = new ArrayList<>();
-        for (String line : Files.readAllLines(callsFile)) {
-            if (line.equals("----")) {
-                out.add(current);
-                current = new ArrayList<>();
-            } else {
-                current.add(line);
-            }
+    /** The query of every lookup so far. */
+    private List<Map<String, String>> calls() {
+        List<Map<String, String>> out = new ArrayList<>();
+        for (FakeYtSucks.Req r : fake.requests("/api/info")) {
+            out.add(r.query());
         }
         return out;
     }
@@ -232,10 +207,10 @@ abstract class YoutubeImportsContract {
         assertTrue(UuidV7.isValid(r.itemId()));
         assertEquals(1, wakes.get());
 
-        List<List<String>> calls = calls();
+        List<Map<String, String>> calls = calls();
         assertEquals(1, calls.size());
-        assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--", "https://www.youtube.com/watch?v=" + ID),
-                calls.get(0), "metadata from the canonical URL, never the pasted one");
+        assertEquals(Map.of("vid", ID, "stream", "true"), calls.get(0), "the video ID, never the pasted link");
+        assertNull(fake.requests("/api/info").get(0).authorization(), "no token, no Authorization header");
 
         Map<String, Object> item = item(r.itemId());
         assertEquals("video", item.get("kind"));
@@ -261,7 +236,7 @@ abstract class YoutubeImportsContract {
         assertEquals("youtube", libraryVia(alice, r.itemId()));
     }
 
-    /** The milestone check: other forms of the same link reuse the item without starting yt-dlp. */
+    /** The milestone check: other forms of the same link reuse the item without a new lookup. */
     @Test
     void otherFormsOfTheSameLinkReuseTheItemWithoutYtdlp() throws Exception {
         String itemId = imports.importUrl(alice, "https://www.youtube.com/watch?v=" + ID, null, null, MV).itemId();
@@ -292,7 +267,7 @@ abstract class YoutubeImportsContract {
             assertEquals(new YoutubeImports.Imported(itemId, true, "ready"),
                     imports.importUrl(alice, link, null, null, MV), link);
         }
-        assertEquals(1, calls().size(), "yt-dlp ran only for the first import");
+        assertEquals(1, calls().size(), "looked up only for the first import");
         assertEquals(1, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
         assertEquals(1, count("SELECT COUNT(*) FROM ingest_jobs WHERE item_id = ?", itemId));
         assertEquals("youtube", libraryVia(bob, itemId));
@@ -613,7 +588,7 @@ abstract class YoutubeImportsContract {
             assertEquals(400, e.status(), bad);
             assertEquals("invalid_youtube_url", e.code(), bad);
         }
-        assertEquals(0, calls().size(), "a bad link never reaches yt-dlp");
+        assertEquals(0, calls().size(), "a bad link never reaches the YouTube service");
 
         meta("{\"id\":\"" + ID + "\",\"title\":\"Live now\",\"is_live\":true,\"live_status\":\"is_live\"}");
         HttpError live = error(() -> imports.importUrl(alice, "https://www.youtube.com/live/" + ID, null, null, MV));
@@ -646,23 +621,96 @@ abstract class YoutubeImportsContract {
             return null;
         });
 
-        Files.writeString(errorFile, "WARNING: something\nERROR: [youtube] " + ID + ": Video unavailable. This video is private\n");
+        fake.infoError(ID, "private", "[youtube] " + ID + ": Video unavailable. This video is private");
         HttpError unavailable = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(422, unavailable.status());
         assertEquals("youtube_unavailable", unavailable.code());
         assertEquals("YouTube didn't return this video: Video unavailable. This video is private", unavailable.getMessage());
-        Files.delete(errorFile);
 
+        // a broken answer (no result line) is the service's fault, not the video's
+        fake = reopen(fake);
         meta("this is not json");
-        assertEquals("youtube_bad_metadata", error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV)).code());
+        HttpError broken = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+        assertEquals(503, broken.status());
+        assertEquals("ytdlp_unavailable", broken.code());
 
         assertEquals(0, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID), "no item for a rejected import");
         assertEquals(0, wakes.get() - 1, "only the accepted import queued a job");
 
-        YoutubeImports noTool = imports(new Tools("ffmpeg", "ffprobe", dir.resolve("no-such-yt-dlp").toString()));
-        HttpError missing = error(() -> noTool.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+        YoutubeImports noService = imports(YoutubeService.none());
+        HttpError missing = error(() -> noService.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
         assertEquals(503, missing.status());
         assertEquals("ytdlp_unavailable", missing.code());
+        assertTrue(missing.getMessage().contains("YouTube service isn't set up"), missing.getMessage());
+    }
+
+    /** A fresh fake in place of {@code old} (closed), with this contract's imports pointed at it. */
+    private FakeYtSucks reopen(FakeYtSucks old) throws Exception {
+        old.close();
+        FakeYtSucks f = new FakeYtSucks();
+        imports = imports(f.service());
+        return f;
+    }
+
+    /** Every {@code error_type} is a 422 with the service's message; sign-in and age checks get a hint. */
+    @Test
+    void theServicesErrorTypes() throws Exception {
+        for (String type : List.of("unavailable", "private", "network", "other")) {
+            fake.infoError(ID, type, "ERROR: [youtube] " + ID + ": Something about " + type);
+            HttpError e = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+            assertEquals(422, e.status(), type);
+            assertEquals("youtube_unavailable", e.code(), type);
+            assertEquals("YouTube didn't return this video: Something about " + type, e.getMessage(), type);
+        }
+        fake.infoError(ID, "sign_in_required", "[youtube] " + ID + ": Sign in to confirm you're not a bot");
+        HttpError bot = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+        assertEquals("youtube_unavailable", bot.code());
+        assertTrue(bot.getMessage().contains("sign in") && bot.getMessage().contains("bot"), bot.getMessage());
+        assertFalse(bot.getMessage().contains("Sign in to confirm"), "the hint replaces the raw text");
+        fake.infoError(ID, "age_restricted", "[youtube] " + ID + ": Sign in to confirm your age");
+        HttpError age = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+        assertEquals(422, age.status());
+        assertTrue(age.getMessage().contains("adults"), age.getMessage());
+        assertEquals(0, count("SELECT COUNT(*) FROM items WHERE youtube_id = ?", ID));
+    }
+
+    /** The service unreachable, refusing the token, or too slow. */
+    @Test
+    void theServiceUnreachableRefusingOrSlow() throws Exception {
+        // nothing listens there any more
+        String url = fake.url();
+        fake.close();
+        YoutubeImports gone = imports(new YoutubeService(() -> new YoutubeService.Endpoint(url, null)));
+        HttpError unreachable = error(() -> gone.importUrl(alice, "https://youtu.be/" + ID, null, null, MV));
+        assertEquals(503, unreachable.status());
+        assertEquals("ytdlp_unavailable", unreachable.code());
+
+        fake = new FakeYtSucks();
+        fake.defaultInfo = "{\"id\":\"" + ID + "\",\"title\":\"t\",\"duration\":10}";
+        fake.requiredToken = "right-token";
+        HttpError refused = error(() -> imports(fake.service("wrong-token")).importUrl(alice, "https://youtu.be/" + ID,
+                null, null, MV));
+        assertEquals(503, refused.status());
+        assertEquals("ytdlp_unavailable", refused.code());
+        assertFalse(refused.getMessage().contains("token"), "generic for people: " + refused.getMessage());
+        assertEquals("Bearer wrong-token", fake.requests("/api/info").get(0).authorization());
+        // the right token: imported, the token only in the header
+        YoutubeImports.Imported ok = imports(fake.service("right-token")).importUrl(alice, "https://youtu.be/" + ID,
+                null, null, MV);
+        assertEquals("pending", ok.status());
+        FakeYtSucks.Req req = fake.requests("/api/info").get(1);
+        assertEquals("Bearer right-token", req.authorization());
+        assertFalse(req.query().containsKey("token"));
+
+        fake.requiredToken = null;
+        fake.infoDelayMs = 3000;
+        YoutubeService slow = fake.service();
+        FakeYtSucks.shortTimeouts(slow, java.time.Duration.ofMillis(400));
+        long start = System.nanoTime();
+        HttpError timeout = error(() -> imports(slow).importUrl(alice, "https://youtu.be/abcdefghijk", null, null, MV));
+        assertEquals(504, timeout.status());
+        assertEquals("youtube_timeout", timeout.code());
+        assertTrue(System.nanoTime() - start < 2_500_000_000L, "gave up at the timeout");
     }
 
     @Test
@@ -675,27 +723,7 @@ abstract class YoutubeImportsContract {
         assertEquals("YouTube didn't return this video", YoutubeImports.errorMessage(null));
     }
 
-    @Test
-    void theCookiesFileIsPassedWhenSet() throws Exception {
-        Path file = Files.writeString(dir.resolve("cookies.txt"), "# Netscape HTTP Cookie File\n");
-        cookies = file.toString();
-        imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV);
-        List<String> args = calls().get(0);
-        // a private copy, deleted afterwards; the cookie yt-dlp added is merged into the shared file
-        Path privateCopy = Path.of(args.get(args.indexOf("--cookies") + 1));
-        assertNotEquals(file, privateCopy);
-        assertFalse(Files.exists(privateCopy));
-        assertEquals("# Netscape HTTP Cookie File\n\n.youtube.com\tTRUE\t/\tTRUE\t0\tFRESH\tyes\n",
-                Files.readString(file));
-        assertEquals("https://www.youtube.com/watch?v=" + ID, args.get(args.size() - 1));
-
-        cookies = dir.resolve("missing.txt").toString();
-        meta("{\"id\":\"abcdefghijk\",\"title\":\"t\"}");
-        imports.importUrl(alice, "https://youtu.be/abcdefghijk", null, null, MV);
-        assertFalse(calls().get(1).contains("--cookies"), "an unreadable cookies file is skipped");
-    }
-
-    /** Concurrent imports of one new video run yt-dlp once and make one item. */
+    /** Concurrent imports of one new video look it up once and make one item. */
     @Test
     void concurrentImportsMakeOneItem() throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(4);
@@ -727,16 +755,14 @@ abstract class YoutubeImportsContract {
 
     @Test
     void theLookupReportsItsStagesInOrder() throws Exception {
-        Files.writeString(stagesFile, "echo '[debug] Encodings: locale UTF-8'\n"
-                + "echo '[youtube] Extracting URL: https://www.youtube.com/watch?v=" + ID + "'\n"
-                + "sleep 0.1\n"
-                + "echo '[youtube] " + ID + ": Downloading webpage'\n"
-                + "echo 'a line nobody knows'\n"
-                + "echo '[youtube] " + ID + ": Downloading tv client config'\n"
-                + "sleep 0.1\n"
-                + "echo '[youtube] " + ID + ": Downloading webpage'\n"
-                + "echo '[youtube] " + ID + ": Downloading m3u8 information'\n"
-                + "echo '[info] " + ID + ": Downloading 1 format(s): 18'\n");
+        fake.stages = List.of("queued", "[debug] Encodings: locale UTF-8",
+                "[youtube] Extracting URL: https://www.youtube.com/watch?v=" + ID,
+                "[youtube] " + ID + ": Downloading webpage",
+                "a line nobody knows",
+                "[youtube] " + ID + ": Downloading tv client config",
+                "[youtube] " + ID + ": Downloading webpage",
+                "[youtube] " + ID + ": Downloading m3u8 information",
+                "[info] " + ID + ": Downloading 1 format(s): 18");
         List<String> stages = new java.util.concurrent.CopyOnWriteArrayList<>();
         YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV,
                 s -> stages.add(s.wire()));
@@ -751,8 +777,7 @@ abstract class YoutubeImportsContract {
 
     @Test
     void unknownOutputAndAThrowingListenerNeverFailTheLookup() throws Exception {
-        Files.writeString(stagesFile, "echo 'Totally new wording: fetching things'\n"
-                + "echo '[youtube] " + ID + ": Downloading webpage'\n");
+        fake.stages = List.of("Totally new wording: fetching things", "[youtube] " + ID + ": Downloading webpage");
         YoutubeImports.Imported r = imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV, s -> {
             throw new IllegalStateException("the socket is gone");
         });
@@ -760,13 +785,10 @@ abstract class YoutubeImportsContract {
     }
 
     @Test
-    void anErrorFollowedByATracebackStillGivesTheErrorMessage() throws Exception {
-        StringBuilder traceback = new StringBuilder("ERROR: [youtube] " + ID + ": Video unavailable\n"
-                + "Traceback (most recent call last):\n");
-        for (int i = 0; i < 40; i++) {
-            traceback.append("  File \"/x/yt_dlp/y.py\", line ").append(i).append(", in f\n");
-        }
-        Files.writeString(errorFile, traceback.toString());
+    void severalErrorLinesGiveTheLastOne() throws Exception {
+        // the service joins yt-dlp's ERROR lines (without the prefix) with newlines
+        fake.infoError(ID, "unavailable", "[youtube] " + ID + ": Something first\n[youtube] " + ID
+                + ": Video unavailable");
         HttpError e = error(() -> imports.importUrl(alice, "https://youtu.be/" + ID, null, null, MV, s -> { }));
         assertEquals("youtube_unavailable", e.code());
         assertEquals("YouTube didn't return this video: Video unavailable", e.getMessage());
@@ -803,8 +825,7 @@ abstract class YoutubeImportsContract {
             imports.linkResolver(resolver(fake, false));
             YoutubeImports.Imported r = imports.importUrl(alice, SPOTIFY_LINK, null, null, MV);
             assertEquals("pending", r.status());
-            assertEquals(List.of("-J", "--no-playlist", "--no-warnings", "--verbose", "--",
-                    "https://www.youtube.com/watch?v=" + FakeMvfinder.VIDEO_ID), calls().get(0));
+            assertEquals(FakeMvfinder.VIDEO_ID, calls().get(0).get("vid"));
             Map<String, Object> item = item(r.itemId());
             assertEquals(FakeMvfinder.VIDEO_ID, item.get("youtube_id"));
             assertEquals("リモコン-NT ver.- (feat. 鏡音リン&鏡音レン)", item.get("title"));

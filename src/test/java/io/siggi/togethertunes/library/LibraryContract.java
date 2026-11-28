@@ -62,8 +62,8 @@ abstract class LibraryContract {
         BuiltinRoles.ensure(db);
         jobs = new IngestJobs(db, clock);
         // addExisting never runs yt-dlp, so a missing tool is fine.
-        YoutubeImports youtube = new YoutubeImports(db, new Tools("ffmpeg", "ffprobe", dir.resolve("no-yt-dlp").toString()),
-                jobs, wakes::incrementAndGet, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, clock);
+        YoutubeImports youtube = new YoutubeImports(db, io.siggi.togethertunes.youtube.YoutubeService.none(),
+                jobs, wakes::incrementAndGet, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, clock);
         library = new Library(db, youtube, clock);
         Accounts accounts = new Accounts(db, new Passwords(new Passwords.Params(64, 1, 1)), clock);
         alice = new Actor.User(accounts.createLocal("alice", "Alice", "alice-password", false, null,

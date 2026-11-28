@@ -59,9 +59,8 @@ abstract class UserLibrariesContract {
         db = open();
         MigrationRunner.migrate(db);
         BuiltinRoles.ensure(db);
-        YoutubeImports youtube = new YoutubeImports(db, new Tools("ffmpeg", "ffprobe",
-                dir.resolve("no-yt-dlp").toString()), new IngestJobs(db, clock), () -> {
-                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, () -> null, clock);
+        YoutubeImports youtube = new YoutubeImports(db, io.siggi.togethertunes.youtube.YoutubeService.none(), new IngestJobs(db, clock), () -> {
+                }, OutputEncoding.defaultFor(OutputProfile.P720_30), 600, clock);
         library = new Library(db, youtube, clock);
         playlists = new Playlists(db, youtube, clock);
         browse = new UserLibraries(db, library, playlists);

@@ -10,14 +10,10 @@ import io.siggi.togethertunes.http.HttpError;
 import io.siggi.togethertunes.ingest.IngestJob;
 import io.siggi.togethertunes.ingest.IngestJobs;
 import io.siggi.togethertunes.ingest.IngestPipeline;
-import io.siggi.togethertunes.ingest.JobLog;
-import io.siggi.togethertunes.ingest.ToolException;
-import io.siggi.togethertunes.ingest.ToolResult;
-import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.retention.References;
 import io.siggi.togethertunes.storage.DiskSpace;
-import io.siggi.togethertunes.ytdlp.CookieJarFile;
-import java.nio.file.Path;
+import io.siggi.togethertunes.youtube.YoutubeService;
+import io.siggi.togethertunes.youtube.YoutubeServiceException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -39,8 +35,8 @@ import java.util.function.Supplier;
  *
  * <ol>
  *   <li>The link is normalised to the 11-character ID ({@link YoutubeIds}); anything else is
- *       {@code 400 invalid_youtube_url}. Nothing below ever sees the pasted URL: yt-dlp only gets
- *       the canonical {@code https://www.youtube.com/watch?v=<id>}.</li>
+ *       {@code 400 invalid_youtube_url}. Nothing below ever sees the pasted URL: the YouTube service
+ *       only gets the ID ({@code vid=}).</li>
  *   <li>{@code items.youtube_id} is looked up:
  *     <ul>
  *       <li>{@code ready} → that item, {@code cached: true}; no network access at all;</li>
@@ -51,9 +47,9 @@ import java.util.function.Supplier;
  *       <li>{@code failed} → a new {@code youtube} job on the same row if the last attempt ended
  *           more than {@link #RETRY_FAILED_AFTER} ago, else {@code 422 youtube_failed} with
  *           {@code Retry-After};</li>
- *       <li>not found → {@code yt-dlp -J} ({@link #fetchMetadata}): live streams are refused
+ *       <li>not found → the YouTube service's lookup ({@link #fetchMetadata}): live streams are refused
  *           ({@code 422 youtube_live}), so is anything longer than {@code ingest.maxDurationSeconds}
- *           ({@code 422 too_long}) and anything yt-dlp can't read ({@code 422
+ *           ({@code 422 too_long}) and anything YouTube refuses ({@code 422
  *           youtube_unavailable}); otherwise a new {@code pending} video item with title, artist
  *           and album from the metadata ({@link YoutubeMetadata}) and a {@code youtube} job.</li>
  *     </ul></li>
@@ -79,10 +75,6 @@ public final class YoutubeImports {
     public static final String AUDIT_RETRIED = "item.ingest_retried";
     /** Recent retries remembered before old ones are dropped. */
     private static final int RETRY_MEMORY = 1024;
-    static final Duration METADATA_TIMEOUT = Duration.ofMinutes(2);
-    static final Duration METADATA_IDLE_TIMEOUT = Duration.ofSeconds(90);
-    /** {@code -J} output with every format listed is a few hundred KiB; this is plenty. */
-    static final int METADATA_MAX_BYTES = 32 * 1024 * 1024;
     private static final int LOCK_STRIPES = 64;
     /** {@code library_entries.via} of an entry made by an import. */
     static final String VIA_IMPORT = "youtube";
@@ -90,12 +82,11 @@ public final class YoutubeImports {
     private static final System.Logger LOG = System.getLogger(YoutubeImports.class.getName());
 
     private final Database db;
-    private final Tools tools;
+    private final YoutubeService youtube;
     private final IngestJobs jobs;
     private final Runnable wake;
     private volatile Supplier<OutputEncoding> profile;
     private volatile IntSupplier maxDurationSec;
-    private final Supplier<String> cookiesFile;
     private final Clock clock;
     private final ReentrantLock[] locks = new ReentrantLock[LOCK_STRIPES];
     private volatile LibraryAddListener libraryAddListener = LibraryAddListener.NONE;
@@ -122,19 +113,18 @@ public final class YoutubeImports {
     /**
      * @param wake           called after a job was queued (the ingest queue's {@code wake})
      * @param profile        the output encoding new items are recorded with
+     * @param youtube        the YouTube service the lookups go to
      * @param maxDurationSec {@code ingest.maxDurationSeconds}
-     * @param cookiesFile    the {@code ytdlp.cookiesFile} setting, read on every metadata request
      */
-    public YoutubeImports(Database db, Tools tools, IngestJobs jobs, Runnable wake, OutputEncoding profile,
-                          int maxDurationSec, Supplier<String> cookiesFile, Clock clock) {
+    public YoutubeImports(Database db, YoutubeService youtube, IngestJobs jobs, Runnable wake, OutputEncoding profile,
+                          int maxDurationSec, Clock clock) {
         this.db = Objects.requireNonNull(db);
-        this.tools = Objects.requireNonNull(tools);
+        this.youtube = Objects.requireNonNull(youtube);
         this.jobs = Objects.requireNonNull(jobs);
         this.wake = Objects.requireNonNull(wake);
         Objects.requireNonNull(profile);
         this.profile = () -> profile;
         this.maxDurationSec = () -> maxDurationSec;
-        this.cookiesFile = Objects.requireNonNull(cookiesFile);
         this.clock = Objects.requireNonNull(clock);
         for (int i = 0; i < locks.length; i++) {
             locks[i] = new ReentrantLock();
@@ -194,7 +184,7 @@ public final class YoutubeImports {
 
     /**
      * Like {@link #importUrl(Actor, String, Boolean, Boolean)}, telling {@code progress} the
-     * stages of the {@code yt-dlp -J} lookup while it runs ({@link YoutubeLookupStage}). Nothing is
+     * stages of the YouTube service's lookup while it runs ({@link YoutubeLookupStage}). Nothing is
      * reported when there is no lookup (an item that is already known answers at once).
      */
     public Imported importUrl(Actor actor, String url, Boolean presentAsAudio, Boolean addToLibrary,
@@ -268,7 +258,7 @@ public final class YoutubeImports {
      * Adds the existing item that holds {@code videoId} to {@code user}'s library with {@code via},
      * through the same cache rules as an import of its link: a ready, pending or processing item is
      * just added; a purged one gets a {@code refetch} job, a failed one a new {@code youtube} job
-     * (subject to {@link #RETRY_FAILED_AFTER}). Never runs yt-dlp here. Used by
+     * (subject to {@link #RETRY_FAILED_AFTER}). Never looks the video up. Used by
      * {@code PUT /api/library/{itemId}} ({@link Library}).
      *
      * @throws HttpError {@code 404 item_not_found} if no item holds the ID (any more),
@@ -497,53 +487,34 @@ public final class YoutubeImports {
     }
 
     /**
-     * {@code yt-dlp -J --no-playlist} for {@code videoId}, checked: not live, not longer than
-     * {@code ingest.maxDurationSeconds}.
+     * The YouTube service's lookup ({@code /api/info}) for {@code videoId}, checked: not live, not
+     * longer than {@code ingest.maxDurationSeconds}.
      */
     YoutubeMetadata fetchMetadata(String videoId) throws InterruptedException {
         return fetchMetadata(videoId, YoutubeLookupStage.Listener.NONE);
     }
 
     /**
-     * Like {@link #fetchMetadata(String)}, reporting the lookup's stages from yt-dlp's stderr
-     * ({@code --verbose} makes {@code -J} print its progress lines there; {@link YoutubeLookupStage}).
+     * Like {@link #fetchMetadata(String)}, reporting the lookup's stages from the service's
+     * {@code stage} lines (yt-dlp's progress lines; {@link YoutubeLookupStage}).
+     *
+     * @throws HttpError {@code 503 ytdlp_unavailable} (no service, or it can't be reached or refuses
+     *                   the token), {@code 504 youtube_timeout}, {@code 422 youtube_unavailable}
+     *                   (YouTube refused), {@code 422 youtube_live}, {@code 422 too_long}
      */
     YoutubeMetadata fetchMetadata(String videoId, YoutubeLookupStage.Listener progress) throws InterruptedException {
-        if (!tools.hasYtdlp()) {
-            throw unavailable();
-        }
-        JobLog log = new JobLog();
         YoutubeLookupStage.Tracker stages = new YoutubeLookupStage.Tracker(progress);
-        // --verbose prints a traceback after an ERROR line, which can push it out of the stderr tail
-        java.util.concurrent.atomic.AtomicReference<String> lastError = new java.util.concurrent.atomic.AtomicReference<>();
-        ToolResult result;
-        try (CookieJarFile.Call cookies = CookieJarFile.open(cookiesFile.get(), null,
-                w -> LOG.log(System.Logger.Level.WARNING, w))) {
-            result = tools.ytdlp(IngestPipeline.metadataArgs(videoId, cookies.file())).timeout(METADATA_TIMEOUT)
-                    .idleTimeout(METADATA_IDLE_TIMEOUT).log(log).stdoutToString(METADATA_MAX_BYTES)
-                    .stderrLines(line -> {
-                        if (line.strip().startsWith("ERROR:")) {
-                            lastError.set(line);
-                        }
-                        stages.line(line);
-                    }).run();
-        } catch (ToolException e) {
-            switch (e.kind()) {
-                case NOT_AVAILABLE, START_FAILED -> throw unavailable();
-                case TIMEOUT, IDLE_TIMEOUT -> throw new HttpError(504, "youtube_timeout",
-                        "YouTube didn't answer in time; try again later");
-                default -> {
-                    LOG.log(System.Logger.Level.INFO, "yt-dlp -J failed for " + videoId + ":\n" + log.tail());
-                    throw new HttpError(422, "youtube_unavailable",
-                            errorMessage(lastError.get() != null ? lastError.get() : e.stderrTail()));
-                }
-            }
+        com.google.gson.JsonObject result;
+        try {
+            result = youtube.info(videoId, stages::line);
+        } catch (YoutubeServiceException e) {
+            throw lookupError(e, videoId);
         }
         YoutubeMetadata meta;
         try {
-            meta = YoutubeMetadata.parse(result.stdoutString(), videoId);
+            meta = YoutubeMetadata.parse(result.toString(), videoId);
         } catch (IllegalArgumentException e) {
-            throw new HttpError(502, "youtube_bad_metadata", "yt-dlp returned no usable metadata for this video");
+            throw new HttpError(502, "youtube_bad_metadata", "The YouTube service returned no usable metadata for this video");
         }
         if (meta.live()) {
             throw new HttpError(422, "youtube_live", "Live streams can't be imported"
@@ -559,9 +530,55 @@ public final class YoutubeImports {
         return meta;
     }
 
+    /** The error people see for a failed lookup; the details go to the server log. */
+    static HttpError lookupError(YoutubeServiceException e, String videoId) {
+        switch (e.kind()) {
+            case NOT_CONFIGURED -> {
+                return unavailable();
+            }
+            case TIMEOUT -> {
+                LOG.log(System.Logger.Level.INFO, "YouTube lookup of " + videoId + " timed out: " + e.getMessage());
+                return new HttpError(504, "youtube_timeout", "YouTube didn't answer in time; try again later");
+            }
+            case YOUTUBE -> {
+                LOG.log(System.Logger.Level.INFO, "YouTube refused " + videoId + " (" + e.errorType() + "): "
+                        + e.getMessage());
+                return new HttpError(422, "youtube_unavailable", serviceErrorMessage(e.errorType(), e.getMessage()));
+            }
+            default -> {
+                LOG.log(System.Logger.Level.WARNING, "YouTube lookup of " + videoId + " failed: " + e.getMessage()
+                        + (e.kind() == YoutubeServiceException.Kind.UNAUTHORIZED
+                        ? " (the YouTube service refused the token: check youtube.serviceToken)" : ""));
+                return new HttpError(503, "ytdlp_unavailable",
+                        "The YouTube service isn't reachable right now; try again later");
+            }
+        }
+    }
+
     /**
-     * The message for a failed {@code -J}: yt-dlp's last {@code ERROR:} line without its prefix
-     * and extractor tag, e.g. "Video unavailable"; a generic message if there is none.
+     * The message for a lookup YouTube refused: the service's {@code error} text (yt-dlp's message,
+     * without the {@code ERROR:} prefix and extractor tag); for {@code sign_in_required}, a hint that
+     * YouTube wants the server to sign in.
+     */
+    static String serviceErrorMessage(String errorType, String error) {
+        if ("sign_in_required".equals(errorType)) {
+            return "YouTube asked this server to sign in to confirm it isn't a bot; try again later, or ask the"
+                    + " server admin to give the YouTube service cookies or a proxy";
+        }
+        if ("age_restricted".equals(errorType)) {
+            return "YouTube only shows this video to signed-in adults; the server admin can give the YouTube"
+                    + " service cookies of such an account";
+        }
+        if (error == null) {
+            return errorMessage(null);
+        }
+        String last = error.strip().lines().reduce((a, b) -> b).orElse("").strip();
+        return errorMessage(last.startsWith("ERROR:") ? last : "ERROR: " + last);
+    }
+
+    /**
+     * The message for a failed lookup: the last {@code ERROR:} line of {@code stderrTail} without
+     * its prefix and extractor tag, e.g. "Video unavailable"; a generic message if there is none.
      */
     static String errorMessage(String stderrTail) {
         String found = null;
@@ -585,7 +602,7 @@ public final class YoutubeImports {
     }
 
     private static HttpError unavailable() {
-        return new HttpError(503, "ytdlp_unavailable", "YouTube imports can't run: yt-dlp isn't available on this server");
+        return new HttpError(503, "ytdlp_unavailable", "YouTube imports can't run: the YouTube service isn't set up on this server");
     }
 
     // ------------------------------------------------------------------ SQL

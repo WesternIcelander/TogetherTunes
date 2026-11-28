@@ -78,6 +78,8 @@ import io.siggi.togethertunes.ingest.SilenceFrame;
 import io.siggi.togethertunes.ingest.ToolException;
 import io.siggi.togethertunes.ingest.Tools;
 import io.siggi.togethertunes.ingest.YtdlpApi;
+import io.siggi.togethertunes.youtube.YoutubeService;
+import io.siggi.togethertunes.youtube.YoutubeServiceApi;
 import io.siggi.togethertunes.ingest.YtdlpUpdater;
 import io.siggi.togethertunes.output.CardGop;
 import io.siggi.togethertunes.output.CleartextTokens;
@@ -250,10 +252,10 @@ public final class Main {
         ReferenceCard referenceCard = outputAssets.reference();
         // Repeated next to the filler cards.
         SilenceFrame silence = loadSilenceFrame(config, System.err);
-        Supplier<String> cookiesFile = cookiesFile(settings);
-        // every yt-dlp call that talks to YouTube gets the PO token provider URL (ytdlp.poTokenProviderUrl)
+        // every YouTube call goes to the YouTube service (youtube.serviceUrl, youtube.serviceToken)
+        YoutubeService youtube = youtubeService(settings);
+        // the old yt-dlp settings, unused since YouTube goes through the service (removed with the old code)
         Supplier<String> poTokenProviderUrl = poTokenProviderUrl(settings);
-        Tools youtubeTools = Tools.from(config).withPoTokenProvider(poTokenProviderUrl);
         // yt-dlp calls without a job directory copy the cookies file here (leftovers deleted)
         try {
             io.siggi.togethertunes.ytdlp.CookieJarFile.serverTempDir(dataDir.tmp().resolve("cookies"));
@@ -274,8 +276,8 @@ public final class Main {
                     + "): looking up song details online is off, and personal data can't be removed from uploads"
                     + " (.m4a originals aren't played in browsers)");
         }
-        IngestPipeline pipeline = new IngestPipeline(youtubeTools, dataDir, new IngestItems(database),
-                referenceCard, config.ingestMaxDurationSeconds(), cookiesFile, presets);
+        IngestPipeline pipeline = new IngestPipeline(Tools.from(config), dataDir, new IngestItems(database),
+                referenceCard, config.ingestMaxDurationSeconds(), youtube, presets);
         pipeline.cleaner(metadataLookup);
         pipeline.reference(outputAssets::reference);
         pipeline.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds, config.ingestMaxDurationSeconds()));
@@ -440,7 +442,7 @@ public final class Main {
         // Guests add media only as a request in a room that allows it (server AND room setting).
         AddMediaPolicy addMedia = new AddMediaPolicy(permissions, settings, roomGuests);
         UploadsApi uploadsApi = new UploadsApi(uploads, addMedia, guests);
-        YoutubeImports youtubeImports = youtubeImports(config, youtubeTools, database, ingest, cookiesFile);
+        YoutubeImports youtubeImports = youtubeImports(config, youtube, database, ingest);
         youtubeImports.outputEncoding(outputAssets::encoding);
         youtubeImports.maxDurationSeconds(() -> setting(settings::ingestMaxDurationSeconds,
                 config.ingestMaxDurationSeconds()));
@@ -467,12 +469,12 @@ public final class Main {
                 Tools.from(config), dataDir, ingest.jobs(), Clock.systemUTC());
         itemsApi.lookup(metadataLookupApi);
         itemsApi.coverUpload(new CoverUpload(items, Tools.from(config), dataDir, ingest.jobs()));
-        // "Find a music video": MVFinder by ISRC, the kept matches, else a yt-dlp search
-        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, youtubeTools, cookiesFile,
+        // "Find a music video": MVFinder by ISRC, the kept matches, else a YouTube service search
+        itemsApi.videoSearch(new VideoSearchApi(new VideoSearch(database, youtube,
                 youtubeImports, linkResolver, () -> setting(() -> settings.get(Settings.MVFINDER_MAX_PER_HOUR),
                 15), Clock.systemUTC()), permissions));
-        // The header search's Search YouTube and the search page's YouTube section: MVFinder, else yt-dlp
-        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(youtubeTools, cookiesFile, linkResolver,
+        // The header search's Search YouTube and the search page's YouTube section: MVFinder, else the YouTube service
+        itemsApi.youtubeSearch(new YoutubeSearchApi(new YoutubeSearch(youtube, linkResolver,
                 () -> setting(() -> settings.get(Settings.YOUTUBE_SEARCH_MAX_PER_HOUR), 60), Clock.systemUTC()),
                 permissions).roomRules(roomGuests::requireYoutubeRequests)); // the room view's request search
         ingest.jobs().uploadReadyListener(metadataLookupApi::uploadReady);
@@ -662,7 +664,9 @@ public final class Main {
         JobList jobList = new JobList(database, ingest.jobs(), Clock.systemUTC());
         jobList.steps(ingest::liveStep);
         new JobsApi(ingest.jobs(), jobList, permissions, ingest::paused, Clock.systemUTC()).register(appRouter);
-        // The admin's "Update yt-dlp" button (yt-dlp -U), the installed version and the PO token provider check.
+        // The admin's YouTube service box: its status, Update now, the update log and the connection test.
+        new YoutubeServiceApi(youtube, settings, database, permissions, Clock.systemUTC()).register(appRouter);
+        // The old yt-dlp routes (no longer used by the admin page; removed with TogetherTunes's own yt-dlp).
         new YtdlpApi(new YtdlpUpdater(Tools.from(config), Clock.systemUTC()), database, permissions, Clock.systemUTC(),
                 poTokenProviderUrl).register(appRouter);
         // The management view's overlay preview (docs/overlay.md#room-ui).
@@ -1132,10 +1136,25 @@ public final class Main {
      * The YouTube import service ({@link YoutubeImports}): the duration limit from the config, new
      * items recorded for the configured output profile, each queued job wakes the ingest workers.
      */
-    static YoutubeImports youtubeImports(Config config, Tools tools, Database database, IngestQueue ingest,
-                                         Supplier<String> cookiesFile) {
-        return new YoutubeImports(database, tools, ingest.jobs(), ingest::wake, config.outputEncoding(),
-                config.ingestMaxDurationSeconds(), cookiesFile, Clock.systemUTC());
+    static YoutubeImports youtubeImports(Config config, YoutubeService youtube, Database database, IngestQueue ingest) {
+        return new YoutubeImports(database, youtube, ingest.jobs(), ingest::wake, config.outputEncoding(),
+                config.ingestMaxDurationSeconds(), Clock.systemUTC());
+    }
+
+    /**
+     * The YouTube service (YTSucks) from {@code youtube.serviceUrl} and {@code youtube.serviceToken},
+     * read for every call (an admin's change applies to the next one); not set up if they can't be read.
+     */
+    static YoutubeService youtubeService(Settings settings) {
+        return new YoutubeService(() -> {
+            try {
+                return new YoutubeService.Endpoint(settings.youtubeServiceUrl(), settings.youtubeServiceToken());
+            } catch (SQLException e) {
+                System.getLogger(Main.class.getName()).log(System.Logger.Level.WARNING,
+                        "Could not read the YouTube service settings: " + e.getMessage());
+                return YoutubeService.Endpoint.NONE;
+            }
+        });
     }
 
     /**
