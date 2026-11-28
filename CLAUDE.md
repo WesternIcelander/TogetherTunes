@@ -28,9 +28,9 @@ A self-hosted, Jellyfin-like media server built around shared listening rooms, w
 6. Stream URL tokens (private rooms) and RTMP keys are capabilities. Never log them in full. (Public and unlisted rooms' stream URLs use the room slug, which isn't a secret. Tokens may travel over plain HTTP when the owner uses the `http.insecureBaseUrl` URL; that use is recorded and warned about, never logged.)
 7. One YouTube video ID maps to at most one item row at a time (purged items are refetched into the same row). Only an admin's **delete record** ([media-types.md](docs/media-types.md#after-media-is-deleted)) removes the row; after that the ID may get a new one.
 
-## Upstream libraries (SiggiHTTP, SimpleWebsocket)
+## Upstream libraries (SiggiHTTP, SimpleWebsocket, YTSucks)
 
-SiggiHTTP and SimpleWebsocket are separate projects, each with its own Claude session (named `SiggiHTTP` and `SimpleWebsocket`; find them with `ListAgents`).
+SiggiHTTP and SimpleWebsocket are separate projects, each with its own Claude session (named `SiggiHTTP` and `SimpleWebsocket`; find them with `ListAgents`). So is **YTSucks** (`/Users/siggi/Desktop/YTSucks`, session `YTSucks`; Siggi, 2026-11-28), the Docker service TogetherTunes uses for every YouTube call: the same rules apply (no edits, report what's missing; it has no `mvn install`, so continue once that session says the change is in).
 
 - **Never modify them directly**: not their source, not copies or patches in this repo, and no workarounds that reimplement them here.
 - **Report bugs and missing capabilities** to that session with `SendMessage`: what's wrong, how to reproduce it, and what TogetherTunes needs. That session fixes it, or tells Siggi if it can't, and then runs `mvn install`, so the fixed `1.11-SNAPSHOT` / `1.1-SNAPSHOT` lands in the local `~/.m2`.
